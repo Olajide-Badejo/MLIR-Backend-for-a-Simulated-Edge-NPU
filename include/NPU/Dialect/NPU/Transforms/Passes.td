@@ -28,4 +28,21 @@ def NPUFoldBatchNorm : Pass<"npu-fold-batchnorm", "::mlir::func::FuncOp"> {
   let dependentDialects = ["::mlir::npu::NPUDialect"];
 }
 
+def NPUFuseOps : Pass<"npu-fuse-ops", "::mlir::func::FuncOp"> {
+  let summary = "Fuse a trailing activation into a convolution or matmul.";
+  let description = [{
+    A `relu` whose sole producer is a `conv2d` or `matmul` with no fused
+    activation is absorbed into that op by setting its `activation` attribute,
+    which already carries any bias as an operand. The result is a single fused
+    `conv2d`/`matmul` that computes the convolution, the bias add, and the
+    activation together.
+
+    This fusion matters because of the memory model: the unfused form writes the
+    convolution result to DRAM and reads it back for the activation, while the
+    fused op keeps that intermediate in the scratchpad. The benchmark suite
+    measures the resulting drop in DRAM traffic.
+  }];
+  let dependentDialects = ["::mlir::npu::NPUDialect"];
+}
+
 #endif // NPU_TRANSFORMS_PASSES_TD

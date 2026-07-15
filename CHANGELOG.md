@@ -24,3 +24,6 @@ Semantic Versioning once a release is tagged.
   idempotence, reshape identity, reshape of reshape); and a dedicated `npu-fold-batchnorm`
   pass that folds batch normalization into a preceding convolution's weights and bias with
   real compile time tensor arithmetic. Canonicalize and fold lit tests.
+- Phase 3: the `npu-fuse-ops` pass that folds a trailing `relu` into a producing `conv2d`
+  or `matmul` (which already carries its bias operand) by setting the fused activation, so
+  the intermediate stays in scratchpad instead of round tripping through DRAM.
