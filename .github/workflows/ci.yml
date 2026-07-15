@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dash-lint:
+    name: dash-lint (no em or en dashes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run dash-lint
+        run: bash scripts/dash-lint.sh
+
+  build-and-test:
+    name: build and test against prebuilt LLVM
+    runs-on: ubuntu-latest
+    # Uses the image produced by docker/Dockerfile.llvm so CI never rebuilds LLVM.
+    # Set the image reference to your registry once the base image is published.
+    container: ghcr.io/OWNER/npu-mlir-llvm:22.1.8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DMLIR_DIR="$MLIR_DIR" \
+            -DLLVM_DIR="$LLVM_DIR" \
+            -DLLVM_USE_LINKER=lld
+      - name: Build
+        run: ninja -C build
+      - name: Lit tests
+        run: ninja -C build check-npu

@@ -1,0 +1,40 @@
+# Dockerfile.llvm
+#
+# Builds LLVM/MLIR once at the pinned tag and bakes it into an image that CI uses as its
+# base, so CI never rebuilds LLVM per push. Build and push this image only when the pinned
+# tag changes.
+#
+#   docker build -f docker/Dockerfile.llvm -t ghcr.io/OWNER/npu-mlir-llvm:22.1.8 .
+#
+FROM ubuntu:24.04
+
+ARG LLVM_TAG=llvmorg-22.1.8
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ninja-build git lld ccache \
+      python3 python3-pip python3-venv python3-dev \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir numpy nanobind
+
+RUN git clone --depth 1 --branch ${LLVM_TAG} \
+      https://github.com/llvm/llvm-project.git /llvm-project
+
+RUN cmake -G Ninja -S /llvm-project/llvm -B /llvm-project/build \
+      -DLLVM_ENABLE_PROJECTS="mlir" \
+      -DLLVM_TARGETS_TO_BUILD="Native" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DLLVM_ENABLE_ASSERTIONS=ON \
+      -DLLVM_USE_LINKER=lld \
+      -DLLVM_PARALLEL_LINK_JOBS=2 \
+      -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+      -DPython3_EXECUTABLE=/opt/venv/bin/python \
+    && ninja -C /llvm-project/build \
+    && ninja -C /llvm-project/build install
+
+ENV MLIR_DIR=/llvm-project/build/lib/cmake/mlir
+ENV LLVM_DIR=/llvm-project/build/lib/cmake/llvm

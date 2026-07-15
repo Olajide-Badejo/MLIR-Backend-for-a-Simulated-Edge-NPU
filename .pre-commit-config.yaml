@@ -1,0 +1,24 @@
+# Pre-commit hooks for npu-mlir.
+# Install once with:  pre-commit install
+# Run against everything with:  pre-commit run --all-files
+repos:
+  - repo: local
+    hooks:
+      - id: dash-lint
+        name: dash-lint (no em or en dashes)
+        entry: scripts/dash-lint.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        files: ^(python|experiments|report/scripts)/.*\.py$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        files: ^(python|experiments|report/scripts)/.*\.py$

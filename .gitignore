@@ -1,0 +1,39 @@
+# Build directories
+/build/
+/build-*/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.bbl
+*.blg
+report/main.pdf
+report_debug/debug_report.pdf
+
+# Editor and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Project outputs that are regenerated, not committed
+*.nbin
+/experiments/results/*.tmp

@@ -1,0 +1,12 @@
+# Dockerfile.dev
+#
+# Developer image layered on the prebuilt LLVM base. Adds the Python packages the frontend
+# and tests need. Build the base (Dockerfile.llvm) first.
+ARG LLVM_IMAGE=ghcr.io/OWNER/npu-mlir-llvm:22.1.8
+FROM ${LLVM_IMAGE}
+
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir \
+      onnx onnxruntime pytest pytest-cov black ruff mypy
+
+WORKDIR /workspace
