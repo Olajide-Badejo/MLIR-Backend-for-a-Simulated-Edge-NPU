@@ -17,6 +17,7 @@ set(LIBS
   # Project dialects and passes.
   MLIRNPUDialect
   MLIRNPUTransforms
+  MLIRNPUISADialect
 )
 
 add_llvm_executable(npu-opt npu-opt.cpp)
