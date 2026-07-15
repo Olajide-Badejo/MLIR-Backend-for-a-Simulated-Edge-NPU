@@ -1,0 +1,15 @@
+//===- NPUDialect.h - NPU dialect declaration -------------------*- C++ -*-===//
+//
+// Part of the npu-mlir project, under the Apache License v2.0 with LLVM
+// Exceptions. See the LICENSE file for license information.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef NPU_DIALECT_NPU_IR_NPUDIALECT_H
+#define NPU_DIALECT_NPU_IR_NPUDIALECT_H
+
+#include "mlir/IR/Dialect.h"
+
+#include "NPU/Dialect/NPU/IR/NPUOpsDialect.h.inc"
+
+#endif // NPU_DIALECT_NPU_IR_NPUDIALECT_H

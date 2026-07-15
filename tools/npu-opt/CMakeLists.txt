@@ -14,6 +14,8 @@ set(LIBS
   MLIRRegisterAllExtensions
   MLIROptLib
   MLIRPass
+  # Project dialects.
+  MLIRNPUDialect
 )
 
 add_llvm_executable(npu-opt npu-opt.cpp)

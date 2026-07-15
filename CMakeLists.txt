@@ -36,6 +36,9 @@ link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 # Custom dialects, passes, libraries, and tools are added phase by phase.
-# Phase 0 wires only the npu-opt driver skeleton and the lit test harness.
+# TableGen include directories are descended into first so their generated
+# headers exist before the libraries and tools that consume them are built.
+add_subdirectory(include/NPU/Dialect/NPU/IR)
+add_subdirectory(lib/Dialect/NPU/IR)
 add_subdirectory(tools/npu-opt)
 add_subdirectory(test)

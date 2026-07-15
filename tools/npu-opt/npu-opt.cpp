@@ -6,9 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Command line driver for running passes and transforms over NPU dialect IR,
-// modeled on mlir-opt. Phase 0 registers the upstream dialects and passes only;
-// the npu and npuisa dialects and their passes are registered here as they land
-// in later phases.
+// modeled on mlir-opt. It registers the upstream dialects and passes plus the
+// project's own dialects. The npuisa dialect and the project passes are added
+// here as they land in later phases.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,10 +17,14 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "NPU/Dialect/NPU/IR/NPUDialect.h"
+
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   mlir::registerAllPasses();
+
+  registry.insert<mlir::npu::NPUDialect>();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "NPU optimizer driver\n", registry));
