@@ -35,3 +35,8 @@ Semantic Versioning once a release is tagged.
   IR with the MLIR Python bindings, mapping Conv, Gemm, Relu, MaxPool, AveragePool, Reshape,
   and Flatten and failing loudly on anything else. pytest covers model structure, an imported
   LeNet verified through npu-opt, and the loud failure path. black and ruff configured.
+- Phase 6: the npuisa instruction dialect (scratchpad buffer type, DMA, compute, and control
+  instructions), the `npu-lower-to-npuisa` dialect conversion lowering (DRAM tensor to
+  scratchpad buffer with DMA at the boundaries), and the `npu-allocate-scratchpad` linear scan
+  allocator that assigns byte offsets and spills the longest lived buffer to DRAM when the
+  working set exceeds the budget. lit covers round trip, lowering, and the fits and spill cases.

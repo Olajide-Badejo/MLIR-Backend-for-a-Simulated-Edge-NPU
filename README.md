@@ -37,7 +37,7 @@ including the memory budget this machine builds under, are in [docs/BUILD.md](do
 - [x] P3 operator fusion
 - [x] P4 DCE via traits and SymbolDCE
 - [x] P5 ONNX frontend and model generator
-- [ ] P6 lowering to npuisa and scratchpad allocator
+- [x] P6 lowering to npuisa and scratchpad allocator
 - [ ] P7 encoder, objdump, simulator, end to end vs onnxruntime
 - [ ] P8 npu-compile driver and opt levels
 - [ ] P9 benchmark harness and ablations

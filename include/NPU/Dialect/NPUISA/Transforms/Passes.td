@@ -28,4 +28,24 @@ def NPULowerToNPUISA : Pass<"npu-lower-to-npuisa", "::mlir::func::FuncOp"> {
   ];
 }
 
+def NPUAllocateScratchpad : Pass<"npu-allocate-scratchpad", "::mlir::func::FuncOp"> {
+  let summary = "Assign scratchpad byte offsets to npuisa buffers, spilling to DRAM.";
+  let description = [{
+    Linear scan allocation over the straight line instruction stream. Each buffer
+    is live from the instruction that produces it to its last use; the allocator
+    assigns each a byte offset within the budget and records it as the `address`
+    attribute, reusing space as buffers die.
+
+    When the peak working set exceeds the budget the allocator spills: it stores
+    the longest lived buffer crossing the peak back to DRAM after it is produced
+    and reloads it before each later use, which bounds the resident set at the
+    cost of extra DMA traffic. The default budget is 1 MB.
+  }];
+  let options = [
+    Option<"budgetBytes", "budget", "int64_t", /*default=*/"1048576",
+           "Scratchpad size in bytes.">,
+  ];
+  let dependentDialects = ["::mlir::npuisa::NPUISADialect"];
+}
+
 #endif // NPUISA_TRANSFORMS_PASSES_TD
