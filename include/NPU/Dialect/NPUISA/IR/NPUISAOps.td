@@ -34,6 +34,21 @@ def NPUISA_HaltOp : NPUISA_Op<"halt", [Terminator]> {
 }
 
 //===----------------------------------------------------------------------===//
+// DRAM constant
+//===----------------------------------------------------------------------===//
+
+def NPUISA_ConstOp : NPUISA_Op<"const", [Pure, ConstantLike]> {
+  let summary = "A constant tensor resident in DRAM.";
+  let description = [{
+    Holds a weight, bias, or other constant in DRAM. A dma_load brings it into the
+    scratchpad before a compute instruction can use it.
+  }];
+  let arguments = (ins ElementsAttr:$value);
+  let results = (outs NPUISA_FloatTensor:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // DMA between DRAM and scratchpad
 //===----------------------------------------------------------------------===//
 

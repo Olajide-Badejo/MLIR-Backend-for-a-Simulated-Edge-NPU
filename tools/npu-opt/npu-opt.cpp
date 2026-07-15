@@ -20,6 +20,7 @@
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPU/Transforms/Passes.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
+#include "NPU/Dialect/NPUISA/Transforms/Passes.h"
 
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
@@ -29,6 +30,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::npu::NPUDialect>();
   registry.insert<mlir::npuisa::NPUISADialect>();
   mlir::npu::registerNPUPasses();
+  mlir::npuisa::registerNPUISAPasses();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "NPU optimizer driver\n", registry));
