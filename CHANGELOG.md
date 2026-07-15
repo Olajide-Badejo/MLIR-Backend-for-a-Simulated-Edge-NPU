@@ -61,6 +61,10 @@ Semantic Versioning once a release is tagged.
   DESIGN_DECISIONS, and CONTRIBUTING join the existing BUILD, ONNX_FRONTEND, ISA_MANUAL, the
   auto generated DIALECT_REFERENCE, the engineering log, and this changelog, indexed from the
   README.
+- Phase 11: the two reports. The main report (report/) covers the architecture, dialects, passes,
+  frontend, ISA, and an evaluation whose results table and inline numbers are generated from the
+  benchmark JSON by results_to_tex.py, so nothing is hand copied. The debug report (report_debug/)
+  is a first person postmortem grouped by theme. Both build with tectonic to zero errors.
 
 ### Fixed
 

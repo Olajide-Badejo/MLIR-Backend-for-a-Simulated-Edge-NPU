@@ -1,0 +1,23 @@
+\section{Lowering and numerics}
+
+The lowering from the tensor level to the instruction level is a representation
+change, and the dialect conversion framework is the right tool for it, but the
+framework's materialization rules took care to get right. A type converter maps
+every tensor to a scratchpad buffer, and target and source materializations insert
+a load or a store at the boundary. The subtlety is keeping DRAM values, the
+function arguments and the constants, as tensors while the intermediates become
+buffers, so that DMA appears only where the two memories meet. A constant becomes
+a DRAM constant followed by a load, which makes the boundary explicit.
+
+The one genuine correctness bug appeared only under a tight scratchpad budget,
+and the benchmark suite caught it. At a small budget the allocator spills a buffer
+by storing it to DRAM after it is produced and reloading it before its next use.
+The maximum error against onnxruntime jumped from the fp32 rounding level to about
+eight hundredths. The cause was in the instruction encoder, which assigned DRAM
+offsets only to inputs, constants, and returned values. A spill store's result is
+a DRAM temporary that is none of those, so with no offset assigned it defaulted to
+offset zero and overwrote the model input, and the reload read the input back
+instead of the spilled buffer. The scratchpad allocation test had checked only
+that spilling inserted the right number of DMA instructions, never the numerics,
+so it did not catch this. The fix gives every spill temporary its own DRAM region,
+and an end to end test at a tight budget now locks the numerics in.

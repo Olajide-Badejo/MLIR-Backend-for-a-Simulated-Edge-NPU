@@ -27,6 +27,7 @@ htmlcov/
 *.blg
 report/main.pdf
 report_debug/debug_report.pdf
+report/generated/
 
 # Editor and OS
 .vscode/

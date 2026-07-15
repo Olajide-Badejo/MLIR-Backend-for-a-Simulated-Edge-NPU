@@ -1,0 +1,13 @@
+\section{Conclusion}
+
+The result is a working MLIR backend that takes a trained ONNX model to an
+executable instruction stream for a simulated edge NPU and runs it with validated
+numerics. The two dialect structure keeps the tensor level optimizations separate
+from the instruction level memory model, the dialect conversion framework makes
+the lowering a principled representation change rather than an ad hoc rewrite, and
+the benchmark suite ties every reported number to a recorded experiment.
+
+The natural next steps are INT8 quantization, which the dialect and cost model were
+designed to accommodate, and a wider set of test models to exercise the depthwise
+and concatenation paths. The debug report, a companion to this document, records
+the problems met along the way and how they were resolved.

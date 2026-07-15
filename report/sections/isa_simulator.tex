@@ -1,0 +1,19 @@
+\section{ISA and simulator}
+
+The instruction set has a two level memory model: DRAM holds inputs, constants,
+and outputs; the scratchpad, a small fixed size fast memory with a default of one
+megabyte, holds the working set. The opcodes are NOP, HALT, DMA\_LOAD, DMA\_STORE,
+CONV2D, MATMUL, RELU, ADD, MUL, POOL\_MAX, POOL\_AVG, and RESHAPE. The binary
+format is a fixed header followed by tagged, length prefixed records, which is
+simpler to get right and to disassemble than a bit packed encoding while remaining
+a real, documented format. The \texttt{npu-objdump} tool renders the DRAM layout
+and the instruction stream.
+
+The simulator executes the stream against DRAM and scratchpad arrays with fp32
+kernels for each instruction. Its cost model is analytical, not cycle accurate.
+DMA costs bytes over an assumed bandwidth; convolution and matmul cost their
+multiply accumulate count over an assumed systolic throughput of 256 operations
+per cycle, the arithmetic of a sixteen by sixteen array; elementwise instructions
+cost their element count over a lane width; and every instruction charges a fixed
+issue overhead. These constants are documented assumptions, and the cycle and DRAM
+figures the simulator reports are simulated estimates.

@@ -1,0 +1,16 @@
+\section{ONNX frontend}
+
+The frontend runs \texttt{onnx.checker} and shape inference before importing, so a
+malformed model is rejected up front and every intermediate tensor has a static
+shape. It then walks the graph in topological order, turning initializers into
+constants and each node into the matching \texttt{npu} op. The supported opset 17
+subset covers convolution, Gemm, matmul, elementwise add, relu, max and average
+pooling, batch normalization, reshape, and flatten. A Gemm with a transposed
+weight folds the transpose into the constant at import time so the plain matmul is
+correct. Anything outside the supported set fails loudly with the op name, never
+emitting silently wrong IR.
+
+The test models are generated, never downloaded, from small seeded PyTorch
+networks exported with \texttt{torch.onnx.export}, so the suite is fully self
+contained and reproducible from the seed. The core model is a LeNet style
+convolutional network.

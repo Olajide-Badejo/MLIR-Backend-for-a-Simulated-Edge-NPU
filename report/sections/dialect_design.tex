@@ -1,0 +1,19 @@
+\section{Dialect design}
+
+The \texttt{npu} dialect is the tensor level. Values are builtin ranked fp32
+tensors, which keeps interoperability with the MLIR infrastructure so that generic
+folding and dead code elimination apply without op specific support. Convolution
+and matmul take an optional bias operand and carry a fused activation attribute
+rather than exploding into a family of named fused ops. This mirrors the fused
+operator style of TFLite and gives the fusion pass a single clean target. Every op
+that computes a pure function of its operands carries the \texttt{Pure} trait, and
+each op with shape or type constraints has an ODS verifier. The dialect reference
+is generated from the op definitions so it cannot drift.
+
+The \texttt{npuisa} dialect is the instruction level, after memory placement. A
+value of \texttt{!npuisa.buffer} type is a scratchpad resident tensor. DRAM
+tensors move to and from the scratchpad through \texttt{dma\_load} and
+\texttt{dma\_store}, and compute instructions read and write buffers only. The
+instruction stream is straight line, since inference graphs are static DAGs, so
+the instruction set has no branches. Each buffer producing instruction carries an
+address attribute that the allocator fills in.

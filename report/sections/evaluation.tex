@@ -1,0 +1,35 @@
+\section{Evaluation}
+
+Correctness is validated end to end. The compiled and simulated output of the
+LeNet model is compared against \texttt{onnxruntime} on a seeded random input; the
+maximum absolute difference is at the level of fp32 rounding, on the order of
+$10^{-8}$, at every optimization level and both under a generous budget and under
+a tight budget that forces spilling. The benchmark harness records one result per
+cell, each carrying a manifest of the git revision, the LLVM tag \LlvmTag, the
+tool versions, and the cost model constants, so every number below traces to a
+recorded experiment. Table~\ref{tab:results} is generated from those files.
+
+\begin{table}[h]
+  \centering
+  \input{generated/results_table}
+  \caption{Per cell results: instruction count, simulated cycles, total DRAM
+    traffic, and maximum absolute error against onnxruntime. Cycle and DRAM
+    figures are simulated estimates.}
+  \label{tab:results}
+\end{table}
+
+Two effects stand out at the one megabyte budget, where nothing spills. Moving
+from \texttt{-O0} to \texttt{-O1}, canonicalization and dead code elimination
+remove the transposed Gemm weight constants that the importer leaves behind, and
+the total DRAM traffic falls from \OaDram{} KB to \ObDram{} KB. Moving to
+\texttt{-O2}, fusion folds the four activations into their producers, and the
+instruction count falls from \OaInstr{} to \OcInstr{} while the simulated cycles
+fall from \OaCycles{} to \OcCycles{}.
+
+The tight budget rows show the memory model at work. When the scratchpad cannot
+hold the working set, the allocator spills buffers to DRAM and reloads them, which
+raises the instruction count and the DRAM traffic relative to the generous budget.
+The numerics are unchanged, because a spill is a value preserving round trip.
+Finding and fixing a bug in that round trip, where spill temporaries were not
+being given distinct DRAM addresses, is one of the cases the benchmark suite
+caught and the debug report discusses.

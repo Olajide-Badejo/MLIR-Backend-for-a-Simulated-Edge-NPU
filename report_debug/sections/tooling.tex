@@ -1,0 +1,21 @@
+\section{Tooling}
+
+The Python environment was newer than the specification assumed, running Python
+3.14. This was a real risk for the frontend, since a compiler that cannot import
+its own dependencies is stuck at the first phase. The risk was retired early by
+confirming that numpy, nanobind, onnx, onnxruntime, and a CPU build of torch all
+publish wheels for this interpreter, so the frontend proceeded on the existing
+environment rather than a downgraded one.
+
+On the C++ side, LLVM builds with exceptions and run time type information
+disabled. The first version of the binary decoder used exceptions to signal a
+malformed file, which did not compile. Rather than fight the build flags per
+target, the decoder was refactored to return an optional, which is a cleaner
+interface anyway and bounds any corrupt length field so a bad file cannot request
+a huge allocation.
+
+A smaller but recurring friction was invoking the Linux toolchain from the Windows
+side. Multi line commands passed through the shell bridge had their quoting
+mangled, so the reliable pattern became writing a short script to a scratch
+location and running that script, rather than passing complex command lines
+inline.
