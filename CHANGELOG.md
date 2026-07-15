@@ -40,3 +40,9 @@ Semantic Versioning once a release is tagged.
   scratchpad buffer with DMA at the boundaries), and the `npu-allocate-scratchpad` linear scan
   allocator that assigns byte offsets and spills the longest lived buffer to DRAM when the
   working set exceeds the budget. lit covers round trip, lowering, and the fits and spill cases.
+- Phase 7: the `.nbin` binary encoding with the InstructionEncoder, the npu-objdump
+  disassembler, and a C++ simulator with fp32 kernels (conv2d, matmul, relu, add, mul, pooling,
+  reshape, DMA) and an analytical cost model reporting simulated cycles and DRAM bytes. GoogleTest
+  covers the format round trip, per instruction semantics, and cost arithmetic; a pytest end to
+  end test compiles and simulates a LeNet and matches onnxruntime within tolerance. The tools are
+  npu-translate, npu-objdump, and npu-sim. All performance numbers are simulated estimates.

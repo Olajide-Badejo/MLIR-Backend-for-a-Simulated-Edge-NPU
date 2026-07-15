@@ -1,0 +1,51 @@
+//===- Simulator.h - Execute an encoded npuisa program ----------*- C++ -*-===//
+//
+// Part of the npu-mlir project, under the Apache License v2.0 with LLVM
+// Exceptions. See the LICENSE file for license information.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef NPU_SIMULATOR_SIMULATOR_H
+#define NPU_SIMULATOR_SIMULATOR_H
+
+#include "NPU/Encoding/Program.h"
+#include "NPU/Simulator/CostModel.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace npu {
+
+// Simulated performance estimates. Never a measurement.
+struct Stats {
+  int64_t cycles = 0;
+  int64_t dramBytesRead = 0;
+  int64_t dramBytesWritten = 0;
+  int64_t instructions = 0;
+
+  std::string toJson() const;
+};
+
+struct SimResult {
+  std::vector<std::vector<float>> outputs; // parallel to Program::outputs
+  Stats stats;
+};
+
+class Simulator {
+public:
+  Simulator(const Program &program, CostModel cost = {})
+      : program(program), cost(cost) {}
+
+  // Run with inputs parallel to Program::inputs, each a flat row major fp32
+  // buffer. Returns the outputs and the simulated statistics.
+  SimResult run(const std::vector<std::vector<float>> &inputs);
+
+private:
+  const Program &program;
+  CostModel cost;
+};
+
+} // namespace npu
+
+#endif // NPU_SIMULATOR_SIMULATOR_H
