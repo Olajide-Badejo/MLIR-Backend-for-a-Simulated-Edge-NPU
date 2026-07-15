@@ -16,6 +16,10 @@
 
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
 
+// The fused activation enum and its specialized attribute are consumed by the
+// generated op classes, so they must be visible first.
+#include "NPU/Dialect/NPU/IR/NPUEnums.h.inc"
+
 #define GET_OP_CLASSES
 #include "NPU/Dialect/NPU/IR/NPUOps.h.inc"
 

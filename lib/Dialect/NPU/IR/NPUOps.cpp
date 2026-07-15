@@ -7,13 +7,25 @@
 
 #include "NPU/Dialect/NPU/IR/NPUOps.h"
 
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
 using namespace mlir::npu;
 
+#include "NPU/Dialect/NPU/IR/NPUEnums.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "NPU/Dialect/NPU/IR/NPUOps.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// Helpers
+//===----------------------------------------------------------------------===//
+
+static RankedTensorType rankedType(Value v) {
+  return llvm::cast<RankedTensorType>(v.getType());
+}
 
 //===----------------------------------------------------------------------===//
 // ConstantOp
@@ -29,3 +41,179 @@ LogicalResult ConstantOp::verify() {
 }
 
 OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) { return getValueAttr(); }
+
+//===----------------------------------------------------------------------===//
+// Conv2DOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult Conv2DOp::verify() {
+  if (rankedType(getInput()).getRank() != 4)
+    return emitOpError("expects a rank 4 NCHW input");
+  if (rankedType(getWeight()).getRank() != 4)
+    return emitOpError("expects a rank 4 OIHW weight");
+  if (rankedType(getOutput()).getRank() != 4)
+    return emitOpError("expects a rank 4 NCHW output");
+  if (getStrides().size() != 2)
+    return emitOpError("expects a 2 element strides attribute");
+  if (getDilations().size() != 2)
+    return emitOpError("expects a 2 element dilations attribute");
+  if (getPads().size() != 4)
+    return emitOpError("expects a 4 element pads attribute");
+  if (getBias() && rankedType(getBias()).getRank() != 1)
+    return emitOpError("bias must be a rank 1 per channel vector");
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MatMulOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult MatMulOp::verify() {
+  auto lhs = rankedType(getLhs());
+  auto rhs = rankedType(getRhs());
+  auto out = rankedType(getOutput());
+  if (lhs.getRank() != 2 || rhs.getRank() != 2 || out.getRank() != 2)
+    return emitOpError("expects rank 2 operands and result");
+  int64_t k1 = lhs.getDimSize(1), k2 = rhs.getDimSize(0);
+  if (!ShapedType::isDynamic(k1) && !ShapedType::isDynamic(k2) && k1 != k2)
+    return emitOpError("contraction dimensions disagree: ")
+           << k1 << " vs " << k2;
+  if (getBias() && rankedType(getBias()).getRank() != 1)
+    return emitOpError("bias must be a rank 1 vector");
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Pooling
+//===----------------------------------------------------------------------===//
+
+template <typename PoolOp>
+static LogicalResult verifyPool(PoolOp op) {
+  if (rankedType(op.getInput()).getRank() != 4 ||
+      rankedType(op.getOutput()).getRank() != 4)
+    return op.emitOpError("expects a rank 4 NCHW input and output");
+  if (op.getKernelShape().size() != 2)
+    return op.emitOpError("expects a 2 element kernel_shape attribute");
+  if (op.getStrides().size() != 2)
+    return op.emitOpError("expects a 2 element strides attribute");
+  if (op.getPads().size() != 4)
+    return op.emitOpError("expects a 4 element pads attribute");
+  return success();
+}
+
+LogicalResult MaxPool2DOp::verify() { return verifyPool(*this); }
+LogicalResult AvgPool2DOp::verify() { return verifyPool(*this); }
+
+//===----------------------------------------------------------------------===//
+// ReshapeOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ReshapeOp::verify() {
+  auto in = rankedType(getInput());
+  auto out = rankedType(getOutput());
+  if (in.hasStaticShape() && out.hasStaticShape() &&
+      in.getNumElements() != out.getNumElements())
+    return emitOpError("element count changes across reshape: ")
+           << in.getNumElements() << " vs " << out.getNumElements();
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TransposeOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult TransposeOp::verify() {
+  auto in = rankedType(getInput());
+  auto out = rankedType(getOutput());
+  int64_t rank = in.getRank();
+  ArrayAttr perm = getPermutation();
+  if (static_cast<int64_t>(perm.size()) != rank)
+    return emitOpError("permutation size ")
+           << perm.size() << " does not match input rank " << rank;
+
+  llvm::SmallVector<bool> seen(rank, false);
+  llvm::SmallVector<int64_t> permVals;
+  for (Attribute a : perm) {
+    int64_t v = llvm::cast<IntegerAttr>(a).getInt();
+    if (v < 0 || v >= rank)
+      return emitOpError("permutation index out of range: ") << v;
+    if (seen[v])
+      return emitOpError("permutation index repeated: ") << v;
+    seen[v] = true;
+    permVals.push_back(v);
+  }
+
+  if (in.hasStaticShape() && out.hasStaticShape())
+    for (int64_t i = 0; i < rank; ++i)
+      if (in.getDimSize(permVals[i]) != out.getDimSize(i))
+        return emitOpError("result shape is not the permuted input shape");
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ConcatOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ConcatOp::verify() {
+  if (getInputs().empty())
+    return emitOpError("expects at least one input");
+  auto out = rankedType(getOutput());
+  int64_t rank = out.getRank();
+  int64_t axis = getAxis();
+  if (axis < 0 || axis >= rank)
+    return emitOpError("axis ") << axis << " out of range for rank " << rank;
+
+  int64_t sum = 0;
+  bool sumStatic = !out.isDynamicDim(axis);
+  for (Value v : getInputs()) {
+    auto t = rankedType(v);
+    if (t.getRank() != rank)
+      return emitOpError("all inputs must match the result rank ") << rank;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == axis)
+        continue;
+      int64_t a = t.getDimSize(d), b = out.getDimSize(d);
+      if (!ShapedType::isDynamic(a) && !ShapedType::isDynamic(b) && a != b)
+        return emitOpError("non concatenated dimension ")
+               << d << " disagrees with the result";
+    }
+    if (t.isDynamicDim(axis))
+      sumStatic = false;
+    else
+      sum += t.getDimSize(axis);
+  }
+  if (sumStatic && sum != out.getDimSize(axis))
+    return emitOpError("concatenated size ")
+           << sum << " does not match result dimension " << out.getDimSize(axis);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// BatchNormOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult BatchNormOp::verify() {
+  auto in = rankedType(getInput());
+  if (in.getRank() != 4)
+    return emitOpError("expects a rank 4 NCHW input");
+  if (rankedType(getOutput()) != in)
+    return emitOpError("result type must equal input type");
+
+  int64_t channels = in.getDimSize(1);
+  auto checkParam = [&](Value v, StringRef name) -> LogicalResult {
+    auto t = rankedType(v);
+    if (t.getRank() != 1)
+      return emitOpError(name) << " must be a rank 1 per channel vector";
+    if (!ShapedType::isDynamic(channels) && !t.isDynamicDim(0) &&
+        t.getDimSize(0) != channels)
+      return emitOpError(name) << " length " << t.getDimSize(0)
+                               << " does not match channel count " << channels;
+    return success();
+  };
+  if (failed(checkParam(getScale(), "scale")) ||
+      failed(checkParam(getOffset(), "offset")) ||
+      failed(checkParam(getMean(), "mean")) ||
+      failed(checkParam(getVariance(), "variance")))
+    return failure();
+  return success();
+}
