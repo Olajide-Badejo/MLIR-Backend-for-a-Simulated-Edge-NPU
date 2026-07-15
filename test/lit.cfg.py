@@ -20,5 +20,5 @@ llvm_config.use_default_substitutions()
 config.excludes = ["CMakeLists.txt", "lit.cfg.py", "lit.site.cfg.py"]
 
 tool_dirs = [config.npu_tools_dir, config.llvm_tools_dir]
-tools = ["npu-opt"]
+tools = ["npu-opt", "npu-translate", "npu-objdump"]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
