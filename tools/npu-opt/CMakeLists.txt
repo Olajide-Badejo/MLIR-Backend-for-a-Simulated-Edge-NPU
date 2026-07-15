@@ -6,6 +6,12 @@ set(LIBS
   ${dialect_libs}
   ${conversion_libs}
   ${extension_libs}
+  # The registerAllDialects/registerAllPasses/registerAllExtensions entry points
+  # live in their own aggregator libraries in this LLVM release; link them so the
+  # symbols the driver calls are defined.
+  MLIRRegisterAllDialects
+  MLIRRegisterAllPasses
+  MLIRRegisterAllExtensions
   MLIROptLib
   MLIRPass
 )

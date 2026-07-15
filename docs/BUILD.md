@@ -54,8 +54,14 @@ Watch Ninja's native progress display. Do not wrap it.
 
 ## 3. Building this project against that LLVM
 
+The canonical repository lives in WSL native storage at `~/npu-mlir` (that is,
+`/home/elijah/npu-mlir`). It is deliberately not under the Windows `/mnt/c` project folder:
+that folder's path contains spaces, and LLVM's lit and FileCheck do not support spaces in
+paths. WSL native storage is also much faster to build in than the 9p `/mnt/c` mount. From
+Windows the repo is reachable at `\\wsl.localhost\Ubuntu\home\elijah\npu-mlir`.
+
 ```bash
-cd <repo>/npu-mlir
+cd ~/npu-mlir
 cmake -G Ninja -S . -B build \
   -DMLIR_DIR=$HOME/llvm-project/build/lib/cmake/mlir \
   -DLLVM_DIR=$HOME/llvm-project/build/lib/cmake/llvm \
@@ -66,5 +72,10 @@ ninja -C build check-npu
 
 ## 4. Measured wall clock times
 
-To be filled in with real measurements as they become available, replacing the spec's
-estimates. Do not quote estimates as if they were measurements.
+Recorded as they become real, replacing the spec's estimates. Do not quote estimates as if
+they were measurements.
+
+- One time LLVM/MLIR build (tag `llvmorg-22.1.8`, Release with assertions, mlir only,
+  Native target, lld, ccache cold, 6 compile / 1 link jobs, WSL2 at 12 GB / 8 proc):
+  about 28 minutes wall clock on the i7-14700K (measured 2026-07-15). Peak resident memory
+  stayed near 3 GB of the 12 GB budget.

@@ -48,3 +48,40 @@ before the ONNX frontend work, with a 3.12 venv as the fallback plan.
 **Verification.** `df`, `free`, `nproc`, `lsb_release`, tool `--version` probes captured
 above. LLVM pinned tag confirmed by `git ls-remote`; shallow clone HEAD resolves to
 `llvmorg-22.1.8`.
+
+## 2026-07-15 Phase 0: repository relocated to WSL native storage (spaces break lit)
+
+**Symptom.** After the LLVM build finished, `npu-opt` built and `npu-opt --help` worked,
+but the very first lit test failed with `FileCheck: Too many positional arguments
+specified!` and a shell error splitting a path at a space. The build tree sat under the
+Windows project folder whose ancestors contain spaces (`Corrected Projects`,
+`MLIR Backend for a Simulated Edge NPU`).
+
+**Root cause.** LLVM's lit expands the `%s` substitution to the test file's real path and
+does not quote it. Under the external `sh`, `npu-opt /mnt/c/.../Corrected Projects/...mlir`
+splits into multiple arguments, so both `npu-opt` and `FileCheck` see too many positional
+arguments. LLVM lit and FileCheck do not support spaces in paths, and lit resolves symlinks
+to the real path, so a space-free symlink over the spaced directory did not help either
+(verified: `%s` still expanded to the spaced `/mnt/c` realpath).
+
+**Options considered.**
+
+1. Keep the repo in the Windows folder and patch lit substitutions to quote `%s`. Rejected:
+   fights the framework, fragile, and would have to be re-done for every future config.
+2. Put the repo at a space-free Windows path such as `C:/Users/jidro/npu-mlir`. Space-free
+   and my editing tools stay native, but WSL builds and lit still run over the slow 9p
+   `/mnt/c` mount for the whole 12 phase project.
+3. Host the canonical repo in WSL native storage at `/home/elijah/npu-mlir`. Space-free,
+   native build and test speed, and the standard recommended layout for WSL2 development.
+   Chosen.
+
+**Chosen fix.** Relocated the git working tree (with history) to `/home/elijah/npu-mlir`.
+Builds go to `/home/elijah/npu-mlir/build`. From Windows the repo is reachable at
+`\\wsl.localhost\Ubuntu\home\elijah\npu-mlir`, which the Windows side editing tools handle
+correctly (verified by reading and enumerating files over that path). A pointer file in the
+original Windows folder records the new location. The original folder keeps only the spec
+and that pointer, so there is a single source of truth.
+
+**Verification.** After relocation, `ninja check-npu` reports `Passed: 1 (100.00%)` and
+`npu-opt --help` lists the registered dialects. All paths in the generated
+`lit.site.cfg.py` and in the `%s` expansion are now space-free.
