@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import pytest
-
 from npu_frontend import compile as npu_compile
 from npu_frontend import model_generator
 
@@ -53,7 +52,9 @@ def test_driver_nbin_matches_onnxruntime(tmp_path, npu_opt):
 
     onnx = model_generator.export("lenet", tmp_path / "lenet.onnx", seed=0)
     nbin = tmp_path / "lenet.nbin"
-    npu_compile.compile_model(onnx, opt_level=2, emit="nbin", output=nbin, bin_dir=bindir)
+    npu_compile.compile_model(
+        onnx, opt_level=2, emit="nbin", output=nbin, bin_dir=bindir
+    )
 
     rng = np.random.default_rng(1)
     x = rng.standard_normal((1, 1, 28, 28)).astype(np.float32)

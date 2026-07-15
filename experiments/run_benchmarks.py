@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
 
@@ -28,7 +28,6 @@ sys.path.insert(0, str(REPO / "python"))
 
 import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
-
 from npu_frontend import compile as npu_compile  # noqa: E402
 from npu_frontend import model_generator  # noqa: E402
 
@@ -68,7 +67,7 @@ def manifest() -> dict:
         "onnxruntime": ort.__version__,
         "numpy": np.__version__,
         "cost_model": COST_MODEL,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -84,9 +83,18 @@ def simulate(nbin: Path, x: np.ndarray) -> tuple[np.ndarray, dict]:
         out = Path(tmp) / "out.bin"
         stats = Path(tmp) / "stats.json"
         subprocess.run(
-            [str(npu_sim), str(nbin), "--input", str(inp), "--output", str(out),
-             "--stats", str(stats)],
-            check=True, capture_output=True,
+            [
+                str(npu_sim),
+                str(nbin),
+                "--input",
+                str(inp),
+                "--output",
+                str(out),
+                "--stats",
+                str(stats),
+            ],
+            check=True,
+            capture_output=True,
         )
         y = np.frombuffer(out.read_bytes(), dtype=np.float32)
         return y, json.loads(stats.read_text())
@@ -168,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         from tqdm import tqdm
+
         iterator = tqdm(cells, desc="benchmarks")
     except ImportError:
         iterator = cells

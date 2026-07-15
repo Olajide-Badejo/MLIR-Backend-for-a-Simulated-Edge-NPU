@@ -13,13 +13,17 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import pytest
-
 from npu_frontend import model_generator, onnx_importer
 
 
-def _compile_and_simulate(tmp_path: Path, npu_opt: str, name: str, seed: int,
-                          input_array: np.ndarray,
-                          budget: int = 1048576) -> np.ndarray:
+def _compile_and_simulate(
+    tmp_path: Path,
+    npu_opt: str,
+    name: str,
+    seed: int,
+    input_array: np.ndarray,
+    budget: int = 1048576,
+) -> np.ndarray:
     bindir = Path(npu_opt).parent
     npu_translate = bindir / "npu-translate"
     npu_sim = bindir / "npu-sim"
@@ -33,21 +37,35 @@ def _compile_and_simulate(tmp_path: Path, npu_opt: str, name: str, seed: int,
 
     isa_path = tmp_path / f"{name}.isa.mlir"
     subprocess.run(
-        [npu_opt, str(mlir_path), "-canonicalize", "-npu-fuse-ops",
-         "-npu-lower-to-npuisa", f"-npu-allocate-scratchpad=budget={budget}",
-         "-o", str(isa_path)],
+        [
+            npu_opt,
+            str(mlir_path),
+            "-canonicalize",
+            "-npu-fuse-ops",
+            "-npu-lower-to-npuisa",
+            f"-npu-allocate-scratchpad=budget={budget}",
+            "-o",
+            str(isa_path),
+        ],
         check=True,
     )
     nbin_path = tmp_path / f"{name}.nbin"
-    subprocess.run([str(npu_translate), str(isa_path), "-o", str(nbin_path)],
-                   check=True)
+    subprocess.run(
+        [str(npu_translate), str(isa_path), "-o", str(nbin_path)], check=True
+    )
 
     in_path = tmp_path / "input.bin"
     in_path.write_bytes(np.ascontiguousarray(input_array, dtype=np.float32).tobytes())
     out_path = tmp_path / "output.bin"
     subprocess.run(
-        [str(npu_sim), str(nbin_path), "--input", str(in_path),
-         "--output", str(out_path)],
+        [
+            str(npu_sim),
+            str(nbin_path),
+            "--input",
+            str(in_path),
+            "--output",
+            str(out_path),
+        ],
         check=True,
     )
     return np.frombuffer(out_path.read_bytes(), dtype=np.float32)

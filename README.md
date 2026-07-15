@@ -43,7 +43,7 @@ including the memory budget this machine builds under, are in [docs/BUILD.md](do
 - [x] P9 benchmark harness and ablations
 - [x] P10 docs set and auto generated dialect reference
 - [x] P11 main report and debug report
-- [ ] P12 final QA and v1.0.0
+- [x] P12 final QA and v1.0.0
 
 ## Documentation
 

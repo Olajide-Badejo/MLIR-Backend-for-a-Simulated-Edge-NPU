@@ -81,7 +81,9 @@ def compile_model(
     if emit == "import":
         return _write(output, text)
 
-    text = stage("optimize", lambda: _run_opt(npu_opt, text, _passes_for_level(opt_level)))
+    text = stage(
+        "optimize", lambda: _run_opt(npu_opt, text, _passes_for_level(opt_level))
+    )
     if emit == "npu":
         return _write(output, text)
 
@@ -100,7 +102,8 @@ def compile_model(
             nbin = Path(tmp) / "program.nbin"
             proc = subprocess.run(
                 [str(npu_translate), str(isa), "-o", str(nbin)],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if proc.returncode != 0:
                 raise RuntimeError(f"npu-translate failed:\n{proc.stderr}")
@@ -123,15 +126,30 @@ def _write(output, text: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="npu-compile", description=__doc__)
     parser.add_argument("model", help="input .onnx model")
-    parser.add_argument("-o", "--output", help="output path (default stdout for text stages)")
-    parser.add_argument("-O", dest="opt", type=int, choices=[0, 1, 2], default=2,
-                        help="optimization level (default 2)")
-    parser.add_argument("--emit", choices=STAGES, default="nbin",
-                        help="stage to emit (default nbin)")
-    parser.add_argument("--budget", type=int, default=1048576,
-                        help="scratchpad size in bytes (default 1 MB)")
+    parser.add_argument(
+        "-o", "--output", help="output path (default stdout for text stages)"
+    )
+    parser.add_argument(
+        "-O",
+        dest="opt",
+        type=int,
+        choices=[0, 1, 2],
+        default=2,
+        help="optimization level (default 2)",
+    )
+    parser.add_argument(
+        "--emit", choices=STAGES, default="nbin", help="stage to emit (default nbin)"
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=1048576,
+        help="scratchpad size in bytes (default 1 MB)",
+    )
     parser.add_argument("--bin-dir", help="directory holding npu-opt and npu-translate")
-    parser.add_argument("--verbose", action="store_true", help="print pass stage timings")
+    parser.add_argument(
+        "--verbose", action="store_true", help="print pass stage timings"
+    )
     args = parser.parse_args(argv)
 
     if args.emit == "nbin" and not args.output:

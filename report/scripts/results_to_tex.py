@@ -17,7 +17,9 @@ OUT = Path(__file__).resolve().parent.parent / "generated"
 
 def load_rows() -> list[dict]:
     rows = [json.loads(Path(f).read_text()) for f in glob.glob(str(RESULTS / "*.json"))]
-    return sorted(rows, key=lambda r: (r["model"], r["scratchpad_budget"], r["opt_level"]))
+    return sorted(
+        rows, key=lambda r: (r["model"], r["scratchpad_budget"], r["opt_level"])
+    )
 
 
 def results_table(rows: list[dict]) -> str:
@@ -42,14 +44,21 @@ def results_table(rows: list[dict]) -> str:
 
 def macros(rows: list[dict]) -> str:
     # Key numbers cited inline, taken from the default budget LeNet cells.
-    default = {r["opt_level"]: r for r in rows
-               if r["model"] == "lenet" and r["scratchpad_budget"] == 1048576}
+    default = {
+        r["opt_level"]: r
+        for r in rows
+        if r["model"] == "lenet" and r["scratchpad_budget"] == 1048576
+    }
     out = []
     if {0, 1, 2} <= set(default):
         out.append(rf"\newcommand{{\OaInstr}}{{{default[0]['instruction_count']}}}")
         out.append(rf"\newcommand{{\OcInstr}}{{{default[2]['instruction_count']}}}")
-        out.append(rf"\newcommand{{\OaDram}}{{{default[0]['dram_bytes_total'] // 1024}}}")
-        out.append(rf"\newcommand{{\ObDram}}{{{default[1]['dram_bytes_total'] // 1024}}}")
+        out.append(
+            rf"\newcommand{{\OaDram}}{{{default[0]['dram_bytes_total'] // 1024}}}"
+        )
+        out.append(
+            rf"\newcommand{{\ObDram}}{{{default[1]['dram_bytes_total'] // 1024}}}"
+        )
         out.append(rf"\newcommand{{\OaCycles}}{{{default[0]['simulated_cycles']}}}")
         out.append(rf"\newcommand{{\OcCycles}}{{{default[2]['simulated_cycles']}}}")
     manifest = rows[0]["manifest"] if rows else {}

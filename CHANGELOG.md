@@ -6,6 +6,12 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-15
+
+First release: a complete MLIR compiler backend and simulator for a simulated edge NPU,
+taking a trained ONNX model to an executable instruction stream validated end to end against
+onnxruntime.
+
 ### Added
 
 - Phase 0 scaffold: out of tree CMake project, `npu-opt` driver skeleton, lit test harness
