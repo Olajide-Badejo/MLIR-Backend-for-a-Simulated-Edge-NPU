@@ -18,7 +18,8 @@ from npu_frontend import model_generator, onnx_importer
 
 
 def _compile_and_simulate(tmp_path: Path, npu_opt: str, name: str, seed: int,
-                          input_array: np.ndarray) -> np.ndarray:
+                          input_array: np.ndarray,
+                          budget: int = 1048576) -> np.ndarray:
     bindir = Path(npu_opt).parent
     npu_translate = bindir / "npu-translate"
     npu_sim = bindir / "npu-sim"
@@ -33,7 +34,8 @@ def _compile_and_simulate(tmp_path: Path, npu_opt: str, name: str, seed: int,
     isa_path = tmp_path / f"{name}.isa.mlir"
     subprocess.run(
         [npu_opt, str(mlir_path), "-canonicalize", "-npu-fuse-ops",
-         "-npu-lower-to-npuisa", "-npu-allocate-scratchpad", "-o", str(isa_path)],
+         "-npu-lower-to-npuisa", f"-npu-allocate-scratchpad=budget={budget}",
+         "-o", str(isa_path)],
         check=True,
     )
     nbin_path = tmp_path / f"{name}.nbin"
@@ -60,6 +62,21 @@ def test_lenet_matches_onnxruntime(tmp_path, npu_opt):
     reference = session.run(None, {"input": x})[0]
 
     simulated = _compile_and_simulate(tmp_path, npu_opt, "lenet", 0, x)
+    simulated = simulated.reshape(reference.shape)
+
+    np.testing.assert_allclose(simulated, reference, rtol=1e-3, atol=1e-3)
+
+
+def test_lenet_with_spilling_matches_onnxruntime(tmp_path, npu_opt):
+    # A 140 KB budget is below the LeNet peak, so the allocator spills buffers to
+    # DRAM and reloads them. The numerics must survive the round trip.
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((1, 1, 28, 28)).astype(np.float32)
+
+    onnx_path = model_generator.export("lenet", tmp_path / "lenet.onnx", seed=0)
+    reference = ort.InferenceSession(str(onnx_path)).run(None, {"input": x})[0]
+
+    simulated = _compile_and_simulate(tmp_path, npu_opt, "lenet", 0, x, budget=143360)
     simulated = simulated.reshape(reference.shape)
 
     np.testing.assert_allclose(simulated, reference, rtol=1e-3, atol=1e-3)

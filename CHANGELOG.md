@@ -50,3 +50,15 @@ Semantic Versioning once a release is tagged.
   (-O0 import and verify, -O1 canonicalize and fold, -O2 fuse and DCE) and staged output
   (--emit import, npu, npuisa, or nbin), plus --verbose stage timings. pytest covers the emit
   stages, that the opt levels change the IR, and that a driver produced nbin matches onnxruntime.
+- Phase 9: the benchmark harness (`experiments/run_benchmarks.py`) sweeping models, optimization
+  levels, and scratchpad budgets, writing one JSON per cell with op counts, simulated cycles, DRAM
+  bytes, numerical error, and a manifest (git sha, LLVM tag, tool versions, cost constants). It is
+  resumable and writes atomically. The harness caught a spill correctness bug: the encoder did not
+  assign DRAM offsets to spill temporaries, so spills clobbered the input; fixed by giving each
+  spill store its own DRAM region, with an end to end spilling test added.
+
+### Fixed
+
+- Encoder: spill `dma_store` temporaries now get their own DRAM regions instead of defaulting to
+  offset 0, so scratchpad spilling preserves numerics (verified against onnxruntime).
+- npu-compile: the library entry point no longer writes text stages to stdout as a side effect.

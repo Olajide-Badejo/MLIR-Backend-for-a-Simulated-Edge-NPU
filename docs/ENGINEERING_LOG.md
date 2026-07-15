@@ -129,3 +129,30 @@ taking a dependency on the UB dialect for folds that cannot produce poison.
 `npu.constant`, and the canonicalization patterns (relu idempotence, reshape identity and
 reshape of reshape) fire. The BatchNorm folding pass turns `bn(conv(x, W))` into one conv
 with hand verified weights `[2, 6]` and bias `[-0.5, -1.5]`. `check-npu` reports 5 of 5.
+
+## 2026-07-15 Phase 9: benchmark harness caught a spill correctness bug
+
+**Symptom.** The first benchmark run at a tight scratchpad budget (140 KB, which forces the
+allocator to spill) showed the maximum absolute error against onnxruntime jumping from
+2.98e-08 (exact up to fp rounding) to about 0.08 at optimization levels O1 and O2. The
+default 1 MB budget, which does not spill, stayed exact.
+
+**Root cause.** The instruction encoder assigned DRAM offsets only to inputs, constants, and
+the values returned from the function. A spill inserts a `dma_store` of an intermediate
+buffer followed by a `dma_load` reload, and that spill store's result is a DRAM temporary
+that is neither an input, a constant, nor a return value. With no offset assigned, the
+`DenseMap` lookup returned the default 0, so every spill wrote to DRAM offset 0, clobbering
+the model input, and the reload read the input back instead of the spilled buffer.
+
+The scratchpad allocation lit test had checked only that spilling inserted the right number
+of DMA instructions, never the numerics, so it did not catch this.
+
+**Chosen fix.** Give every spill temporary its own DRAM region in the encoder. Scan the
+block for `dma_store` ops whose result is not returned, assign each a fresh DRAM offset in
+the unified `dramOffset` map, and lay them out after the constants and before the outputs.
+The reload `dma_load` reads from the same map, so it now finds the spill region.
+
+**Verification.** After the fix the objdump of a spilling program shows the spill store going
+to a distinct DRAM offset (`dram[0x800]`, separate from the inputs at 0x0 and 0x400 and the
+outputs), and every benchmark cell, spilling or not, is back to 2.98e-08 against onnxruntime.
+Added an end to end pytest at a 140 KB budget to lock the fix in.

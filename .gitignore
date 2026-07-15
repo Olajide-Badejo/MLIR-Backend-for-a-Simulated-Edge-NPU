@@ -37,3 +37,5 @@ report_debug/debug_report.pdf
 # Project outputs that are regenerated, not committed
 *.nbin
 /experiments/results/*.tmp
+/experiments/results/*.json
+/experiments/models/*.onnx

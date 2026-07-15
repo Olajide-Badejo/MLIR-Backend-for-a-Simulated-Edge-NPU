@@ -113,10 +113,10 @@ def compile_model(
 
 
 def _write(output, text: str) -> str:
+    # Write to a file when requested; never to stdout, so the function is quiet
+    # when used as a library. The CLI handles stdout.
     if output:
         Path(output).write_text(text)
-    else:
-        sys.stdout.write(text)
     return text
 
 
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--emit nbin requires -o OUTPUT")
 
     try:
-        compile_model(
+        result = compile_model(
             args.model,
             opt_level=args.opt,
             emit=args.emit,
@@ -150,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
     except (RuntimeError, FileNotFoundError) as e:
         print(f"npu-compile: {e}", file=sys.stderr)
         return 1
+
+    # Text stages go to stdout when no output file was given.
+    if not args.output and isinstance(result, str):
+        sys.stdout.write(result)
     return 0
 
 

@@ -10,6 +10,7 @@
 #include "NPU/Dialect/NPUISA/IR/NPUISAOps.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISATypes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -79,12 +80,26 @@ FailureOr<Program> encodeFunction(func::FuncOp func) {
     }
   }
 
-  // Outputs: the values returned, each produced by a dma_store.
   auto returnOp = cast<func::ReturnOp>(block.getTerminator());
-  DenseMap<Value, int64_t> outputOffset;
+  llvm::SmallPtrSet<Value, 4> returned(returnOp.getOperands().begin(),
+                                       returnOp.getOperands().end());
+
+  // Spill temporaries: a dma_store whose result is not returned spills a buffer
+  // to DRAM to be reloaded later, so it needs its own DRAM region.
+  for (Operation &op : block)
+    if (auto store = dyn_cast<npuisa::DmaStoreOp>(op)) {
+      Value res = store.getResult();
+      if (!returned.count(res)) {
+        MemRegion region{dram, shapeOf(res.getType())};
+        dramOffset[res] = dram;
+        dram += region.byteSize();
+      }
+    }
+
+  // Outputs: the values returned, each produced by a dma_store.
   for (Value ret : returnOp.getOperands()) {
     MemRegion region{dram, shapeOf(ret.getType())};
-    outputOffset[ret] = dram;
+    dramOffset[ret] = dram;
     dram += region.byteSize();
     program.outputs.push_back(region);
   }
@@ -111,7 +126,7 @@ FailureOr<Program> encodeFunction(func::FuncOp func) {
           in.op = Opcode::DmaStore;
           in.resultShape = shapeOf(o.getSource().getType());
           in.operandAddrs = {scratchpadAddr(o.getSource())};
-          in.dramAddr = outputOffset.lookup(o.getResult());
+          in.dramAddr = dramOffset.lookup(o.getResult());
         })
         .Case<npuisa::Conv2DOp>([&](npuisa::Conv2DOp o) {
           in.op = Opcode::Conv2D;
