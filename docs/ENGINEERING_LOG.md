@@ -85,3 +85,26 @@ and that pointer, so there is a single source of truth.
 **Verification.** After relocation, `ninja check-npu` reports `Passed: 1 (100.00%)` and
 `npu-opt --help` lists the registered dialects. All paths in the generated
 `lit.site.cfg.py` and in the `%s` expansion are now space-free.
+
+## 2026-07-15 Phase 1: two ODS surprises building the first ops
+
+Two failures worth recording while standing up the npu dialect, both of the "the
+TableGen half and the C++ half of an interface are separate includes" family.
+
+1. **`Variable not defined: 'SameOperandsAndResultType'`** from mlir-tblgen. This trait is
+   not in `mlir/IR/OpBase.td` (it appears there only in FIXME comments). It is defined in
+   `mlir/Interfaces/InferTypeOpInterface.td`, which must be included from the ops `.td`.
+
+2. **`'InferTypeOpInterface' is not a member of 'mlir'`** at C++ compile time, after fixing
+   1. Reason: `SameOperandsAndResultType` is a trait list that also mixes in
+   `InferTypeOpInterface::Trait`, so the generated op class references
+   `::mlir::InferTypeOpInterface`. The TableGen include is not enough; the C++ side needs
+   `#include "mlir/Interfaces/InferTypeOpInterface.h"` in the ops header and the
+   `MLIRInferTypeOpInterface` library on the dialect's `LINK_LIBS`.
+
+**Lesson for later ops.** Any convenience trait may drag in an interface with a matching
+C++ header and link library. When a trait is added in ODS, add its interface header and
+link library at the same time rather than after the next build failure.
+
+**Verification.** `ninja check-npu` reports `Passed: 2 (100.00%)`; the core ops round trip
+through two `npu-opt` passes without change.
