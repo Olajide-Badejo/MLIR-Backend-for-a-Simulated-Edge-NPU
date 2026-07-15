@@ -18,6 +18,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
+#include "NPU/Dialect/NPU/Transforms/Passes.h"
 
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
@@ -25,6 +26,7 @@ int main(int argc, char **argv) {
   mlir::registerAllPasses();
 
   registry.insert<mlir::npu::NPUDialect>();
+  mlir::npu::registerNPUPasses();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "NPU optimizer driver\n", registry));

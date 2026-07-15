@@ -7,8 +7,10 @@
 
 #include "NPU/Dialect/NPU/IR/NPUOps.h"
 
+#include "mlir/Dialect/CommonFolders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
@@ -41,6 +43,85 @@ LogicalResult ConstantOp::verify() {
 }
 
 OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) { return getValueAttr(); }
+
+//===----------------------------------------------------------------------===//
+// Elementwise folders
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AddOp::fold(FoldAdaptor adaptor) {
+  return constFoldBinaryOp<FloatAttr, APFloat, void>(
+      ArrayRef<Attribute>{adaptor.getLhs(), adaptor.getRhs()},
+      [](const APFloat &a, const APFloat &b) { return a + b; });
+}
+
+OpFoldResult MulOp::fold(FoldAdaptor adaptor) {
+  return constFoldBinaryOp<FloatAttr, APFloat, void>(
+      ArrayRef<Attribute>{adaptor.getLhs(), adaptor.getRhs()},
+      [](const APFloat &a, const APFloat &b) { return a * b; });
+}
+
+OpFoldResult ReluOp::fold(FoldAdaptor adaptor) {
+  return constFoldUnaryOp<FloatAttr, APFloat, void>(
+      ArrayRef<Attribute>{adaptor.getInput()}, [](const APFloat &a) {
+        APFloat zero = APFloat::getZero(a.getSemantics());
+        return a.compare(zero) == APFloat::cmpLessThan ? zero : a;
+      });
+}
+
+//===----------------------------------------------------------------------===//
+// Canonicalization patterns
+//===----------------------------------------------------------------------===//
+
+namespace {
+// relu(relu(x)) folds to relu(x): the activation is idempotent.
+struct FoldReluOfRelu : public OpRewritePattern<ReluOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(ReluOp op,
+                                PatternRewriter &rewriter) const override {
+    auto parent = op.getInput().getDefiningOp<ReluOp>();
+    if (!parent)
+      return failure();
+    rewriter.replaceOp(op, parent.getResult());
+    return success();
+  }
+};
+
+// A reshape whose result type equals its input type is the identity.
+struct FoldReshapeIdentity : public OpRewritePattern<ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInput().getType() != op.getOutput().getType())
+      return failure();
+    rewriter.replaceOp(op, op.getInput());
+    return success();
+  }
+};
+
+// reshape(reshape(x)) collapses to a single reshape to the outer result type.
+struct FoldReshapeOfReshape : public OpRewritePattern<ReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto parent = op.getInput().getDefiningOp<ReshapeOp>();
+    if (!parent)
+      return failure();
+    rewriter.replaceOpWithNewOp<ReshapeOp>(op, op.getOutput().getType(),
+                                           parent.getInput());
+    return success();
+  }
+};
+} // namespace
+
+void ReluOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                         MLIRContext *context) {
+  results.add<FoldReluOfRelu>(context);
+}
+
+void ReshapeOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.add<FoldReshapeIdentity, FoldReshapeOfReshape>(context);
+}
 
 //===----------------------------------------------------------------------===//
 // Conv2DOp

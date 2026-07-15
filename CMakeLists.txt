@@ -39,6 +39,8 @@ add_definitions(${LLVM_DEFINITIONS})
 # TableGen include directories are descended into first so their generated
 # headers exist before the libraries and tools that consume them are built.
 add_subdirectory(include/NPU/Dialect/NPU/IR)
+add_subdirectory(include/NPU/Dialect/NPU/Transforms)
 add_subdirectory(lib/Dialect/NPU/IR)
+add_subdirectory(lib/Dialect/NPU/Transforms)
 add_subdirectory(tools/npu-opt)
 add_subdirectory(test)

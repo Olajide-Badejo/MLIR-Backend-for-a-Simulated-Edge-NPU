@@ -68,6 +68,8 @@ def NPU_ReluOp : NPU_Op<"relu", [Pure, SameOperandsAndResultType]> {
   let arguments = (ins NPU_FloatTensor:$input);
   let results = (outs NPU_FloatTensor:$output);
   let assemblyFormat = "$input attr-dict `:` type($output)";
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 def NPU_AddOp : NPU_Op<"add", [Pure, SameOperandsAndResultType, Commutative]> {
@@ -75,6 +77,7 @@ def NPU_AddOp : NPU_Op<"add", [Pure, SameOperandsAndResultType, Commutative]> {
   let arguments = (ins NPU_FloatTensor:$lhs, NPU_FloatTensor:$rhs);
   let results = (outs NPU_FloatTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+  let hasFolder = 1;
 }
 
 def NPU_MulOp : NPU_Op<"mul", [Pure, SameOperandsAndResultType, Commutative]> {
@@ -82,6 +85,7 @@ def NPU_MulOp : NPU_Op<"mul", [Pure, SameOperandsAndResultType, Commutative]> {
   let arguments = (ins NPU_FloatTensor:$lhs, NPU_FloatTensor:$rhs);
   let results = (outs NPU_FloatTensor:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -176,6 +180,7 @@ def NPU_ReshapeOp : NPU_Op<"reshape", [Pure]> {
   let results = (outs NPU_FloatTensor:$output);
   let assemblyFormat = "$input attr-dict `:` type($input) `to` type($output)";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def NPU_TransposeOp : NPU_Op<"transpose", [Pure]> {

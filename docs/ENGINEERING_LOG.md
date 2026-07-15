@@ -108,3 +108,24 @@ link library at the same time rather than after the next build failure.
 
 **Verification.** `ninja check-npu` reports `Passed: 2 (100.00%)`; the core ops round trip
 through two `npu-opt` passes without change.
+
+## 2026-07-15 Phase 2: CommonFolders poison template argument
+
+**Symptom.** Using `constFoldBinaryOp<FloatAttr>` and `constFoldUnaryOp<FloatAttr>` from
+`mlir/Dialect/CommonFolders.h` to fold the pointwise ops failed to compile with a static
+assertion: "PoisonAttr is undefined, either add a dependency on UB dialect or pass void as
+template argument to opt-out from poison semantics."
+
+**Root cause.** In this LLVM release these helpers gained a `PoisonAttr` template parameter
+that defaults to `ub::PoisonAttr`, whose definition is only available if the UB dialect is
+linked. The parameter is the third one, after `AttrElementT` and `ElementValueT`. My first
+fix passed `void` as the second argument, which wrongly set `ElementValueT` to void.
+
+**Chosen fix.** Opt out of poison propagation by passing all three explicitly:
+`constFoldBinaryOp<FloatAttr, APFloat, void>(...)` and the unary equivalent. This avoids
+taking a dependency on the UB dialect for folds that cannot produce poison.
+
+**Verification.** `-canonicalize` folds `add`, `mul`, and `relu` over constants to a single
+`npu.constant`, and the canonicalization patterns (relu idempotence, reshape identity and
+reshape of reshape) fire. The BatchNorm folding pass turns `bn(conv(x, W))` into one conv
+with hand verified weights `[2, 6]` and bias `[-0.5, -1.5]`. `check-npu` reports 5 of 5.
