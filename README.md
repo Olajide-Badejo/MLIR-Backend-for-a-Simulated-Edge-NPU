@@ -35,7 +35,7 @@ including the memory budget this machine builds under, are in [docs/BUILD.md](do
 - [x] P1 npu dialect (ODS, verifiers, round trip lit)
 - [x] P2 canonicalize, constant fold, batchnorm fold
 - [x] P3 operator fusion
-- [ ] P4 DCE via traits and SymbolDCE
+- [x] P4 DCE via traits and SymbolDCE
 - [ ] P5 ONNX frontend and model generator
 - [ ] P6 lowering to npuisa and scratchpad allocator
 - [ ] P7 encoder, objdump, simulator, end to end vs onnxruntime

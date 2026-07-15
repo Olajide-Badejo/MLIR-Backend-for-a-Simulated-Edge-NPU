@@ -27,3 +27,6 @@ Semantic Versioning once a release is tagged.
 - Phase 3: the `npu-fuse-ops` pass that folds a trailing `relu` into a producing `conv2d`
   or `matmul` (which already carries its bias operand) by setting the fused activation, so
   the intermediate stays in scratchpad instead of round tripping through DRAM.
+- Phase 4: dead code elimination validated. Because every op carries the Pure trait, unused
+  ops are removed by the upstream canonicalizer, and unused private functions by symbol-dce,
+  so no custom DCE pass is needed. lit tests cover both.
