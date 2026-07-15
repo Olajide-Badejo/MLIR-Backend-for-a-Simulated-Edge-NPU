@@ -41,9 +41,22 @@ including the memory budget this machine builds under, are in [docs/BUILD.md](do
 - [x] P7 encoder, objdump, simulator, end to end vs onnxruntime
 - [x] P8 npu-compile driver and opt levels
 - [x] P9 benchmark harness and ablations
-- [ ] P10 docs set and auto generated dialect reference
+- [x] P10 docs set and auto generated dialect reference
 - [ ] P11 main report and debug report
 - [ ] P12 final QA and v1.0.0
+
+## Documentation
+
+- [ARCHITECTURE](docs/ARCHITECTURE.md) the pipeline, the two dialects, the components
+- [BUILD](docs/BUILD.md) exact build steps and the memory budget this machine uses
+- [PASSES](docs/PASSES.md) each optimization pass with before and after IR
+- [ONNX_FRONTEND](docs/ONNX_FRONTEND.md) the importer and the supported op subset
+- [ISA_MANUAL](docs/ISA_MANUAL.md) the instruction set, memory model, and .nbin format
+- [DIALECT_REFERENCE](docs/DIALECT_REFERENCE.md) generated from ODS
+- [DESIGN_DECISIONS](docs/DESIGN_DECISIONS.md) the choices and why
+- [ENGINEERING_LOG](docs/ENGINEERING_LOG.md) the running record of problems and fixes
+- [CONTRIBUTING](docs/CONTRIBUTING.md) building, testing, and style
+- [CHANGELOG](CHANGELOG.md)
 
 ## License
 

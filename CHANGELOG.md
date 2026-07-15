@@ -57,6 +57,11 @@ Semantic Versioning once a release is tagged.
   assign DRAM offsets to spill temporaries, so spills clobbered the input; fixed by giving each
   spill store its own DRAM region, with an end to end spilling test added.
 
+- Phase 10: the documentation set. ARCHITECTURE, PASSES (each pass with before and after IR),
+  DESIGN_DECISIONS, and CONTRIBUTING join the existing BUILD, ONNX_FRONTEND, ISA_MANUAL, the
+  auto generated DIALECT_REFERENCE, the engineering log, and this changelog, indexed from the
+  README.
+
 ### Fixed
 
 - Encoder: spill `dma_store` temporaries now get their own DRAM regions instead of defaulting to
