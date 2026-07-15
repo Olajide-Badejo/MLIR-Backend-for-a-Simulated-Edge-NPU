@@ -39,7 +39,7 @@ including the memory budget this machine builds under, are in [docs/BUILD.md](do
 - [x] P5 ONNX frontend and model generator
 - [x] P6 lowering to npuisa and scratchpad allocator
 - [x] P7 encoder, objdump, simulator, end to end vs onnxruntime
-- [ ] P8 npu-compile driver and opt levels
+- [x] P8 npu-compile driver and opt levels
 - [ ] P9 benchmark harness and ablations
 - [ ] P10 docs set and auto generated dialect reference
 - [ ] P11 main report and debug report

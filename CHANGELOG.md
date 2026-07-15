@@ -46,3 +46,7 @@ Semantic Versioning once a release is tagged.
   covers the format round trip, per instruction semantics, and cost arithmetic; a pytest end to
   end test compiles and simulates a LeNet and matches onnxruntime within tolerance. The tools are
   npu-translate, npu-objdump, and npu-sim. All performance numbers are simulated estimates.
+- Phase 8: the `npu-compile` driver. One entry point from ONNX to .nbin with optimization levels
+  (-O0 import and verify, -O1 canonicalize and fold, -O2 fuse and DCE) and staged output
+  (--emit import, npu, npuisa, or nbin), plus --verbose stage timings. pytest covers the emit
+  stages, that the opt levels change the IR, and that a driver produced nbin matches onnxruntime.

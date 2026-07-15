@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# npu-compile driver wrapper. Runs the Python driver with the project venv when
+# available. Set NPU_BIN to point at the directory holding npu-opt and
+# npu-translate if it is not the default build/bin.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+py="${NPU_VENV:-$HOME/npu-venv}/bin/python"
+if [ ! -x "$py" ]; then
+  py="python3"
+fi
+
+export PYTHONPATH="$here/python:${PYTHONPATH:-}"
+exec "$py" -m npu_frontend.compile "$@"
