@@ -18,6 +18,16 @@ recorded experiment. Table~\ref{tab:results} is generated from those files.
   \label{tab:results}
 \end{table}
 
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{../docs/images/optimization_levels}
+  \caption{What each optimization level buys on LeNet at the one megabyte budget:
+    instruction count, simulated cycles, and DRAM traffic all fall from
+    \texttt{-O0} to \texttt{-O2}, while the numerics stay exact. Simulated
+    estimates.}
+  \label{fig:levels}
+\end{figure}
+
 Two effects stand out at the one megabyte budget, where nothing spills. Moving
 from \texttt{-O0} to \texttt{-O1}, canonicalization and dead code elimination
 remove the transposed Gemm weight constants that the importer leaves behind, and

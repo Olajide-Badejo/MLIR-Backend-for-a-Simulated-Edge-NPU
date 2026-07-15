@@ -9,6 +9,7 @@ all: main.pdf
 
 main.pdf: main.tex references.bib $(wildcard sections/*.tex)
 	$(PYTHON) scripts/results_to_tex.py
+	$(PYTHON) ../experiments/plot_results.py
 	tectonic main.tex
 
 clean:

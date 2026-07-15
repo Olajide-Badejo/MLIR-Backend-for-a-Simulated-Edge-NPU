@@ -1,7 +1,7 @@
 //===- Program.h - Encoded npuisa program model -----------------*- C++ -*-===//
 //
-// Part of the npu-mlir project, under the Apache License v2.0 with LLVM
-// Exceptions. See the LICENSE file for license information.
+// Part of the npu-mlir project, under the MIT License.
+// See the LICENSE file for license information.
 //
 //===----------------------------------------------------------------------===//
 //

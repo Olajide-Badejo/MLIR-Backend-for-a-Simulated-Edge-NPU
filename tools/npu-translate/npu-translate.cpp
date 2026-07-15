@@ -1,7 +1,7 @@
 //===- npu-translate.cpp - Encode allocated npuisa MLIR to .nbin ----------===//
 //
-// Part of the npu-mlir project, under the Apache License v2.0 with LLVM
-// Exceptions. See the LICENSE file for license information.
+// Part of the npu-mlir project, under the MIT License.
+// See the LICENSE file for license information.
 //
 //===----------------------------------------------------------------------===//
 
