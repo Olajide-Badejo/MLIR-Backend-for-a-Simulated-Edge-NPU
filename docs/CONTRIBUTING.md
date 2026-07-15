@@ -26,7 +26,7 @@ python -m pytest test/Python        # importer, driver, end to end vs onnxruntim
   formatted consistently.
 - Python is PEP 8 via `black` and `ruff`, configured in `pyproject.toml`.
 - Commits follow Conventional Commits, one logical change each.
-- Report and comment prose is first person and concrete, with no AI stock phrasing.
+- Report and comment prose is first person and concrete, with no filler or stock phrasing.
 
 ## The dash rule
 

@@ -100,6 +100,66 @@ TEST(Simulator, Conv2DKnown) {
   EXPECT_EQ(r.outputs[0], (std::vector<float>{6, 8, 12, 14}));
 }
 
+TEST(Simulator, ElementwiseAddMul) {
+  Program p;
+  p.dramBytes = 64;
+  p.inputs.push_back({0, {4}});
+  p.inputs.push_back({16, {4}});
+  p.outputs.push_back({48, {4}});
+  Instruction add;
+  add.op = Opcode::Add;
+  add.resultAddr = 32;
+  add.resultShape = {4};
+  add.operandAddrs = {0, 16};
+  Instruction mul;
+  mul.op = Opcode::Mul;
+  mul.resultAddr = 48;
+  mul.resultShape = {4};
+  mul.operandAddrs = {32, 0};
+  p.instructions = {load(0, {4}, 0), load(16, {4}, 16), add, mul,
+                    store(48, {4}, 48), halt()};
+
+  SimResult r = Simulator(p).run({{1, 2, 3, 4}, {10, 20, 30, 40}});
+  // add -> [11, 22, 33, 44], then mul by the first input [1, 2, 3, 4].
+  EXPECT_EQ(r.outputs[0], (std::vector<float>{11, 44, 99, 176}));
+}
+
+TEST(Simulator, AvgPool) {
+  Program p;
+  p.dramBytes = 32;
+  p.inputs.push_back({0, {1, 1, 2, 2}});
+  p.outputs.push_back({16, {1, 1, 1, 1}});
+  Instruction pool;
+  pool.op = Opcode::PoolAvg;
+  pool.resultAddr = 16;
+  pool.resultShape = {1, 1, 1, 1};
+  pool.operandAddrs = {0};
+  pool.kernelShape = {2, 2};
+  pool.strides = {2, 2};
+  pool.pads = {0, 0, 0, 0};
+  p.instructions = {load(0, {1, 1, 2, 2}, 0), pool, store(16, {1, 1, 1, 1}, 16),
+                    halt()};
+
+  SimResult r = Simulator(p).run({{1, 2, 3, 4}});
+  EXPECT_EQ(r.outputs[0], (std::vector<float>{2.5f})); // mean of 1,2,3,4
+}
+
+TEST(Simulator, Reshape) {
+  Program p;
+  p.dramBytes = 32;
+  p.inputs.push_back({0, {2, 2}});
+  p.outputs.push_back({16, {4}});
+  Instruction rs;
+  rs.op = Opcode::Reshape;
+  rs.resultAddr = 16;
+  rs.resultShape = {4};
+  rs.operandAddrs = {0};
+  p.instructions = {load(0, {2, 2}, 0), rs, store(16, {4}, 16), halt()};
+
+  SimResult r = Simulator(p).run({{1, 2, 3, 4}});
+  EXPECT_EQ(r.outputs[0], (std::vector<float>{1, 2, 3, 4}));
+}
+
 TEST(CostModelArithmetic, MatchesFormulas) {
   CostModel c;
   EXPECT_EQ(c.dmaCycles(64), 64 / 16 + 1);

@@ -6,11 +6,12 @@ and a real optimization pipeline down to a binary instruction stream for a
 simulated edge accelerator, then runs that stream in a cycle costed simulator and
 checks the answer against onnxruntime.
 
+[![CI](https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/workflows/ci.yml/badge.svg)](https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
+![coverage](https://img.shields.io/badge/coverage-90%25%20C%2B%2B%20%2F%2089%25%20Py-brightgreen)
 ![LLVM/MLIR 22](https://img.shields.io/badge/LLVM%2FMLIR-22.1.8-orange)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C)
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB)
-![tests](https://img.shields.io/badge/tests-31%20passing-brightgreen)
 
 I built this to understand how a production machine learning compiler actually
 works, by writing one. Every piece is here: the dialect definitions, the shape
@@ -150,6 +151,10 @@ ninja -C build check-npu       # lit and FileCheck
 ./build/bin/NPUSimulatorTests  # GoogleTest: kernels and cost model
 python -m pytest test/Python   # importer, driver, end to end vs onnxruntime
 ```
+
+Coverage runs to **90% of lines on the C++ backend** (the optimization, lowering,
+and allocation passes sit at 87 to 95 percent) and **89% on the Python frontend**.
+Reproduce it with `scripts/coverage.sh`.
 
 ## What is in the box
 

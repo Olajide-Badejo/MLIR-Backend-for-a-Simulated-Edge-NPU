@@ -46,7 +46,7 @@ def bars(ax, values, color, title, ylabel, fmt="{:,}"):
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
     top = max(values)
-    for x, v in zip(xs, values):
+    for x, v in zip(xs, values, strict=True):
         ax.text(x, v + top * 0.02, fmt.format(v), ha="center", va="bottom",
                 fontsize=10, fontweight="bold")
     ax.set_ylim(0, top * 1.15)

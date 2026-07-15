@@ -33,6 +33,18 @@ def test_emit_stages(tmp_path, npu_opt):
     assert data[:4] == b"NPUB"
 
 
+def test_cli_main_emits_npu(tmp_path, npu_opt, monkeypatch):
+    bindir = _bindir(npu_opt)
+    onnx = model_generator.export("lenet", tmp_path / "lenet.onnx", seed=0)
+    out = tmp_path / "lenet.npu.mlir"
+    monkeypatch.setenv("NPU_BIN", str(bindir))
+    rc = npu_compile.main(
+        [str(onnx), "-O2", "--emit", "npu", "-o", str(out), "--verbose"]
+    )
+    assert rc == 0
+    assert "npu.conv2d" in out.read_text()
+
+
 def test_opt_levels_change_the_ir(tmp_path, npu_opt):
     bindir = _bindir(npu_opt)
     onnx = model_generator.export("lenet", tmp_path / "lenet.onnx", seed=0)
