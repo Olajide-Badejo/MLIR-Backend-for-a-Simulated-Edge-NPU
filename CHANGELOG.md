@@ -30,3 +30,8 @@ Semantic Versioning once a release is tagged.
 - Phase 4: dead code elimination validated. Because every op carries the Pure trait, unused
   ops are removed by the upstream canonicalizer, and unused private functions by symbol-dce,
   so no custom DCE pass is needed. lit tests cover both.
+- Phase 5: the ONNX frontend (`python/npu_frontend/`). A seeded LeNet style model generator
+  exports to ONNX; the importer runs onnx.checker and shape inference, then builds npu dialect
+  IR with the MLIR Python bindings, mapping Conv, Gemm, Relu, MaxPool, AveragePool, Reshape,
+  and Flatten and failing loudly on anything else. pytest covers model structure, an imported
+  LeNet verified through npu-opt, and the loud failure path. black and ruff configured.
