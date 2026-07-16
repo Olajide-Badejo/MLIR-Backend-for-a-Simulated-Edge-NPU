@@ -10,7 +10,7 @@ checks the answer against onnxruntime.
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![coverage](https://img.shields.io/badge/coverage-90%25%20C%2B%2B%20%2F%2089%25%20Py-brightgreen)
 ![LLVM/MLIR 22](https://img.shields.io/badge/LLVM%2FMLIR-22.1.8-orange)
-![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C)
+![C++17](https://img.shields.io/badge/C%2B%2B-20-00599C)
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB)
 
 I built this to understand how a production machine learning compiler actually
@@ -169,7 +169,7 @@ Reproduce it with `scripts/coverage.sh`.
 
 ## Tech
 
-C++17 and TableGen against LLVM/MLIR 22, Python 3.14 for the frontend and driver,
+C++20 and TableGen against LLVM/MLIR 22, Python 3.14 for the frontend and driver,
 CMake and Ninja, GoogleTest, lit, and pytest, with the reports written in LaTeX
 and built by tectonic.
 
