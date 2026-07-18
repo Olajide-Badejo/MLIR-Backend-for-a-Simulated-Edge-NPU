@@ -27,7 +27,7 @@ If you still see the kernel OOM killer fire during linking, drop compile jobs to
 ## 2. One time LLVM/MLIR build
 
 Prerequisites (already present or installed on this machine): cmake 3.24+, ninja, gcc or
-clang with C++17, git, lld, ccache, python3 with venv.
+clang with C++20, git, lld, ccache, python3 with venv.
 
 ```bash
 cd ~/llvm-project
