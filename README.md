@@ -1,4 +1,4 @@
-# MLIR Backend for a Simulated Edge NPU
+# MLIR Backend for a Simulated Edge NPU 
 
 **A from scratch deep learning compiler.** It takes a trained neural network in
 ONNX form, compiles it through two custom [MLIR](https://mlir.llvm.org) dialects
