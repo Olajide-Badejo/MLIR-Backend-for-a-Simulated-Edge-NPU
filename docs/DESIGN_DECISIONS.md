@@ -58,6 +58,44 @@ systolic throughput, bytes over DMA bandwidth, elements over lane width, plus a
 fixed issue overhead), not a cycle accurate model. Every number it produces is
 labeled a simulated estimate, and the constants are documented assumptions.
 
+## Reachability exemptions
+
+Every op in the `npu` dialect is supposed to be reachable end to end: importable
+from ONNX, lowerable to `npuisa`, encodable, simulatable, and exercised by a
+model in the benchmark suite. `scripts/check-reachability.py` enforces that on
+every push and fails on any op that is not, unless the op has a dated row here.
+
+The rule exists because `transpose`, `concat`, and `batch_norm` sat in the
+dialect for twelve phases with verifiers, round trip tests, and no conversion
+pattern at all, so any graph containing one failed to legalize. Nothing noticed,
+because LeNet contains none of them.
+
+Running the checker for the first time found six unreachable ops rather than the
+three the audit identified. The two extra findings are worth stating plainly.
+`add` and `mul` are fully lowered, encoded, and simulated, and have no ONNX
+converter, so nothing can ever produce one from a real model; they exist only
+for hand written IR. And `avg_pool2d` is reachable at every layer but is not
+exercised by any model, because LeNet uses max pooling throughout. That last one
+is exactly the class of gap this check is for: nothing is broken, but a code path
+the project claims to support has never run on a real graph.
+
+These are targets tied to phases, not promises with dates attached to nothing. If
+one slips, the row moves and the reason gets written down rather than the check
+being disabled.
+
+<!-- REACHABILITY-EXEMPT-BEGIN -->
+
+| Op | Missing layers | Target | Phase and plan |
+|---|---|---|---|
+| `npu.transpose` | importer, lowering, encoder, simulator, model | 2026-12-31 | U7. New `TRANSPOSE` opcode appended (not renumbered), a simulator kernel, an ISA manual entry, and a lowering pattern. The Gemm importer already builds transposed weight constants at compile time, so nothing regresses. |
+| `npu.concat` | importer, lowering, encoder, simulator, model | 2026-12-31 | U7. New `CONCAT` opcode, kernel, and lowering. This is the one that unlocks branching topologies, so the inception block in the U8 model suite depends on it. |
+| `npu.batch_norm` | importer, lowering, encoder, simulator, model | 2026-12-31 | U7 and U8. Lowering decomposes an unfolded batch norm into mul plus add rather than adding an opcode, since the folding pass handles the common case. Reaching it also needs `Identity` in the importer, because `torch.onnx.export` only leaves a `BatchNormalization` node behind with `do_constant_folding=False`, which emits `Identity` nodes the importer currently rejects. |
+| `npu.add` | importer, model | 2026-12-31 | U7. Add an `Add` converter to `op_mapping.py`. Exercised by the small ResNet block's residual connection in the U8 suite. |
+| `npu.mul` | importer, model | 2026-12-31 | U7. Add a `Mul` converter. Also becomes reachable through the `batch_norm` decomposition above. |
+| `npu.avg_pool2d` | model | 2026-12-31 | U8. Nothing to implement; it needs a model that uses average pooling. `GlobalAveragePool` in the depthwise separable block covers it. |
+
+<!-- REACHABILITY-EXEMPT-END -->
+
 ## MIT license, not Apache-2.0 with LLVM exceptions
 
 The v2 build specification pinned Apache-2.0 with LLVM exceptions, on the

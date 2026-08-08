@@ -23,11 +23,17 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from npu_frontend import onnx_importer
 
 STAGES = ["import", "npu", "npuisa", "nbin"]
+
+# The stage helper is generic over what its stage returns: the text stages give
+# back str, the encode stage gives back bytes.
+T = TypeVar("T")
 
 
 def _default_bin_dir() -> Path:
@@ -69,7 +75,7 @@ def compile_model(
     npu_opt = bin_dir / "npu-opt"
     npu_translate = bin_dir / "npu-translate"
 
-    def stage(name: str, fn):
+    def stage(name: str, fn: Callable[[], T]) -> T:
         start = time.perf_counter()
         result = fn()
         if verbose:
@@ -115,7 +121,7 @@ def compile_model(
     return data
 
 
-def _write(output, text: str) -> str:
+def _write(output: str | Path | None, text: str) -> str:
     # Write to a file when requested; never to stdout, so the function is quiet
     # when used as a library. The CLI handles stdout.
     if output:

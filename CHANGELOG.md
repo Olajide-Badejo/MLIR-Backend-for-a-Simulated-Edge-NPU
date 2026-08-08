@@ -8,6 +8,30 @@ Semantic Versioning once a release is tagged.
 
 ### Added
 
+- Phase U2: CI that builds the compiler and runs every suite. `ci.yml` gains
+  `build-and-test` (configure, build, lit, both GoogleTest binaries, pytest, the
+  reachability check with its model layer, and the regression baseline),
+  `sanitizers` (ASan and UBSan), and `coverage` (which fails below 85 percent
+  line coverage). The `lint` job gains black, mypy, and the reachability check.
+  Before this, CI ran dash-lint and ruff and nothing else, while the README
+  carried a badge that reads as "the test suite passes on every push".
+- Phase U2: `.github/workflows/report.yml` builds both PDFs and uploads them as
+  artifacts, with a forced rebuild so a checkout's uniform timestamps cannot
+  make it succeed having built nothing.
+- Phase U2: `.github/workflows/llvm-image.yml` builds the pinned LLVM and MLIR
+  base image and publishes it to GHCR. Manual only, and only when the tag
+  changes.
+- Phase U2: `scripts/check-reachability.py` enforces that every op in the `npu`
+  dialect is importable, lowerable, encodable, simulatable, and exercised by a
+  benchmark model, or carries a dated exemption in `docs/DESIGN_DECISIONS.md`.
+  Its first run found six unreachable ops, three more than the audit had: `add`
+  and `mul` have no ONNX converter at all, and `avg_pool2d` is wired end to end
+  but exercised by no model.
+- Phase U2: mypy over `python/npu_frontend`, configured in `pyproject.toml` and
+  wired into pre-commit and CI. The package is now fully annotated, and the
+  contract between the importer and its per op converters is expressed as an
+  `ImportContext` Protocol instead of a comment.
+
 - Phase U0: `scripts/regression-baseline.sh`, the safety net that gates every
   later upgrade phase. It builds the project, runs lit, both GoogleTest binaries,
   pytest, and dash-lint, then compiles and simulates LeNet at every combination
@@ -59,6 +83,18 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U2: `docker/Dockerfile.llvm` kept the entire LLVM build tree *and* ran
+  `ninja install` to place a second copy alongside it, which is tens of
+  gigabytes and not realistically pushable to a registry. Rewritten as two
+  stages: the builder compiles, and the shipped stage copies only the headers,
+  static libraries, CMake package files, tools, and Python bindings that an out
+  of tree project consumes, at the same absolute paths, since the build tree's
+  CMake files hardcode them. It also self checks at build time so a broken image
+  fails there rather than in somebody's CI run.
+- Phase U2: `scripts/coverage.sh` deletes stale `.gcda` counters before running.
+  The repository shipped a `build-cov` tree from an earlier run, and gcov refuses
+  to merge a counter file whose checksum no longer matches its rebuilt object,
+  so coverage for those translation units was whatever survived the collision.
 - Phase U1: `scripts/coverage.sh` ran `ninja check-npu || true`, so it reported a
   coverage percentage whether or not the lit suite passed, and that percentage is
   what the README badge showed. The `|| true` is gone. The script also configured

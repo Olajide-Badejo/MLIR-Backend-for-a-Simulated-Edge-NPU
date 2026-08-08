@@ -8,6 +8,7 @@ result is textual MLIR; run it through npu-opt to verify it against the dialect.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnx
@@ -23,24 +24,31 @@ from .op_mapping import UnsupportedOpError
 
 
 class _Context:
-    """Shared state threaded through the per node converters."""
+    """Shared state threaded through the per node converters.
 
-    def __init__(self, shapes, initializers):
+    Implements op_mapping.ImportContext, which is where the contract lives.
+    """
+
+    def __init__(
+        self,
+        shapes: dict[str, tuple[int, ...]],
+        initializers: dict[str, np.ndarray],
+    ) -> None:
         self.values: dict[str, ir.Value] = {}
         self._shapes = shapes
         self._initializers = initializers
 
-    def shape(self, name):
+    def shape(self, name: str) -> tuple[int, ...]:
         if name not in self._shapes:
             raise UnsupportedOpError(f"no inferred shape for tensor {name!r}")
         return self._shapes[name]
 
-    def init(self, name):
+    def init(self, name: str) -> np.ndarray | None:
         return self._initializers.get(name)
 
 
-def _collect_shapes(graph) -> dict[str, tuple]:
-    shapes: dict[str, tuple] = {}
+def _collect_shapes(graph: Any) -> dict[str, tuple[int, ...]]:
+    shapes: dict[str, tuple[int, ...]] = {}
     for coll in (graph.input, graph.output, graph.value_info):
         for vi in coll:
             dims = tuple(d.dim_value for d in vi.type.tensor_type.shape.dim)

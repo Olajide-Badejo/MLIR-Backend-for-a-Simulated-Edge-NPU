@@ -22,3 +22,21 @@ repos:
     hooks:
       - id: ruff
         files: ^(python|experiments|report/scripts|scripts|test/Python)/.*\.py$
+
+  # Types the frontend package. Configured in pyproject.toml, which also pins
+  # which paths it covers, so pass_filenames is off and mypy picks its own.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        pass_filenames: false
+        additional_dependencies: [numpy]
+
+  - repo: local
+    hooks:
+      - id: check-reachability
+        name: every npu op is reachable end to end, or dated exempt
+        entry: python scripts/check-reachability.py --skip-models
+        language: system
+        pass_filenames: false
+        files: ^(include/NPU/Dialect/NPU/IR/NPUOps\.td|lib/|python/npu_frontend/|docs/DESIGN_DECISIONS\.md)

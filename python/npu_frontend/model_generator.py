@@ -73,7 +73,9 @@ def export(name: str, path: str | Path, seed: int = 0, opset: int = 17) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         model,
-        dummy,
+        # A one element tuple, not a bare tensor. Both work at runtime, but the
+        # tuple is the documented form and the bare tensor fails type checking.
+        (dummy,),
         str(path),
         input_names=["input"],
         output_names=["output"],
