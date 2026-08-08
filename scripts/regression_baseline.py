@@ -6,10 +6,14 @@ produces for every LeNet cell in the optimization level times budget grid.
 Afterwards, `--check` re-runs the identical measurements and diffs them against
 the recording, exiting nonzero on any drift.
 
-Two things are deliberately recorded but never treated as drift, because they
+Some things are deliberately recorded but never treated as drift, because they
 change for reasons that are not behaviour changes: the git sha, which moves with
-every commit, and the tool versions, which move when the machine is updated.
-Both are reported. Pass --strict-tools to make a tool version change fatal.
+every commit; the tool versions, which move when the machine is updated; and
+newly added tests, since every upgrade phase adds some. All are reported as
+notes. Pass --strict-tools to make a tool version change fatal.
+
+What does count as drift in a test suite is a test disappearing, a test that
+used to pass no longer passing, or anything failing at all.
 
 The instruction count comes from the simulator's own `stats.instructions`, not
 from a regex over the IR dump. The regex counts `npuisa.const`, which is data
@@ -373,26 +377,37 @@ def check(snapshot: dict, goldens: dict, strict_tools: bool) -> int:
         if was != now:
             drift.append(f"cost model constant {name}: {was} to {now}")
 
+    # What is drift in a test suite: a test that existed before has disappeared,
+    # a test that passed before no longer does, or anything is failing. What is
+    # not drift: new tests. Every upgrade phase adds tests, so a rising pass
+    # count is the expected shape of progress and is reported as a note.
     for suite, was in old["suites"].items():
         now = snapshot["suites"].get(suite)
         if now is None:
             drift.append(f"suite {suite} disappeared")
             continue
-        for field in ("passed", "failed", "skipped"):
-            if was[field] != now[field]:
-                drift.append(f"suite {suite} {field}: {was[field]} to {now[field]}")
+        if now["failed"]:
+            drift.append(f"suite {suite} has {now['failed']} failing test(s)")
         was_names = {t["name"] for t in was["tests"]}
         now_names = {t["name"] for t in now["tests"]}
         for gone in sorted(was_names - now_names):
             drift.append(f"suite {suite} lost test {gone}")
-        for added in sorted(now_names - was_names):
-            notes.append(f"suite {suite} gained test {added}")
+        added = sorted(now_names - was_names)
+        if added:
+            notes.append(
+                f"suite {suite} gained {len(added)} test(s): {', '.join(added)}"
+            )
         was_status = {t["name"]: t["status"] for t in was["tests"]}
         for test in now["tests"]:
             before = was_status.get(test["name"])
             if before is not None and before != test["status"]:
                 drift.append(
                     f"suite {suite} test {test['name']}: {before} to {test['status']}"
+                )
+        for field in ("passed", "failed", "skipped"):
+            if was[field] != now[field]:
+                notes.append(
+                    f"suite {suite} {field} count: {was[field]} to {now[field]}"
                 )
     for suite in snapshot["suites"]:
         if suite not in old["suites"]:

@@ -7,10 +7,19 @@ result through npu-opt, which has the dialect and its verifiers. Any ONNX op tha
 is not in SUPPORTED_OPS fails loudly, naming the op and node, rather than emitting
 silently wrong IR.
 
-Supported ops (opset 17): Conv, Gemm, MatMul, Add, Relu, MaxPool, AveragePool,
-BatchNormalization, Reshape, Flatten, GlobalAveragePool, Concat, Clip. The subset
-needed by the core LeNet suite is implemented first; the rest raise a clear
-"not yet implemented" until their phase.
+Implemented ops (opset 17), seven of them: Conv, Gemm, Relu, MaxPool,
+AveragePool, Reshape, Flatten. These are what the LeNet suite needs.
+
+Not yet implemented, six of them: MatMul, Add, BatchNormalization,
+GlobalAveragePool, Concat, Clip. There is no partial support for these and no
+placeholder converter. A model containing one fails on the first such node with
+an UnsupportedOpError naming the op, which is the intended behaviour rather than
+a gap: emitting approximate IR would be worse. Phase U7 of UPGRADE_SPEC_V3.md
+implements them. Identity matters more than its triviality suggests, since it is
+what blocks importing any model exported with do_constant_folding=False, which
+in turn is what keeps the BatchNorm folding pass unreachable.
+
+Batch size greater than 1 is refused, see check_unbatched_activation below.
 """
 
 from __future__ import annotations
@@ -85,6 +94,32 @@ def make_constant(array: np.ndarray) -> ir.Value:
 # ---------------------------------------------------------------------------
 
 
+def check_unbatched_activation(name: str, shape) -> None:
+    """Refuse a batch size the backend cannot compute correctly.
+
+    The simulator's convolution kernel hardcodes batch index 0 and its pooling
+    kernel never sees the batch dimension, so for N greater than 1 both write
+    correct data for the first image and leave the rest of the output holding
+    whatever the scratchpad contained. Before this check nothing rejected it
+    anywhere in the pipeline and the wrong answer came out with no diagnostic.
+    docs/ASSESSMENT.md section 2.1 has the numerical reproduction.
+
+    Applied to activations only. Convolution weights are OIHW, so dimension 0
+    is the output channel count and a 6x1x5x5 kernel is not a batch of six.
+    The verifiers in NPUOps.cpp enforce the same rule one layer down.
+    """
+    dims = tuple(int(d) for d in shape)
+    if len(dims) != 4 or dims[0] == 1:
+        return
+    raise UnsupportedOpError(
+        f"batch size {dims[0]} is not supported yet: tensor {name!r} has shape "
+        f"{dims}. The simulator processes only batch index 0 in convolution and "
+        "pooling, so a batch greater than 1 returns silently wrong results for "
+        "every image after the first. This is a tracked limitation, not a "
+        "permanent design choice: upgrade phase U6 adds real batch support."
+    )
+
+
 def _attr(node, name, default=None):
     for a in node.attribute:
         if a.name == name:
@@ -104,6 +139,7 @@ def _attr(node, name, default=None):
 
 
 def _conv(node, ctx):
+    check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     w = ctx.values[node.input[1]]
     operands = [x, w]
@@ -127,6 +163,7 @@ def _relu(node, ctx):
 
 
 def _maxpool(node, ctx):
+    check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
     kernel = _attr(node, "kernel_shape")
@@ -141,6 +178,7 @@ def _maxpool(node, ctx):
 
 
 def _averagepool(node, ctx):
+    check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
     kernel = _attr(node, "kernel_shape")

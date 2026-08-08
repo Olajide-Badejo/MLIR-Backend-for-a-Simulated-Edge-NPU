@@ -551,13 +551,31 @@ Ordered by value divided by effort. Tiers are cumulative.
 
 1. Reject `N != 1` in the importer and verifiers, with a clear message. Closes the
    silent wrong answer in section 2.1.
+   **DONE (phase U1).** Guarded in `op_mapping.check_unbatched_activation` and in
+   the `conv2d`, both pool, and `batch_norm` verifiers. Activations only, since a
+   conv weight is OIHW and its leading dimension is output channels, not batch.
 2. Fix `op_mapping.py`'s docstring to match reality.
+   **DONE (phase U1).** It now lists the seven implemented ops and the six that
+   are not, with a pointer to phase U7.
 3. Commit `experiments/results/*.json` and regenerate them at `HEAD`.
+   **DONE (phase U1).** The `.gitignore` line that excluded them is gone and they
+   are regenerated and tracked. Correction to this document: the results recorded
+   `git_sha: 8095dbec`, and that is **not a commit in this repository**. They were
+   not three commits stale, they were produced from a tree that was never
+   committed, so they were reproducible from no point in the history at all.
 4. Make `valid()` invalidate results whose manifest `git_sha` or cost model
    constants differ from the current ones.
+   **DONE (phase U1)**, as `staleness()`, which returns the reason rather than a
+   bool. The sha rule is "same sha, or nothing that can move a number has changed
+   since it", not literal sha equality, which would make every result stale on
+   the very commit that adds it. Rationale in `docs/DESIGN_DECISIONS.md`.
 5. Delete `|| true` from `coverage.sh`.
+   **DONE (phase U1).** Also unified the `build-coverage` and `build-cov` names
+   and added `npu-sim` to the instrumented build.
 6. Tighten the e2e tolerance to something near the observed 3e-8 so a numerics
    regression actually fails.
+   **DONE (phase U1).** `rtol=1e-5, atol=1e-6`, with the observed 2.98e-8
+   recorded in the test as a comment.
 
 ### Tier 1: make the claims true (one to two weeks)
 

@@ -29,6 +29,35 @@ static RankedTensorType rankedType(Value v) {
   return llvm::cast<RankedTensorType>(v.getType());
 }
 
+// Reject a batch size the backend cannot compute correctly.
+//
+// The simulator's convolution kernel hardcodes batch index 0, and its pooling
+// kernel iterates channels without ever seeing the batch dimension, so for
+// N greater than 1 both write correct data for the first image and leave the
+// rest of the output holding whatever was in the scratchpad. Nothing used to
+// stop that: the importer, the verifiers, the lowering, and the allocator all
+// accepted it, and the wrong answer came out of the simulator with no
+// diagnostic. docs/ASSESSMENT.md section 2.1 has the reproduction.
+//
+// Refusing is the correct behaviour until phase U6 adds the batch loops. This
+// only applies to activations. A convolution weight is OIHW, so its leading
+// dimension is the output channel count and has nothing to do with batch.
+static LogicalResult verifyUnbatchedActivation(Operation *op, Value activation) {
+  auto type = llvm::cast<RankedTensorType>(activation.getType());
+  if (type.getRank() != 4 || type.isDynamicDim(0))
+    return success();
+  int64_t batch = type.getDimSize(0);
+  if (batch == 1)
+    return success();
+  return op->emitOpError()
+         << "batch size " << batch
+         << " is not supported yet. The simulator processes only batch index 0 "
+            "for this op, so N greater than 1 returns silently wrong results "
+            "for every image after the first. This is a tracked limitation, "
+            "not a permanent design choice: upgrade phase U6 adds real batch "
+            "support";
+}
+
 //===----------------------------------------------------------------------===//
 // ConstantOp
 //===----------------------------------------------------------------------===//
@@ -142,7 +171,7 @@ LogicalResult Conv2DOp::verify() {
     return emitOpError("expects a 4 element pads attribute");
   if (getBias() && rankedType(getBias()).getRank() != 1)
     return emitOpError("bias must be a rank 1 per channel vector");
-  return success();
+  return verifyUnbatchedActivation(*this, getInput());
 }
 
 //===----------------------------------------------------------------------===//
@@ -179,7 +208,7 @@ static LogicalResult verifyPool(PoolOp op) {
     return op.emitOpError("expects a 2 element strides attribute");
   if (op.getPads().size() != 4)
     return op.emitOpError("expects a 4 element pads attribute");
-  return success();
+  return verifyUnbatchedActivation(op, op.getInput());
 }
 
 LogicalResult MaxPool2DOp::verify() { return verifyPool(*this); }
@@ -296,5 +325,5 @@ LogicalResult BatchNormOp::verify() {
       failed(checkParam(getMean(), "mean")) ||
       failed(checkParam(getVariance(), "variance")))
     return failure();
-  return success();
+  return verifyUnbatchedActivation(*this, getInput());
 }

@@ -70,6 +70,94 @@ depending on how the build was invoked, which is a real reproducibility hazard o
 this machine. The baseline now records each tool as "resolved path: version" so
 this surfaces as a legible note rather than a mysterious version change.
 
+## 2026-08-08 Phase U1: the published numbers came from a commit that never existed
+
+**Symptom.** Phase U1 was meant to be routine cleanup: track the benchmark results,
+and make the harness stop reusing stale ones. I wrote the staleness check first and
+a test asserting the committed results match the tree. It failed, which was
+expected, since `docs/ASSESSMENT.md` section 4.2 had already found the results were
+three commits behind. What was not expected was the reason it gave:
+
+```
+generated at unknown commit 8095dbec, HEAD is d93e73de
+```
+
+**Root cause.** `git cat-file -e 8095dbec^{commit}` fails. That sha is not in this
+repository. The assessment had read the manifest and assumed an old commit; in fact
+the results were produced from a working tree that was never committed in the form
+that produced them, probably an amended or discarded Phase 9 state. So the six
+numbers the README headline table, the evaluation section, and both PDFs are built
+from were reproducible from no point in the history. This is worse than stale. A
+stale result can at least be reproduced by checking out its commit.
+
+**Options considered.**
+
+1. Compare the manifest sha to HEAD exactly, as `UPGRADE_SPEC_V3.md` section 8.1
+   item 4 words it. Rejected after trying it. A result can only be committed by a
+   commit that comes after the run that produced it, so under this rule every
+   result is stale the moment it lands, every invocation regenerates the whole
+   suite, and the committed files never match their own commit. The rule is
+   self defeating as literally written.
+2. Compare only the cost model constants. Rejected: it would not have caught this,
+   since the cost model was unchanged throughout.
+3. Compare the sha, and when it differs, ask whether anything that can actually
+   move a number changed between then and the working tree. Chosen.
+
+**Chosen fix.** `staleness()` replaces `valid()` and returns the reason rather than
+a bool, so the harness can print why it is regenerating. A result is reusable when
+its cost model constants match and either its manifest sha is HEAD, or `git diff`
+between that sha and the tree touches nothing under `RESULT_INPUTS`: the dialect,
+the passes, the encoder, the simulator, the tools, the frontend, and the harness
+itself. Uncommitted edits count, because a result produced from a dirty tree is not
+reproducible from any commit either. A sha the repository does not recognise is
+stale by definition, which is what caught this. Deviation from the spec's literal
+wording recorded in `docs/DESIGN_DECISIONS.md`.
+
+**Verification.** Nine tests in `test/Python/test_benchmarks.py`, including one that
+walks recent history for a documentation only commit and asserts the filter sees
+through it, and `test_committed_results_are_current`, which is the standing guard.
+Shown failing before the regeneration and passing after.
+
+## 2026-08-08 Phase U1: refusing a batch size rather than lying about it
+
+**Symptom.** `docs/ASSESSMENT.md` section 2.1: a 2 batch conv plus relu returns
+1.19e-07 error on image 0 and 1.85 on image 1. No diagnostic anywhere.
+
+**Root cause.** `Simulator.cpp` conv2d has `int64_t n = 0; // batch is 1 for the
+supported models`, and `pool()` iterates `C = inS[1]` without ever seeing the batch
+dimension. Neither is a coding mistake so much as a faithful implementation of a
+specification whose stated scope was one LeNet at batch 1. Nothing else in the
+pipeline had a reason to disagree, so the importer, the verifiers, the lowering,
+and the allocator all accepted N greater than 1 and the allocator even sized the
+buffers correctly for it.
+
+**Options considered.**
+
+1. Fix the kernels now. Rejected for this phase, not on merit: it is phase U6, it
+   needs batched cost model changes and new GoogleTests, and U1's job is to stop
+   the compiler being wrong, not to widen it. Shipping the guard first means the
+   silent failure closes today rather than in two phases.
+2. Reject any rank 4 tensor whose leading dimension is not 1. Rejected: a
+   convolution weight is OIHW, so LeNet's 6x1x5x5 first kernel would be read as a
+   batch of six and every real model would be refused. There is a test pinning
+   this, because it is the obvious wrong way to write the guard.
+3. Guard activations only, at the ops that are actually wrong. Chosen.
+
+**Chosen fix.** `check_unbatched_activation` in the importer, called from the conv
+and both pool converters, and `verifyUnbatchedActivation` in `NPUOps.cpp`, called
+from the `conv2d`, `max_pool2d`, `avg_pool2d`, and `batch_norm` verifiers. Two
+layers, as the spec asks, and both name the tensor and its shape and say the
+limitation is tracked rather than permanent.
+
+Deliberately not guarded: `matmul` and the elementwise ops. `matmul` iterates `M`
+correctly, so a rank 2 batch is genuinely fine there, and relu, add, and mul are
+elementwise over the whole buffer. Refusing those would be refusing something that
+works, which the no silent failure rule does not ask for.
+
+**Verification.** Four pytest cases and four lit cases, all shown failing before the
+guard and passing after. Two of them are controls: batch 1 still imports, and a
+6x1x5x5 weight is not mistaken for a batch.
+
 ## 2026-07-15 Phase 0: environment reconciliation
 
 **Symptom.** The build spec (Section 3) assumes Ubuntu 24.04, a WSL budget of 20 GB

@@ -11,7 +11,10 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
-build=build-coverage
+# One name for the instrumented build tree. This used to configure and build in
+# build-coverage while an older build-cov tree sat in the repository, so it was
+# never obvious which one a stale .gcda came from.
+build=build-cov
 mlir_dir="${MLIR_DIR:-$HOME/llvm-project/build/lib/cmake/mlir}"
 llvm_dir="${LLVM_DIR:-$HOME/llvm-project/build/lib/cmake/llvm}"
 
@@ -21,8 +24,13 @@ cmake -G Ninja -S . -B "$build" \
   -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
   -DCMAKE_EXE_LINKER_FLAGS="--coverage"
 
-ninja -C "$build" npu-opt npu-translate npu-objdump NPUEncodingTests NPUSimulatorTests
-ninja -C "$build" check-npu || true
+ninja -C "$build" npu-opt npu-translate npu-objdump npu-sim \
+  NPUEncodingTests NPUSimulatorTests
+
+# A coverage number is only meaningful if the run that produced it passed. This
+# line used to end in "|| true", so a build where every lit test failed still
+# reported a percentage, and that percentage is what the README badge showed.
+ninja -C "$build" check-npu
 "./$build/bin/NPUEncodingTests"
 "./$build/bin/NPUSimulatorTests"
 

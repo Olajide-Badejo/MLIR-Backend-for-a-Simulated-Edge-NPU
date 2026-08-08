@@ -71,3 +71,46 @@ func.func @bad_batch_norm(%in: tensor<1x4x8x8xf32>, %s: tensor<3xf32>,
     : (tensor<1x4x8x8xf32>, tensor<3xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> tensor<1x4x8x8xf32>
   return %0 : tensor<1x4x8x8xf32>
 }
+
+// -----
+
+// Batch greater than 1 is refused until phase U6 adds real batch loops to the
+// simulator. Before this guard existed these four ops verified cleanly and the
+// simulator returned correct data for image 0 and garbage for the rest.
+
+func.func @batched_conv(%in: tensor<2x3x8x8xf32>,
+                        %w: tensor<4x3x3x3xf32>) -> tensor<2x4x8x8xf32> {
+  // expected-error @+1 {{batch size 2 is not supported yet}}
+  %0 = npu.conv2d %in, %w {strides = [1, 1], pads = [1, 1, 1, 1], dilations = [1, 1]}
+    : (tensor<2x3x8x8xf32>, tensor<4x3x3x3xf32>) -> tensor<2x4x8x8xf32>
+  return %0 : tensor<2x4x8x8xf32>
+}
+
+// -----
+
+func.func @batched_max_pool(%in: tensor<4x3x8x8xf32>) -> tensor<4x3x4x4xf32> {
+  // expected-error @+1 {{batch size 4 is not supported yet}}
+  %0 = npu.max_pool2d %in {kernel_shape = [2, 2], strides = [2, 2], pads = [0, 0, 0, 0]}
+    : (tensor<4x3x8x8xf32>) -> tensor<4x3x4x4xf32>
+  return %0 : tensor<4x3x4x4xf32>
+}
+
+// -----
+
+func.func @batched_avg_pool(%in: tensor<2x3x8x8xf32>) -> tensor<2x3x4x4xf32> {
+  // expected-error @+1 {{batch size 2 is not supported yet}}
+  %0 = npu.avg_pool2d %in {kernel_shape = [2, 2], strides = [2, 2], pads = [0, 0, 0, 0]}
+    : (tensor<2x3x8x8xf32>) -> tensor<2x3x4x4xf32>
+  return %0 : tensor<2x3x4x4xf32>
+}
+
+// -----
+
+func.func @batched_batch_norm(%in: tensor<2x4x8x8xf32>, %s: tensor<4xf32>,
+                              %o: tensor<4xf32>, %m: tensor<4xf32>,
+                              %v: tensor<4xf32>) -> tensor<2x4x8x8xf32> {
+  // expected-error @+1 {{batch size 2 is not supported yet}}
+  %0 = npu.batch_norm %in, %s, %o, %m, %v
+    : (tensor<2x4x8x8xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> tensor<2x4x8x8xf32>
+  return %0 : tensor<2x4x8x8xf32>
+}

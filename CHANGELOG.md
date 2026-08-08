@@ -19,6 +19,52 @@ Semantic Versioning once a release is tagged.
 - `docs/BREAKING_CHANGES.md`, where any deliberate regression against that
   baseline has to be written down before the commit that causes it.
 
+- Phase U1: `experiments/results/*.json` are tracked in git. They were excluded
+  by a `.gitignore` line, so a fresh clone had no results and `results_to_tex.py`
+  had nothing to read, even though every number in the README and both reports
+  comes from them.
+- Phase U1: `run_benchmarks.py --allow-stale`, for deliberately reusing results
+  whose manifest no longer matches the tree.
+- Phase U1: benchmark manifests now record the model generator seed and a
+  `GENERATOR_VERSION`. The exported `.onnx` files stay untracked because they are
+  regenerated from the seed, which is only reproducible if the seed travels with
+  the result.
+
+### Changed
+
+- Phase U1 (**behaviour change, deliberate**): a batch size other than 1 is now
+  rejected instead of silently computing wrong numbers. The simulator's
+  convolution kernel hardcodes batch index 0 and its pooling kernel never sees
+  the batch dimension, so N greater than 1 returned correct data for the first
+  image and scratchpad residue for the rest, with no diagnostic anywhere in the
+  pipeline. The refusal is enforced in the ONNX importer and again in the
+  `conv2d`, `max_pool2d`, `avg_pool2d`, and `batch_norm` verifiers, and it names
+  the offending tensor and its shape. This is a limitation with a tracked plan,
+  not a permanent design choice: phase U6 adds real batch loops and removes the
+  guard. No supported model changes behaviour, since everything in the suite is
+  batch 1.
+- Phase U1 (**behaviour change, deliberate**): `run_benchmarks.py` no longer
+  reuses a recorded result just because it parses as JSON. A result is
+  regenerated unless its cost model constants match and either its manifest sha
+  is HEAD or nothing that can move a number has changed since that sha.
+- Phase U1 (**tightened assertion**): the end to end tolerance goes from
+  `rtol=1e-3, atol=1e-3` to `rtol=1e-5, atol=1e-6`. Observed error is 2.98e-8, so
+  the old assertion was five orders of magnitude looser than reality and a four
+  order of magnitude accuracy regression would have passed while invalidating the
+  README. No current result moves; the assertion simply now means something.
+- Phase U1: `op_mapping.py`'s module docstring said all 13 ONNX ops were
+  supported and that the unimplemented ones raised a clear "not yet implemented".
+  Seven are implemented and the other six were never mentioned in `CONVERTERS` at
+  all. Corrected to say which is which.
+
+### Fixed
+
+- Phase U1: `scripts/coverage.sh` ran `ninja check-npu || true`, so it reported a
+  coverage percentage whether or not the lit suite passed, and that percentage is
+  what the README badge showed. The `|| true` is gone. The script also configured
+  `build-coverage` while a stale `build-cov` tree sat in the repository; both are
+  now `build-cov`.
+
 ### Notes
 
 - The baseline records the instruction count from the simulator's own

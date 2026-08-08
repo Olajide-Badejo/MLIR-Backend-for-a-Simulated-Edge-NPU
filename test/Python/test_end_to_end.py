@@ -71,6 +71,17 @@ def _compile_and_simulate(
     return np.frombuffer(out_path.read_bytes(), dtype=np.float32)
 
 
+# The observed max absolute error on this pipeline is 2.98e-8, which is one ulp
+# of float32 at the magnitude of these outputs and is what reordered but
+# mathematically identical fp32 accumulation costs. The assertion used to be
+# rtol=1e-3, atol=1e-3, five orders of magnitude looser than what actually
+# happens, so a regression that degraded accuracy by four orders of magnitude
+# would have passed while invalidating the README's 3e-8 claim. These values sit
+# just above the observed error, so real numerics regressions fail.
+RTOL = 1e-5
+ATOL = 1e-6
+
+
 def test_lenet_matches_onnxruntime(tmp_path, npu_opt):
     rng = np.random.default_rng(0)
     x = rng.standard_normal((1, 1, 28, 28)).astype(np.float32)
@@ -82,7 +93,7 @@ def test_lenet_matches_onnxruntime(tmp_path, npu_opt):
     simulated = _compile_and_simulate(tmp_path, npu_opt, "lenet", 0, x)
     simulated = simulated.reshape(reference.shape)
 
-    np.testing.assert_allclose(simulated, reference, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(simulated, reference, rtol=RTOL, atol=ATOL)
 
 
 def test_lenet_with_spilling_matches_onnxruntime(tmp_path, npu_opt):
@@ -97,4 +108,4 @@ def test_lenet_with_spilling_matches_onnxruntime(tmp_path, npu_opt):
     simulated = _compile_and_simulate(tmp_path, npu_opt, "lenet", 0, x, budget=143360)
     simulated = simulated.reshape(reference.shape)
 
-    np.testing.assert_allclose(simulated, reference, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(simulated, reference, rtol=RTOL, atol=ATOL)
