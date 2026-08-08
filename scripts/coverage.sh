@@ -27,6 +27,13 @@ cmake -G Ninja -S . -B "$build" \
 ninja -C "$build" npu-opt npu-translate npu-objdump npu-sim \
   NPUEncodingTests NPUSimulatorTests
 
+# Drop counter files left by earlier runs. gcov refuses to merge a .gcda whose
+# checksum no longer matches its rebuilt object, printing "overwriting an
+# existing profile data with a different checksum", and the numbers for that
+# translation unit are then whatever survived the collision. The repository was
+# found with exactly such a stale tree in place.
+find "$build" -name '*.gcda' -delete
+
 # A coverage number is only meaningful if the run that produced it passed. This
 # line used to end in "|| true", so a build where every lit test failed still
 # reported a percentage, and that percentage is what the README badge showed.
