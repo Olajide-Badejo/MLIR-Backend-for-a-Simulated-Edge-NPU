@@ -21,10 +21,10 @@
   "dram_bytes_written": 166600,
   "dram_bytes_total": 514000,
   "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
-  "compile_ms": 24.701042999822675,
+  "compile_ms": 22.447728000315692,
   "note": "simulated estimates, not measurements",
   "manifest": {
-    "git_sha": "02663ce38a0c3d3924e447c0dbd0b42dae99f247",
+    "git_sha": "38af136333889ac000f17f5a5a48bc16857229fc",
     "llvm_tag": "llvmorg-22.1.8",
     "python": "3.14.4",
     "onnxruntime": "1.27.0",
@@ -37,6 +37,6 @@
     },
     "seed": 0,
     "model_generator_version": 1,
-    "timestamp": "2026-08-08T20:50:42.019563+00:00"
+    "timestamp": "2026-08-08T20:56:07.753232+00:00"
   }
 }
