@@ -54,3 +54,17 @@ add_subdirectory(tools/npu-translate)
 add_subdirectory(tools/npu-sim)
 add_subdirectory(unittests)
 add_subdirectory(test)
+
+# Re-measure the recorded regression baseline and fail on any drift. The script
+# skips its own build step here, since ninja has just done it, and depends on
+# the tools and test binaries the measurement needs.
+add_custom_target(baseline-check
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/regression-baseline.sh
+          --check --no-build --build-dir ${CMAKE_BINARY_DIR}
+  DEPENDS npu-opt npu-translate npu-objdump npu-sim
+          NPUEncodingTests NPUSimulatorTests
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  USES_TERMINAL
+  COMMENT "Checking the recorded regression baseline"
+)
+set_target_properties(baseline-check PROPERTIES FOLDER "Tests")
