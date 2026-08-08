@@ -1,14 +1,30 @@
 # Dockerfile.llvm
 #
-# Builds LLVM/MLIR once at the pinned tag and bakes it into an image that CI uses as its
-# base, so CI never rebuilds LLVM per push. Build and push this image only when the pinned
-# tag changes.
+# Builds LLVM and MLIR once at the pinned tag and bakes the result into an image
+# CI uses as its base, so CI never rebuilds LLVM per push. Build and push this
+# image only when the pinned tag changes.
+#
+# In practice do not run this by hand. The .github/workflows/llvm-image.yml
+# workflow builds it on a runner and pushes to GHCR, because the development
+# machine's WSL2 guest is capped at 12 GB (docs/BUILD.md) and building LLVM
+# inside it alongside a container runtime thrashes. To do it locally anyway:
 #
 #   docker build -f docker/Dockerfile.llvm -t ghcr.io/OWNER/npu-mlir-llvm:22.1.8 .
 #
-FROM ubuntu:24.04
+# Two stages, because a single stage image is not shippable. The build tree for
+# a release build with assertions runs to tens of gigabytes, almost all of it
+# object files that nothing downstream reads. The final stage copies only what
+# an out of tree project actually links and runs against, at the same absolute
+# paths, because the CMake package files in the build tree hardcode them.
 
 ARG LLVM_TAG=llvmorg-22.1.8
+
+# ---------------------------------------------------------------------------
+# Stage 1: build
+# ---------------------------------------------------------------------------
+FROM ubuntu:24.04 AS builder
+
+ARG LLVM_TAG
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,22 +35,77 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir numpy nanobind
+RUN pip install --no-cache-dir numpy nanobind pybind11
 
 RUN git clone --depth 1 --branch ${LLVM_TAG} \
       https://github.com/llvm/llvm-project.git /llvm-project
 
+# No install step. The out of tree project consumes the build tree directly:
+# MLIR_DIR points into build/lib/cmake/mlir, lit and FileCheck come from
+# build/bin, and the Python bindings live under build/tools/mlir.
 RUN cmake -G Ninja -S /llvm-project/llvm -B /llvm-project/build \
       -DLLVM_ENABLE_PROJECTS="mlir" \
       -DLLVM_TARGETS_TO_BUILD="Native" \
       -DCMAKE_BUILD_TYPE=Release \
       -DLLVM_ENABLE_ASSERTIONS=ON \
       -DLLVM_USE_LINKER=lld \
-      -DLLVM_PARALLEL_LINK_JOBS=2 \
+      -DLLVM_PARALLEL_LINK_JOBS=1 \
+      -DLLVM_INCLUDE_BENCHMARKS=OFF \
+      -DLLVM_INCLUDE_EXAMPLES=OFF \
+      -DLLVM_INCLUDE_DOCS=OFF \
       -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
       -DPython3_EXECUTABLE=/opt/venv/bin/python \
-    && ninja -C /llvm-project/build \
-    && ninja -C /llvm-project/build install
+    && ninja -C /llvm-project/build
 
+# Drop what the final stage will not copy anyway, so the layer that gets
+# exported is smaller and the copy is quicker.
+RUN find /llvm-project/build -name '*.o' -delete \
+    && rm -rf /llvm-project/.git
+
+# ---------------------------------------------------------------------------
+# Stage 2: the shipped image
+# ---------------------------------------------------------------------------
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ninja-build git lld ccache \
+      python3 python3-pip python3-venv python3-dev \
+      ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+
+# Source headers. MLIRConfig.cmake and LLVMConfig.cmake in a build tree point
+# include paths at the source checkout, so these are not optional.
+COPY --from=builder /llvm-project/llvm/include /llvm-project/llvm/include
+COPY --from=builder /llvm-project/mlir/include /llvm-project/mlir/include
+COPY --from=builder /llvm-project/cmake /llvm-project/cmake
+COPY --from=builder /llvm-project/llvm/cmake /llvm-project/llvm/cmake
+COPY --from=builder /llvm-project/mlir/cmake /llvm-project/mlir/cmake
+
+# Generated headers, the static libraries and CMake package files, the tools
+# (llvm-lit, FileCheck, count, not, the tblgens), and the Python bindings.
+COPY --from=builder /llvm-project/build/include /llvm-project/build/include
+COPY --from=builder /llvm-project/build/tools/mlir/include \
+                    /llvm-project/build/tools/mlir/include
+COPY --from=builder /llvm-project/build/lib /llvm-project/build/lib
+COPY --from=builder /llvm-project/build/bin /llvm-project/build/bin
+COPY --from=builder /llvm-project/build/tools/mlir/python_packages \
+                    /llvm-project/build/tools/mlir/python_packages
+COPY --from=builder /llvm-project/build/CMakeCache.txt \
+                    /llvm-project/build/CMakeCache.txt
+
+ENV PATH="/opt/venv/bin:/llvm-project/build/bin:$PATH"
 ENV MLIR_DIR=/llvm-project/build/lib/cmake/mlir
 ENV LLVM_DIR=/llvm-project/build/lib/cmake/llvm
+ENV MLIR_PYTHON_PACKAGES=/llvm-project/build/tools/mlir/python_packages/mlir_core
+
+# A cheap smoke test at build time, so a broken image fails here rather than in
+# somebody's CI run.
+RUN test -x /llvm-project/build/bin/FileCheck \
+    && test -x /llvm-project/build/bin/llvm-lit \
+    && test -f "$MLIR_DIR/MLIRConfig.cmake" \
+    && test -d "$MLIR_PYTHON_PACKAGES/mlir" \
+    && echo "llvm image looks sane"

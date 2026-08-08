@@ -70,6 +70,90 @@ depending on how the build was invoked, which is a real reproducibility hazard o
 this machine. The baseline now records each tool as "resolved path: version" so
 this surfaces as a legible note rather than a mysterious version change.
 
+## 2026-08-08 Phase U2: ASan fires inside MLIR, and it is not our bug
+
+**Symptom.** The new `sanitizers` CI job, run locally before pushing, aborts:
+
+```
+ERROR: AddressSanitizer: use-after-poison on address 0x70459d3e15b8
+WRITE of size 32 at 0x70459d3e15b8 thread T0
+    #1 llvm::SmallVectorImpl<std::pair<mlir::TypeID, void*>>::operator=(...)
+    #2 mlir::Dialect::addType(mlir::TypeID, mlir::AbstractType&&)
+    #5 mlir::BuiltinDialect::initialize()
+    #10 EncodeFunction_LowersSmallProgram_Test::TestBody() EncodingTest.cpp:100
+```
+
+Every frame between the test and the fault is MLIR's own. `NPUSimulatorTests`
+runs clean; only the one encoding test that constructs an `MLIRContext` fails.
+
+**Root cause.** An instrumentation mismatch, not a memory bug. `llvm/Support/
+Compiler.h` defines `LLVM_ADDRESS_SANITIZER_BUILD` purely from
+`__SANITIZE_ADDRESS__`, which gcc defines whenever `-fsanitize=address` is on.
+`BumpPtrAllocator` in `llvm/Support/Allocator.h` is header only and, under that
+macro, poisons each new slab (line 351) and unpoisons per allocation. So the
+copy of the allocator instantiated in our instrumented translation units
+believes LLVM is an ASan build and poisons slab memory, while the prebuilt
+`libMLIRIR.a`, compiled with no instrumentation and no matching unpoison, writes
+straight into it. The shadow map shows exactly that: a clean allocation followed
+by a poisoned tail being written.
+
+**Options considered.**
+
+1. Build a second LLVM with `-DLLVM_USE_SANITIZER=Address`. Correct, and the
+   only thing that makes MLIR itself sanitizable. Rejected on cost: a second
+   multi hour image, hours of CI per tag change, to find bugs in LLVM rather
+   than in this project.
+2. `ASAN_OPTIONS=detect_container_overflow=0`, the usual advice for linking
+   instrumented code against uninstrumented LLVM. Rejected: that suppresses
+   container annotation reports, and this is a `use-after-poison` from
+   `BumpPtrAllocator`'s explicit poison calls, which the option does not cover.
+3. Disable the annotations by defining the macro away. Rejected: `Compiler.h`
+   defines it unconditionally inside the `__SANITIZE_ADDRESS__` branch, so it
+   cannot be overridden without patching LLVM.
+4. Scope the job to the code the job exists for. Chosen.
+
+**Chosen fix.** The sanitizer job runs `NPUEncodingTests
+--gtest_filter=-EncodeFunction.*` and the whole of `NPUSimulatorTests`. Nothing
+is actually given up. ASan is here for the memory unsafe surface, which is
+`Program::decode`, the `Program::validate` and fuzz corpus work landing in phase
+U3, and the simulator's raw `spAt`/`dramAt` pointer arithmetic. None of it
+touches MLIR. `EncodeFunction.*` still runs uninstrumented in `build-and-test`.
+The exclusion is commented in `ci.yml` and in `docs/BUILD.md` with the reason,
+because a bare `--gtest_filter` that looks like someone hiding a failure is
+worse than the failure.
+
+**Verification.** `NPUEncodingTests --gtest_filter=-EncodeFunction.*` passes 3
+tests and `NPUSimulatorTests` passes 7, both clean under
+`-fsanitize=address,undefined` with `halt_on_error=1` and `detect_leaks=1`.
+
+## 2026-08-08 Phase U2: what the first reachability run found
+
+**Symptom.** Not a failure so much as a measurement. The first run of
+`scripts/check-reachability.py` reported six unreachable ops out of twelve, where
+`docs/ASSESSMENT.md` section 2.2 had identified three.
+
+**The three the audit already knew about**, `transpose`, `concat`, and
+`batch_norm`, are missing every layer: no importer converter, no lowering
+pattern, no encoder case, no simulator kernel.
+
+**The three it did not.** `add` and `mul` are fully lowered, encoded, and
+simulated, and have no ONNX converter at all, so nothing can produce one from a
+real model; they exist only for hand written IR and for the lit tests. And
+`avg_pool2d` is present at every layer and is exercised by nothing, because
+LeNet uses max pooling throughout. That last one is the interesting category:
+not broken, never run on a real graph, and invisible to a test suite that only
+asks whether the tests pass.
+
+**Chosen fix.** None yet, deliberately. Phase U2's job is the check, not the
+implementation, and the gaps belong to U7 and U8. All six carry dated exemptions
+in `docs/DESIGN_DECISIONS.md` and the check fails once a date passes.
+
+One design note. The checker refuses to run at all if an op in `NPUOps.td` has no
+entry in its `NPUISA_EQUIVALENT` table, rather than inferring a mapping. Adding
+an op to the dialect should force an answer to "what does this become in the
+ISA". An inferring checker would have quietly passed `transpose` on the day it
+was added, which is the whole failure being guarded against.
+
 ## 2026-08-08 Phase U1: the published numbers came from a commit that never existed
 
 **Symptom.** Phase U1 was meant to be routine cleanup: track the benchmark results,

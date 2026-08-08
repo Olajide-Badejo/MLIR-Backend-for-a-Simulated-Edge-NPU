@@ -70,6 +70,52 @@ ninja -C build npu-opt
 ninja -C build check-npu
 ```
 
+## 3a. Python tooling
+
+The frontend and the checks around it need, beyond the runtime dependencies
+(`numpy`, `onnx`, `onnxruntime`, `torch`, `tqdm`):
+
+| Tool | Used by |
+|---|---|
+| `pytest` | `test/Python` |
+| `pytest-cov`, `gcovr` | `scripts/coverage.sh` |
+| `ruff`, `black` | lint and format, and the CI lint job |
+| `mypy` | type checks `python/npu_frontend`, configured in `pyproject.toml` |
+| `pyyaml` | only if you want to validate the workflow files locally |
+
+```bash
+source ~/npu-venv/bin/activate
+pip install pytest pytest-cov gcovr ruff black mypy
+```
+
+## 3b. What CI runs, and how to run it here
+
+`.github/workflows/ci.yml` has four jobs, and every one of them can be
+reproduced locally.
+
+| Job | Locally |
+|---|---|
+| `lint` | `bash scripts/dash-lint.sh`, `ruff check ...`, `black --check ...`, `mypy`, `python scripts/check-reachability.py` |
+| `build-and-test` | `ninja -C build -j6`, `ninja -C build check-npu`, both GoogleTest binaries, `pytest test/Python`, `scripts/regression-baseline.sh --check` |
+| `sanitizers` | configure a `build-san` tree with `-fsanitize=address,undefined`, then run the GoogleTests |
+| `coverage` | `bash scripts/coverage.sh` |
+
+CI runs inside a prebuilt image holding LLVM and MLIR at the pinned tag. That
+image is produced by `.github/workflows/llvm-image.yml`, which is manual only
+and should be run when the tag changes and at no other time. Do not build it on
+this machine: the 12 GB guest ceiling in section 1 makes an LLVM build inside a
+container thrash.
+
+One caveat on the sanitizer job. LLVM is prebuilt without instrumentation, but
+`BumpPtrAllocator` and `SmallVector` are header only, so the copies compiled
+into instrumented translation units poison memory that uninstrumented
+`libMLIRIR.a` then writes to. Any test that constructs an `MLIRContext`
+therefore reports a spurious use-after-poison inside
+`BuiltinDialect::initialize`. The job excludes `EncodeFunction.*` for that
+reason and no other. Everything ASan is actually there to protect, the decoder
+and the simulator's raw memory arithmetic, has no MLIR dependency and is fully
+covered.
+
 ## 4. Measured wall clock times
 
 Recorded as they become real, replacing the spec's estimates. Do not quote estimates as if

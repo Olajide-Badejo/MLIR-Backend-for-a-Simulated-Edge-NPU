@@ -5,16 +5,32 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
-# A fast, self contained code quality gate that needs no LLVM toolchain: the
-# no dash rule and the Python linter. Building and running the compiler needs a
-# prebuilt LLVM/MLIR (see docs/BUILD.md) and is done locally.
+# CI builds the compiler and runs every suite. It used to run dash-lint and ruff
+# and nothing else, while the README carried a badge that read as "the test
+# suite passes on every push". The heavy part is LLVM and MLIR, which are baked
+# into a prebuilt image at the pinned tag by llvm-image.yml and are never built
+# here.
+env:
+  LLVM_TAG: llvmorg-22.1.8
+  LLVM_IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check-reachability compares against history when validating
+          # exemption dates, and the benchmark staleness test walks recent
+          # commits, so a shallow clone is not enough.
+          fetch-depth: 0
 
       - name: No em or en dashes
         run: bash scripts/dash-lint.sh
@@ -23,7 +39,173 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Python lint (ruff)
+      - name: Install lint tooling
         run: |
-          python -m pip install --quiet "ruff==0.15.21"
-          ruff check python test/Python experiments report/scripts
+          python -m pip install --quiet \
+            "ruff==0.15.21" "black==24.10.0" "mypy==1.14.1" numpy
+
+      - name: Python lint (ruff)
+        run: ruff check python test/Python experiments report/scripts scripts
+
+      - name: Python format (black)
+        run: black --check python test/Python experiments report/scripts scripts
+
+      - name: Python types (mypy)
+        run: mypy
+
+      - name: Every npu op is reachable end to end, or dated exempt
+        # --skip-models here: exercising the benchmark models needs torch and
+        # onnxruntime and a built compiler. The build-and-test job runs the
+        # full check including that layer.
+        run: python scripts/check-reachability.py --skip-models
+
+  build-and-test:
+    name: build and test
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Trust the workspace
+        # The container runs as root while the checkout is owned by the runner
+        # user, so git refuses to operate on it without this.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ env.LLVM_TAG }}-${{ github.sha }}
+          restore-keys: ccache-${{ env.LLVM_TAG }}-
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DMLIR_DIR="$MLIR_DIR" -DLLVM_DIR="$LLVM_DIR" \
+            -DLLVM_USE_LINKER=lld \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        # -j6 matches the cap the development machine builds under; see
+        # docs/BUILD.md. The runner has fewer cores than that anyway.
+        run: ninja -C build -j6
+
+      - name: lit and FileCheck
+        run: ninja -C build check-npu
+
+      - name: GoogleTest, encoding
+        run: ./build/bin/NPUEncodingTests
+
+      - name: GoogleTest, simulator
+        run: ./build/bin/NPUSimulatorTests
+
+      - name: Install Python test dependencies
+        run: pip install --no-cache-dir pytest onnx onnxruntime torch --index-url https://download.pytorch.org/whl/cpu || pip install --no-cache-dir pytest onnx onnxruntime torch
+
+      - name: pytest
+        env:
+          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
+        run: python -m pytest test/Python -q
+
+      - name: Reachability, including the benchmark model layer
+        env:
+          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
+        run: python scripts/check-reachability.py
+
+      - name: Regression baseline
+        env:
+          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
+        run: |
+          NPU_VENV=/opt/venv NPU_LIT=/llvm-project/build/bin/llvm-lit \
+            bash scripts/regression-baseline.sh --check --no-build
+
+  sanitizers:
+    name: asan and ubsan
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Configure with sanitizers
+        run: |
+          cmake -G Ninja -S . -B build-san \
+            -DMLIR_DIR="$MLIR_DIR" -DLLVM_DIR="$LLVM_DIR" \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build the test binaries
+        run: ninja -C build-san -j6 NPUEncodingTests NPUSimulatorTests npu-sim
+
+      - name: GoogleTest under ASan and UBSan
+        env:
+          # halt_on_error makes a UBSan finding fail the job instead of being a
+          # line of log nobody reads.
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=1
+        # EncodeFunction.* is excluded, and the reason is not that it fails.
+        #
+        # Those tests construct an MLIRContext. LLVM is prebuilt without
+        # instrumentation, but BumpPtrAllocator and SmallVector are header only,
+        # so the copies instantiated in these ASan compiled translation units
+        # poison slab memory that the uninstrumented libMLIRIR.a then writes
+        # into. ASan reports a use-after-poison inside
+        # BuiltinDialect::initialize, entirely within MLIR's own call stack and
+        # nothing to do with this project. The only real fix is an ASan build of
+        # LLVM, which costs a second multi hour image for no benefit here.
+        #
+        # Nothing is lost by excluding them. This job exists to cover the
+        # memory unsafe surface, which is the .nbin decoder, Program::validate,
+        # the fuzz corpus, and the simulator's raw scratchpad and DRAM
+        # arithmetic. None of that touches MLIR. EncodeFunction.* still runs
+        # uninstrumented in build-and-test.
+        run: |
+          ./build-san/bin/NPUEncodingTests --gtest_filter=-EncodeFunction.*
+          ./build-san/bin/NPUSimulatorTests
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install coverage tooling
+        run: pip install --no-cache-dir gcovr pytest pytest-cov onnx onnxruntime torch
+
+      - name: Run coverage
+        env:
+          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
+        run: bash scripts/coverage.sh | tee coverage.log
+
+      - name: Enforce the thresholds
+        # UPGRADE_SPEC_V3.md section 9.8: at least 85 percent line coverage on
+        # lib/Dialect, lib/Encoding, and lib/Simulator, counted only from a run
+        # where every test passed. coverage.sh exits nonzero if any suite
+        # failed, so reaching this step already establishes the second half.
+        run: |
+          pct=$(grep -oP 'lines: \K[0-9.]+' coverage.log | head -1)
+          echo "C++ line coverage: ${pct}%"
+          python -c "import sys; sys.exit(0 if float('${pct}') >= 85.0 else 1)" \
+            || { echo "C++ line coverage ${pct}% is below the 85% threshold"; exit 1; }

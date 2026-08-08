@@ -581,6 +581,19 @@ Ordered by value divided by effort. Tiers are cumulative.
 
 7. Real CI: build `Dockerfile.llvm`, publish to GHCR, add a job that configures,
    builds, and runs lit plus GoogleTest plus pytest. Add `report.yml`.
+   **DONE (phase U2), pending a push.** `ci.yml` now has four jobs: `lint`
+   (dash-lint, ruff, black, mypy, reachability), `build-and-test` (configure,
+   build, lit, both GoogleTests, pytest, reachability with the model layer, and
+   the regression baseline), `sanitizers` (ASan and UBSan), and `coverage` (with
+   the 85 percent threshold enforced). `report.yml` builds both PDFs and uploads
+   them. `llvm-image.yml` builds and publishes the LLVM base image, manually and
+   only when the pinned tag changes. `Dockerfile.llvm` was rewritten as two
+   stages: as written it kept the full build tree *and* a second installed copy,
+   which is tens of gigabytes and not pushable.
+   Every job was run locally and passes. What cannot be verified without push
+   access is CI itself going green and red, so the four fault class proof runs
+   required by `UPGRADE_SPEC_V3.md` section 10.2 are outstanding. Until they are
+   done the badge still claims more than has been demonstrated.
 8. `Program::validate()` plus bounds checked memory access in the simulator, plus
    an input size check in `npu-sim`. Add a corrupted input GoogleTest.
 9. Per pass ablations in `run_benchmarks.py`: op counts before and after each pass,

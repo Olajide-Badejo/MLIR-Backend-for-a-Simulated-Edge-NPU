@@ -24,14 +24,35 @@ Batch size greater than 1 is refused, see check_unbatched_activation below.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 from mlir import ir
 
+if TYPE_CHECKING:
+    from onnx import NodeProto
+
 
 class UnsupportedOpError(Exception):
     """Raised when an ONNX op cannot be imported. Never emit wrong IR instead."""
+
+
+class ImportContext(Protocol):
+    """The state a converter is handed by the importer.
+
+    Written as a Protocol rather than left to a comment because it is the actual
+    contract between onnx_importer._Context and every converter below, and it
+    was previously documented only in prose.
+    """
+
+    values: dict[str, ir.Value]
+
+    def shape(self, name: str) -> tuple[int, ...]:
+        """Inferred shape of a tensor, by ONNX name."""
+
+    def init(self, name: str) -> np.ndarray | None:
+        """The constant data behind a tensor name, or None if it is not one."""
 
 
 # ---------------------------------------------------------------------------
@@ -51,18 +72,18 @@ def i64() -> ir.Type:
     return ir.IntegerType.get_signless(64)
 
 
-def tensor_type(shape) -> ir.RankedTensorType:
+def tensor_type(shape: Sequence[int]) -> ir.RankedTensorType:
     dims = [int(d) for d in shape]
     if any(d <= 0 for d in dims):
         raise UnsupportedOpError(f"dynamic or unknown dimension in shape {shape}")
     return ir.RankedTensorType.get(dims, f32())
 
 
-def i64_array(values) -> ir.ArrayAttr:
+def i64_array(values: Sequence[int]) -> ir.ArrayAttr:
     return ir.ArrayAttr.get([ir.IntegerAttr.get(i64(), int(v)) for v in values])
 
 
-def i64_attr(v) -> ir.IntegerAttr:
+def i64_attr(v: int) -> ir.IntegerAttr:
     return ir.IntegerAttr.get(i64(), int(v))
 
 
@@ -71,7 +92,12 @@ def activation_attr(kind: int = 0) -> ir.IntegerAttr:
     return ir.IntegerAttr.get(i32(), kind)
 
 
-def _create(name: str, operands, result_types, attributes) -> ir.Value:
+def _create(
+    name: str,
+    operands: Sequence[ir.Value],
+    result_types: Sequence[ir.Type],
+    attributes: dict[str, ir.Attribute],
+) -> ir.Value:
     op = ir.Operation.create(
         name,
         results=result_types,
@@ -94,7 +120,7 @@ def make_constant(array: np.ndarray) -> ir.Value:
 # ---------------------------------------------------------------------------
 
 
-def check_unbatched_activation(name: str, shape) -> None:
+def check_unbatched_activation(name: str, shape: Sequence[int]) -> None:
     """Refuse a batch size the backend cannot compute correctly.
 
     The simulator's convolution kernel hardcodes batch index 0 and its pooling
@@ -120,7 +146,7 @@ def check_unbatched_activation(name: str, shape) -> None:
     )
 
 
-def _attr(node, name, default=None):
+def _attr(node: NodeProto, name: str, default: Any = None) -> Any:
     for a in node.attribute:
         if a.name == name:
             if a.ints:
@@ -138,7 +164,7 @@ def _attr(node, name, default=None):
 # ---------------------------------------------------------------------------
 
 
-def _conv(node, ctx):
+def _conv(node: NodeProto, ctx: ImportContext) -> None:
     check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     w = ctx.values[node.input[1]]
@@ -156,13 +182,13 @@ def _conv(node, ctx):
     ctx.values[node.output[0]] = _create("npu.conv2d", operands, [out_t], attrs)
 
 
-def _relu(node, ctx):
+def _relu(node: NodeProto, ctx: ImportContext) -> None:
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
     ctx.values[node.output[0]] = _create("npu.relu", [x], [out_t], {})
 
 
-def _maxpool(node, ctx):
+def _maxpool(node: NodeProto, ctx: ImportContext) -> None:
     check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
@@ -177,7 +203,7 @@ def _maxpool(node, ctx):
     ctx.values[node.output[0]] = _create("npu.max_pool2d", [x], [out_t], attrs)
 
 
-def _averagepool(node, ctx):
+def _averagepool(node: NodeProto, ctx: ImportContext) -> None:
     check_unbatched_activation(node.input[0], ctx.shape(node.input[0]))
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
@@ -192,7 +218,7 @@ def _averagepool(node, ctx):
     ctx.values[node.output[0]] = _create("npu.avg_pool2d", [x], [out_t], attrs)
 
 
-def _gemm(node, ctx):
+def _gemm(node: NodeProto, ctx: ImportContext) -> None:
     # Y = alpha * (A' * B') + beta * C, with optional transpose of A and B.
     alpha = _attr(node, "alpha", 1.0)
     beta = _attr(node, "beta", 1.0)
@@ -222,19 +248,21 @@ def _gemm(node, ctx):
     )
 
 
-def _reshape(node, ctx):
+def _reshape(node: NodeProto, ctx: ImportContext) -> None:
     x = ctx.values[node.input[0]]
     out_t = tensor_type(ctx.shape(node.output[0]))
     ctx.values[node.output[0]] = _create("npu.reshape", [x], [out_t], {})
 
 
-def _flatten(node, ctx):
+def _flatten(node: NodeProto, ctx: ImportContext) -> None:
     # Flatten collapses the dimensions from axis onward; the imported result type
     # already carries the flattened shape, so a reshape expresses it.
     _reshape(node, ctx)
 
 
-CONVERTERS: dict[str, Callable] = {
+Converter = Callable[["NodeProto", ImportContext], None]
+
+CONVERTERS: dict[str, Converter] = {
     "Conv": _conv,
     "Relu": _relu,
     "MaxPool": _maxpool,
@@ -247,7 +275,7 @@ CONVERTERS: dict[str, Callable] = {
 SUPPORTED_OPS = frozenset(CONVERTERS)
 
 
-def convert_node(node, ctx) -> None:
+def convert_node(node: NodeProto, ctx: ImportContext) -> None:
     converter = CONVERTERS.get(node.op_type)
     if converter is None:
         raise UnsupportedOpError(
