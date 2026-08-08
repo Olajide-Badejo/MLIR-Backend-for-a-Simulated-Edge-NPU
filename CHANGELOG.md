@@ -6,6 +6,28 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Phase U0: `scripts/regression-baseline.sh`, the safety net that gates every
+  later upgrade phase. It builds the project, runs lit, both GoogleTest binaries,
+  pytest, and dash-lint, then compiles and simulates LeNet at every combination
+  of optimization level and scratchpad budget. Everything it measures is written
+  to `test/baseline/baseline.json`, and the simulated output tensors are frozen
+  as `.npy` golden files in `test/baseline/golden/`. The `--check` form
+  re-measures and exits nonzero on drift, naming what moved and by how much.
+  Also available as `ninja baseline-check`.
+- `docs/BREAKING_CHANGES.md`, where any deliberate regression against that
+  baseline has to be written down before the commit that causes it.
+
+### Notes
+
+- The baseline records the instruction count from the simulator's own
+  `stats.instructions`. For LeNet that is 28 / 25 / 21 at `-O0` / `-O1` / `-O2`,
+  not the 91 / 82 / 70 in the README's headline table, which came from a regex
+  over the IR dump that also counts `npuisa.const` and matches inside type
+  strings. The README is not corrected here; that is Phase U4, which changes the
+  published numbers deliberately and documents the correction.
+
 ## [1.0.0] - 2026-07-15
 
 First release: a complete MLIR compiler backend and simulator for a simulated edge NPU,

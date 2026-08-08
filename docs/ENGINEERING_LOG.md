@@ -4,6 +4,72 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-08 Phase U0: a regression net before any upgrade work starts
+
+**Symptom.** Not a bug. The upgrade specification (`UPGRADE_SPEC_V3.md`) asks for a
+long sequence of changes to a repository that currently works, under a prime
+directive of not breaking it. Before Phase U0 there was no way to answer "did that
+change move anything?" other than eyeballing test output. The four suites report
+pass or fail but say nothing about instruction counts, cycles, DRAM traffic, or
+numerics, which are exactly the things an optimizer change moves silently.
+
+**Root cause.** The project has assertions but no recorded expectations. The end to
+end pytest asserts agreement with onnxruntime at `rtol=1e-3`, five orders of
+magnitude looser than the 3e-8 actually observed, so a numerics regression of four
+orders of magnitude would pass. Nothing at all watched cycles or DRAM bytes.
+
+**Options considered.**
+
+1. Rely on the existing suites and read the diffs by hand each phase. Rejected:
+   the interesting quantities are not asserted anywhere, so there is nothing to
+   diff.
+2. Add tighter assertions to the existing tests and stop there. Rejected as
+   insufficient on its own: it catches numerics but not instruction counts,
+   cycles, or DRAM traffic, and it would not notice a test quietly disappearing.
+3. Record a machine readable snapshot of everything the repository does today and
+   diff against it at every phase gate. Chosen.
+
+**Chosen fix.** `scripts/regression-baseline.sh` (a thin wrapper that finds the
+venv and the prebuilt lit) over `scripts/regression_baseline.py` (the engine).
+It records per suite pass, fail, and skip counts plus the full test name list, the
+cost model constants parsed straight out of `CostModel.h`, the tool versions, and
+for each of the six LeNet cells the instruction count, simulated cycles, DRAM
+bytes read and written, and the max absolute error against onnxruntime. The
+simulated output tensor of every cell is frozen as a `.npy` golden file.
+
+Three details worth recording:
+
+- All four suites emit JUnit or XUnit XML natively (`llvm-lit --xunit-xml-output`,
+  `--gtest_output=xml:`, `pytest --junitxml=`), so one parser covers all of them
+  and the recorded shape is uniform. That was better than scraping four different
+  human readable summaries.
+- The instruction count comes from the simulator's `stats.instructions`, not from
+  the regex in `run_benchmarks.py`. The two disagree badly: the regex reports
+  91 / 82 / 70 for `-O0` / `-O1` / `-O2` and the simulator reports 28 / 25 / 21,
+  because the regex counts `npuisa.const` (data, not an instruction) and matches
+  inside type strings such as `!npuisa.buffer`. Recording the wrong number as the
+  baseline would have baked the error in.
+- The git sha and the tool versions are recorded but are notes rather than drift.
+  The sha moves with every commit, and a machine update is not a behaviour change.
+  `--strict-tools` promotes tool changes to failures when that is wanted.
+
+**Verification.** Recorded at `7de39c6`: 37 passed, 0 failed across the five
+suites. Ran `--check` immediately on unchanged code and it reported zero drift.
+Then perturbed one cost model constant (`macsPerCycle` 256 to 255, chosen because
+it feeds every conv and matmul cycle estimate while changing no numerics) and
+`--check` failed with 10 items, catching it on three independent axes: the
+constant itself, the `CostModelArithmetic::MatchesFormulas` GoogleTest flipping to
+failed, and all six cells reporting `simulated_cycles` up by exactly 5. Reverted,
+and `--check` went clean again. The net catches things.
+
+**Incidental finding.** The first `ninja baseline-check` run reported a cmake
+version change that the direct run did not. The cause is that a pip installed
+cmake 4.4.0 in `~/.local/bin` shadows the apt cmake 4.2.3 on `PATH`, but only in
+login shells. So the project can be configured by either of two cmake versions
+depending on how the build was invoked, which is a real reproducibility hazard on
+this machine. The baseline now records each tool as "resolved path: version" so
+this surfaces as a legible note rather than a mysterious version change.
+
 ## 2026-07-15 Phase 0: environment reconciliation
 
 **Symptom.** The build spec (Section 3) assumes Ubuntu 24.04, a WSL budget of 20 GB
