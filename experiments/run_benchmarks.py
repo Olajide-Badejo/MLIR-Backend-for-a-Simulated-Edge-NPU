@@ -59,7 +59,7 @@ def git_sha() -> str:
         return "unknown"
 
 
-def manifest() -> dict:
+def manifest(seed: int) -> dict:
     return {
         "git_sha": git_sha(),
         "llvm_tag": LLVM_TAG,
@@ -67,6 +67,11 @@ def manifest() -> dict:
         "onnxruntime": ort.__version__,
         "numpy": np.__version__,
         "cost_model": COST_MODEL,
+        # The .onnx files are not committed because they are regenerated
+        # deterministically. That only holds if the seed and the generator that
+        # consumed it travel with the result, so both are recorded here.
+        "seed": seed,
+        "model_generator_version": model_generator.GENERATOR_VERSION,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
@@ -138,7 +143,7 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
         "max_abs_error_vs_onnxruntime": max_abs_error,
         "compile_ms": compile_ms,
         "note": "simulated estimates, not measurements",
-        "manifest": manifest(),
+        "manifest": manifest(seed),
     }
 
 
@@ -154,17 +159,108 @@ def write_atomic(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def valid(path: Path) -> bool:
+# Paths whose contents can change a benchmark number. A commit that only edits
+# the README or a report does not invalidate a recorded result, and treating it
+# as though it did would mean no result was ever reusable.
+RESULT_INPUTS = [
+    "CMakeLists.txt",
+    "include",
+    "lib",
+    "tools",
+    "python/npu_frontend",
+    "experiments/run_benchmarks.py",
+]
+
+
+def _changed_since(sha: str) -> list[str] | None:
+    """Files under RESULT_INPUTS that differ between ``sha`` and the worktree.
+
+    Returns None if ``sha`` is not a commit this repository knows about.
+    Uncommitted edits count, because a result produced from a dirty tree is not
+    reproducible from any commit.
+    """
     try:
-        json.loads(path.read_text())
-        return True
+        subprocess.run(
+            ["git", "-C", str(REPO), "cat-file", "-e", f"{sha}^{{commit}}"],
+            check=True,
+            capture_output=True,
+        )
     except Exception:
-        return False
+        return None
+
+    changed: set[str] = set()
+    for args in (
+        ["diff", "--name-only", sha, "HEAD", "--"],
+        ["status", "--porcelain", "--"],
+    ):
+        out = subprocess.check_output(
+            ["git", "-C", str(REPO), *args, *RESULT_INPUTS], text=True
+        )
+        for line in out.splitlines():
+            name = line[3:] if args[0] == "status" else line
+            if name.strip():
+                changed.add(name.strip())
+    return sorted(changed)
+
+
+def staleness(path: Path) -> str | None:
+    """Return why a recorded result cannot be reused, or None if it can be.
+
+    The old version returned True for anything that parsed as JSON, which made
+    staleness permanent: a result generated three commits earlier was reused
+    forever unless someone remembered --force. Since every number in the README
+    and both reports traces back to these files, that quietly decoupled the
+    published numbers from the compiler that produced them.
+
+    A note on the rule. UPGRADE_SPEC_V3.md section 8.1 item 4 asks for "stale if
+    its manifest.git_sha differs from the current sha". Taken literally that is
+    unusable, because a result is committed by the very commit that follows its
+    generation, so it would be born stale and every run would regenerate
+    everything. What the rule is actually protecting is that a published number
+    came from the code currently in the tree. So the check is: same sha, or no
+    change since that sha to any path that can move a number. Recorded in
+    docs/DESIGN_DECISIONS.md.
+    """
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        return f"unreadable ({exc.__class__.__name__})"
+
+    recorded = data.get("manifest")
+    if not isinstance(recorded, dict):
+        return "no manifest block"
+
+    if recorded.get("cost_model") != COST_MODEL:
+        return f"cost model changed: {recorded.get('cost_model')} to {COST_MODEL}"
+
+    current = git_sha()
+    was = str(recorded.get("git_sha", ""))
+    if current == "unknown":
+        return None
+    if was == current:
+        return None
+
+    changed = _changed_since(was)
+    if changed is None:
+        return f"generated at unknown commit {was[:8]}, HEAD is {current[:8]}"
+    if changed:
+        shown = ", ".join(changed[:4]) + (" ..." if len(changed) > 4 else "")
+        return (
+            f"generated at {was[:8]}, HEAD is {current[:8]}, and "
+            f"{len(changed)} compiler input(s) changed since: {shown}"
+        )
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the benchmark suite.")
     parser.add_argument("--force", action="store_true", help="redo existing results")
+    parser.add_argument(
+        "--allow-stale",
+        action="store_true",
+        help="reuse results whose manifest does not match HEAD or the current "
+        "cost model, instead of regenerating them",
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -183,8 +279,14 @@ def main(argv: list[str] | None = None) -> int:
 
     for model, level, budget in iterator:
         path = result_path(model, level, budget)
-        if path.exists() and valid(path) and not args.force:
-            continue
+        if path.exists() and not args.force:
+            why = staleness(path)
+            if why is None:
+                continue
+            if args.allow_stale:
+                print(f"reusing stale {path.name}: {why}")
+                continue
+            print(f"regenerating {path.name}: {why}")
         write_atomic(path, benchmark(model, level, budget, args.seed))
 
     print(f"results in {RESULTS}")

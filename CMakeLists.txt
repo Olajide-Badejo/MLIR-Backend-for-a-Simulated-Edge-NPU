@@ -59,7 +59,9 @@ add_subdirectory(test)
 # skips its own build step here, since ninja has just done it, and depends on
 # the tools and test binaries the measurement needs.
 add_custom_target(baseline-check
-  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/regression-baseline.sh
+  # Invoked through bash rather than directly: this repository has
+  # core.fileMode=false, so the executable bit is not reliably carried.
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/regression-baseline.sh
           --check --no-build --build-dir ${CMAKE_BINARY_DIR}
   DEPENDS npu-opt npu-translate npu-objdump npu-sim
           NPUEncodingTests NPUSimulatorTests

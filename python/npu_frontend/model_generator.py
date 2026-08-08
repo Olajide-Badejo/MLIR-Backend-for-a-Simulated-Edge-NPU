@@ -46,6 +46,13 @@ MODELS = {
     "lenet": (LeNet, (1, 1, 28, 28)),
 }
 
+# Bump this whenever a model definition or the export call changes in a way that
+# would produce different weights or a different graph from the same seed. The
+# exported .onnx files are not committed, so a recorded benchmark result is only
+# reproducible if the seed and this version travel with it. Both go into the
+# result manifest; see experiments/run_benchmarks.py.
+GENERATOR_VERSION = 1
+
 
 def build(name: str, seed: int = 0) -> tuple[nn.Module, tuple[int, ...]]:
     """Construct a seeded model and its input shape."""

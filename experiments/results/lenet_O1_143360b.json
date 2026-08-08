@@ -1,0 +1,42 @@
+{
+  "model": "lenet",
+  "opt_level": 1,
+  "scratchpad_budget": 143360,
+  "npuisa_op_counts": {
+    "npuisa.scratchpad_budget": 1,
+    "npuisa.scratchpad_bytes": 1,
+    "npuisa.dma_load": 14,
+    "npuisa.buffer": 52,
+    "npuisa.const": 10,
+    "npuisa.dma_store": 4,
+    "npuisa.conv2d": 2,
+    "npuisa.relu": 4,
+    "npuisa.pool_max": 2,
+    "npuisa.reshape": 1,
+    "npuisa.matmul": 3
+  },
+  "instruction_count": 94,
+  "simulated_cycles": 33834,
+  "dram_bytes_read": 347400,
+  "dram_bytes_written": 166600,
+  "dram_bytes_total": 514000,
+  "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
+  "compile_ms": 22.447728000315692,
+  "note": "simulated estimates, not measurements",
+  "manifest": {
+    "git_sha": "38af136333889ac000f17f5a5a48bc16857229fc",
+    "llvm_tag": "llvmorg-22.1.8",
+    "python": "3.14.4",
+    "onnxruntime": "1.27.0",
+    "numpy": "2.5.1",
+    "cost_model": {
+      "macs_per_cycle": 256,
+      "dram_bytes_per_cycle": 16,
+      "lanes": 16,
+      "issue_overhead": 1
+    },
+    "seed": 0,
+    "model_generator_version": 1,
+    "timestamp": "2026-08-08T20:56:07.753232+00:00"
+  }
+}

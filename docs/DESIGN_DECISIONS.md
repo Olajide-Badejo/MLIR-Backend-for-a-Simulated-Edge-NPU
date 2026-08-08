@@ -57,3 +57,49 @@ The simulator's performance numbers come from an analytical model (MACs over
 systolic throughput, bytes over DMA bandwidth, elements over lane width, plus a
 fixed issue overhead), not a cycle accurate model. Every number it produces is
 labeled a simulated estimate, and the constants are documented assumptions.
+
+## MIT license, not Apache-2.0 with LLVM exceptions
+
+The v2 build specification pinned Apache-2.0 with LLVM exceptions, on the
+reasoning that an out of tree MLIR project should match upstream LLVM's terms so
+code could move between them. Commit `48a0be3` relicensed to MIT and the change
+was never written down, which left a pinned assumption silently contradicted.
+
+Recording it now, with the reason. Nothing in this repository is derived from
+LLVM source; it links against LLVM and MLIR as libraries, which their license
+permits under any downstream terms. The LLVM exception exists to let LLVM's own
+runtime code be embedded in binaries without attribution obligations, and no
+runtime library here is distributed that way. MIT is the simplest permissive
+license that says what I mean for a portfolio project, and it is what the
+README and the LICENSE file already claim. Changing the code to match the spec
+would be worse than changing the record to match the code.
+
+## A recorded benchmark result goes stale on compiler change, not on any commit
+
+Every number in the README and both reports traces back to a JSON file in
+`experiments/results/`. Those files carry a manifest naming the commit and cost
+model constants that produced them, and the harness refuses to reuse a result
+whose manifest no longer matches.
+
+`UPGRADE_SPEC_V3.md` section 8.1 item 4 words the rule as "stale if its
+`manifest.git_sha` differs from the current sha". Implemented literally that is
+unusable. A result can only be committed by a commit that comes after the run
+that produced it, so every result would be stale from the moment it landed and
+every invocation would regenerate the entire suite, which also means the
+committed files would never match their own commit.
+
+What the rule protects is that a published number came from the code currently
+in the tree. So the implemented check is: the manifest sha equals HEAD, or
+nothing under `RESULT_INPUTS` (the dialect, passes, encoder, simulator, tools,
+frontend, and the harness itself) has changed between that sha and the working
+tree, uncommitted edits included. A README fix does not invalidate a
+measurement; a one line change to the cost model does. `--allow-stale` reuses
+results anyway when that is deliberately wanted.
+
+One consequence worth stating: the results found in the tree at the start of
+this work recorded `git_sha: 8095dbec`, and that is not a commit in this
+repository at all. They were generated from a working tree that was never
+committed in the form that produced them, so the published numbers were not
+reproducible from any point in the history. That is the failure mode this rule
+exists to prevent, and it is why the check treats an unrecognised sha as stale
+rather than assuming it is merely old.
