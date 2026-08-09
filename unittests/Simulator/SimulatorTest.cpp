@@ -166,6 +166,66 @@ TEST(Simulator, Reshape) {
   EXPECT_EQ(r.outputs[0], (std::vector<float>{1, 2, 3, 4}));
 }
 
+TEST(Simulator, RefusesAWriteJustPastTheScratchpadEnd) {
+  // The result ends one fp32 past the declared scratchpad, and nothing else
+  // about the program is wrong. The simulator used to grow the scratchpad to
+  // cover whatever the instructions referenced, which made this run clean and
+  // left the bounds check with nothing to catch on a scratchpad write.
+  auto programWith = [](int64_t scratchpadBytes) {
+    Program p;
+    p.dramBytes = 32;
+    p.scratchpadBytes = scratchpadBytes;
+    p.inputs.push_back({0, {4}});
+    p.outputs.push_back({16, {4}});
+    Instruction relu;
+    relu.op = Opcode::Relu;
+    relu.resultAddr = 20; // spans [20, 36), 4 bytes past a 32 byte scratchpad
+    relu.resultShape = {4};
+    relu.operandAddrs = {0};
+    p.instructions = {load(0, {4}, 0), relu, store(20, {4}, 16), halt()};
+    return p;
+  };
+
+  Program tooSmall = programWith(32);
+  SimResult refused = Simulator(tooSmall).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_FALSE(refused.error.empty());
+  EXPECT_NE(refused.error.find("instruction 1"), std::string::npos);
+  EXPECT_NE(refused.error.find("scratchpad"), std::string::npos);
+  // The size in the diagnostic is the declared one, not one grown to fit.
+  EXPECT_NE(refused.error.find("32 byte region"), std::string::npos);
+
+  // Control: the same instructions with a scratchpad that genuinely holds them
+  // run clean, so it is the declared size doing the refusing above and not
+  // something else about the program.
+  Program bigEnough = programWith(36);
+  SimResult ok = Simulator(bigEnough).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_TRUE(ok.error.empty()) << ok.error;
+  EXPECT_EQ(ok.outputs[0], (std::vector<float>{0.0f, 2.0f, 0.0f, 4.0f}));
+}
+
+TEST(Simulator, ScratchpadIsSizedFromTheDeclaredFieldOnly) {
+  // The declaration is what provides the room. These instructions work in the
+  // last four cells of a 4096 byte declaration while referencing nothing in
+  // between, so the run can only succeed if the scratchpad was sized from the
+  // declared field. This pins the other direction of the change: sizing is not
+  // narrowed to what the instructions happen to reference either.
+  Program p;
+  p.dramBytes = 32;
+  p.scratchpadBytes = 4096;
+  p.inputs.push_back({0, {4}});
+  p.outputs.push_back({16, {4}});
+  Instruction relu;
+  relu.op = Opcode::Relu;
+  relu.resultAddr = 4080; // spans [4080, 4096), exactly filling the declaration
+  relu.resultShape = {4};
+  relu.operandAddrs = {0};
+  p.instructions = {load(0, {4}, 0), relu, store(4080, {4}, 16), halt()};
+
+  SimResult r = Simulator(p).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_TRUE(r.error.empty()) << r.error;
+  EXPECT_EQ(r.outputs[0], (std::vector<float>{0.0f, 2.0f, 0.0f, 4.0f}));
+}
+
 TEST(CostModelArithmetic, MatchesFormulas) {
   CostModel c;
   EXPECT_EQ(c.dmaCycles(64), 64 / 16 + 1);

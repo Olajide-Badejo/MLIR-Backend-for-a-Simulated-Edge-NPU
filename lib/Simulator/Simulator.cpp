@@ -120,16 +120,15 @@ std::string Stats::toJson() const {
 }
 
 SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
-  // Size DRAM and the scratchpad. The scratchpad must cover every assigned
-  // address, so take the larger of the reported high water and what the
-  // instructions actually reference.
-  int64_t spBytes = program.scratchpadBytes;
-  for (const Instruction &in : program.instructions)
-    if (in.resultAddr >= 0)
-      spBytes = std::max(spBytes, in.resultAddr + numElements(in.resultShape) * 4);
-
+  // Size both memories strictly from what the program declares. A loop used to
+  // stand here that grew the scratchpad to cover every resultAddr it found, so
+  // an address past the end of the declared budget was quietly accommodated
+  // instead of refused, and the growing arithmetic ran on unvalidated input at
+  // the exact entry point the bounds checking exists to defend. The declared
+  // budget is the hardware the program asked for, and a program that writes
+  // outside it is wrong rather than in need of more memory.
   std::vector<float> dram(std::max<int64_t>(1, program.dramBytes / 4), 0.0f);
-  std::vector<float> sp(std::max<int64_t>(1, spBytes / 4), 0.0f);
+  std::vector<float> sp(std::max<int64_t>(1, program.scratchpadBytes / 4), 0.0f);
 
   // Bounds checked access, replacing the raw "data() + addr / 4" lambdas.
   //
@@ -146,9 +145,6 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
   // the first refusal is recorded, because it is the one that explains the run;
   // the rest are consequences of it. Execution then continues to the end, so
   // the caller gets a result carrying a diagnostic rather than a crash.
-  //
-  // Note the two are checked against different sizes: the scratchpad is sized
-  // by spBytes above, which can exceed program.scratchpadBytes.
   bool trapped = false;
   std::string trapMessage;
   auto checkedAt = [&](std::vector<float> &memory, int64_t addr,

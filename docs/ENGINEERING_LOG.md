@@ -4,6 +4,91 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: a convenience that swallowed the hardening
+
+**Symptom.** `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+failed. It plants a `resultAddr` far past the end of the scratchpad, runs the
+program, and expects `SimResult.error` to name instruction 2. The simulator ran
+it clean and returned no error at all, even though the bounds checked accessor
+that the same phase had just added was sitting right there in the path.
+
+**Root cause.** A convenience that predates the hardening, at the top of `run()`:
+
+```cpp
+int64_t spBytes = program.scratchpadBytes;
+for (const Instruction &in : program.instructions)
+  if (in.resultAddr >= 0)
+    spBytes = std::max(spBytes, in.resultAddr + numElements(in.resultShape) * 4);
+```
+
+The scratchpad was then sized from `spBytes`. So the answer to "is this address
+inside the scratchpad?" was computed by first making the scratchpad big enough
+to contain the address. The check could still catch a negative address or a
+misaligned one, but for the case it was written for, an oversized result
+address, it was structurally unable to fire. The test was not wrong; the check
+was unreachable.
+
+Two things make this worse than a dead check. The loop runs before any
+validation, so `in.resultAddr + numElements(in.resultShape) * 4` is arithmetic
+on unvalidated attacker controlled values at the exact entry point U3 exists to
+defend, and it can overflow int64 or ask for an absurd allocation. And the
+comment under it told the reader the scratchpad "can exceed
+program.scratchpadBytes", which documented the hole without anyone reading it
+as one.
+
+**Options considered.**
+
+1. Gate the expansion behind `validate()`, so it only grows for programs already
+   known good. Rejected: it reorders the arithmetic rather than removing it, and
+   it keeps a rule where the declared budget means one thing for validated
+   callers and another for library callers.
+2. Keep the expansion behind an opt in flag for convenience callers. Rejected:
+   spec 11.4 item 2 allows it, but a flag that makes the memory safety property
+   optional is a flag someone will set.
+3. Size strictly from the declared `scratchpadBytes`. Chosen, and this is what
+   spec 11.4 item 2 lists first. It removes the arithmetic on unvalidated input
+   instead of moving it, and it gives `scratchpadBytes` one meaning everywhere:
+   the memory the program asked for.
+
+**Chosen fix.** Delete the loop and size from the declared field:
+
+```cpp
+std::vector<float> sp(std::max<int64_t>(1, program.scratchpadBytes / 4), 0.0f);
+```
+
+**Did anything real regress?** No. `-npu-allocate-scratchpad` computes
+`highWater = max(offset + size)` over every buffer it places and writes it to
+`npuisa.scratchpad_bytes` (`AllocateScratchpad.cpp:226` and `:232`), and the
+encoder copies that straight into `program.scratchpadBytes`
+(`InstructionEncoder.cpp:108`). So every compiled program declares exactly the
+extent it uses, with no slack and no shortfall, and the expansion was always a
+no op for it. Confirmed by running the suites: lit 13 of 13, and the end to end
+pytest, which is the real LeNet path through `npu-sim` including the 140 KB
+spilling budget, unchanged. Both lit tests that reach the encoder run
+`-npu-allocate-scratchpad` first, so neither depended on the expansion either.
+Nothing goes in `docs/BREAKING_CHANGES.md`.
+
+What did break is six hand built unit programs in `SimulatorTest.cpp`, which set
+`dramBytes` but never `scratchpadBytes` and so had been running on a scratchpad
+conjured entirely from their instruction stream. That is the finding, not
+collateral damage: those tests asserted numerics against a memory the program
+never declared. They now declare the smallest size that covers their writes (32,
+48, 80, 64, 20, and 32 bytes) with the arithmetic written down, and that landed
+as its own commit first so no commit on this branch carries a red simulator
+suite.
+
+**Verification.** The target test shown failing before and passing after, in
+`build-asserts` and `build-ndebug` both. Encoding 43 of 43, simulator 9 of 9
+including two new tests: `RefusesAWriteJustPastTheScratchpadEnd` puts a result
+4 bytes past a 32 byte declaration and asserts the refusal names instruction 1
+and reports the declared 32 byte region rather than a grown one, with a control
+at 36 bytes that runs clean; `ScratchpadIsSizedFromTheDeclaredFieldOnly` works
+in the last four cells of a 4096 byte declaration, which only succeeds if the
+declaration and not the instruction extent is what allocated the memory. lit 13
+of 13, pytest 24 passed with `test_committed_results_are_current` red, which is
+the dirty tree provenance guard expected red for all of U3 (ASSESSMENT 13.3) and
+is cleared by Part 5.
+
 ## 2026-08-09 Phase U3: an assert that fired on the case the check was for
 
 **Symptom.** Not a test failure, which is why it survived review. The bounds

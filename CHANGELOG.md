@@ -76,6 +76,19 @@ Semantic Versioning once a release is tagged.
 
 ### Changed
 
+- Phase U3 (**behaviour change, deliberate**): the simulator sizes its
+  scratchpad strictly from the declared `scratchpadBytes`. It used to grow the
+  scratchpad to cover every `resultAddr` it found in the instruction stream,
+  which swallowed the U3 hardening whole: an out of range result address was
+  quietly accommodated rather than refused, so the new result bounds check could
+  only ever fire on a negative or misaligned address. The growing arithmetic
+  also ran before any validation, computing `resultAddr + elements * 4` on
+  hostile input at the exact entry point the check exists to defend. A program
+  that writes outside its declared budget is now refused. Nothing in the
+  compiler regressed: `-npu-allocate-scratchpad` records its high water mark in
+  `npuisa.scratchpad_bytes` and the encoder emits that as `scratchpadBytes`, so
+  every compiled program declares exactly what it uses. Only hand built
+  `Program` values that declared no scratchpad at all relied on the expansion.
 - Phase U3: every hand built `Program` in `unittests/Simulator/SimulatorTest.cpp`
   now sets `scratchpadBytes` explicitly, at the smallest size that covers its
   writes (32, 48, 80, 64, 20, and 32 bytes), with the arithmetic in a comment.
