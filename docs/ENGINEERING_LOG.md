@@ -4,6 +4,71 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: an assert that fired on the case the check was for
+
+**Symptom.** Not a test failure, which is why it survived review. The bounds
+checked accessor added earlier in U3 ends its refusal path with
+
+```cpp
+assert(false && "simulator memory access out of bounds");
+return nullptr;
+```
+
+so the moment the check actually fires, an assert enabled build aborts the
+process. The `return nullptr` below it, the `SimResult.error` string filled in
+just above it, and every null test at the call sites are all unreachable in the
+build most people compile.
+
+**Root cause.** Two contracts written into one function. `SimResult.error`
+exists so that a caller can be handed a diagnostic, which is the U3 promise:
+no silent failure, and no crash either. The assert says the opposite, that
+reaching this point is a programming error worth aborting for. Both cannot be
+true. It was reachable by design: the header says the simulator is reachable as
+a library and from hand built `Program` values, which is exactly where an
+unvalidated program comes from.
+
+The comment above the accessor had drifted too. It claimed a failure "aborts in
+a debug build and clamps to a scratch cell in a release build". The first half
+described the assert. The second half described nothing at all: there is no
+clamp anywhere in the function, and there never was in this revision. A comment
+that describes a design that was considered and not built is worse than no
+comment, because it is what a reader will believe.
+
+**Options considered.**
+
+1. Keep the assert and treat a trap as a bug in the caller. Rejected: it
+   contradicts the reason `SimResult.error` exists, and it makes the library
+   entry point abort the host process on hostile input.
+2. Replace it with `llvm_unreachable` or an `abort` with a better message.
+   Rejected for the same reason, and spec 11.4 item 5 asks for graceful refusal
+   in every build mode.
+3. Keep the assert but only under a debug flag the tests can turn off. Rejected:
+   it makes the tested behaviour differ from the shipped behaviour, which is the
+   defect, not the fix.
+4. Delete the assert so the already correct refusal path is the only path.
+   Chosen.
+
+**Chosen fix.** Delete the assert and the now unused `<cassert>` include, and
+rewrite the comment to state what the code does: every access is checked in
+every build mode, the first refusal records its message and returns `nullptr`,
+each caller tests the pointer and skips the access, and execution runs to the
+end so the caller gets a result carrying the diagnostic. Only the first refusal
+is kept, because it is the one that explains the run and the rest are its
+consequences.
+
+Audited all eleven `spAt` and `dramAt` call sites while here, since a missing
+null test becomes a null dereference the moment the assert stops aborting
+first. All eleven already test the pointer: the constant and input preload and
+the output readback use `if (float *p = ...)`, and every opcode arm binds its
+pointers and then tests them together before touching memory. Conv2D and MatMul
+correctly distinguish a bias that is absent (two operands, `nullptr` is legal)
+from a bias that was refused. No call site needed fixing.
+
+**Verification.** `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+passes in both `build-asserts` (`-DCMAKE_BUILD_TYPE=Debug`, asserts on) and
+`build-ndebug` (`-DCMAKE_BUILD_TYPE=Release`, `NDEBUG`), which is the pair that
+would have diverged before. `grep -rn "assert(false)" lib/ tools/` is empty.
+
 ## 2026-08-09 Phase U3: a test that never reached the rule it named
 
 **Symptom.** `Validation.RejectsRegionPastTheEndOfDram` failed, but not by the

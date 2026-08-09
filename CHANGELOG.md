@@ -109,6 +109,15 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: the simulator's trap path called
+  `assert(false && "simulator memory access out of bounds")`, so an assert
+  enabled build aborted the process on exactly the input the bounds check was
+  added to handle, while a release build returned a diagnostic. Graceful refusal
+  is now the behaviour in every build mode: the first refusal is recorded in
+  `SimResult.error`, `nullptr` is returned, and the caller skips the access. The
+  comment above the accessor also claimed a failure "aborts in a debug build and
+  clamps to a scratch cell in a release build"; neither half was ever true of
+  the code below it, and it now describes what the code does.
 - Phase U3: `Validation.RejectsRegionPastTheEndOfDram` named the
   `region-in-range` rule but set a DRAM offset of 8190, which is not 4 byte
   aligned, so `region-offset` claimed the program first and the rule the test

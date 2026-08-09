@@ -8,7 +8,6 @@
 #include "NPU/Simulator/Simulator.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -138,9 +137,15 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
   // of bounds read or write straight into the heap. Program::validate now
   // rejects such a program before it can be run, but the simulator is also
   // reachable as a library and from hand built Program values in tests, and
-  // "the caller validated it" is not a memory safety argument. A failure here
-  // aborts in a debug build and clamps to a scratch cell in a release build,
-  // both of which are better than corrupting the heap.
+  // "the caller validated it" is not a memory safety argument.
+  //
+  // Every access is checked, in every build mode: there is no assert here and
+  // no release build path that skips the check. A refused access records its
+  // message in SimResult.error and returns nullptr, and every caller tests the
+  // returned pointer and skips the access rather than dereferencing it. Only
+  // the first refusal is recorded, because it is the one that explains the run;
+  // the rest are consequences of it. Execution then continues to the end, so
+  // the caller gets a result carrying a diagnostic rather than a crash.
   //
   // Note the two are checked against different sizes: the scratchpad is sized
   // by spBytes above, which can exceed program.scratchpadBytes.
@@ -161,7 +166,6 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
            << " is outside the " << (total * 4) << " byte region";
         trapMessage = os.str();
       }
-      assert(false && "simulator memory access out of bounds");
       return nullptr;
     }
     return memory.data() + addr / 4;
