@@ -9,9 +9,11 @@
 #include "NPU/Encoding/InstructionEncoder.h"
 #include "NPU/Encoding/Program.h"
 
+#include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -105,6 +107,47 @@ TEST(EncodingFormat, DisassembleMentionsOpcodes) {
   p.instructions.push_back(relu);
   std::string text = disassemble(p);
   EXPECT_NE(text.find("RELU"), std::string::npos);
+}
+
+TEST(EncodeFunction, RefusesAnUnencodableOp) {
+  // A high level npu op that was never lowered to npuisa, which is what reaches
+  // the encoder when a lowering pattern is missing or a pass was skipped. It has
+  // no case in the encoder's TypeSwitch.
+  //
+  // This used to emit a diagnostic, skip the op, and return the program anyway,
+  // so npu-translate printed an error, wrote the .nbin, and exited 0. The file
+  // it wrote was the program with that work silently deleted from it, which is
+  // worse than no file: it looks like a successful compile.
+  const char *ir = R"mlir(
+    func.func @main(%x: tensor<1x2xf32>) -> tensor<1x2xf32>
+        attributes {npuisa.scratchpad_bytes = 16 : i64} {
+      %0 = npu.relu %x : tensor<1x2xf32>
+      return %0 : tensor<1x2xf32>
+    }
+  )mlir";
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<mlir::npu::NPUDialect, mlir::npuisa::NPUISADialect,
+                  mlir::func::FuncDialect>();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(ir, &ctx);
+  ASSERT_TRUE(module);
+
+  mlir::func::FuncOp func;
+  module->walk([&](mlir::func::FuncOp f) { func = f; });
+
+  // Capture the diagnostic rather than letting it print, and assert it names
+  // the problem. A failure with no explanation would satisfy the return value
+  // check while still leaving the user with nothing to act on.
+  std::string diagnostic;
+  mlir::ScopedDiagnosticHandler handler(&ctx, [&](mlir::Diagnostic &d) {
+    diagnostic += d.str();
+    return mlir::success();
+  });
+
+  auto program = encodeFunction(func);
+  EXPECT_TRUE(mlir::failed(program));
+  EXPECT_NE(diagnostic.find("cannot encode unexpected op"), std::string::npos)
+      << "diagnostic was: " << diagnostic;
 }
 
 TEST(EncodeFunction, LowersSmallProgram) {

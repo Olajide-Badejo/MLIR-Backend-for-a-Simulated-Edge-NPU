@@ -8,6 +8,7 @@ llvm_update_compile_flags(NPUEncodingTests)
 target_link_libraries(NPUEncodingTests PRIVATE
   MLIRNPUEncoding
   MLIRNPUSimulator
+  MLIRNPUDialect
   MLIRNPUISADialect
   MLIRParser
   MLIRIR

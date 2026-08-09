@@ -122,6 +122,15 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: `encodeFunction`'s `.Default` case emitted `cannot encode unexpected
+  op`, skipped the op, and returned the program anyway, so `npu-translate`
+  printed an error, wrote the `.nbin`, and exited 0. Verified before the fix on
+  an unlowered `npu.relu`: exit code 0 and a 150 byte output file. The file was
+  the program with that work silently deleted from it, which is worse than no
+  file because it looks like a successful compile. It now returns failure, after
+  the loop rather than inside it so one run names every op it cannot encode.
+  `npu-translate` already checked the result before opening the output stream,
+  so it now exits nonzero and leaves no file.
 - Phase U3: the decoder's `getCount()` capped element counts at 2^28 and stopped
   there, which bounds the number but not the work. At the cap a single shape
   vector is 2 GiB, and `getVec()` sized that vector from the count before

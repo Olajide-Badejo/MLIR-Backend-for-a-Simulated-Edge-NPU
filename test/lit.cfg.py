@@ -20,5 +20,7 @@ llvm_config.use_default_substitutions()
 config.excludes = ["CMakeLists.txt", "lit.cfg.py", "lit.site.cfg.py"]
 
 tool_dirs = [config.npu_tools_dir, config.llvm_tools_dir]
-tools = ["npu-opt", "npu-translate", "npu-objdump"]
+# "not" comes from the LLVM build. Without it a test cannot assert that a tool
+# refuses something, which makes every negative tool test unwritable.
+tools = ["npu-opt", "npu-translate", "npu-objdump", "not"]
 llvm_config.add_tool_substitutions(tools, tool_dirs)

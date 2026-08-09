@@ -4,6 +4,65 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: an error message is not a failure
+
+**Symptom.** Run `npu-translate` on a function holding an op the encoder has no
+case for, in this instance an `npu.relu` that was never lowered to npuisa:
+
+```
+$ npu-translate test/Encoding/unencodable.mlir -o /tmp/u.nbin
+loc(...): error: cannot encode unexpected op
+$ echo $?
+0
+$ ls -la /tmp/u.nbin
+-rw-r--r-- 1 elijah elijah 150 Aug  9 18:31 /tmp/u.nbin
+```
+
+It printed an error, exited successfully, and wrote a file.
+
+**Root cause.** The `.Default` case of the encoder's `TypeSwitch` set the local
+`emit` flag false and emitted a diagnostic, and `emit` is the same flag used by
+the two ops that legitimately produce no instruction, `npuisa.const` and the
+terminator. So "I have nothing to emit for this" and "I do not understand this"
+were the same signal, and the function fell through to `return program` either
+way.
+
+What makes this the worst of the four defects in this part is the shape of the
+artifact. A crash is fine, a nonzero exit is fine, no output is fine. This
+produced a well formed `.nbin` that decodes, validates, and runs, and is simply
+missing the relu. Every downstream check passes on it. A build script that
+looks at the exit code sees success. The only evidence is a line of stderr that
+scrolled past.
+
+**Options considered.**
+
+1. Return failure from inside the `.Default` lambda. Not possible directly, and
+   working around it would stop at the first bad op.
+2. Track it in the existing `emit` flag. Rejected: that flag means "no
+   instruction for this op", which is a legitimate state for two ops. Conflating
+   them is what caused this.
+3. A separate `unencodable` flag checked after the loop. Chosen. One run then
+   names every op it cannot encode instead of only the first, which matters when
+   a lowering pass was skipped entirely and a dozen ops are unlowered.
+
+**Chosen fix.** A `bool unencodable` alongside the loop, set only in `.Default`,
+and `if (unencodable) return failure();` after the loop and before the halt is
+appended. The caller in `npu-translate` already tested `mlir::failed(program)`
+and already opened its output stream after that test, so no change was needed
+there; that was checked rather than assumed.
+
+**Incidental.** The lit test for this needs `not npu-translate`, and `not` was
+not among the substituted tools in `test/lit.cfg.py`, so it failed with
+`not: command not found`. Added it. Worth recording because it means no negative
+tool test could have been written for this suite before now, which is a plausible
+part of why a tool that exits 0 on failure went unnoticed.
+
+**Verification.** `EncodeFunction.RefusesAnUnencodableOp` shown failing before
+and passing after, asserting both the failure and that the diagnostic names the
+problem. `test/Encoding/unencodable.mlir` runs the real tool and checks all
+three properties: nonzero exit, the diagnostic, and no output file. After the
+fix the same command exits nonzero and writes nothing. lit 14 of 14.
+
 ## 2026-08-09 Phase U3: a cap on the count is not a cap on the work
 
 **Symptom.** The work order for this part asked only for corpus cases probing
