@@ -122,6 +122,18 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: `Program::validate()` checked operand reads for membership only. Its
+  written before read walk records an element count per result address, then
+  asked whether the address had been written and never whether enough had been.
+  A `DMA_STORE` reading 100 elements from a 4 element buffer passed validation
+  and then trapped in the simulator, which contradicted the contract comment on
+  `Program.h` saying validate checks every invariant the simulator relies on. An
+  over read that stays inside the scratchpad was worse: it validated, ran, and
+  silently folded stale memory into the result. A new `operand-extent` rule
+  requires the recorded count to cover what the consumer reads, naming the
+  instruction, the operand, elements needed, and elements written. `CONV2D` and
+  `MATMUL` get the weaker rule of requiring a non zero recorded count, because
+  their extents follow from tensor shapes and the walk tracks counts.
 - Phase U3: the simulator's trap path called
   `assert(false && "simulator memory access out of bounds")`, so an assert
   enabled build aborted the process on exactly the input the bounds check was

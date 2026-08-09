@@ -4,6 +4,68 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: membership is not an extent
+
+**Symptom.** Found by adversarial testing rather than by a failing test, and
+recorded as ASSESSMENT 13.2 item 4. A `DMA_STORE` reading 100 elements from a
+4 element buffer near the top of the scratchpad passes `Program::validate()`
+and then traps in the simulator. The header on `Program.h` says validate checks
+every invariant the simulator relies on, so either the header or the code was
+wrong, and it was the code.
+
+**Root cause.** The written before read walk keeps
+`std::map<int64_t, int64_t> writtenElements`, address to element count. It
+stores the count, and then only ever asks `find(addr) == end()`. The count sat
+there unused. So the walk answered "did anything write here?" while the
+question the simulator needs answered is "did enough get written here?".
+
+The trapping case is the mild one, because it is at least loud. Move the same
+over read down into the middle of the scratchpad and it stays in bounds: the
+program validates, the simulator runs to completion, and 96 elements of
+whatever is adjacent get folded into the result. No trap, no diagnostic, a
+plausible looking wrong answer. That is precisely the failure mode the no
+silent failures rule exists to prevent, and it survived a phase whose whole
+purpose was to prevent it.
+
+**Options considered.**
+
+1. Track full shapes instead of counts, and check every operand exactly.
+   Rejected for now: for `CONV2D` that means reproducing convolution shape
+   inference inside the validator, which is a second implementation of
+   something the compiler already does and a second thing to keep in sync.
+2. Check only the ops whose operand extent is determined by the result extent,
+   and require a weaker property of the rest. Chosen.
+3. Leave it and rely on the simulator's bounds check. Rejected: the bounds
+   check cannot see the interior over read at all, since it is in bounds.
+
+**Chosen fix.** A new `operand-extent` check. Before the operand loop the walk
+computes what this consumer reads:
+
+- `DMA_STORE`, `RELU`, `ADD`, `MUL`, `RESHAPE` read `resultElements` from each
+  operand, which is exact.
+- `POOL_MAX` and `POOL_AVG` require at least `resultElements`, a lower bound,
+  since a pool reads a window at least as large as its output for everything
+  the backend emits.
+- `CONV2D` and `MATMUL` require a non zero recorded count and nothing more.
+  This is the weak rule, stated as such in the code comment. Their extents
+  follow from the recorded shapes and this walk tracks counts, so a real check
+  needs shape tracking. Recorded here so the gap is visible rather than
+  implied.
+
+The failure names the instruction index, the operand index, elements needed,
+and elements written, so the message is enough to find the bug without a
+debugger.
+
+**Verification.** Three new tests, the first two shown red before and green
+after. `RejectsAnOperandReadLargerThanWhatWasWritten` is the ASSESSMENT case,
+reading 100 from 4 at address 32000 so the read would run past a 32768 byte
+scratchpad. `RejectsAnInteriorOverRead` is the same over read at 20480, which
+stays in bounds and would otherwise never be caught by anything. Both were
+accepted before. `AcceptsAnExactExtentRead` reads exactly what was written and
+was green before and after, which is what stops the new rule from being a
+blanket refusal of `DMA_STORE`. Encoding 46 of 46, simulator 9 of 9, lit 13 of
+13.
+
 ## 2026-08-09 Phase U3: a convenience that swallowed the hardening
 
 **Symptom.** `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`

@@ -371,6 +371,47 @@ std::optional<ValidationError> Program::validate() const {
                         " bytes");
     }
 
+    // How many elements this consumer reads from each operand address. The
+    // written before read walk above only establishes that something wrote the
+    // address; it says nothing about how much. Reading more than was written is
+    // a read off the end of a live buffer when the address is near the top of
+    // the scratchpad, and a silent read of stale data when it is not. Only the
+    // first of those would ever trap, which is why membership alone was not
+    // enough.
+    //
+    // CONV2D and MATMUL are deliberately not given a count. Their operand
+    // extents follow from the recorded tensor shapes, and this walk tracks
+    // element counts rather than shapes, so deriving them would mean
+    // reproducing convolution shape inference here. The rule implemented for
+    // them is the weaker one: every operand the kernel indexes must carry a non
+    // zero recorded count. Full extent checking for those two needs shape
+    // tracking and is not attempted here.
+    //
+    // The pooling bound is a lower bound. A pool reads its input window, which
+    // is at least as large as its output for every configuration the backend
+    // emits. A heavily padded pool whose output is larger than its input would
+    // be rejected by this, and nothing in the compiler produces one.
+    int64_t operandNeeds = 0;
+    switch (in.op) {
+    case Opcode::DmaStore:
+    case Opcode::Relu:
+    case Opcode::Add:
+    case Opcode::Mul:
+    case Opcode::Reshape:
+    case Opcode::PoolMax:
+    case Opcode::PoolAvg:
+      operandNeeds = resultElements;
+      break;
+    case Opcode::Conv2D:
+    case Opcode::MatMul:
+      operandNeeds = 1;
+      break;
+    case Opcode::Nop:
+    case Opcode::Halt:
+    case Opcode::DmaLoad:
+      break;
+    }
+
     for (int k = 0; k < operands; ++k) {
       int64_t addr = in.operandAddrs[k];
       if (addr < 0 || addr >= scratchpadBytes)
@@ -385,6 +426,13 @@ std::optional<ValidationError> Program::validate() const {
                         " reads scratchpad address " + num(addr) +
                         ", which no earlier instruction wrote, so its shape is "
                         "unknown");
+      if (known->second < operandNeeds)
+        return fail(i, "operand-extent",
+                    std::string(name) + " operand " + std::to_string(k) +
+                        " reads " + num(operandNeeds) +
+                        " element(s) from scratchpad address " + num(addr) +
+                        ", but only " + num(known->second) +
+                        " element(s) were written there");
     }
 
     if (want.touchesDram) {

@@ -66,6 +66,30 @@ Program validProgram() {
   return p;
 }
 
+// A valid program with a DMA_STORE appended that reads `read` elements from an
+// address where an appended DMA_LOAD wrote `written`. Those two counts are
+// exactly what the operand extent rule compares, and everything else about the
+// program stays valid so that nothing else can be what rejects it.
+Program storeReadingFrom(int64_t addr, int64_t written, int64_t read) {
+  Program p = validProgram();
+
+  Instruction load;
+  load.op = Opcode::DmaLoad;
+  load.resultAddr = addr;
+  load.resultShape = {written};
+  load.dramAddr = 0;
+
+  Instruction store;
+  store.op = Opcode::DmaStore;
+  store.resultShape = {read};
+  store.operandAddrs = {addr};
+  store.dramAddr = 0;
+
+  // Before the halt, so the walk sees the write and then the read.
+  p.instructions.insert(p.instructions.end() - 1, {load, store});
+  return p;
+}
+
 // Assert the program is rejected, and by the rule we meant to break.
 void expectRejected(const Program &p, const char *check) {
   std::optional<ValidationError> error = p.validate();
@@ -174,6 +198,33 @@ TEST(Validation, RejectsShapeThatWouldOverflow) {
   Program p = validProgram();
   p.instructions[2].resultShape = {1LL << 40, 1LL << 40, 1LL << 40, 1LL << 40};
   expectRejected(p, "result-shape");
+}
+
+TEST(Validation, RejectsAnOperandReadLargerThanWhatWasWritten) {
+  // The case from ASSESSMENT 13.2 item 4: a DMA_STORE reading 100 elements from
+  // a 4 element buffer near the top of the scratchpad. Membership alone accepted
+  // this, and the simulator then trapped at run time, which contradicts the
+  // contract on Program.h that validate checks what the simulator relies on.
+  // The read spans [32000, 32400) against a 32768 byte scratchpad.
+  expectRejected(storeReadingFrom(32000, 4, 100), "operand-extent");
+}
+
+TEST(Validation, RejectsAnInteriorOverRead) {
+  // The same over read, moved down so it stays comfortably inside the
+  // scratchpad: [20480, 20880) of 32768. Nothing traps here and the simulator
+  // would run to completion, quietly folding 96 elements of whatever happened to
+  // be adjacent into the result. Being in bounds is not the same as being
+  // defined, so this has to be rejected by the same rule.
+  expectRejected(storeReadingFrom(20480, 4, 100), "operand-extent");
+}
+
+TEST(Validation, AcceptsAnExactExtentRead) {
+  // The control. A consumer reading exactly what was written is the normal case
+  // and has to keep validating, otherwise the rule above is indistinguishable
+  // from refusing every DMA_STORE.
+  Program p = storeReadingFrom(20480, 4, 4);
+  std::optional<ValidationError> error = p.validate();
+  ASSERT_FALSE(error.has_value()) << error->toString();
 }
 
 TEST(Validation, RejectsShapeAtTheOverflowBoundary) {
