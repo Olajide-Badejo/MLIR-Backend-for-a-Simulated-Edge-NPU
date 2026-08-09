@@ -76,6 +76,12 @@ Semantic Versioning once a release is tagged.
 
 ### Changed
 
+- Phase U3: every hand built `Program` in `unittests/Simulator/SimulatorTest.cpp`
+  now sets `scratchpadBytes` explicitly, at the smallest size that covers its
+  writes (32, 48, 80, 64, 20, and 32 bytes), with the arithmetic in a comment.
+  They set `dramBytes` but never `scratchpadBytes`, so they ran only because the
+  simulator grew the scratchpad to fit whatever the instructions referenced. A
+  tight explicit size is what makes a future off by one visible.
 - Phase U1 (**behaviour change, deliberate**): a batch size other than 1 is now
   rejected instead of silently computing wrong numbers. The simulator's
   convolution kernel hardcodes batch index 0 and its pooling kernel never sees

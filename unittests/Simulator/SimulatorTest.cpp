@@ -40,6 +40,7 @@ Instruction store(int64_t sp, std::vector<int64_t> shape, int64_t dram) {
 TEST(Simulator, Relu) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 32; // input 4 fp32 at 0, result 4 fp32 at 16
   p.inputs.push_back({0, {4}});
   p.outputs.push_back({16, {4}});
   Instruction relu;
@@ -59,6 +60,7 @@ TEST(Simulator, Relu) {
 TEST(Simulator, MatMulIdentity) {
   Program p;
   p.dramBytes = 48;
+  p.scratchpadBytes = 48; // lhs 4 fp32 at 0, rhs at 16, result at 32
   p.inputs.push_back({0, {2, 2}});
   p.constants.push_back({16, {2, 2}});
   p.constantData.push_back({1.0f, 0.0f, 0.0f, 1.0f}); // identity
@@ -79,6 +81,7 @@ TEST(Simulator, Conv2DKnown) {
   // 1x1x3x3 input, 1x1x2x2 weight [[1,0],[0,1]], valid, stride 1 -> 1x1x2x2.
   Program p;
   p.dramBytes = 3 * 36 + 16;
+  p.scratchpadBytes = 80; // input 9 fp32 at 0, weight 4 at 36, result 4 at 64
   p.inputs.push_back({0, {1, 1, 3, 3}});   // 36 bytes
   p.constants.push_back({36, {1, 1, 2, 2}}); // 16 bytes
   p.constantData.push_back({1.0f, 0.0f, 0.0f, 1.0f});
@@ -103,6 +106,7 @@ TEST(Simulator, Conv2DKnown) {
 TEST(Simulator, ElementwiseAddMul) {
   Program p;
   p.dramBytes = 64;
+  p.scratchpadBytes = 64; // two inputs at 0 and 16, add at 32, mul at 48
   p.inputs.push_back({0, {4}});
   p.inputs.push_back({16, {4}});
   p.outputs.push_back({48, {4}});
@@ -127,6 +131,7 @@ TEST(Simulator, ElementwiseAddMul) {
 TEST(Simulator, AvgPool) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 20; // input 4 fp32 at 0, the single result fp32 at 16
   p.inputs.push_back({0, {1, 1, 2, 2}});
   p.outputs.push_back({16, {1, 1, 1, 1}});
   Instruction pool;
@@ -147,6 +152,7 @@ TEST(Simulator, AvgPool) {
 TEST(Simulator, Reshape) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 32; // source 4 fp32 at 0, reshaped copy 4 fp32 at 16
   p.inputs.push_back({0, {2, 2}});
   p.outputs.push_back({16, {4}});
   Instruction rs;
