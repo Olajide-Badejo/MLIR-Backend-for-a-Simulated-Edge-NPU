@@ -19,50 +19,74 @@
 
 using namespace npu;
 
-TEST(EncodingFormat, RoundTrip) {
+// A small but genuinely valid program: load the input, load the weights,
+// convolve, halt. Shared by the round trip and validation tests so there is one
+// place that knows what a well formed program looks like.
+//
+// This used to be written inline with a scratchpad of 4096 bytes holding a
+// 13824 byte convolution result, and a weight operand at an address no
+// instruction ever wrote. Program::decode accepted it because it validated
+// nothing, so the round trip test was round tripping a program the simulator
+// could not have run.
+static Program validProgram() {
   Program p;
-  p.scratchpadBytes = 4096;
+  p.scratchpadBytes = 32768;
   p.dramBytes = 8192;
-  p.inputs.push_back({0, {1, 1, 28, 28}});
-  p.constants.push_back({4096, {6, 1, 5, 5}});
+  p.inputs.push_back({0, {1, 1, 28, 28}});    // 3136 bytes at 0
+  p.constants.push_back({4096, {6, 1, 5, 5}}); // 600 bytes at 4096
   p.constantData.push_back(std::vector<float>(150, 0.5f));
-  p.outputs.push_back({8000, {1, 10}});
+  p.outputs.push_back({8000, {1, 10}}); // 40 bytes, ending at 8040
 
-  Instruction dma;
-  dma.op = Opcode::DmaLoad;
-  dma.resultAddr = 0;
-  dma.resultShape = {1, 1, 28, 28};
-  dma.dramAddr = 0;
-  p.instructions.push_back(dma);
+  Instruction loadInput;
+  loadInput.op = Opcode::DmaLoad;
+  loadInput.resultAddr = 0;
+  loadInput.resultShape = {1, 1, 28, 28};
+  loadInput.dramAddr = 0;
+  p.instructions.push_back(loadInput);
+
+  Instruction loadWeight;
+  loadWeight.op = Opcode::DmaLoad;
+  loadWeight.resultAddr = 3136;
+  loadWeight.resultShape = {6, 1, 5, 5};
+  loadWeight.dramAddr = 4096;
+  p.instructions.push_back(loadWeight);
 
   Instruction conv;
   conv.op = Opcode::Conv2D;
-  conv.resultAddr = 512;
-  conv.resultShape = {1, 6, 24, 24};
+  conv.resultAddr = 3736;
+  conv.resultShape = {1, 6, 24, 24}; // 13824 bytes, ending at 17560
   conv.operandAddrs = {0, 3136};
   conv.strides = {1, 1};
   conv.pads = {0, 0, 0, 0};
   conv.dilations = {1, 1};
   conv.activation = 1;
   p.instructions.push_back(conv);
+
   p.instructions.push_back(Instruction{Opcode::Halt});
+  return p;
+}
+
+TEST(EncodingFormat, RoundTrip) {
+  Program p = validProgram();
+  ASSERT_FALSE(p.validate().has_value()) << p.validate()->toString();
 
   auto decoded = Program::decode(p.encode());
   ASSERT_TRUE(decoded.has_value());
   Program q = *decoded;
 
-  EXPECT_EQ(q.scratchpadBytes, 4096);
+  EXPECT_EQ(q.version, Program::kVersion);
+  EXPECT_EQ(q.scratchpadBytes, 32768);
   EXPECT_EQ(q.dramBytes, 8192);
   ASSERT_EQ(q.inputs.size(), 1u);
   EXPECT_EQ(q.inputs[0].shape, (std::vector<int64_t>{1, 1, 28, 28}));
   ASSERT_EQ(q.constantData.size(), 1u);
   EXPECT_EQ(q.constantData[0].size(), 150u);
   EXPECT_FLOAT_EQ(q.constantData[0][0], 0.5f);
-  ASSERT_EQ(q.instructions.size(), 3u);
-  EXPECT_EQ(q.instructions[1].op, Opcode::Conv2D);
-  EXPECT_EQ(q.instructions[1].operandAddrs, (std::vector<int64_t>{0, 3136}));
-  EXPECT_EQ(q.instructions[1].activation, 1);
-  EXPECT_EQ(q.instructions[2].op, Opcode::Halt);
+  ASSERT_EQ(q.instructions.size(), 4u);
+  EXPECT_EQ(q.instructions[2].op, Opcode::Conv2D);
+  EXPECT_EQ(q.instructions[2].operandAddrs, (std::vector<int64_t>{0, 3136}));
+  EXPECT_EQ(q.instructions[2].activation, 1);
+  EXPECT_EQ(q.instructions[3].op, Opcode::Halt);
 }
 
 TEST(EncodingFormat, BadMagicRejected) {

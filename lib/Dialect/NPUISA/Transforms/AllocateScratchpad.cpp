@@ -166,6 +166,19 @@ struct NPUAllocateScratchpadPass
     func::FuncOp func = getOperation();
     if (func.getBody().empty())
       return;
+    // The ISA is straight line by design, so a function is one block. That is a
+    // deliberate limitation, but it used to be applied by allocating for
+    // getBody().front() and ignoring every other block in silence, which would
+    // leave later blocks holding unassigned addresses.
+    if (!func.getBody().hasOneBlock()) {
+      func.emitError("scratchpad allocation needs a single block, but @")
+          << func.getName() << " has "
+          << std::distance(func.getBody().begin(), func.getBody().end())
+          << " blocks. The npuisa ISA has no branches, so control flow is not "
+             "representable; see docs/DESIGN_DECISIONS.md.";
+      signalPassFailure();
+      return;
+    }
     Block &block = func.getBody().front();
     OpBuilder builder(&getContext());
     int64_t budget = budgetBytes;

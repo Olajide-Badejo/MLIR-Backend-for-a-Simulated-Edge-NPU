@@ -8,8 +8,24 @@
 #include "NPU/Encoding/Program.h"
 
 #include <cstring>
+#include <map>
+#include <sstream>
 
 namespace npu {
+
+bool isValidOpcode(Opcode op) {
+  return static_cast<uint16_t>(op) <= kMaxOpcode;
+}
+
+std::string ValidationError::toString() const {
+  std::ostringstream os;
+  if (instructionIndex == kProgramLevel)
+    os << "program: ";
+  else
+    os << "instruction " << instructionIndex << ": ";
+  os << check << ": " << detail;
+  return os.str();
+}
 
 const char *opcodeName(Opcode op) {
   switch (op) {
@@ -164,7 +180,297 @@ std::vector<uint8_t> Program::encode() const {
   return w.bytes;
 }
 
-std::optional<Program> Program::decode(const std::vector<uint8_t> &bytes) {
+namespace {
+
+// Element count of a shape, or nullopt if the shape is unusable: empty, holding
+// a non positive extent, or large enough that the product would overflow. The
+// overflow case matters because the byte size is compared against a region
+// bound, and a wrapped product compares as small.
+std::optional<int64_t> shapeElements(const std::vector<int64_t> &shape) {
+  if (shape.empty())
+    return std::nullopt;
+  constexpr int64_t kLimit = int64_t{1} << 40;
+  int64_t n = 1;
+  for (int64_t d : shape) {
+    if (d <= 0 || d > kLimit)
+      return std::nullopt;
+    n *= d;
+    if (n > kLimit)
+      return std::nullopt;
+  }
+  return n;
+}
+
+// What each opcode requires. Written out rather than inferred so that adding an
+// opcode forces a decision about its arity and whether it touches memory.
+struct OpcodeShape {
+  int minOperands;
+  int maxOperands;
+  bool writesScratchpad; // needs a resultAddr inside the scratchpad
+  bool touchesDram;      // needs a dramAddr inside DRAM
+};
+
+std::optional<OpcodeShape> opcodeShape(Opcode op) {
+  switch (op) {
+  case Opcode::Nop:
+  case Opcode::Halt:
+    return OpcodeShape{0, 0, false, false};
+  case Opcode::DmaLoad:
+    return OpcodeShape{0, 0, true, true};
+  case Opcode::DmaStore:
+    return OpcodeShape{1, 1, false, true};
+  case Opcode::Conv2D:
+  case Opcode::MatMul:
+    // Two operands, or three when a bias is present. Conv2D used to index
+    // operandAddrs[1] unconditionally, so a one operand CONV2D read out of
+    // bounds rather than being rejected.
+    return OpcodeShape{2, 3, true, false};
+  case Opcode::Relu:
+  case Opcode::Reshape:
+  case Opcode::PoolMax:
+  case Opcode::PoolAvg:
+    return OpcodeShape{1, 1, true, false};
+  case Opcode::Add:
+  case Opcode::Mul:
+    return OpcodeShape{2, 2, true, false};
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<ValidationError> Program::validate() const {
+  constexpr size_t kProgram = ValidationError::kProgramLevel;
+  auto fail = [](size_t index, const char *check,
+                 const std::string &detail) -> ValidationError {
+    return ValidationError{index, check, detail};
+  };
+  auto num = [](int64_t v) { return std::to_string(v); };
+
+  if (version != kVersion)
+    return fail(kProgram, "version",
+                "file declares version " + std::to_string(version) +
+                    " but this build understands version " +
+                    std::to_string(kVersion));
+  if (scratchpadBytes < 0)
+    return fail(kProgram, "scratchpad-size",
+                "negative scratchpad size " + num(scratchpadBytes));
+  if (scratchpadBytes > kMaxScratchpadBytes)
+    return fail(kProgram, "scratchpad-size",
+                "declared scratchpad of " + num(scratchpadBytes) +
+                    " bytes exceeds the format limit of " +
+                    num(kMaxScratchpadBytes));
+  if (dramBytes < 0)
+    return fail(kProgram, "dram-size", "negative DRAM size " + num(dramBytes));
+  if (dramBytes > kMaxDramBytes)
+    return fail(kProgram, "dram-size",
+                "declared DRAM of " + num(dramBytes) +
+                    " bytes exceeds the format limit of " + num(kMaxDramBytes));
+
+  // Every declared region has to describe a real, in bounds piece of DRAM.
+  auto checkRegion = [&](const MemRegion &r, const char *what,
+                         size_t i) -> std::optional<ValidationError> {
+    std::string where = std::string(what) + " " + std::to_string(i);
+    std::optional<int64_t> n = shapeElements(r.shape);
+    if (!n)
+      return fail(kProgram, "region-shape",
+                  where + " has an empty shape or a non positive extent");
+    if (r.dramOffset < 0)
+      return fail(kProgram, "region-offset",
+                  where + " has negative DRAM offset " + num(r.dramOffset));
+    // Everything is fp32 and every access indexes as addr / 4, so a misaligned
+    // offset would silently read across element boundaries.
+    if (r.dramOffset % 4 != 0)
+      return fail(kProgram, "region-offset",
+                  where + " has DRAM offset " + num(r.dramOffset) +
+                      ", which is not 4 byte aligned");
+    if (*n * 4 > dramBytes - r.dramOffset)
+      return fail(kProgram, "region-in-range",
+                  where + " spans DRAM [" + num(r.dramOffset) + ", " +
+                      num(r.dramOffset + *n * 4) + ") but DRAM is " +
+                      num(dramBytes) + " bytes");
+    return std::nullopt;
+  };
+  for (size_t i = 0; i < inputs.size(); ++i)
+    if (auto bad = checkRegion(inputs[i], "input", i))
+      return bad;
+  for (size_t i = 0; i < outputs.size(); ++i)
+    if (auto bad = checkRegion(outputs[i], "output", i))
+      return bad;
+  for (size_t i = 0; i < constants.size(); ++i)
+    if (auto bad = checkRegion(constants[i], "constant", i))
+      return bad;
+
+  if (constantData.size() != constants.size())
+    return fail(kProgram, "constant-data",
+                "there are " + std::to_string(constants.size()) +
+                    " constant regions but " +
+                    std::to_string(constantData.size()) + " data blocks");
+  for (size_t i = 0; i < constants.size(); ++i) {
+    int64_t n = *shapeElements(constants[i].shape);
+    if (static_cast<int64_t>(constantData[i].size()) != n)
+      return fail(kProgram, "constant-data",
+                  "constant " + std::to_string(i) + " has shape holding " +
+                      num(n) + " elements but carries " +
+                      std::to_string(constantData[i].size()) + " floats");
+  }
+
+  // Walk the instructions, tracking what each scratchpad address holds. This
+  // mirrors what the simulator does at run time, so reading an address nothing
+  // has written is caught here rather than becoming a silent zero read.
+  std::map<int64_t, int64_t> writtenElements;
+  for (size_t i = 0; i < instructions.size(); ++i) {
+    const Instruction &in = instructions[i];
+
+    if (!isValidOpcode(in.op))
+      return fail(i, "opcode",
+                  "opcode " + std::to_string(static_cast<uint16_t>(in.op)) +
+                      " is outside the range 0 to " +
+                      std::to_string(kMaxOpcode));
+    OpcodeShape want = *opcodeShape(in.op);
+    const char *name = opcodeName(in.op);
+
+    int operands = static_cast<int>(in.operandAddrs.size());
+    if (operands < want.minOperands || operands > want.maxOperands)
+      return fail(i, "arity",
+                  std::string(name) + " takes " +
+                      std::to_string(want.minOperands) +
+                      (want.maxOperands != want.minOperands
+                           ? " to " + std::to_string(want.maxOperands)
+                           : "") +
+                      " operands but has " + std::to_string(operands));
+
+    int64_t resultElements = 0;
+    if (want.writesScratchpad || in.op == Opcode::DmaStore) {
+      std::optional<int64_t> n = shapeElements(in.resultShape);
+      if (!n)
+        return fail(i, "result-shape",
+                    std::string(name) +
+                        " has an empty result shape or a non positive extent");
+      resultElements = *n;
+    }
+
+    if (want.writesScratchpad) {
+      if (in.resultAddr < 0)
+        return fail(i, "result-address",
+                    std::string(name) + " has negative scratchpad address " +
+                        num(in.resultAddr));
+      if (in.resultAddr % 4 != 0)
+        return fail(i, "result-address",
+                    std::string(name) + " writes scratchpad address " +
+                        num(in.resultAddr) + ", which is not 4 byte aligned");
+      if (resultElements * 4 > scratchpadBytes - in.resultAddr)
+        return fail(i, "result-in-range",
+                    std::string(name) + " writes scratchpad [" +
+                        num(in.resultAddr) + ", " +
+                        num(in.resultAddr + resultElements * 4) +
+                        ") but the scratchpad is " + num(scratchpadBytes) +
+                        " bytes");
+    }
+
+    for (int k = 0; k < operands; ++k) {
+      int64_t addr = in.operandAddrs[k];
+      if (addr < 0 || addr >= scratchpadBytes)
+        return fail(i, "operand-in-range",
+                    std::string(name) + " operand " + std::to_string(k) +
+                        " is at scratchpad address " + num(addr) +
+                        ", outside [0, " + num(scratchpadBytes) + ")");
+      auto known = writtenElements.find(addr);
+      if (known == writtenElements.end())
+        return fail(i, "operand-defined",
+                    std::string(name) + " operand " + std::to_string(k) +
+                        " reads scratchpad address " + num(addr) +
+                        ", which no earlier instruction wrote, so its shape is "
+                        "unknown");
+    }
+
+    if (want.touchesDram) {
+      if (in.dramAddr < 0)
+        return fail(i, "dram-address",
+                    std::string(name) + " has negative DRAM address " +
+                        num(in.dramAddr));
+      if (resultElements * 4 > dramBytes - in.dramAddr)
+        return fail(i, "dram-in-range",
+                    std::string(name) + " touches DRAM [" + num(in.dramAddr) +
+                        ", " + num(in.dramAddr + resultElements * 4) +
+                        ") but DRAM is " + num(dramBytes) + " bytes");
+    }
+
+    // Attribute vectors the kernels index without checking.
+    auto needVector = [&](const std::vector<int64_t> &v, size_t want_,
+                          const char *what) -> std::optional<ValidationError> {
+      if (v.size() != want_)
+        return fail(i, "attribute-size",
+                    std::string(name) + " needs a " + std::to_string(want_) +
+                        " element " + what + " but has " +
+                        std::to_string(v.size()));
+      for (int64_t d : v)
+        if (d < 0)
+          return fail(i, "attribute-value",
+                      std::string(name) + " has a negative " + what + " entry");
+      return std::nullopt;
+    };
+    if (in.op == Opcode::Conv2D) {
+      if (auto bad = needVector(in.strides, 2, "strides"))
+        return bad;
+      if (auto bad = needVector(in.pads, 4, "pads"))
+        return bad;
+      if (auto bad = needVector(in.dilations, 2, "dilations"))
+        return bad;
+      if (in.strides[0] == 0 || in.strides[1] == 0)
+        return fail(i, "attribute-value", "CONV2D stride is zero");
+      if (in.dilations[0] == 0 || in.dilations[1] == 0)
+        return fail(i, "attribute-value", "CONV2D dilation is zero");
+      if (in.group < 1)
+        return fail(i, "group",
+                    "CONV2D group is " + num(in.group) + ", must be at least 1");
+    }
+    if (in.op == Opcode::PoolMax || in.op == Opcode::PoolAvg) {
+      if (auto bad = needVector(in.kernelShape, 2, "kernel_shape"))
+        return bad;
+      if (auto bad = needVector(in.strides, 2, "strides"))
+        return bad;
+      if (auto bad = needVector(in.pads, 4, "pads"))
+        return bad;
+      if (in.kernelShape[0] == 0 || in.kernelShape[1] == 0)
+        return fail(i, "attribute-value", "pool kernel_shape is zero");
+      if (in.strides[0] == 0 || in.strides[1] == 0)
+        return fail(i, "attribute-value", "pool stride is zero");
+    }
+    if (in.op == Opcode::Conv2D || in.op == Opcode::MatMul) {
+      if (in.activation != 0 && in.activation != 1)
+        return fail(i, "activation",
+                    "activation " + std::to_string(in.activation) +
+                        " is not none (0) or relu (1)");
+    }
+
+    if (want.writesScratchpad)
+      writtenElements[in.resultAddr] = resultElements;
+  }
+
+  return std::nullopt;
+}
+
+std::optional<Program> Program::decode(const std::vector<uint8_t> &bytes,
+                                       ValidationError *error) {
+  std::optional<Program> raw = decodeUnvalidated(bytes);
+  if (!raw) {
+    if (error)
+      *error = ValidationError{ValidationError::kProgramLevel, "structure",
+                               "byte stream is truncated, or does not begin "
+                               "with the NPUB magic"};
+    return std::nullopt;
+  }
+  if (std::optional<ValidationError> bad = raw->validate()) {
+    if (error)
+      *error = *bad;
+    return std::nullopt;
+  }
+  return raw;
+}
+
+std::optional<Program>
+Program::decodeUnvalidated(const std::vector<uint8_t> &bytes) {
   Reader r(bytes);
   char magic[4];
   for (char &c : magic)

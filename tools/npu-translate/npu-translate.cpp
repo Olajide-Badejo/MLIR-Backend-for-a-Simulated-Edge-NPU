@@ -43,19 +43,40 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // The encoder produces one program from one function. This used to take the
+  // first function it walked to and silently drop the rest, so a multi function
+  // module encoded to something that was not the module.
   mlir::func::FuncOp func;
+  unsigned functionCount = 0;
   module->walk([&](mlir::func::FuncOp f) {
+    ++functionCount;
     if (!func)
       func = f;
   });
   if (!func) {
-    std::cerr << "npu-translate: no function found\n";
+    std::cerr << "npu-translate: no function found in " << input << "\n";
+    return 1;
+  }
+  if (functionCount > 1) {
+    std::cerr << "npu-translate: " << input << " has " << functionCount
+              << " functions, and the .nbin format holds exactly one program. "
+                 "Split the module, or delete the functions you do not want "
+                 "encoded.\n";
     return 1;
   }
 
   auto program = npu::encodeFunction(func);
   if (mlir::failed(program))
     return 1;
+
+  // Refuse to write a program the simulator would reject. Catching an encoder
+  // bug here, where the IR that produced it is still in hand, beats catching it
+  // as a decode failure in npu-sim.
+  if (auto bad = program->validate()) {
+    std::cerr << "npu-translate: refusing to write an invalid program\n"
+              << "  " << bad->toString() << "\n";
+    return 1;
+  }
 
   std::vector<uint8_t> bytes = program->encode();
   std::ofstream out(output, std::ios::binary);

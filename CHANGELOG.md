@@ -8,6 +8,26 @@ Semantic Versioning once a release is tagged.
 
 ### Added
 
+- Phase U3: `Program::validate()`, a structured check of every invariant the
+  simulator relies on, and `Program::decode()` now means decode plus validate.
+  Before this, `decode()` checked the magic, capped a few vector lengths, and
+  stopped; everything downstream trusted the result, so the simulator did raw
+  pointer arithmetic on unchecked addresses, `Conv2D` indexed `operandAddrs[1]`
+  whether or not it existed, and an out of range opcode fell through a `switch`
+  as undefined behaviour. A `ValidationError` names the failing rule, the
+  instruction index, and the offending construct.
+- Phase U3: `Program::decodeUnvalidated()`, for `npu-objdump` alone. A
+  disassembler has to be able to dump a suspect file, so it deliberately keeps
+  the old permissive path and prefixes the dump with a warning.
+- Phase U3: an always on bounds checked scratchpad accessor in the simulator,
+  input size checking and multi output writing in `npu-sim`, a multi function
+  diagnostic in `npu-translate`, and a multi block diagnostic in
+  `AllocateScratchpad`.
+- Phase U3: `unittests/Encoding/ValidationTest.cpp` (one test per validation
+  rule, each asserting which rule caught it, not merely that something did),
+  `PropertyTest.cpp` (a 1000 iteration encode and decode round trip), and
+  `FuzzTest.cpp` (a 322 case corpus of malformed inputs, asserting that every
+  one is refused or survived rather than crashing).
 - Phase U2: CI that builds the compiler and runs every suite. `ci.yml` gains
   `build-and-test` (configure, build, lit, both GoogleTest binaries, pytest, the
   reachability check with its model layer, and the regression baseline),
