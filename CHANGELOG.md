@@ -131,6 +131,14 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: `Fuzz.DecodeUnvalidatedNeverCrashesEither` accumulated the fields it
+  touches into a signed `int64_t`, and the corpus holds a file declaring
+  `INT64_MAX` bytes of scratchpad, which `decodeUnvalidated` returns by design.
+  Adding to that was undefined behaviour in the test itself, reported by UBSan
+  the first time the whole corpus was run under it. The accumulator is unsigned
+  now. Constant regions are touched by shape length rather than `byteSize()`,
+  which multiplies extents out and is only ever called by the encoder on shapes
+  from the MLIR type system, never on decoded input.
 - Phase U3: `encodeFunction`'s `.Default` case emitted `cannot encode unexpected
   op`, skipped the op, and returned the program anyway, so `npu-translate`
   printed an error, wrote the `.nbin`, and exited 0. Verified before the fix on

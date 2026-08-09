@@ -380,13 +380,27 @@ TEST(Fuzz, DecodeUnvalidatedNeverCrashesEither) {
       continue;
     // Touch every field the disassembler would, without asserting anything
     // about the values. This is a crash and sanitizer test, not a value test.
-    volatile int64_t sink = program->scratchpadBytes + program->dramBytes;
+    //
+    // The accumulator is unsigned. decodeUnvalidated deliberately does not
+    // validate, so it returns whatever the file declared, and the corpus holds
+    // a file declaring INT64_MAX bytes of scratchpad. Adding anything to that
+    // in signed arithmetic is undefined behaviour in the test itself, which
+    // UBSan reported at this line and which says nothing about the code under
+    // test. Unsigned wrapping is defined, and the sum was always meaningless.
+    volatile uint64_t sink = static_cast<uint64_t>(program->scratchpadBytes) +
+                             static_cast<uint64_t>(program->dramBytes);
     for (const Instruction &in : program->instructions)
-      sink += in.resultAddr + in.dramAddr + in.group +
-              static_cast<int64_t>(in.resultShape.size()) +
-              static_cast<int64_t>(in.operandAddrs.size());
+      sink += static_cast<uint64_t>(in.resultAddr) +
+              static_cast<uint64_t>(in.dramAddr) +
+              static_cast<uint64_t>(in.group) + in.resultShape.size() +
+              in.operandAddrs.size();
+    // Constant regions are touched by shape length rather than byteSize(),
+    // because byteSize() multiplies the extents out and is only ever called by
+    // the encoder, on shapes that came from the MLIR type system. It is not on
+    // the disassembler's path, so calling it here on a hostile shape would be
+    // the test inventing an overflow that no shipping caller can reach.
     for (const MemRegion &r : program->constants)
-      sink += r.byteSize();
+      sink += static_cast<uint64_t>(r.shape.size());
     (void)sink;
   }
 }

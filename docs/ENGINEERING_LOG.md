@@ -4,6 +4,48 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: the fuzz test was the thing with undefined behaviour
+
+**Symptom.** The gate for this part is the first to run the whole fuzz corpus
+under UBSan; earlier parts ran `Validation.*` only. It aborted:
+
+```
+FuzzTest.cpp:383:54: runtime error: signed integer overflow:
+9223372036854775807 + 8192 cannot be represented in type 'long int'
+```
+
+**Root cause.** In the test, not the decoder.
+`Fuzz.DecodeUnvalidatedNeverCrashesEither` touches every field a disassembler
+would, to prove that reading them cannot crash, and accumulated them into a
+`volatile int64_t`. The corpus contains a file declaring `INT64_MAX` bytes of
+scratchpad, and `decodeUnvalidated` returns it, correctly, because not
+validating is the entire point of that entry point. So the first addition
+overflowed. The test asserting that hostile input cannot cause undefined
+behaviour was itself the undefined behaviour.
+
+Confirmed pre-existing rather than introduced here: at Part 2's tip both the
+`INT64_MAX` corpus case and the signed accumulator are already present,
+unchanged. The near cap cases added in this part are all rejected, so they
+never reach the accumulator. Nothing in this part caused it; the part's gate is
+simply the first thing that looked.
+
+**Chosen fix.** Accumulate in `uint64_t`, where wrapping is defined. The sum
+was always meaningless, since the point is to touch the fields rather than to
+compute anything.
+
+One related decision. The loop over constant regions called `r.byteSize()`,
+which multiplies the extents out and would overflow on a hostile shape for the
+same reason. Rather than make `byteSize()` saturate, the loop now touches the
+shape length. `byteSize()` has exactly four callers, all in
+`InstructionEncoder.cpp`, all on shapes that came from the MLIR type system,
+and `disassemble()` does not call it, so no shipping path reaches it with
+decoded input. Hardening it would have been guarding against a caller that does
+not exist, and the test would have been inventing the risk it then caught.
+
+**Verification.** The full corpus under ASan and UBSan, 46 of 46 with
+`EncodeFunction.*` excluded for the documented MLIR slab poisoning reason, and
+no diagnostic of any kind. Peak RSS 99.9 MB under ASan, 0.15 s.
+
 ## 2026-08-09 Phase U3: the second input was always zero
 
 **Symptom.** `npu-sim` parsed `--input` into a single `std::string`, so a second
