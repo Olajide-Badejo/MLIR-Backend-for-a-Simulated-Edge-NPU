@@ -32,11 +32,12 @@ std::vector<float> readFloats(const std::string &path) {
 } // namespace
 
 int main(int argc, char **argv) {
-  std::string nbin, inputPath, outputPath, statsPath;
+  std::string nbin, outputPath, statsPath;
+  std::vector<std::string> inputPaths;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--input" && i + 1 < argc)
-      inputPath = argv[++i];
+      inputPaths.push_back(argv[++i]);
     else if (a == "--output" && i + 1 < argc)
       outputPath = argv[++i];
     else if (a == "--stats" && i + 1 < argc)
@@ -45,8 +46,10 @@ int main(int argc, char **argv) {
       nbin = a;
   }
   if (nbin.empty()) {
-    std::cerr << "usage: npu-sim <model.nbin> [--input in.bin] "
-                 "[--output out.bin] [--stats stats.json]\n";
+    std::cerr << "usage: npu-sim <model.nbin> [--input in.bin]... "
+                 "[--output out.bin] [--stats stats.json]\n"
+                 "  --input is given once per declared input region, in "
+                 "declaration order\n";
     return 1;
   }
 
@@ -67,25 +70,33 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // One --input per declared input region, in declaration order. npu-sim used
+  // to keep a single input path, so a two input program ran with its second
+  // input left as zeros and reported nothing. That is a confident wrong answer,
+  // which is the outcome this phase exists to remove. Refusing a count mismatch
+  // makes the mistake impossible to make quietly.
+  if (inputPaths.size() != program->inputs.size()) {
+    std::cerr << "npu-sim: " << nbin << " declares " << program->inputs.size()
+              << " input region(s) but " << inputPaths.size()
+              << " --input flag(s) were given\n"
+              << "  pass one --input per declared input, in declaration order\n";
+    return 1;
+  }
+
   std::vector<std::vector<float>> inputs;
-  if (!inputPath.empty()) {
-    std::vector<float> data = readFloats(inputPath);
+  for (size_t i = 0; i < inputPaths.size(); ++i) {
+    std::vector<float> data = readFloats(inputPaths[i]);
     // The input file used to be memcpy'd into DRAM without ever being compared
     // against the region it was going into, so an oversized input.bin was a
     // heap overflow.
-    if (program->inputs.empty()) {
-      std::cerr << "npu-sim: " << inputPath
-                << " was given but the program declares no inputs\n";
-      return 1;
-    }
     int64_t expected = 1;
-    for (int64_t d : program->inputs[0].shape)
+    for (int64_t d : program->inputs[i].shape)
       expected *= d;
     if (static_cast<int64_t>(data.size()) != expected) {
-      std::cerr << "npu-sim: " << inputPath << " holds " << data.size()
-                << " float(s) but input 0 has shape [";
-      for (size_t i = 0; i < program->inputs[0].shape.size(); ++i)
-        std::cerr << (i ? "x" : "") << program->inputs[0].shape[i];
+      std::cerr << "npu-sim: " << inputPaths[i] << " holds " << data.size()
+                << " float(s) but input " << i << " has shape [";
+      for (size_t k = 0; k < program->inputs[i].shape.size(); ++k)
+        std::cerr << (k ? "x" : "") << program->inputs[i].shape[k];
       std::cerr << "], which is " << expected << " float(s)\n";
       return 1;
     }

@@ -4,6 +4,59 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: the second input was always zero
+
+**Symptom.** `npu-sim` parsed `--input` into a single `std::string`, so a second
+`--input` overwrote the first and a program declaring two inputs ran with one of
+them left as whatever the DRAM was initialised to, which is zeros. Nothing was
+printed. The simulation completed, wrote an output, and reported statistics.
+
+**Root cause.** Not really a bug in the parsing, which does exactly what a
+single string can do. The bug is that the tool never compared what it was given
+against what the program declared. `program->inputs` has the answer in it and
+was consulted only for `inputs[0]`, to size check that one file. Everything
+about the second input region was ignored, including its existence.
+
+This is the same defect as the multi output one fixed earlier in this phase and
+the multi function one in `npu-translate`: a tool written against the single
+case, then handed a program that is not the single case, silently doing a
+fraction of the work. Worth noting that none of the three were found by a test,
+because every test in the repository uses LeNet, which has one input, one
+output, and one function.
+
+**Options considered.**
+
+1. Accept `--input` repeatedly and require the count to match. Chosen. Spec 5.3
+   allows refusing instead of implementing, but there is nothing hard here: the
+   simulator already takes a vector of inputs, and `run()` already loops over
+   `program->inputs`. The single string was the only thing in the way.
+2. Accept one `--input` holding all inputs concatenated. Rejected: it needs the
+   caller to know the exact byte layout, and a wrong split would be silent,
+   which is the failure mode being removed.
+3. Refuse a multi input program outright. Rejected as worse than the two lines
+   of work needed to support it.
+
+**Chosen fix.** `--input` collects into a vector, the count is compared against
+`program->inputs.size()` before anything is read, and a mismatch is refused with
+both numbers in the message. Each file's float count is then checked against its
+own region's shape rather than only input 0. The usage string and the Tools
+section of `docs/ISA_MANUAL.md` say so; the manual did not document `npu-sim` at
+all before, so the numbered multi output files are now written down too.
+
+A deliberate behaviour change rides along: a program with declared inputs run
+with no `--input` used to simulate them as zeros and now is refused. Nothing in
+the repository relied on it, since every caller passes one `--input` for a one
+input model, and the benchmark and end to end paths are unchanged. No
+`docs/BREAKING_CHANGES.md` entry, and the pytest suite is what confirms it.
+
+**Verification.** A new pytest builds a genuinely two input program, an
+`npu.add` of two arguments, through the real pipeline. With two `--input` flags
+it runs and the output is `[11 22 33 44]`, which is the sum; had the second
+input still been zeros it would have been `[1 2 3 4]`, so the assertion
+distinguishes the fix from the bug rather than merely observing a clean exit.
+With one flag it exits nonzero and the message names 2 and 1; with three, 2 and
+3. Demonstrated at the terminal as well as in the test.
+
 ## 2026-08-09 Phase U3: an error message is not a failure
 
 **Symptom.** Run `npu-translate` on a function holding an op the encoder has no

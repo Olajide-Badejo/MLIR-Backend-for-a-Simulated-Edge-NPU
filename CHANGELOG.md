@@ -8,6 +8,15 @@ Semantic Versioning once a release is tagged.
 
 ### Added
 
+- Phase U3: `npu-sim` accepts `--input` once per declared input region, in
+  declaration order, and checks each file's float count against that region's
+  shape. It used to keep a single input path, so a two input program ran with
+  its second input left as zeros and said nothing, which is a confident wrong
+  answer. A count that does not match the program is now refused with both
+  numbers in the message (**behaviour change, deliberate**: a program with
+  declared inputs run with no `--input` used to simulate them as zeros). The
+  usage string and the Tools section of `docs/ISA_MANUAL.md` describe it, and
+  the manual now documents `npu-sim` and the numbered multi output files at all.
 - Phase U3: `Program::validate()`, a structured check of every invariant the
   simulator relies on, and `Program::decode()` now means decode plus validate.
   Before this, `decode()` checked the magic, capped a few vector lengths, and

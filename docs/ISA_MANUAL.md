@@ -65,4 +65,17 @@ vec          = u32 count, count * i64
 - `npu-translate model.isa.mlir -o model.nbin` encodes an allocated npuisa
   function.
 - `npu-objdump model.nbin` prints the DRAM layout and the disassembled
-  instruction stream.
+  instruction stream. It decodes without validating, so it can dump a file that
+  `npu-sim` would refuse; such a dump is prefixed with a warning.
+- `npu-sim model.nbin [--input in.bin]... [--output out.bin] [--stats s.json]`
+  runs a program and prints its simulated statistics as JSON.
+
+  `--input` is given once per declared input region, in declaration order, and
+  each file is a flat row major fp32 buffer. A count that does not match the
+  program is refused, naming both numbers: passing one `--input` to a two input
+  model used to run with the second input left as zeros and say nothing.
+  Each file's float count is also checked against its region's shape.
+
+  `--output` names one file for a single output model. A model with several
+  outputs gets one file per output, numbered beside the given path, so
+  `--output out.bin` writes `out.0.bin` and `out.1.bin`.
