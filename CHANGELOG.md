@@ -122,6 +122,17 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: the decoder's `getCount()` capped element counts at 2^28 and stopped
+  there, which bounds the number but not the work. At the cap a single shape
+  vector is 2 GiB, and `getVec()` sized that vector from the count before
+  reading a byte behind it, so a thirty byte file naming a count near the cap
+  was a decompression bomb. Measured on the new probes: 2.0 GiB peak RSS and 43
+  seconds to refuse 36 tiny files. `getCount()` now also takes the smallest
+  space one element can occupy and refuses a count the remaining bytes cannot
+  back, which is the truncation it always was. The same 36 files now cost 6 MB
+  and no measurable time. A well formed file always carries those bytes, so
+  nothing the format permits is rejected; the 1000 iteration round trip property
+  test covers that.
 - Phase U3: `Program::validate()` checked operand reads for membership only. Its
   written before read walk records an element count per result address, then
   asked whether the address had been written and never whether enough had been.

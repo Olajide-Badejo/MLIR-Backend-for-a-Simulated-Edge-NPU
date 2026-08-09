@@ -88,17 +88,30 @@ struct Reader {
     p += sizeof(T);
     return value;
   }
+  size_t remaining() const { return static_cast<size_t>(end - p); }
+
   // Bound element counts so a corrupt length cannot request a huge allocation.
-  uint32_t getCount() {
+  //
+  // The 2^28 cap alone was not a bound on work. At the cap a single shape
+  // vector is 2 GiB, and nothing stopped a thirty byte file from naming one,
+  // because the count was believed before the bytes behind it were known to
+  // exist. minBytesPerElement is the smallest space one element can occupy in
+  // the stream, so a count the remaining bytes cannot possibly back is a
+  // truncated file, and it is refused here rather than after something has been
+  // sized from it. A well formed file always carries those bytes, so this
+  // rejects nothing the format permits.
+  uint32_t getCount(size_t minBytesPerElement) {
     uint32_t n = get<uint32_t>();
-    if (n > (1u << 28)) {
+    if (!ok)
+      return 0;
+    if (n > (1u << 28) || n > remaining() / minBytesPerElement) {
       ok = false;
       return 0;
     }
     return n;
   }
   std::vector<int64_t> getVec() {
-    uint32_t n = getCount();
+    uint32_t n = getCount(sizeof(int64_t));
     std::vector<int64_t> v(n);
     for (uint32_t i = 0; i < n; ++i)
       v[i] = get<int64_t>();
@@ -107,6 +120,17 @@ struct Reader {
 };
 
 constexpr char kMagic[4] = {'N', 'P', 'U', 'B'};
+
+// The least space one element of each repeated section can occupy in the
+// stream, used above to refuse a count the file cannot back. A region is an
+// int64 offset plus a shape count; a constant is a region plus its data count;
+// an instruction is its opcode, four scalars, and the counts of its six
+// vectors. These are lower bounds, so they stay correct if a field grows.
+constexpr size_t kMinRegionBytes = sizeof(int64_t) + sizeof(uint32_t);
+constexpr size_t kMinConstantBytes = kMinRegionBytes + sizeof(uint32_t);
+constexpr size_t kMinInstructionBytes = sizeof(uint16_t) + sizeof(int64_t) +
+                                        sizeof(int64_t) + sizeof(int32_t) +
+                                        sizeof(int64_t) + 6 * sizeof(uint32_t);
 
 void writeRegion(Writer &w, const MemRegion &r) {
   w.put<int64_t>(r.dramOffset);
@@ -534,24 +558,24 @@ Program::decodeUnvalidated(const std::vector<uint8_t> &bytes) {
   p.scratchpadBytes = r.get<int64_t>();
   p.dramBytes = r.get<int64_t>();
 
-  uint32_t nIn = r.getCount();
+  uint32_t nIn = r.getCount(kMinRegionBytes);
   for (uint32_t i = 0; i < nIn && r.ok; ++i)
     p.inputs.push_back(readRegion(r));
-  uint32_t nOut = r.getCount();
+  uint32_t nOut = r.getCount(kMinRegionBytes);
   for (uint32_t i = 0; i < nOut && r.ok; ++i)
     p.outputs.push_back(readRegion(r));
 
-  uint32_t nConst = r.getCount();
+  uint32_t nConst = r.getCount(kMinConstantBytes);
   for (uint32_t i = 0; i < nConst && r.ok; ++i) {
     p.constants.push_back(readRegion(r));
-    uint32_t n = r.getCount();
+    uint32_t n = r.getCount(sizeof(float));
     std::vector<float> data(n);
     for (uint32_t j = 0; j < n; ++j)
       data[j] = r.get<float>();
     p.constantData.push_back(std::move(data));
   }
 
-  uint32_t nInstr = r.getCount();
+  uint32_t nInstr = r.getCount(kMinInstructionBytes);
   for (uint32_t i = 0; i < nInstr && r.ok; ++i)
     p.instructions.push_back(readInstr(r));
 

@@ -80,6 +80,90 @@ template <typename T> void poke(std::vector<uint8_t> &bytes, size_t at, T v) {
   std::memcpy(bytes.data() + at, &v, sizeof(T));
 }
 
+// A hand built byte stream. Everything else in this file mutates a valid file;
+// these cases need the opposite, a file that is tiny and claims to be huge.
+struct Blob {
+  std::vector<uint8_t> bytes;
+  template <typename T> Blob &put(T v) {
+    auto *p = reinterpret_cast<const uint8_t *>(&v);
+    bytes.insert(bytes.end(), p, p + sizeof(T));
+    return *this;
+  }
+  Blob &header() {
+    bytes.insert(bytes.end(), {'N', 'P', 'U', 'B'});
+    put<uint32_t>(Program::kVersion);
+    put<int64_t>(32768);
+    put<int64_t>(8192);
+    return *this;
+  }
+};
+
+// Every count field in the format, probed just under, exactly at, and just over
+// the decoder's 2^28 cap. The cap alone is not a bound on work: 2^28 int64
+// elements is a 2 GiB vector, and getVec sizes that vector from the count
+// before reading a single element behind it. So a file of a few dozen bytes
+// naming a count near the cap is a decompression bomb, and the just under and
+// exactly at values are the ones the cap lets through. These are separate from
+// buildCorpus so the dedicated test can iterate exactly them.
+std::vector<Case> buildNearCapCases() {
+  std::vector<Case> cases;
+  for (uint32_t n : {(1u << 28) - 1, 1u << 28, (1u << 28) + 1}) {
+    const std::string tag = "-" + std::to_string(n);
+
+    // The four container counts, in the order decodeUnvalidated reads them.
+    cases.push_back({"cap-input-count" + tag,
+                     Blob().header().put<uint32_t>(n).bytes});
+    cases.push_back({"cap-output-count" + tag,
+                     Blob().header().put<uint32_t>(0).put<uint32_t>(n).bytes});
+    cases.push_back({"cap-constant-count" + tag,
+                     Blob().header().put<uint32_t>(0).put<uint32_t>(0)
+                         .put<uint32_t>(n).bytes});
+    cases.push_back({"cap-instruction-count" + tag,
+                     Blob().header().put<uint32_t>(0).put<uint32_t>(0)
+                         .put<uint32_t>(0).put<uint32_t>(n).bytes});
+
+    // The shape vector inside a region, which is a getVec of int64.
+    cases.push_back({"cap-region-shape-count" + tag,
+                     Blob().header().put<uint32_t>(1).put<int64_t>(0)
+                         .put<uint32_t>(n).bytes});
+
+    // Constant data, which is a vector<float> sized the same way.
+    cases.push_back({"cap-constant-data-count" + tag,
+                     Blob().header().put<uint32_t>(0).put<uint32_t>(0)
+                         .put<uint32_t>(1)                            // 1 const
+                         .put<int64_t>(0).put<uint32_t>(1).put<int64_t>(4)
+                         .put<uint32_t>(n).bytes});
+
+    // Each of the six vectors inside an instruction. readInstr takes them as
+    // resultShape, operandAddrs, then dramAddr / activation / group, then
+    // strides, pads, dilations, kernelShape.
+    for (int target = 0; target < 6; ++target) {
+      Blob b;
+      b.header()
+          .put<uint32_t>(0)
+          .put<uint32_t>(0)
+          .put<uint32_t>(0)
+          .put<uint32_t>(1)  // one instruction
+          .put<uint16_t>(0)  // NOP
+          .put<int64_t>(0);  // resultAddr
+      auto scalars = [&] {
+        b.put<int64_t>(0).put<int32_t>(0).put<int64_t>(1);
+      };
+      for (int k = 0; k < target; ++k) {
+        if (k == 2)
+          scalars();
+        b.put<uint32_t>(0); // an empty vector, to reach the one being probed
+      }
+      if (target == 2)
+        scalars();
+      b.put<uint32_t>(n);
+      cases.push_back(
+          {"cap-instruction-vec-" + std::to_string(target) + tag, b.bytes});
+    }
+  }
+  return cases;
+}
+
 std::vector<Case> buildCorpus() {
   const std::vector<uint8_t> good = validProgram().encode();
   std::vector<Case> corpus;
@@ -198,6 +282,10 @@ std::vector<Case> buildCorpus() {
   encodeWith("region-past-dram",
              [](Program &p) { p.outputs[0].dramOffset = 8190; });
 
+  // 10. Every count field probed from both sides of the decoder's cap.
+  for (Case &c : buildNearCapCases())
+    corpus.push_back(std::move(c));
+
   return corpus;
 }
 
@@ -206,7 +294,34 @@ std::vector<Case> buildCorpus() {
 TEST(Fuzz, CorpusIsLargeEnough) {
   // The spec asks for at least 200 cases. Assert it, so trimming the generator
   // is a visible decision rather than a quiet one.
-  EXPECT_GE(buildCorpus().size(), 200u);
+  const size_t size = buildCorpus().size();
+  EXPECT_GE(size, 200u);
+  // Pinned as well as floored, so a change in the generator has to be justified
+  // by a number rather than silently absorbed. It was 322 before the 36 near
+  // cap probes were added.
+  EXPECT_EQ(size, 358u);
+}
+
+TEST(Fuzz, NearTheCountCapNothingOverAllocates) {
+  // Each of these files is a few dozen bytes and names a count near 2^28. The
+  // assertion that matters is not visible from here, which is that decoding
+  // them costs a few kilobytes rather than a few gigabytes; that is measured by
+  // running this test under a peak RSS check. What is asserted here is that the
+  // file really is tiny and that every one of them is refused with a reason, so
+  // the cost claim is about refusal and not about a successful giant decode.
+  std::vector<Case> cases = buildNearCapCases();
+  EXPECT_EQ(cases.size(), 36u);
+  for (const Case &c : cases) {
+    EXPECT_LT(c.bytes.size(), 128u) << c.name;
+
+    ValidationError error;
+    EXPECT_FALSE(Program::decode(c.bytes, &error).has_value()) << c.name;
+    EXPECT_FALSE(error.check.empty()) << c.name;
+    EXPECT_FALSE(error.detail.empty()) << c.name;
+
+    // npu-objdump takes the permissive path, so it has to refuse these too.
+    EXPECT_FALSE(Program::decodeUnvalidated(c.bytes).has_value()) << c.name;
+  }
 }
 
 TEST(Fuzz, EveryMalformedInputIsHandledCleanly) {

@@ -4,6 +4,90 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: a cap on the count is not a cap on the work
+
+**Symptom.** The work order for this part asked only for corpus cases probing
+the decoder's count cap from both sides, on the grounds that the corpus never
+probed just under it. Adding the probes turned the request into a defect
+report. The 36 new cases are a few dozen bytes each, and every one of them was
+already correctly refused, but refusing them cost:
+
+```
+Maximum resident set size (kbytes): 2102888
+Elapsed (wall clock) time (h:mm:ss or m:ss): 0:43.37
+```
+
+Two gigabytes and forty three seconds to say no to 36 files that together
+weigh under four kilobytes.
+
+**Root cause.** `Reader::getCount()` rejected counts above `1u << 28` and
+returned anything at or below it as trustworthy. That bounds the number, not
+the work behind it. `getVec()` then does
+
+```cpp
+uint32_t n = getCount();
+std::vector<int64_t> v(n);
+```
+
+which sizes and zero fills the vector before reading a single element, so a
+count of 2^28 is a 2 GiB allocation regardless of how many bytes the file
+actually holds. The cap was doing the opposite of its stated job for exactly
+the values just below it: 2^28 and 2^28 minus one are the two counts it lets
+through, and they are the two most expensive counts expressible. The cases the
+old corpus did probe, `0xFFFFFFFF` and `1u << 29`, were all above the cap and
+so were refused for free, which is why the hole never showed up.
+
+Worth naming the general shape: a length prefixed format where the length is
+validated against a constant rather than against the bytes remaining is a
+decompression bomb by construction. The constant can only ever be a guess about
+what is reasonable; the remaining byte count is the truth.
+
+**Options considered.**
+
+1. Lower the 2^28 cap. Rejected: it is a guess either way, and any cap high
+   enough to be useful for real shapes is still high enough to be expensive.
+2. Reserve incrementally and read as you go, so the allocation follows the
+   bytes actually present. Rejected as a bigger change than needed, and it
+   leaves the count itself unvalidated, so the loop bound is still attacker
+   controlled.
+3. Validate the count against the bytes that remain. Chosen. A count of `n`
+   elements needs at least `n * minBytesPerElement` bytes behind it, and if
+   they are not there the file is truncated, which the reader already knows how
+   to say.
+
+**Chosen fix.** `getCount` takes the least space one element can occupy and
+refuses a count the remaining bytes cannot back:
+
+```cpp
+if (n > (1u << 28) || n > remaining() / minBytesPerElement) {
+  ok = false;
+  return 0;
+}
+```
+
+with the per section minimums written down next to the magic: 12 bytes for a
+region, 16 for a constant, 54 for an instruction, `sizeof(int64_t)` for a shape
+element, `sizeof(float)` for constant data. They are lower bounds, so they stay
+correct if a field is added later. The old cap stays as a second line, since a
+file large enough to back a huge count is still not a file worth decoding.
+
+This cannot reject a well formed file, because a well formed file by definition
+carries the bytes it names. The 1000 iteration round trip property test is what
+holds that down, and it stayed green.
+
+**Verification.** The same 36 cases, same binary, after the change:
+
+```
+Maximum resident set size (kbytes): 6208
+Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.00
+```
+
+2.0 GiB to 6 MB. The whole encoding suite now peaks at 25.6 MB and runs in
+0.41 s. Corpus grew from 322 to 358, which the `CorpusIsLargeEnough` test now
+pins exactly rather than only flooring at 200, so a future change to the
+generator has to justify a number. Encoding 47 of 47, simulator 9 of 9, lit 13
+of 13.
+
 ## 2026-08-09 Phase U3: membership is not an extent
 
 **Symptom.** Found by adversarial testing rather than by a failing test, and
