@@ -176,6 +176,21 @@ TEST(Validation, RejectsShapeThatWouldOverflow) {
   expectRejected(p, "result-shape");
 }
 
+TEST(Validation, RejectsShapeAtTheOverflowBoundary) {
+  // Pin the boundary the overflow guard defines, so that a later edit cannot
+  // move the cap without a test saying so. The cap is 2^40 elements inclusive:
+  // at exactly the cap the shape rule has nothing to say and the size check
+  // downstream is what refuses the program, while one bit past it the shape
+  // rule fires. Asserting the rule name is what makes this a boundary test
+  // rather than two more ways of observing that a huge shape is rejected.
+  Program p = validProgram();
+  p.instructions[2].resultShape = {1 << 20, 1 << 20}; // 2^40, exactly the cap
+  expectRejected(p, "result-in-range");
+
+  p.instructions[2].resultShape = {1 << 20, 1 << 21}; // 2^41, one bit past it
+  expectRejected(p, "result-shape");
+}
+
 TEST(Validation, RejectsRegionPastTheEndOfDram) {
   Program p = validProgram();
   p.outputs[0].dramOffset = 8190; // 40 bytes from 8190 exceeds 8192

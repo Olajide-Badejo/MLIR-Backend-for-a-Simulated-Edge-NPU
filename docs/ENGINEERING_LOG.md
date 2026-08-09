@@ -4,6 +4,75 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: the overflow guard was itself the overflow
+
+**Symptom.** `Validation.RejectsShapeThatWouldOverflow` failed, in the most
+pointed way available: the program it plants is the exact case the guard exists
+for, and `validate()` accepted it. Built with `-fsanitize=undefined` the same
+test also reported signed integer overflow at `Program.cpp:197`.
+
+**Root cause.** `shapeElements()` accumulated the product and then checked it:
+
+```cpp
+n *= d;
+if (n > kLimit)
+  return std::nullopt;
+```
+
+A check can only run on a value that has already been computed, and computing
+that value is the undefined behaviour. For a shape like `{2^40, 2^24}` the
+multiply overflows int64 and wraps, so what the comparison sees is a small
+number and the function returns a plausible element count for a shape it exists
+to refuse. Downstream that count is multiplied by 4 and compared against a
+region bound, where a wrapped product compares as comfortably in range. The
+failure mode is therefore not a crash at decode but a program that validates
+and then walks off the end of a buffer at run time, which is precisely what
+phase U3 exists to make impossible.
+
+Worth recording that the test was written before the implementation and was red
+for a real reason, not a wrong expectation. A guard exercised only with inputs
+an order of magnitude below its own limit looks correct forever.
+
+**Options considered.**
+
+1. Accumulate in a wider type (`__int128`) or in unsigned arithmetic and keep
+   checking after the multiply. Rejected: it buys correctness with a compiler
+   extension, or with wrapping semantics that are defined but still leave the
+   check written the wrong way round for the next person to copy.
+2. Test `n > kLimit / d` before the multiply. Chosen. It is the standard
+   division based overflow test, it needs no wider type, and the `d <= 0`
+   rejection immediately above it guarantees the divisor is at least 1.
+3. Lower `kLimit` far enough that no product can overflow. Rejected: it changes
+   an encoding contract to work around an arithmetic bug, and any cap large
+   enough to be useful is still large enough to overflow when squared.
+
+**Chosen fix.** Test the headroom before consuming it, so the guard never
+performs the operation it is guarding:
+
+```cpp
+if (d <= 0 || d > kLimit)
+  return std::nullopt;
+if (n > kLimit / d)
+  return std::nullopt;
+n *= d;
+```
+
+`kLimit` stays at `int64_t{1} << 40` and the signature is unchanged, so the
+three callers (the region check, the constant data check, and the instruction
+result check) keep the contract they were written against. The comment above
+the function now says the cap is inclusive, because that is the one part of the
+behaviour a reader cannot recover without working through the integer division.
+
+**Verification.** `Validation.RejectsShapeThatWouldOverflow` shown failing
+before the change ("expected result-shape to reject this") and passing after.
+Added `Validation.RejectsShapeAtTheOverflowBoundary`, which pins both sides of
+the cap: `{2^20, 2^20}` is exactly 2^40 and has to fall through the shape rule
+to `result-in-range`, while `{2^20, 2^21}` is one bit past and has to be caught
+by `result-shape`. Asserting which rule fires is what keeps the boundary from
+drifting silently, since either shape is rejected either way. A rebuilt
+`build-san` running `Validation.*` under ASan and UBSan reports no diagnostic of
+any kind, in particular nothing at `Program.cpp`.
+
 ## 2026-08-08 Phase U0: a regression net before any upgrade work starts
 
 **Symptom.** Not a bug. The upgrade specification (`UPGRADE_SPEC_V3.md`) asks for a

@@ -103,6 +103,14 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: `shapeElements()` tested its running product against the 2^40 element
+  cap only after multiplying, so the multiply was itself the signed overflow the
+  cap exists to prevent (UBSan reported it at `Program.cpp:197`). A shape such as
+  `{2^40, 2^24}` wrapped to a small product, passed the cap, and was then
+  compared against a region bound as if it were small, so the guard accepted
+  exactly the input it was written to refuse. Each extent is now tested against
+  the headroom that is left before it is multiplied in. `kLimit` and the
+  function's signature are unchanged, so all three callers keep their contract.
 - Phase U2: `docker/Dockerfile.llvm` kept the entire LLVM build tree *and* ran
   `ninja install` to place a second copy alongside it, which is tens of
   gigabytes and not realistically pushable to a registry. Rewritten as two

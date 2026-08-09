@@ -183,9 +183,12 @@ std::vector<uint8_t> Program::encode() const {
 namespace {
 
 // Element count of a shape, or nullopt if the shape is unusable: empty, holding
-// a non positive extent, or large enough that the product would overflow. The
-// overflow case matters because the byte size is compared against a region
-// bound, and a wrapped product compares as small.
+// a non positive extent, or holding a product above the 2^40 element cap. The
+// cap matters because the byte size is compared against a region bound, and a
+// product that wrapped int64 compares as small. Each extent is tested against
+// the headroom that is left before it is multiplied in, so the guard never
+// performs the overflow it exists to catch. The cap is inclusive: a product of
+// exactly 2^40 is returned, and the caller's own size check is what refuses it.
 std::optional<int64_t> shapeElements(const std::vector<int64_t> &shape) {
   if (shape.empty())
     return std::nullopt;
@@ -194,9 +197,9 @@ std::optional<int64_t> shapeElements(const std::vector<int64_t> &shape) {
   for (int64_t d : shape) {
     if (d <= 0 || d > kLimit)
       return std::nullopt;
-    n *= d;
-    if (n > kLimit)
+    if (n > kLimit / d)
       return std::nullopt;
+    n *= d;
   }
   return n;
 }
