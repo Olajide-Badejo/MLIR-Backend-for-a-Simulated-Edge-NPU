@@ -4,6 +4,57 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3: a test that never reached the rule it named
+
+**Symptom.** `Validation.RejectsRegionPastTheEndOfDram` failed, but not by the
+program being accepted. `validate()` rejected it. What failed was the assertion
+about which rule did the rejecting:
+
+```
+Expected equality of these values:
+  error->check
+    Which is: "region-offset"
+  check
+    Which is: "region-in-range"
+rejected, but by the wrong rule: program: region-offset: output 0 has DRAM
+offset 8190, which is not 4 byte aligned
+```
+
+**Root cause.** Test authoring, not product code. The test set
+`p.outputs[0].dramOffset = 8190` to push a 40 byte output past the end of an
+8192 byte DRAM. 8190 is not a multiple of 4, and `checkRegion()` tests alignment
+before it tests range, so the alignment rule claimed the program and the range
+rule never ran.
+
+The design point is worth recording, because this is the first time it paid for
+itself. `expectRejected()` asserts the rule name rather than merely that
+something was rejected. A test that only checked "rejected" would have been
+green here while exercising a completely different rule, and `region-in-range`
+would have shipped with no coverage at all while appearing to have some. That
+is the exact failure mode the file's header comment warns about, and it caught
+its own author.
+
+**Options considered.**
+
+1. Reorder `checkRegion()` so range is tested before alignment. Rejected: it
+   edits product code to suit a test, and alignment first is the correct order
+   anyway, since every access indexes as `addr / 4` and a misaligned offset
+   makes the range arithmetic meaningless.
+2. Relax the assertion to "rejected by something". Rejected: that is precisely
+   the weakness this file was written to avoid, and it would leave
+   `region-in-range` untested while looking tested.
+3. Choose an aligned offset that still overruns. Chosen.
+
+**Chosen fix.** 8160. It is 4 byte aligned (8160 = 4 * 2040), and the output
+region holds 10 fp32 elements, so it spans [8160, 8200), which ends 8 bytes past
+an 8192 byte DRAM. Alignment passes, range fires, and the test asserts the rule
+it was written for. The trailing comment now carries that arithmetic so the
+constant is not a magic number, and says what the old one got wrong.
+
+**Verification.** Shown failing before ("rejected, but by the wrong rule ...
+region-offset ... not 4 byte aligned") and passing after. No product code was
+touched, and the encoding suite moved by exactly this one test.
+
 ## 2026-08-09 Phase U3: the overflow guard was itself the overflow
 
 **Symptom.** `Validation.RejectsShapeThatWouldOverflow` failed, in the most

@@ -103,6 +103,12 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: `Validation.RejectsRegionPastTheEndOfDram` named the
+  `region-in-range` rule but set a DRAM offset of 8190, which is not 4 byte
+  aligned, so `region-offset` claimed the program first and the rule the test
+  exists for was never reached. The offset is now 8160, which is aligned and
+  still runs the 10 element output past the end of an 8192 byte DRAM. Nothing in
+  the decoder changed; the rule was correct and untested.
 - Phase U3: `shapeElements()` tested its running product against the 2^40 element
   cap only after multiplying, so the multiply was itself the signed overflow the
   cap exists to prevent (UBSan reported it at `Program.cpp:197`). A shape such as

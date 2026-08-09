@@ -193,7 +193,10 @@ TEST(Validation, RejectsShapeAtTheOverflowBoundary) {
 
 TEST(Validation, RejectsRegionPastTheEndOfDram) {
   Program p = validProgram();
-  p.outputs[0].dramOffset = 8190; // 40 bytes from 8190 exceeds 8192
+  // This was 8190, which is not 4 byte aligned, so the alignment rule fired
+  // first and the test never reached the rule it names. The offset has to break
+  // the range rule and nothing else.
+  p.outputs[0].dramOffset = 8160; // aligned; 10 fp32 span [8160, 8200) > 8192
   expectRejected(p, "region-in-range");
 }
 
