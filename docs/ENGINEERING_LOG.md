@@ -4,6 +4,623 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3 landed: what the phase was actually about
+
+**Not a bug.** The closing entry for the phase, written at the merge.
+
+U3 was scoped as "harden the binary interface", and the shape of the work turned
+out to be consistent enough to be worth naming. Every defect fixed in it was the
+same defect: **a check that could not fail.**
+
+- `shapeElements()` tested its product against the cap after multiplying, so the
+  guard performed the overflow it existed to catch.
+- The simulator grew its scratchpad to cover every result address before
+  checking whether result addresses were in range, so the bounds check was
+  answering a question it had already made true.
+- The trap path called `assert(false)`, so in the build most people compile, the
+  refusal path aborted instead of refusing.
+- `validate()` recorded an element count per address and then only asked whether
+  the address existed, so an over read validated.
+- `getCount()` capped counts at 2^28 and called that a bound on work, while the
+  vector sized from it was 2 GiB.
+- `encodeFunction` emitted an error and returned success.
+- `npu-sim` compared its input against the program's declared inputs only for
+  input 0.
+- A test asserted that hostile input cannot cause undefined behaviour, in a way
+  that was itself undefined behaviour.
+
+Eight defects, one pattern. The lesson is not "write more checks", it is that a
+check needs a test that proves it can *fail*, and the corpus, the negative tests,
+and the two build modes are what turn that from an intention into a fact. The
+validation suite's habit of asserting **which** rule rejected a program, rather
+than only that something did, is what caught two of these; a suite asserting only
+rejection would have been green throughout.
+
+**What landed.** `Program::validate()` with 22 named rules, `decode` meaning
+decode plus validate, `decodeUnvalidated` for the disassembler, a bounds checked
+simulator that refuses gracefully in every build mode and sizes strictly from the
+declared budget, diagnostics in `npu-sim`, `npu-translate`, and
+`AllocateScratchpad`, one `--input` per declared region, 36 validation tests, a
+1000 iteration property test, a 358 case fuzz corpus, and a manual that documents
+the format, the byte order, every check name, and the version policy.
+
+**Gate.** 51 of 51 encoding, 9 of 9 simulator, 14 of 14 lit, 25 of 26 pytest,
+ASan and UBSan clean over both GoogleTest binaries, dash-lint clean. The one red
+pytest is `test_committed_results_are_current`, the provenance guard that is
+stale by design for the whole phase and is Part 5's to clear; it is also the only
+item the regression baseline reports as drift. No benchmark number moved, which
+is what a validation and diagnostics phase should do.
+
+## 2026-08-09 Phase U3: the fuzz test was the thing with undefined behaviour
+
+**Symptom.** The gate for this part is the first to run the whole fuzz corpus
+under UBSan; earlier parts ran `Validation.*` only. It aborted:
+
+```
+FuzzTest.cpp:383:54: runtime error: signed integer overflow:
+9223372036854775807 + 8192 cannot be represented in type 'long int'
+```
+
+**Root cause.** In the test, not the decoder.
+`Fuzz.DecodeUnvalidatedNeverCrashesEither` touches every field a disassembler
+would, to prove that reading them cannot crash, and accumulated them into a
+`volatile int64_t`. The corpus contains a file declaring `INT64_MAX` bytes of
+scratchpad, and `decodeUnvalidated` returns it, correctly, because not
+validating is the entire point of that entry point. So the first addition
+overflowed. The test asserting that hostile input cannot cause undefined
+behaviour was itself the undefined behaviour.
+
+Confirmed pre-existing rather than introduced here: at Part 2's tip both the
+`INT64_MAX` corpus case and the signed accumulator are already present,
+unchanged. The near cap cases added in this part are all rejected, so they
+never reach the accumulator. Nothing in this part caused it; the part's gate is
+simply the first thing that looked.
+
+**Chosen fix.** Accumulate in `uint64_t`, where wrapping is defined. The sum
+was always meaningless, since the point is to touch the fields rather than to
+compute anything.
+
+One related decision. The loop over constant regions called `r.byteSize()`,
+which multiplies the extents out and would overflow on a hostile shape for the
+same reason. Rather than make `byteSize()` saturate, the loop now touches the
+shape length. `byteSize()` has exactly four callers, all in
+`InstructionEncoder.cpp`, all on shapes that came from the MLIR type system,
+and `disassemble()` does not call it, so no shipping path reaches it with
+decoded input. Hardening it would have been guarding against a caller that does
+not exist, and the test would have been inventing the risk it then caught.
+
+**Verification.** The full corpus under ASan and UBSan, 46 of 46 with
+`EncodeFunction.*` excluded for the documented MLIR slab poisoning reason, and
+no diagnostic of any kind. Peak RSS 99.9 MB under ASan, 0.15 s.
+
+## 2026-08-09 Phase U3: the second input was always zero
+
+**Symptom.** `npu-sim` parsed `--input` into a single `std::string`, so a second
+`--input` overwrote the first and a program declaring two inputs ran with one of
+them left as whatever the DRAM was initialised to, which is zeros. Nothing was
+printed. The simulation completed, wrote an output, and reported statistics.
+
+**Root cause.** Not really a bug in the parsing, which does exactly what a
+single string can do. The bug is that the tool never compared what it was given
+against what the program declared. `program->inputs` has the answer in it and
+was consulted only for `inputs[0]`, to size check that one file. Everything
+about the second input region was ignored, including its existence.
+
+This is the same defect as the multi output one fixed earlier in this phase and
+the multi function one in `npu-translate`: a tool written against the single
+case, then handed a program that is not the single case, silently doing a
+fraction of the work. Worth noting that none of the three were found by a test,
+because every test in the repository uses LeNet, which has one input, one
+output, and one function.
+
+**Options considered.**
+
+1. Accept `--input` repeatedly and require the count to match. Chosen. Spec 5.3
+   allows refusing instead of implementing, but there is nothing hard here: the
+   simulator already takes a vector of inputs, and `run()` already loops over
+   `program->inputs`. The single string was the only thing in the way.
+2. Accept one `--input` holding all inputs concatenated. Rejected: it needs the
+   caller to know the exact byte layout, and a wrong split would be silent,
+   which is the failure mode being removed.
+3. Refuse a multi input program outright. Rejected as worse than the two lines
+   of work needed to support it.
+
+**Chosen fix.** `--input` collects into a vector, the count is compared against
+`program->inputs.size()` before anything is read, and a mismatch is refused with
+both numbers in the message. Each file's float count is then checked against its
+own region's shape rather than only input 0. The usage string and the Tools
+section of `docs/ISA_MANUAL.md` say so; the manual did not document `npu-sim` at
+all before, so the numbered multi output files are now written down too.
+
+A deliberate behaviour change rides along: a program with declared inputs run
+with no `--input` used to simulate them as zeros and now is refused. Nothing in
+the repository relied on it, since every caller passes one `--input` for a one
+input model, and the benchmark and end to end paths are unchanged. No
+`docs/BREAKING_CHANGES.md` entry, and the pytest suite is what confirms it.
+
+**Verification.** A new pytest builds a genuinely two input program, an
+`npu.add` of two arguments, through the real pipeline. With two `--input` flags
+it runs and the output is `[11 22 33 44]`, which is the sum; had the second
+input still been zeros it would have been `[1 2 3 4]`, so the assertion
+distinguishes the fix from the bug rather than merely observing a clean exit.
+With one flag it exits nonzero and the message names 2 and 1; with three, 2 and
+3. Demonstrated at the terminal as well as in the test.
+
+## 2026-08-09 Phase U3: an error message is not a failure
+
+**Symptom.** Run `npu-translate` on a function holding an op the encoder has no
+case for, in this instance an `npu.relu` that was never lowered to npuisa:
+
+```
+$ npu-translate test/Encoding/unencodable.mlir -o /tmp/u.nbin
+loc(...): error: cannot encode unexpected op
+$ echo $?
+0
+$ ls -la /tmp/u.nbin
+-rw-r--r-- 1 elijah elijah 150 Aug  9 18:31 /tmp/u.nbin
+```
+
+It printed an error, exited successfully, and wrote a file.
+
+**Root cause.** The `.Default` case of the encoder's `TypeSwitch` set the local
+`emit` flag false and emitted a diagnostic, and `emit` is the same flag used by
+the two ops that legitimately produce no instruction, `npuisa.const` and the
+terminator. So "I have nothing to emit for this" and "I do not understand this"
+were the same signal, and the function fell through to `return program` either
+way.
+
+What makes this the worst of the four defects in this part is the shape of the
+artifact. A crash is fine, a nonzero exit is fine, no output is fine. This
+produced a well formed `.nbin` that decodes, validates, and runs, and is simply
+missing the relu. Every downstream check passes on it. A build script that
+looks at the exit code sees success. The only evidence is a line of stderr that
+scrolled past.
+
+**Options considered.**
+
+1. Return failure from inside the `.Default` lambda. Not possible directly, and
+   working around it would stop at the first bad op.
+2. Track it in the existing `emit` flag. Rejected: that flag means "no
+   instruction for this op", which is a legitimate state for two ops. Conflating
+   them is what caused this.
+3. A separate `unencodable` flag checked after the loop. Chosen. One run then
+   names every op it cannot encode instead of only the first, which matters when
+   a lowering pass was skipped entirely and a dozen ops are unlowered.
+
+**Chosen fix.** A `bool unencodable` alongside the loop, set only in `.Default`,
+and `if (unencodable) return failure();` after the loop and before the halt is
+appended. The caller in `npu-translate` already tested `mlir::failed(program)`
+and already opened its output stream after that test, so no change was needed
+there; that was checked rather than assumed.
+
+**Incidental.** The lit test for this needs `not npu-translate`, and `not` was
+not among the substituted tools in `test/lit.cfg.py`, so it failed with
+`not: command not found`. Added it. Worth recording because it means no negative
+tool test could have been written for this suite before now, which is a plausible
+part of why a tool that exits 0 on failure went unnoticed.
+
+**Verification.** `EncodeFunction.RefusesAnUnencodableOp` shown failing before
+and passing after, asserting both the failure and that the diagnostic names the
+problem. `test/Encoding/unencodable.mlir` runs the real tool and checks all
+three properties: nonzero exit, the diagnostic, and no output file. After the
+fix the same command exits nonzero and writes nothing. lit 14 of 14.
+
+## 2026-08-09 Phase U3: a cap on the count is not a cap on the work
+
+**Symptom.** The work order for this part asked only for corpus cases probing
+the decoder's count cap from both sides, on the grounds that the corpus never
+probed just under it. Adding the probes turned the request into a defect
+report. The 36 new cases are a few dozen bytes each, and every one of them was
+already correctly refused, but refusing them cost:
+
+```
+Maximum resident set size (kbytes): 2102888
+Elapsed (wall clock) time (h:mm:ss or m:ss): 0:43.37
+```
+
+Two gigabytes and forty three seconds to say no to 36 files that together
+weigh under four kilobytes.
+
+**Root cause.** `Reader::getCount()` rejected counts above `1u << 28` and
+returned anything at or below it as trustworthy. That bounds the number, not
+the work behind it. `getVec()` then does
+
+```cpp
+uint32_t n = getCount();
+std::vector<int64_t> v(n);
+```
+
+which sizes and zero fills the vector before reading a single element, so a
+count of 2^28 is a 2 GiB allocation regardless of how many bytes the file
+actually holds. The cap was doing the opposite of its stated job for exactly
+the values just below it: 2^28 and 2^28 minus one are the two counts it lets
+through, and they are the two most expensive counts expressible. The cases the
+old corpus did probe, `0xFFFFFFFF` and `1u << 29`, were all above the cap and
+so were refused for free, which is why the hole never showed up.
+
+Worth naming the general shape: a length prefixed format where the length is
+validated against a constant rather than against the bytes remaining is a
+decompression bomb by construction. The constant can only ever be a guess about
+what is reasonable; the remaining byte count is the truth.
+
+**Options considered.**
+
+1. Lower the 2^28 cap. Rejected: it is a guess either way, and any cap high
+   enough to be useful for real shapes is still high enough to be expensive.
+2. Reserve incrementally and read as you go, so the allocation follows the
+   bytes actually present. Rejected as a bigger change than needed, and it
+   leaves the count itself unvalidated, so the loop bound is still attacker
+   controlled.
+3. Validate the count against the bytes that remain. Chosen. A count of `n`
+   elements needs at least `n * minBytesPerElement` bytes behind it, and if
+   they are not there the file is truncated, which the reader already knows how
+   to say.
+
+**Chosen fix.** `getCount` takes the least space one element can occupy and
+refuses a count the remaining bytes cannot back:
+
+```cpp
+if (n > (1u << 28) || n > remaining() / minBytesPerElement) {
+  ok = false;
+  return 0;
+}
+```
+
+with the per section minimums written down next to the magic: 12 bytes for a
+region, 16 for a constant, 54 for an instruction, `sizeof(int64_t)` for a shape
+element, `sizeof(float)` for constant data. They are lower bounds, so they stay
+correct if a field is added later. The old cap stays as a second line, since a
+file large enough to back a huge count is still not a file worth decoding.
+
+This cannot reject a well formed file, because a well formed file by definition
+carries the bytes it names. The 1000 iteration round trip property test is what
+holds that down, and it stayed green.
+
+**Verification.** The same 36 cases, same binary, after the change:
+
+```
+Maximum resident set size (kbytes): 6208
+Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.00
+```
+
+2.0 GiB to 6 MB. The whole encoding suite now peaks at 25.6 MB and runs in
+0.41 s. Corpus grew from 322 to 358, which the `CorpusIsLargeEnough` test now
+pins exactly rather than only flooring at 200, so a future change to the
+generator has to justify a number. Encoding 47 of 47, simulator 9 of 9, lit 13
+of 13.
+
+## 2026-08-09 Phase U3: membership is not an extent
+
+**Symptom.** Found by adversarial testing rather than by a failing test, and
+recorded as ASSESSMENT 13.2 item 4. A `DMA_STORE` reading 100 elements from a
+4 element buffer near the top of the scratchpad passes `Program::validate()`
+and then traps in the simulator. The header on `Program.h` says validate checks
+every invariant the simulator relies on, so either the header or the code was
+wrong, and it was the code.
+
+**Root cause.** The written before read walk keeps
+`std::map<int64_t, int64_t> writtenElements`, address to element count. It
+stores the count, and then only ever asks `find(addr) == end()`. The count sat
+there unused. So the walk answered "did anything write here?" while the
+question the simulator needs answered is "did enough get written here?".
+
+The trapping case is the mild one, because it is at least loud. Move the same
+over read down into the middle of the scratchpad and it stays in bounds: the
+program validates, the simulator runs to completion, and 96 elements of
+whatever is adjacent get folded into the result. No trap, no diagnostic, a
+plausible looking wrong answer. That is precisely the failure mode the no
+silent failures rule exists to prevent, and it survived a phase whose whole
+purpose was to prevent it.
+
+**Options considered.**
+
+1. Track full shapes instead of counts, and check every operand exactly.
+   Rejected for now: for `CONV2D` that means reproducing convolution shape
+   inference inside the validator, which is a second implementation of
+   something the compiler already does and a second thing to keep in sync.
+2. Check only the ops whose operand extent is determined by the result extent,
+   and require a weaker property of the rest. Chosen.
+3. Leave it and rely on the simulator's bounds check. Rejected: the bounds
+   check cannot see the interior over read at all, since it is in bounds.
+
+**Chosen fix.** A new `operand-extent` check. Before the operand loop the walk
+computes what this consumer reads:
+
+- `DMA_STORE`, `RELU`, `ADD`, `MUL`, `RESHAPE` read `resultElements` from each
+  operand, which is exact.
+- `POOL_MAX` and `POOL_AVG` require at least `resultElements`, a lower bound,
+  since a pool reads a window at least as large as its output for everything
+  the backend emits.
+- `CONV2D` and `MATMUL` require a non zero recorded count and nothing more.
+  This is the weak rule, stated as such in the code comment. Their extents
+  follow from the recorded shapes and this walk tracks counts, so a real check
+  needs shape tracking. Recorded here so the gap is visible rather than
+  implied.
+
+The failure names the instruction index, the operand index, elements needed,
+and elements written, so the message is enough to find the bug without a
+debugger.
+
+**Verification.** Three new tests, the first two shown red before and green
+after. `RejectsAnOperandReadLargerThanWhatWasWritten` is the ASSESSMENT case,
+reading 100 from 4 at address 32000 so the read would run past a 32768 byte
+scratchpad. `RejectsAnInteriorOverRead` is the same over read at 20480, which
+stays in bounds and would otherwise never be caught by anything. Both were
+accepted before. `AcceptsAnExactExtentRead` reads exactly what was written and
+was green before and after, which is what stops the new rule from being a
+blanket refusal of `DMA_STORE`. Encoding 46 of 46, simulator 9 of 9, lit 13 of
+13.
+
+## 2026-08-09 Phase U3: a convenience that swallowed the hardening
+
+**Symptom.** `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+failed. It plants a `resultAddr` far past the end of the scratchpad, runs the
+program, and expects `SimResult.error` to name instruction 2. The simulator ran
+it clean and returned no error at all, even though the bounds checked accessor
+that the same phase had just added was sitting right there in the path.
+
+**Root cause.** A convenience that predates the hardening, at the top of `run()`:
+
+```cpp
+int64_t spBytes = program.scratchpadBytes;
+for (const Instruction &in : program.instructions)
+  if (in.resultAddr >= 0)
+    spBytes = std::max(spBytes, in.resultAddr + numElements(in.resultShape) * 4);
+```
+
+The scratchpad was then sized from `spBytes`. So the answer to "is this address
+inside the scratchpad?" was computed by first making the scratchpad big enough
+to contain the address. The check could still catch a negative address or a
+misaligned one, but for the case it was written for, an oversized result
+address, it was structurally unable to fire. The test was not wrong; the check
+was unreachable.
+
+Two things make this worse than a dead check. The loop runs before any
+validation, so `in.resultAddr + numElements(in.resultShape) * 4` is arithmetic
+on unvalidated attacker controlled values at the exact entry point U3 exists to
+defend, and it can overflow int64 or ask for an absurd allocation. And the
+comment under it told the reader the scratchpad "can exceed
+program.scratchpadBytes", which documented the hole without anyone reading it
+as one.
+
+**Options considered.**
+
+1. Gate the expansion behind `validate()`, so it only grows for programs already
+   known good. Rejected: it reorders the arithmetic rather than removing it, and
+   it keeps a rule where the declared budget means one thing for validated
+   callers and another for library callers.
+2. Keep the expansion behind an opt in flag for convenience callers. Rejected:
+   spec 11.4 item 2 allows it, but a flag that makes the memory safety property
+   optional is a flag someone will set.
+3. Size strictly from the declared `scratchpadBytes`. Chosen, and this is what
+   spec 11.4 item 2 lists first. It removes the arithmetic on unvalidated input
+   instead of moving it, and it gives `scratchpadBytes` one meaning everywhere:
+   the memory the program asked for.
+
+**Chosen fix.** Delete the loop and size from the declared field:
+
+```cpp
+std::vector<float> sp(std::max<int64_t>(1, program.scratchpadBytes / 4), 0.0f);
+```
+
+**Did anything real regress?** No. `-npu-allocate-scratchpad` computes
+`highWater = max(offset + size)` over every buffer it places and writes it to
+`npuisa.scratchpad_bytes` (`AllocateScratchpad.cpp:226` and `:232`), and the
+encoder copies that straight into `program.scratchpadBytes`
+(`InstructionEncoder.cpp:108`). So every compiled program declares exactly the
+extent it uses, with no slack and no shortfall, and the expansion was always a
+no op for it. Confirmed by running the suites: lit 13 of 13, and the end to end
+pytest, which is the real LeNet path through `npu-sim` including the 140 KB
+spilling budget, unchanged. Both lit tests that reach the encoder run
+`-npu-allocate-scratchpad` first, so neither depended on the expansion either.
+Nothing goes in `docs/BREAKING_CHANGES.md`.
+
+What did break is six hand built unit programs in `SimulatorTest.cpp`, which set
+`dramBytes` but never `scratchpadBytes` and so had been running on a scratchpad
+conjured entirely from their instruction stream. That is the finding, not
+collateral damage: those tests asserted numerics against a memory the program
+never declared. They now declare the smallest size that covers their writes (32,
+48, 80, 64, 20, and 32 bytes) with the arithmetic written down, and that landed
+as its own commit first so no commit on this branch carries a red simulator
+suite.
+
+**Verification.** The target test shown failing before and passing after, in
+`build-asserts` and `build-ndebug` both. Encoding 43 of 43, simulator 9 of 9
+including two new tests: `RefusesAWriteJustPastTheScratchpadEnd` puts a result
+4 bytes past a 32 byte declaration and asserts the refusal names instruction 1
+and reports the declared 32 byte region rather than a grown one, with a control
+at 36 bytes that runs clean; `ScratchpadIsSizedFromTheDeclaredFieldOnly` works
+in the last four cells of a 4096 byte declaration, which only succeeds if the
+declaration and not the instruction extent is what allocated the memory. lit 13
+of 13, pytest 24 passed with `test_committed_results_are_current` red, which is
+the dirty tree provenance guard expected red for all of U3 (ASSESSMENT 13.3) and
+is cleared by Part 5.
+
+## 2026-08-09 Phase U3: an assert that fired on the case the check was for
+
+**Symptom.** Not a test failure, which is why it survived review. The bounds
+checked accessor added earlier in U3 ends its refusal path with
+
+```cpp
+assert(false && "simulator memory access out of bounds");
+return nullptr;
+```
+
+so the moment the check actually fires, an assert enabled build aborts the
+process. The `return nullptr` below it, the `SimResult.error` string filled in
+just above it, and every null test at the call sites are all unreachable in the
+build most people compile.
+
+**Root cause.** Two contracts written into one function. `SimResult.error`
+exists so that a caller can be handed a diagnostic, which is the U3 promise:
+no silent failure, and no crash either. The assert says the opposite, that
+reaching this point is a programming error worth aborting for. Both cannot be
+true. It was reachable by design: the header says the simulator is reachable as
+a library and from hand built `Program` values, which is exactly where an
+unvalidated program comes from.
+
+The comment above the accessor had drifted too. It claimed a failure "aborts in
+a debug build and clamps to a scratch cell in a release build". The first half
+described the assert. The second half described nothing at all: there is no
+clamp anywhere in the function, and there never was in this revision. A comment
+that describes a design that was considered and not built is worse than no
+comment, because it is what a reader will believe.
+
+**Options considered.**
+
+1. Keep the assert and treat a trap as a bug in the caller. Rejected: it
+   contradicts the reason `SimResult.error` exists, and it makes the library
+   entry point abort the host process on hostile input.
+2. Replace it with `llvm_unreachable` or an `abort` with a better message.
+   Rejected for the same reason, and spec 11.4 item 5 asks for graceful refusal
+   in every build mode.
+3. Keep the assert but only under a debug flag the tests can turn off. Rejected:
+   it makes the tested behaviour differ from the shipped behaviour, which is the
+   defect, not the fix.
+4. Delete the assert so the already correct refusal path is the only path.
+   Chosen.
+
+**Chosen fix.** Delete the assert and the now unused `<cassert>` include, and
+rewrite the comment to state what the code does: every access is checked in
+every build mode, the first refusal records its message and returns `nullptr`,
+each caller tests the pointer and skips the access, and execution runs to the
+end so the caller gets a result carrying the diagnostic. Only the first refusal
+is kept, because it is the one that explains the run and the rest are its
+consequences.
+
+Audited all eleven `spAt` and `dramAt` call sites while here, since a missing
+null test becomes a null dereference the moment the assert stops aborting
+first. All eleven already test the pointer: the constant and input preload and
+the output readback use `if (float *p = ...)`, and every opcode arm binds its
+pointers and then tests them together before touching memory. Conv2D and MatMul
+correctly distinguish a bias that is absent (two operands, `nullptr` is legal)
+from a bias that was refused. No call site needed fixing.
+
+**Verification.** `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+passes in both `build-asserts` (`-DCMAKE_BUILD_TYPE=Debug`, asserts on) and
+`build-ndebug` (`-DCMAKE_BUILD_TYPE=Release`, `NDEBUG`), which is the pair that
+would have diverged before. `grep -rn "assert(false)" lib/ tools/` is empty.
+
+## 2026-08-09 Phase U3: a test that never reached the rule it named
+
+**Symptom.** `Validation.RejectsRegionPastTheEndOfDram` failed, but not by the
+program being accepted. `validate()` rejected it. What failed was the assertion
+about which rule did the rejecting:
+
+```
+Expected equality of these values:
+  error->check
+    Which is: "region-offset"
+  check
+    Which is: "region-in-range"
+rejected, but by the wrong rule: program: region-offset: output 0 has DRAM
+offset 8190, which is not 4 byte aligned
+```
+
+**Root cause.** Test authoring, not product code. The test set
+`p.outputs[0].dramOffset = 8190` to push a 40 byte output past the end of an
+8192 byte DRAM. 8190 is not a multiple of 4, and `checkRegion()` tests alignment
+before it tests range, so the alignment rule claimed the program and the range
+rule never ran.
+
+The design point is worth recording, because this is the first time it paid for
+itself. `expectRejected()` asserts the rule name rather than merely that
+something was rejected. A test that only checked "rejected" would have been
+green here while exercising a completely different rule, and `region-in-range`
+would have shipped with no coverage at all while appearing to have some. That
+is the exact failure mode the file's header comment warns about, and it caught
+its own author.
+
+**Options considered.**
+
+1. Reorder `checkRegion()` so range is tested before alignment. Rejected: it
+   edits product code to suit a test, and alignment first is the correct order
+   anyway, since every access indexes as `addr / 4` and a misaligned offset
+   makes the range arithmetic meaningless.
+2. Relax the assertion to "rejected by something". Rejected: that is precisely
+   the weakness this file was written to avoid, and it would leave
+   `region-in-range` untested while looking tested.
+3. Choose an aligned offset that still overruns. Chosen.
+
+**Chosen fix.** 8160. It is 4 byte aligned (8160 = 4 * 2040), and the output
+region holds 10 fp32 elements, so it spans [8160, 8200), which ends 8 bytes past
+an 8192 byte DRAM. Alignment passes, range fires, and the test asserts the rule
+it was written for. The trailing comment now carries that arithmetic so the
+constant is not a magic number, and says what the old one got wrong.
+
+**Verification.** Shown failing before ("rejected, but by the wrong rule ...
+region-offset ... not 4 byte aligned") and passing after. No product code was
+touched, and the encoding suite moved by exactly this one test.
+
+## 2026-08-09 Phase U3: the overflow guard was itself the overflow
+
+**Symptom.** `Validation.RejectsShapeThatWouldOverflow` failed, in the most
+pointed way available: the program it plants is the exact case the guard exists
+for, and `validate()` accepted it. Built with `-fsanitize=undefined` the same
+test also reported signed integer overflow at `Program.cpp:197`.
+
+**Root cause.** `shapeElements()` accumulated the product and then checked it:
+
+```cpp
+n *= d;
+if (n > kLimit)
+  return std::nullopt;
+```
+
+A check can only run on a value that has already been computed, and computing
+that value is the undefined behaviour. For a shape like `{2^40, 2^24}` the
+multiply overflows int64 and wraps, so what the comparison sees is a small
+number and the function returns a plausible element count for a shape it exists
+to refuse. Downstream that count is multiplied by 4 and compared against a
+region bound, where a wrapped product compares as comfortably in range. The
+failure mode is therefore not a crash at decode but a program that validates
+and then walks off the end of a buffer at run time, which is precisely what
+phase U3 exists to make impossible.
+
+Worth recording that the test was written before the implementation and was red
+for a real reason, not a wrong expectation. A guard exercised only with inputs
+an order of magnitude below its own limit looks correct forever.
+
+**Options considered.**
+
+1. Accumulate in a wider type (`__int128`) or in unsigned arithmetic and keep
+   checking after the multiply. Rejected: it buys correctness with a compiler
+   extension, or with wrapping semantics that are defined but still leave the
+   check written the wrong way round for the next person to copy.
+2. Test `n > kLimit / d` before the multiply. Chosen. It is the standard
+   division based overflow test, it needs no wider type, and the `d <= 0`
+   rejection immediately above it guarantees the divisor is at least 1.
+3. Lower `kLimit` far enough that no product can overflow. Rejected: it changes
+   an encoding contract to work around an arithmetic bug, and any cap large
+   enough to be useful is still large enough to overflow when squared.
+
+**Chosen fix.** Test the headroom before consuming it, so the guard never
+performs the operation it is guarding:
+
+```cpp
+if (d <= 0 || d > kLimit)
+  return std::nullopt;
+if (n > kLimit / d)
+  return std::nullopt;
+n *= d;
+```
+
+`kLimit` stays at `int64_t{1} << 40` and the signature is unchanged, so the
+three callers (the region check, the constant data check, and the instruction
+result check) keep the contract they were written against. The comment above
+the function now says the cap is inclusive, because that is the one part of the
+behaviour a reader cannot recover without working through the integer division.
+
+**Verification.** `Validation.RejectsShapeThatWouldOverflow` shown failing
+before the change ("expected result-shape to reject this") and passing after.
+Added `Validation.RejectsShapeAtTheOverflowBoundary`, which pins both sides of
+the cap: `{2^20, 2^20}` is exactly 2^40 and has to fall through the shape rule
+to `result-in-range`, while `{2^20, 2^21}` is one bit past and has to be caught
+by `result-shape`. Asserting which rule fires is what keeps the boundary from
+drifting silently, since either shape is rejected either way. A rebuilt
+`build-san` running `Validation.*` under ASan and UBSan reports no diagnostic of
+any kind, in particular nothing at `Program.cpp`.
+
 ## 2026-08-08 Phase U0: a regression net before any upgrade work starts
 
 **Symptom.** Not a bug. The upgrade specification (`UPGRADE_SPEC_V3.md`) asks for a

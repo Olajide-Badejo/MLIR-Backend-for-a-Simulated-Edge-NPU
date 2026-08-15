@@ -68,6 +68,32 @@ Corrected or newly pinned by this document:
   oracle, add SCALE-Sim for cycles and Accelergy for energy. See Section 5.4 and
   ASSESSMENT sections 10.3 through 10.7. Do not replace the in house simulator.
 
+### 0.4 Status as of 2026-08-09 (second audit)
+
+The repository was re-audited on 2026-08-09; the full evidence is
+`docs/ASSESSMENT.md` section 13. Where this spec and that section disagree
+about the current state of the tree, section 13 is newer and wins. Standing:
+
+- **Phases U0, U1, U2 are implemented and merged locally** (`main` at
+  `6d62406`). Their code gates pass on this machine.
+- **Phase U2 is not finished by its own gate:** nothing since 2026-08-07 has
+  been pushed, so the new CI has never run on GitHub, the README badge still
+  reports the old lint only workflow, the GHCR LLVM image does not exist yet
+  (anonymous manifest probe returns 403), and the four fault class proof runs
+  of Section 10.2 are outstanding. Completion requirements are in Section
+  10.4.
+- **Phase U3 is in flight, uncommitted, on the `main` checkout.** 39 of its 42
+  encoding tests pass. The re-audit found five defects that must be fixed
+  before it lands; they are itemized in Section 11.4 and in ASSESSMENT 13.2.
+- **The committed PDFs are stale** and still embed numbers traced to the
+  nonexistent commit `8095dbec`; regenerating results and rebuilding both PDFs
+  after U3 lands is a required step (ASSESSMENT 13.3 and 13.4 item 3).
+- **The remaining work is serialized into 65 consecutive, independently
+  executable parts in Section 25**, published as
+  `upgrade_parts/UPGRADE_SPEC_V3_Part_1.md` through `_Part_65.md`. One agent
+  session implements one part; each part restates its own context, so a fresh
+  agent needs only its part file and this repository.
+
 ---
 
 ## 1. Aim and objectives
@@ -585,6 +611,23 @@ A CI pipeline that has never failed is not known to work. Before merging:
 - [ ] The README CI badge points at the real workflow
 - [ ] Baseline check clean
 
+### 10.4 Addendum 2026-08-09: completion requirements
+
+The workflows exist and pass locally, but the 10.3 gate is unmet because
+nothing has been pushed. To finish the phase (serialized as Part 6 in Section
+25):
+
+1. Push `main` and the `upgrade/*` branches to origin.
+2. Dispatch `llvm-image.yml` and wait for
+   `ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8` to exist; it currently does
+   not (anonymous probe returns 403), so any earlier push shows a red badge at
+   container pull. If the Actions build of the image exceeds the public
+   runner's 6 hour job limit, build the same Dockerfile locally in WSL and
+   `docker push` it once by hand; the workflow's manual dispatch design
+   tolerates that.
+3. Re-run CI, record the green URL, then run the four fault class proofs of
+   Section 10.2 and record the four red URLs in `docs/ENGINEERING_LOG.md`.
+
 ---
 
 ## 11. Phase U3: harden the binary interface (1 session, mandatory)
@@ -633,6 +676,51 @@ ASSESSMENT roadmap item 8, and ASSESSMENT 2.3.
 - [ ] Baseline check clean
 - [ ] `docs/ISA_MANUAL.md` documents the validation rules and the version policy
 
+### 11.4 Addendum 2026-08-09: defects in the in flight implementation
+
+The working tree already holds most of this phase, uncommitted: `validate()`,
+`decodeUnvalidated()`, the checked simulator accessor, the `npu-sim` and
+`npu-translate` and allocator diagnostics, 32 validation tests, the property
+test, and a 322 case fuzz corpus. 39 of 42 encoding tests pass. The re-audit
+(ASSESSMENT 13.2, evidence in WSL `/tmp/npuverify/`) found what remains, and
+these are now gate items:
+
+1. `shapeElements()` checks its running product against the 2^40 cap only
+   after multiplying, so the guard itself overflows (UBSan confirms at
+   `Program.cpp:197`) and a shape like `{2^40, 2^24}` wraps to 0 and is
+   accepted. Test `d > kLimit / n` before multiplying. This is why
+   `Validation.RejectsShapeThatWouldOverflow` fails.
+2. The simulator grows the scratchpad to cover every result write before
+   execution (`Simulator.cpp:127`), which absorbs out of range result
+   addresses and neutralizes the new result bounds check; it also computes
+   `resultAddr + elements * 4` on unvalidated input, which can itself overflow
+   or demand an absurd allocation. Gate the expansion behind validation or
+   size strictly from the declared `scratchpadBytes`. This is why
+   `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+   fails.
+3. `Validation.RejectsRegionPastTheEndOfDram` uses `dramOffset = 8190`, which
+   is rejected by the alignment rule before the range rule it names. Use an
+   aligned offset such as 8160.
+4. `validate()` never compares operand read extents to what was written; the
+   written before read walk checks membership only, so a validated program can
+   still trap in the simulator, and interior over reads silently read stale
+   data. Record each written buffer's element count and require the consumer's
+   need to fit it.
+5. The trap path contains `assert(false)`, so an assert enabled build aborts
+   instead of returning `SimResult.error`, and the comment above it describes
+   clamping the code does not do. Remove the assert and make graceful refusal
+   the behavior in every build mode.
+
+Also fold in while the files are open: probe the decoder's just under the
+2^28 count cap allocation path in the corpus; make `encodeFunction`'s
+`.Default` case return failure instead of emitting a diagnostic and
+succeeding; have `npu-sim` either support multiple `--input` flags or refuse
+multi input programs; correct the false "tagged records" phrase in both
+`docs/ISA_MANUAL.md` and the `Program.h` header comment, and state the real
+byte order policy (the helpers are host endian despite their comment). Move
+the work to `upgrade/u3-harden-the-binary-interface` before committing (rule
+11).
+
 ---
 
 ## 12. Phase U4: measurement integrity (2 sessions, mandatory)
@@ -676,6 +764,22 @@ ASSESSMENT roadmap items 9 through 14.
 - [ ] `mypy` clean and in CI
 - [ ] Progress bar works and is TTY aware, verified both ways
 - [ ] Tight budget regression written up
+
+### 12.3 Addendum 2026-08-09
+
+Three additions from the re-audit (ASSESSMENT 13.4 items 4, 5, 9):
+
+1. When replacing the regex count, note that the README's objdump excerpt
+   ("21 instructions") already matches the simulator's true `-O2` count; it is
+   the headline table that is wrong. Regenerate both from a real run so they
+   agree.
+2. mypy landed early in U2 but is scoped to `python/npu_frontend` and targets
+   Python 3.12 while the venv runs 3.14. Widen the scope to `experiments/`,
+   `scripts/`, and `test/Python`, and raise the target to the newest version
+   the pinned tools support, recording why if it cannot reach 3.14.
+3. Replace the CI coverage step's grep of the first `lines:` figure with a
+   `gcovr --json-summary` parse, and add a Python coverage threshold to match
+   the C++ one.
 
 ---
 
@@ -1021,3 +1125,272 @@ omniscient, and the codebase will move underneath it.
   report the revised estimate rather than half landing a large change.
 - If two requirements conflict, the prime directive (Section 0.2) wins, then the no
   silent failure rule (Section 5.3), then everything else.
+
+---
+
+## 25. The 65 part execution plan (added 2026-08-09)
+
+The remaining work, from finishing the in flight Phase U3 through the full
+U13 Gemmini backend, is serialized here into 65 consecutive parts. Each part
+is sized for one agent session and is published as a self contained work
+order at `upgrade_parts/UPGRADE_SPEC_V3_Part_N.md`. The intended workflow: a
+fresh agent receives exactly one part file, implements it, passes its gate,
+lands it, and stops; the next agent receives the next part.
+
+### 25.1 The execution contract, binding for every part
+
+1. Part N assumes parts 1 through N-1 are merged. Every part begins with a
+   preflight that verifies this (suites green, expected artifacts present).
+   If preflight fails, stop and report; do not repair earlier parts silently.
+2. Every part obeys this spec's ground rules (Section 4), the prime directive
+   (0.2), the no silent failure rule (5.3), the testing matrix (Section 9),
+   and the machine constraints (Section 3: 12 GB ceiling, build at `-j6`,
+   never rebuild LLVM).
+3. Every part works on the phase branch its file names, lands via merge to
+   `main` only when its gate passes with output shown, and updates
+   `CHANGELOG.md`, `docs/ENGINEERING_LOG.md`, and the relevant docs in the
+   same commits. Parts marked GATE also walk their phase's gate checklist
+   from this spec.
+4. A part that discovers its premise is false follows Section 24: evidence,
+   skip, report. A part that discovers a new defect adds it to
+   `docs/ASSESSMENT.md` and fixes it in the part where it belongs.
+5. No part may leave the tree red. If a part cannot finish, it stops at a
+   working point on its branch and reports what remains.
+
+### 25.2 Part manifest
+
+**Finishing Phase U3 (Section 11, addendum 11.4):**
+
+- **Part 1 (U3).** Overflow safe `shapeElements()` in `Program.cpp` (test
+  `d > kLimit / n` before multiplying) and the aligned `dramOffset` fix in
+  `Validation.RejectsRegionPastTheEndOfDram`. Gate: those two tests green,
+  UBSan clean on the validation suite, no other test moves.
+- **Part 2 (U3).** Remove the simulator's pre validation scratchpad auto
+  expansion (size strictly from declared `scratchpadBytes`; existing unit
+  test programs get explicit sizes), and replace the `assert(false)` trap
+  with graceful refusal in every build mode; fix the stale clamping comment.
+  Gate: `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+  green in both NDEBUG and asserts on builds, simulator suite green.
+- **Part 3 (U3).** Close the remaining validate gaps: compare operand read
+  extents against written element counts; probe the decoder's just under cap
+  allocation path with new corpus cases; make `encodeFunction`'s `.Default`
+  return failure; `npu-sim` multi input support or a counted refusal. Gate:
+  new tests for each, 42 of 42 encoding tests green, fuzz corpus grown and
+  clean.
+- **Part 4 (U3, GATE).** U3 documentation and landing: ISA manual gains the
+  validation rules and version policy, "tagged records" corrected in both the
+  manual and `Program.h`, byte order policy stated; migrate the work to
+  `upgrade/u3-harden-the-binary-interface`; full 11.3 gate including ASan,
+  UBSan, 1000 iteration property test, baseline check; merge.
+
+**Republishing truthful numbers (ASSESSMENT 13.3, 13.4):**
+
+- **Part 5.** Regenerate the six benchmark results on the clean post U3 tree,
+  rebuild both PDFs from them, and commit results, generated tex, and PDFs as
+  separate commits. Gate: `test_committed_results_are_current` green, the
+  local `macros.tex` sha matches the results manifests, no PDF in the tree
+  traces to `8095dbec`.
+- **Part 6 (closes U2 per 10.4).** Push `main` and branches, dispatch
+  `llvm-image.yml` (local docker build and push fallback per 10.4), CI green
+  URL recorded, then the four fault class proof runs of 10.2 with their four
+  red URLs recorded in `docs/ENGINEERING_LOG.md`. Gate: 10.3 checklist fully
+  satisfied.
+
+**Phase U4, measurement integrity (Section 12):**
+
+- **Part 7 (U4).** Replace the regex instruction count with the simulator's
+  `stats.instructions` everywhere (harness, plots, README table, report),
+  regenerate results, record the headline change in `CHANGELOG.md`, and
+  regenerate the README objdump excerpt from a real run (12.3 item 1).
+- **Part 8 (U4).** Per pass instrumentation: before and after op counts per
+  individual pass and wall clock per pass from `--mlir-timing`, recorded per
+  cell in the results schema.
+- **Part 9 (U4).** Leave one out ablations for every `-O2` pass, results
+  schema and plots extended, evaluation table updated.
+- **Part 10 (U4).** The full e2e matrix of Section 9.6 at every level and
+  both budgets with both tolerances and the five input classes; slow cells
+  markered.
+- **Part 11 (U4, GATE).** TTY aware progress bar in `npu-sim` (plus the
+  projected wall clock line), the tight budget regression write up in the
+  evaluation, mypy scope and version widening (12.3 item 2), coverage step
+  moved to a JSON summary parse with a Python threshold (12.3 item 3); walk
+  the 12.2 gate.
+
+**Phase U5, external cross validation (Section 13):**
+
+- **Part 12 (U5).** `experiments/scalesim_export.py` emitting the topology
+  CSV and architecture config from allocated `npuisa` IR, with pytest
+  coverage on shapes and edge cases.
+- **Part 13 (U5).** Harness integration: `scalesim_cycles` per cell, SCALE-Sim
+  version in the manifest, and the divergence direction prediction written
+  into the evaluation **before** any number is recorded.
+- **Part 14 (U5).** Accelergy: explicit MAC count in `Stats`, the estimation
+  plug in adapter, `energy_pj` and `area_mm2` per cell.
+- **Part 15 (U5, GATE).** The `cost_model_agreement` subsection with the
+  prediction compared against measurement, the energy column in the README,
+  fusion re-argued in energy terms, dependencies pinned and documented; walk
+  the 13.3 gate.
+
+**Phase U6, real batch support (Section 14):**
+
+- **Part 16 (U6).** Batch loop in the conv2d kernel, with the failing first
+  batch 2 regression test from ASSESSMENT 2.1 shown failing then passing, and
+  batch 4 GoogleTests against hand computed values.
+- **Part 17 (U6).** Batch in `pool`, the batched matmul decision (rank 3
+  support or documented rank 2), elementwise ops verified batched, cost model
+  scaling with batch.
+- **Part 18 (U6).** Remove the U1 guards at both layers, add the batched
+  LeNet model, extend the e2e matrix with `batch in [1, 4]`.
+- **Part 19 (U6, GATE).** Walk the 14.3 gate: batch 1 numbers unchanged
+  against the baseline, results regenerated (schema now includes batch),
+  docs, merge.
+
+**Phase U7, operator coverage (Section 15):**
+
+- **Part 20 (U7).** `TRANSPOSE` end to end: `npuisa` opcode appended, ONNX
+  `Transpose` converter, lowering, encoder, simulator kernel, `validate()`
+  arity, tests at every layer, ISA manual entry.
+- **Part 21 (U7).** `CONCAT` end to end, same layers as Part 20, including
+  the ONNX `Concat` converter.
+- **Part 22 (U7).** Unfolded `batch_norm` decomposed to mul plus add in the
+  lowering, with lit and e2e numerics tests.
+- **Part 23 (U7).** Importer wave 1: `Add`, `Mul`, `Identity` converters with
+  per op pytests.
+- **Part 24 (U7).** Importer wave 2: `MatMul`, `GlobalAveragePool`, `Clip`,
+  `BatchNormalization` converters with per op pytests.
+- **Part 25 (U7).** Bias fusion pattern (`add(conv(x, w), b)` into the bias
+  operand) with positive and negative lit tests, the misleading lit test
+  renamed, `-cse` and `-sccp` enabled in `_passes_for_level` with ablation
+  rows.
+- **Part 26 (U7).** `InferTypeOpInterface` plus arithmetic shape verification
+  for conv, matmul, pools (output arithmetic, bias length, group
+  divisibility, positivity); `_attr` rewritten to switch on
+  `AttributeProto.type`; `count_include_pad` handled or rejected; the all
+  padding average pool divide guarded.
+- **Part 27 (U7, GATE).** Reachability passes with zero exemptions, the
+  exemption table emptied, `DIALECT_REFERENCE.md` regenerated with a CI
+  staleness gate added, walk the 15.2 gate, merge.
+
+**Phase U8, the model suite (Section 16):**
+
+- **Part 28 (U8).** Suite wave 1: depthwise separable block and small ResNet
+  block in `MODELS` with structural pytests and e2e cells.
+- **Part 29 (U8).** Suite wave 2: small Inception block, dilated conv stack,
+  batched LeNet row, same requirements.
+- **Part 30 (U8).** The Conv plus BatchNorm plus ReLU model exported with
+  `do_constant_folding=False`, `-npu-fold-batchnorm` wired into `-O2`, the
+  fold numerics e2e test.
+- **Part 31 (U8).** Full suite benchmarks across the complete matrix, the
+  BatchNorm ablation row with a measured delta, suite runtime measured under
+  30 minutes.
+- **Part 32 (U8, GATE).** README and report regenerated from the full suite
+  results, every number tracing to a committed result, walk the 16.3 gate,
+  then walk the 23.1 mandatory core checklist and tag `v2.0.0`.
+
+**Phase U9, allocator and performance (Section 17):**
+
+- **Part 33 (U9).** Belady style cost aware spill heuristic behind a pass
+  option, old heuristic preserved, lit tests for both.
+- **Part 34 (U9).** Heuristic comparison benchmarked as an ablation; verify
+  whether it fixes the tight budget regression and update the evaluation
+  subsection either way.
+- **Part 35 (U9).** O(n log n) liveness and allocation via a sweep line, with
+  the synthetic 5000 op compile time benchmark recorded before and after.
+- **Part 36 (U9).** Parallel or im2col convolution kernel, suite runtime drop
+  measured, numerics unchanged against goldens.
+- **Part 37 (U9, GATE).** Allocator test quartet (fits, spill, fragmentation,
+  budget too small), the two port cost model decision made with U5 divergence
+  data and recorded in `docs/DESIGN_DECISIONS.md`, walk the Section 17 gate,
+  merge.
+
+**Phase U10, memref and memory spaces (Section 18, own branch):**
+
+- **Part 38 (U10).** Design and types: `#npu.scratchpad` and `#npu.dram`
+  memory space attributes, memref based `npuisa` op signatures, parser and
+  printer round trip tests, `docs/ARCHITECTURE.md` design entry.
+- **Part 39 (U10).** The npu to npuisa lowering re-expressed on memrefs with
+  bufferization integration.
+- **Part 40 (U10).** `AllocateScratchpad` re-expressed as allocation on the
+  scratchpad memory space, spill semantics preserved, lit tests updated with
+  justification per test.
+- **Part 41 (U10).** Encoder consumes the memref form; binary format
+  unchanged; round trip and golden tests prove numerics identical.
+- **Part 42 (U10).** `TilingInterface` and `DestinationStyleOpInterface`
+  implemented for the compute ops, with interface unit tests.
+- **Part 43 (U10, GATE).** Full matrix on the branch, goldens unchanged,
+  documentation rationale, merge the long lived branch.
+
+**Phase U11, INT8 quantization (Section 19, depends U10):**
+
+- **Part 44 (U11).** `quantize` and `dequantize` ops with verifiers, round
+  trip and invalid tests, documentation.
+- **Part 45 (U11).** The calibration pass and its Python driver harness
+  (min max observation over calibration inputs), with unit tests.
+- **Part 46 (U11).** `QUANT` and `DEQUANT` opcodes: encoder, `validate()`
+  rules, ISA manual entries, opcodes appended not renumbered.
+- **Part 47 (U11).** Integer simulator kernels (int8 by int8 into int32
+  accumulate) with hand computed GoogleTests.
+- **Part 48 (U11).** Quantized e2e across the suite: accuracy deltas
+  recorded per model in the results schema.
+- **Part 49 (U11, GATE).** The accuracy versus cycles versus energy
+  evaluation section, calibration methodology documented, walk the Section
+  19 gate, merge.
+
+**Phase U12, advanced optimization (Section 20):**
+
+- **Part 50 (U12).** Asynchronous DMA: token producing `dma_load_async` and
+  `dma_store_async` plus `await`, verifiers, lowering support, lit tests.
+- **Part 51 (U12).** Double buffering pass built on the tokens, plus the two
+  port overlap treatment in the cost model per the Part 37 decision, with
+  ablation rows.
+- **Part 52 (U12).** Region based `npu.fused_op` replacing the two case
+  `Activation` enum, generalizing fusion to elementwise chains; migration of
+  the existing fusion patterns; negative tests.
+- **Part 53 (U12).** Layout assignment (NCHW versus NHWC) as an optimization
+  with the layout encoding attribute, and its ablation row.
+- **Part 54 (U12).** Tiling part 1 (depends U10): tile convolutions and
+  matmuls that exceed the scratchpad via `TilingInterface`, replacing whole
+  tensor spilling as the only response to a tight budget.
+- **Part 55 (U12).** Tiling part 2: tile size selection heuristic, the tight
+  budget cells re-benchmarked against the U9 spilling story, evaluation
+  updated.
+- **Part 56 (U12).** The `.nbin` debug section mapping program counter to
+  ONNX node name, `npu-sim --trace`, objdump support, format version bump
+  with validation.
+- **Part 57 (U12, GATE).** ZigZag design space exploration cross check on the
+  tiling choices, U12 evaluation subsection consolidated, merge.
+
+**Phase U13, Gemmini (Section 21, ASSESSMENT section 12):**
+
+- **Part 58 (U13).** Stage 0 toolchain: Chipyard, riscv-tools, Spike; build
+  and run Gemmini's own bundled tests inside the 12 GB budget. Hard stop
+  gate: if this does not fit the machine, stop U13 and record why.
+- **Part 59 (U13).** Stage 0 wrap: the sibling backend skeleton (separate
+  repo or CMake flag per ASSESSMENT 12.7), environment pinning documented,
+  smoke test scripted.
+- **Part 60 (U13).** Stage 1: a single 16x16 matmul emitted as `config_ex`,
+  `mvin`, `matmul.preload`, `matmul.compute.preloaded`, `mvout`, validated
+  against numpy on Spike.
+- **Part 61 (U13).** Stage 2 cheap path: emit `loop_ws`, run LeNet's fully
+  connected layers end to end on Spike.
+- **Part 62 (U13).** Stage 3 groundwork: the allocator re-expressed for
+  Gemmini's row addressed scratchpad and separate accumulator address space,
+  building on the U10 memory spaces.
+- **Part 63 (U13).** Stage 3 real path: compiler directed tiling emitting
+  explicit `matmul.preload` plus `matmul.compute` sequences, building on the
+  U12 tiling; whole matmul path validated on Spike.
+- **Part 64 (U13).** Stage 4: convolution via im2col or `loop_conv_ws`,
+  whole LeNet on Spike, the INT8 versus FP config decision made and
+  recorded (ASSESSMENT 12.2 item 4).
+- **Part 65 (U13, FINAL GATE).** Stage 5: Verilator cycle counts within the
+  memory ceiling plan of ASSESSMENT 12.6, the headline comparison of
+  compiler directed tiling versus the hardware `loop_ws` on the same RTL,
+  the report's Gemmini section, the full definition of done walked one last
+  time, `v3.0.0` tagged.
+
+### 25.3 Regenerating the part files
+
+The part files are derived from this section plus the phase sections they
+cite. If this spec changes, regenerate the affected part files rather than
+editing them by hand, and keep part numbering stable: a part that becomes
+unnecessary is replaced by a file stating so and why, never renumbered.

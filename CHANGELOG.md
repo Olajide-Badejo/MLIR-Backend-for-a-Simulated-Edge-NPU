@@ -6,8 +6,61 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase U3 summary: the user visible surface
+
+Everything below is detailed in its own entry; this is what changed for someone
+running the tools rather than reading the source.
+
+- `Program::decode()` now means decode **and** validate. A `.nbin` that decodes
+  but violates an invariant is refused, naming the rule and the offending
+  construct, instead of being handed to the simulator. `npu-objdump` keeps the
+  old permissive path through `decodeUnvalidated()` and warns.
+- `npu-sim` takes one `--input` per declared input region, refuses a count that
+  does not match the program, refuses an input file whose float count does not
+  match its region, and writes every output rather than only the first.
+- `npu-translate` refuses a multi function module instead of encoding the first
+  function and dropping the rest, and refuses an op it cannot encode instead of
+  printing an error, writing the `.nbin`, and exiting 0.
+- `AllocateScratchpad` refuses a multi block function instead of silently
+  allocating for the first block.
+- The simulator sizes its scratchpad from the declared budget only, so a program
+  writing outside it is refused rather than accommodated, and it refuses an out
+  of bounds access gracefully in every build mode rather than aborting under
+  asserts.
+- `docs/ISA_MANUAL.md` documents the real format, the byte order, every
+  validation rule by check name, and the version policy.
+
 ### Added
 
+- Phase U3: `npu-sim` accepts `--input` once per declared input region, in
+  declaration order, and checks each file's float count against that region's
+  shape. It used to keep a single input path, so a two input program ran with
+  its second input left as zeros and said nothing, which is a confident wrong
+  answer. A count that does not match the program is now refused with both
+  numbers in the message (**behaviour change, deliberate**: a program with
+  declared inputs run with no `--input` used to simulate them as zeros). The
+  usage string and the Tools section of `docs/ISA_MANUAL.md` describe it, and
+  the manual now documents `npu-sim` and the numbered multi output files at all.
+- Phase U3: `Program::validate()`, a structured check of every invariant the
+  simulator relies on, and `Program::decode()` now means decode plus validate.
+  Before this, `decode()` checked the magic, capped a few vector lengths, and
+  stopped; everything downstream trusted the result, so the simulator did raw
+  pointer arithmetic on unchecked addresses, `Conv2D` indexed `operandAddrs[1]`
+  whether or not it existed, and an out of range opcode fell through a `switch`
+  as undefined behaviour. A `ValidationError` names the failing rule, the
+  instruction index, and the offending construct.
+- Phase U3: `Program::decodeUnvalidated()`, for `npu-objdump` alone. A
+  disassembler has to be able to dump a suspect file, so it deliberately keeps
+  the old permissive path and prefixes the dump with a warning.
+- Phase U3: an always on bounds checked scratchpad accessor in the simulator,
+  input size checking and multi output writing in `npu-sim`, a multi function
+  diagnostic in `npu-translate`, and a multi block diagnostic in
+  `AllocateScratchpad`.
+- Phase U3: `unittests/Encoding/ValidationTest.cpp` (one test per validation
+  rule, each asserting which rule caught it, not merely that something did),
+  `PropertyTest.cpp` (a 1000 iteration encode and decode round trip), and
+  `FuzzTest.cpp` (a 322 case corpus of malformed inputs, asserting that every
+  one is refused or survived rather than crashing).
 - Phase U2: CI that builds the compiler and runs every suite. `ci.yml` gains
   `build-and-test` (configure, build, lit, both GoogleTest binaries, pytest, the
   reachability check with its model layer, and the regression baseline),
@@ -56,6 +109,25 @@ Semantic Versioning once a release is tagged.
 
 ### Changed
 
+- Phase U3 (**behaviour change, deliberate**): the simulator sizes its
+  scratchpad strictly from the declared `scratchpadBytes`. It used to grow the
+  scratchpad to cover every `resultAddr` it found in the instruction stream,
+  which swallowed the U3 hardening whole: an out of range result address was
+  quietly accommodated rather than refused, so the new result bounds check could
+  only ever fire on a negative or misaligned address. The growing arithmetic
+  also ran before any validation, computing `resultAddr + elements * 4` on
+  hostile input at the exact entry point the check exists to defend. A program
+  that writes outside its declared budget is now refused. Nothing in the
+  compiler regressed: `-npu-allocate-scratchpad` records its high water mark in
+  `npuisa.scratchpad_bytes` and the encoder emits that as `scratchpadBytes`, so
+  every compiled program declares exactly what it uses. Only hand built
+  `Program` values that declared no scratchpad at all relied on the expansion.
+- Phase U3: every hand built `Program` in `unittests/Simulator/SimulatorTest.cpp`
+  now sets `scratchpadBytes` explicitly, at the smallest size that covers its
+  writes (32, 48, 80, 64, 20, and 32 bytes), with the arithmetic in a comment.
+  They set `dramBytes` but never `scratchpadBytes`, so they ran only because the
+  simulator grew the scratchpad to fit whatever the instructions referenced. A
+  tight explicit size is what makes a future off by one visible.
 - Phase U1 (**behaviour change, deliberate**): a batch size other than 1 is now
   rejected instead of silently computing wrong numbers. The simulator's
   convolution kernel hardcodes batch index 0 and its pooling kernel never sees
@@ -83,6 +155,81 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: the `.nbin` format was documented as "a fixed header followed by
+  tagged records, little endian" in `docs/ISA_MANUAL.md`, in the
+  `include/NPU/Encoding/Program.h` header comment, and in a
+  `docs/DESIGN_DECISIONS.md` heading. Both halves were false. There are no tags:
+  every field sits at a position determined by the fields before it, so nothing
+  can skip an unrecognised field, which is exactly why the version field exists.
+  And the helpers copy the object representation in and out of the stream, so the
+  encoding is host byte order, not a fixed little endian; a `.nbin` is not
+  portable across byte orders. All three now say what is true, and the code
+  comment claiming little endian helpers says so too. No byte swapping was added:
+  that is a format change. `docs/ASSESSMENT.md` 13.4 item 7 had found two of the
+  three places.
+- Phase U3: `Fuzz.DecodeUnvalidatedNeverCrashesEither` accumulated the fields it
+  touches into a signed `int64_t`, and the corpus holds a file declaring
+  `INT64_MAX` bytes of scratchpad, which `decodeUnvalidated` returns by design.
+  Adding to that was undefined behaviour in the test itself, reported by UBSan
+  the first time the whole corpus was run under it. The accumulator is unsigned
+  now. Constant regions are touched by shape length rather than `byteSize()`,
+  which multiplies extents out and is only ever called by the encoder on shapes
+  from the MLIR type system, never on decoded input.
+- Phase U3: `encodeFunction`'s `.Default` case emitted `cannot encode unexpected
+  op`, skipped the op, and returned the program anyway, so `npu-translate`
+  printed an error, wrote the `.nbin`, and exited 0. Verified before the fix on
+  an unlowered `npu.relu`: exit code 0 and a 150 byte output file. The file was
+  the program with that work silently deleted from it, which is worse than no
+  file because it looks like a successful compile. It now returns failure, after
+  the loop rather than inside it so one run names every op it cannot encode.
+  `npu-translate` already checked the result before opening the output stream,
+  so it now exits nonzero and leaves no file.
+- Phase U3: the decoder's `getCount()` capped element counts at 2^28 and stopped
+  there, which bounds the number but not the work. At the cap a single shape
+  vector is 2 GiB, and `getVec()` sized that vector from the count before
+  reading a byte behind it, so a thirty byte file naming a count near the cap
+  was a decompression bomb. Measured on the new probes: 2.0 GiB peak RSS and 43
+  seconds to refuse 36 tiny files. `getCount()` now also takes the smallest
+  space one element can occupy and refuses a count the remaining bytes cannot
+  back, which is the truncation it always was. The same 36 files now cost 6 MB
+  and no measurable time. A well formed file always carries those bytes, so
+  nothing the format permits is rejected; the 1000 iteration round trip property
+  test covers that.
+- Phase U3: `Program::validate()` checked operand reads for membership only. Its
+  written before read walk records an element count per result address, then
+  asked whether the address had been written and never whether enough had been.
+  A `DMA_STORE` reading 100 elements from a 4 element buffer passed validation
+  and then trapped in the simulator, which contradicted the contract comment on
+  `Program.h` saying validate checks every invariant the simulator relies on. An
+  over read that stays inside the scratchpad was worse: it validated, ran, and
+  silently folded stale memory into the result. A new `operand-extent` rule
+  requires the recorded count to cover what the consumer reads, naming the
+  instruction, the operand, elements needed, and elements written. `CONV2D` and
+  `MATMUL` get the weaker rule of requiring a non zero recorded count, because
+  their extents follow from tensor shapes and the walk tracks counts.
+- Phase U3: the simulator's trap path called
+  `assert(false && "simulator memory access out of bounds")`, so an assert
+  enabled build aborted the process on exactly the input the bounds check was
+  added to handle, while a release build returned a diagnostic. Graceful refusal
+  is now the behaviour in every build mode: the first refusal is recorded in
+  `SimResult.error`, `nullptr` is returned, and the caller skips the access. The
+  comment above the accessor also claimed a failure "aborts in a debug build and
+  clamps to a scratch cell in a release build"; neither half was ever true of
+  the code below it, and it now describes what the code does.
+- Phase U3: `Validation.RejectsRegionPastTheEndOfDram` named the
+  `region-in-range` rule but set a DRAM offset of 8190, which is not 4 byte
+  aligned, so `region-offset` claimed the program first and the rule the test
+  exists for was never reached. The offset is now 8160, which is aligned and
+  still runs the 10 element output past the end of an 8192 byte DRAM. Nothing in
+  the decoder changed; the rule was correct and untested.
+- Phase U3: `shapeElements()` tested its running product against the 2^40 element
+  cap only after multiplying, so the multiply was itself the signed overflow the
+  cap exists to prevent (UBSan reported it at `Program.cpp:197`). A shape such as
+  `{2^40, 2^24}` wrapped to a small product, passed the cap, and was then
+  compared against a region bound as if it were small, so the guard accepted
+  exactly the input it was written to refuse. Each extent is now tested against
+  the headroom that is left before it is multiplied in. `kLimit` and the
+  function's signature are unchanged, so all three callers keep their contract.
 - Phase U2: `docker/Dockerfile.llvm` kept the entire LLVM build tree *and* ran
   `ninja install` to place a second copy alongside it, which is tens of
   gigabytes and not realistically pushable to a registry. Rewritten as two

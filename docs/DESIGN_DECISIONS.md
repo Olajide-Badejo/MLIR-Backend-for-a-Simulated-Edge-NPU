@@ -45,11 +45,18 @@ scratchpad buffers with addresses). That is exactly what the dialect conversion
 framework with a `TypeConverter` and materializations is for, so the lowering uses
 it and inserts DMA only at the DRAM boundaries.
 
-## Fixed header plus tagged records for the binary
+## Fixed header plus length prefixed sections for the binary
 
-The `.nbin` format is a fixed header followed by tagged, length prefixed records
-rather than a bit packed encoding. It is simpler to get right and to disassemble,
-and it is still a real, documented, decodable format.
+The `.nbin` format is a fixed header followed by fixed order, length prefixed
+sections rather than a bit packed encoding. It is simpler to get right and to
+disassemble, and it is still a real, documented, decodable format.
+
+The sections are **not** tagged, and this heading and paragraph said they were
+until 2026-08-09. Nothing skips an unrecognised field, because nothing can: every
+field's position depends on the fields before it. The consequence is deliberate
+and is what the version field is for, and the version policy in
+`docs/ISA_MANUAL.md` states it. Recorded here because the false phrase appeared in
+three places, and `docs/ASSESSMENT.md` 13.4 item 7 had found only two of them.
 
 ## Analytical cost model, labeled as such
 

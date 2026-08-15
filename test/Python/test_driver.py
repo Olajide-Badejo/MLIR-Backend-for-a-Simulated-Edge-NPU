@@ -56,6 +56,81 @@ def test_opt_levels_change_the_ir(tmp_path, npu_opt):
     assert o0.count("npu.relu") > o2.count("npu.relu")
 
 
+def test_npu_sim_takes_one_input_per_declared_region(tmp_path, npu_opt):
+    """npu-sim needs one --input per declared input, and says so when it is not.
+
+    It used to keep a single input path, so a two input program ran with its
+    second input left as zeros and reported nothing about it.
+    """
+    import subprocess
+
+    bindir = _bindir(npu_opt)
+    npu_sim = bindir / "npu-sim"
+    if not npu_sim.exists():
+        pytest.skip("npu-sim not built")
+
+    src = tmp_path / "two_inputs.mlir"
+    src.write_text(
+        "func.func @main(%a: tensor<1x1x2x2xf32>, %b: tensor<1x1x2x2xf32>)\n"
+        "    -> tensor<1x1x2x2xf32> {\n"
+        "  %0 = npu.add %a, %b : tensor<1x1x2x2xf32>\n"
+        "  return %0 : tensor<1x1x2x2xf32>\n"
+        "}\n"
+    )
+    lowered = tmp_path / "two_inputs.isa.mlir"
+    subprocess.run(
+        [
+            str(npu_opt),
+            str(src),
+            "-npu-lower-to-npuisa",
+            "-npu-allocate-scratchpad",
+            "-o",
+            str(lowered),
+        ],
+        check=True,
+    )
+    nbin = tmp_path / "two_inputs.nbin"
+    subprocess.run(
+        [str(bindir / "npu-translate"), str(lowered), "-o", str(nbin)], check=True
+    )
+
+    a = np.array([1, 2, 3, 4], dtype=np.float32).reshape(1, 1, 2, 2)
+    b = np.array([10, 20, 30, 40], dtype=np.float32).reshape(1, 1, 2, 2)
+    a_path = tmp_path / "a.bin"
+    b_path = tmp_path / "b.bin"
+    a_path.write_bytes(a.tobytes())
+    b_path.write_bytes(b.tobytes())
+    out_path = tmp_path / "out.bin"
+
+    # Two flags for two declared inputs. The result proves the second input was
+    # actually read: with it left as zeros the sum would be a alone.
+    subprocess.run(
+        [
+            str(npu_sim),
+            str(nbin),
+            "--input",
+            str(a_path),
+            "--input",
+            str(b_path),
+            "--output",
+            str(out_path),
+        ],
+        check=True,
+    )
+    got = np.frombuffer(out_path.read_bytes(), dtype=np.float32)
+    np.testing.assert_allclose(got, (a + b).reshape(-1))
+
+    # One flag for two declared inputs is the case that used to run quietly.
+    refused = subprocess.run(
+        [str(npu_sim), str(nbin), "--input", str(a_path), "--output", str(out_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert refused.returncode != 0
+    assert "2 input region(s)" in refused.stderr
+    assert "1 --input flag(s)" in refused.stderr
+
+
 def test_driver_nbin_matches_onnxruntime(tmp_path, npu_opt):
     bindir = _bindir(npu_opt)
     npu_sim = bindir / "npu-sim"

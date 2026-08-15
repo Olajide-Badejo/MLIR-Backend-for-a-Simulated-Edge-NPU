@@ -9,9 +9,11 @@
 #include "NPU/Encoding/InstructionEncoder.h"
 #include "NPU/Encoding/Program.h"
 
+#include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -19,50 +21,74 @@
 
 using namespace npu;
 
-TEST(EncodingFormat, RoundTrip) {
+// A small but genuinely valid program: load the input, load the weights,
+// convolve, halt. Shared by the round trip and validation tests so there is one
+// place that knows what a well formed program looks like.
+//
+// This used to be written inline with a scratchpad of 4096 bytes holding a
+// 13824 byte convolution result, and a weight operand at an address no
+// instruction ever wrote. Program::decode accepted it because it validated
+// nothing, so the round trip test was round tripping a program the simulator
+// could not have run.
+static Program validProgram() {
   Program p;
-  p.scratchpadBytes = 4096;
+  p.scratchpadBytes = 32768;
   p.dramBytes = 8192;
-  p.inputs.push_back({0, {1, 1, 28, 28}});
-  p.constants.push_back({4096, {6, 1, 5, 5}});
+  p.inputs.push_back({0, {1, 1, 28, 28}});    // 3136 bytes at 0
+  p.constants.push_back({4096, {6, 1, 5, 5}}); // 600 bytes at 4096
   p.constantData.push_back(std::vector<float>(150, 0.5f));
-  p.outputs.push_back({8000, {1, 10}});
+  p.outputs.push_back({8000, {1, 10}}); // 40 bytes, ending at 8040
 
-  Instruction dma;
-  dma.op = Opcode::DmaLoad;
-  dma.resultAddr = 0;
-  dma.resultShape = {1, 1, 28, 28};
-  dma.dramAddr = 0;
-  p.instructions.push_back(dma);
+  Instruction loadInput;
+  loadInput.op = Opcode::DmaLoad;
+  loadInput.resultAddr = 0;
+  loadInput.resultShape = {1, 1, 28, 28};
+  loadInput.dramAddr = 0;
+  p.instructions.push_back(loadInput);
+
+  Instruction loadWeight;
+  loadWeight.op = Opcode::DmaLoad;
+  loadWeight.resultAddr = 3136;
+  loadWeight.resultShape = {6, 1, 5, 5};
+  loadWeight.dramAddr = 4096;
+  p.instructions.push_back(loadWeight);
 
   Instruction conv;
   conv.op = Opcode::Conv2D;
-  conv.resultAddr = 512;
-  conv.resultShape = {1, 6, 24, 24};
+  conv.resultAddr = 3736;
+  conv.resultShape = {1, 6, 24, 24}; // 13824 bytes, ending at 17560
   conv.operandAddrs = {0, 3136};
   conv.strides = {1, 1};
   conv.pads = {0, 0, 0, 0};
   conv.dilations = {1, 1};
   conv.activation = 1;
   p.instructions.push_back(conv);
+
   p.instructions.push_back(Instruction{Opcode::Halt});
+  return p;
+}
+
+TEST(EncodingFormat, RoundTrip) {
+  Program p = validProgram();
+  ASSERT_FALSE(p.validate().has_value()) << p.validate()->toString();
 
   auto decoded = Program::decode(p.encode());
   ASSERT_TRUE(decoded.has_value());
   Program q = *decoded;
 
-  EXPECT_EQ(q.scratchpadBytes, 4096);
+  EXPECT_EQ(q.version, Program::kVersion);
+  EXPECT_EQ(q.scratchpadBytes, 32768);
   EXPECT_EQ(q.dramBytes, 8192);
   ASSERT_EQ(q.inputs.size(), 1u);
   EXPECT_EQ(q.inputs[0].shape, (std::vector<int64_t>{1, 1, 28, 28}));
   ASSERT_EQ(q.constantData.size(), 1u);
   EXPECT_EQ(q.constantData[0].size(), 150u);
   EXPECT_FLOAT_EQ(q.constantData[0][0], 0.5f);
-  ASSERT_EQ(q.instructions.size(), 3u);
-  EXPECT_EQ(q.instructions[1].op, Opcode::Conv2D);
-  EXPECT_EQ(q.instructions[1].operandAddrs, (std::vector<int64_t>{0, 3136}));
-  EXPECT_EQ(q.instructions[1].activation, 1);
-  EXPECT_EQ(q.instructions[2].op, Opcode::Halt);
+  ASSERT_EQ(q.instructions.size(), 4u);
+  EXPECT_EQ(q.instructions[2].op, Opcode::Conv2D);
+  EXPECT_EQ(q.instructions[2].operandAddrs, (std::vector<int64_t>{0, 3136}));
+  EXPECT_EQ(q.instructions[2].activation, 1);
+  EXPECT_EQ(q.instructions[3].op, Opcode::Halt);
 }
 
 TEST(EncodingFormat, BadMagicRejected) {
@@ -81,6 +107,47 @@ TEST(EncodingFormat, DisassembleMentionsOpcodes) {
   p.instructions.push_back(relu);
   std::string text = disassemble(p);
   EXPECT_NE(text.find("RELU"), std::string::npos);
+}
+
+TEST(EncodeFunction, RefusesAnUnencodableOp) {
+  // A high level npu op that was never lowered to npuisa, which is what reaches
+  // the encoder when a lowering pattern is missing or a pass was skipped. It has
+  // no case in the encoder's TypeSwitch.
+  //
+  // This used to emit a diagnostic, skip the op, and return the program anyway,
+  // so npu-translate printed an error, wrote the .nbin, and exited 0. The file
+  // it wrote was the program with that work silently deleted from it, which is
+  // worse than no file: it looks like a successful compile.
+  const char *ir = R"mlir(
+    func.func @main(%x: tensor<1x2xf32>) -> tensor<1x2xf32>
+        attributes {npuisa.scratchpad_bytes = 16 : i64} {
+      %0 = npu.relu %x : tensor<1x2xf32>
+      return %0 : tensor<1x2xf32>
+    }
+  )mlir";
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<mlir::npu::NPUDialect, mlir::npuisa::NPUISADialect,
+                  mlir::func::FuncDialect>();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(ir, &ctx);
+  ASSERT_TRUE(module);
+
+  mlir::func::FuncOp func;
+  module->walk([&](mlir::func::FuncOp f) { func = f; });
+
+  // Capture the diagnostic rather than letting it print, and assert it names
+  // the problem. A failure with no explanation would satisfy the return value
+  // check while still leaving the user with nothing to act on.
+  std::string diagnostic;
+  mlir::ScopedDiagnosticHandler handler(&ctx, [&](mlir::Diagnostic &d) {
+    diagnostic += d.str();
+    return mlir::success();
+  });
+
+  auto program = encodeFunction(func);
+  EXPECT_TRUE(mlir::failed(program));
+  EXPECT_NE(diagnostic.find("cannot encode unexpected op"), std::string::npos)
+      << "diagnostic was: " << diagnostic;
 }
 
 TEST(EncodeFunction, LowersSmallProgram) {

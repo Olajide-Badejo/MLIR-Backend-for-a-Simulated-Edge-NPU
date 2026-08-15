@@ -40,6 +40,7 @@ Instruction store(int64_t sp, std::vector<int64_t> shape, int64_t dram) {
 TEST(Simulator, Relu) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 32; // input 4 fp32 at 0, result 4 fp32 at 16
   p.inputs.push_back({0, {4}});
   p.outputs.push_back({16, {4}});
   Instruction relu;
@@ -59,6 +60,7 @@ TEST(Simulator, Relu) {
 TEST(Simulator, MatMulIdentity) {
   Program p;
   p.dramBytes = 48;
+  p.scratchpadBytes = 48; // lhs 4 fp32 at 0, rhs at 16, result at 32
   p.inputs.push_back({0, {2, 2}});
   p.constants.push_back({16, {2, 2}});
   p.constantData.push_back({1.0f, 0.0f, 0.0f, 1.0f}); // identity
@@ -79,6 +81,7 @@ TEST(Simulator, Conv2DKnown) {
   // 1x1x3x3 input, 1x1x2x2 weight [[1,0],[0,1]], valid, stride 1 -> 1x1x2x2.
   Program p;
   p.dramBytes = 3 * 36 + 16;
+  p.scratchpadBytes = 80; // input 9 fp32 at 0, weight 4 at 36, result 4 at 64
   p.inputs.push_back({0, {1, 1, 3, 3}});   // 36 bytes
   p.constants.push_back({36, {1, 1, 2, 2}}); // 16 bytes
   p.constantData.push_back({1.0f, 0.0f, 0.0f, 1.0f});
@@ -103,6 +106,7 @@ TEST(Simulator, Conv2DKnown) {
 TEST(Simulator, ElementwiseAddMul) {
   Program p;
   p.dramBytes = 64;
+  p.scratchpadBytes = 64; // two inputs at 0 and 16, add at 32, mul at 48
   p.inputs.push_back({0, {4}});
   p.inputs.push_back({16, {4}});
   p.outputs.push_back({48, {4}});
@@ -127,6 +131,7 @@ TEST(Simulator, ElementwiseAddMul) {
 TEST(Simulator, AvgPool) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 20; // input 4 fp32 at 0, the single result fp32 at 16
   p.inputs.push_back({0, {1, 1, 2, 2}});
   p.outputs.push_back({16, {1, 1, 1, 1}});
   Instruction pool;
@@ -147,6 +152,7 @@ TEST(Simulator, AvgPool) {
 TEST(Simulator, Reshape) {
   Program p;
   p.dramBytes = 32;
+  p.scratchpadBytes = 32; // source 4 fp32 at 0, reshaped copy 4 fp32 at 16
   p.inputs.push_back({0, {2, 2}});
   p.outputs.push_back({16, {4}});
   Instruction rs;
@@ -158,6 +164,66 @@ TEST(Simulator, Reshape) {
 
   SimResult r = Simulator(p).run({{1, 2, 3, 4}});
   EXPECT_EQ(r.outputs[0], (std::vector<float>{1, 2, 3, 4}));
+}
+
+TEST(Simulator, RefusesAWriteJustPastTheScratchpadEnd) {
+  // The result ends one fp32 past the declared scratchpad, and nothing else
+  // about the program is wrong. The simulator used to grow the scratchpad to
+  // cover whatever the instructions referenced, which made this run clean and
+  // left the bounds check with nothing to catch on a scratchpad write.
+  auto programWith = [](int64_t scratchpadBytes) {
+    Program p;
+    p.dramBytes = 32;
+    p.scratchpadBytes = scratchpadBytes;
+    p.inputs.push_back({0, {4}});
+    p.outputs.push_back({16, {4}});
+    Instruction relu;
+    relu.op = Opcode::Relu;
+    relu.resultAddr = 20; // spans [20, 36), 4 bytes past a 32 byte scratchpad
+    relu.resultShape = {4};
+    relu.operandAddrs = {0};
+    p.instructions = {load(0, {4}, 0), relu, store(20, {4}, 16), halt()};
+    return p;
+  };
+
+  Program tooSmall = programWith(32);
+  SimResult refused = Simulator(tooSmall).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_FALSE(refused.error.empty());
+  EXPECT_NE(refused.error.find("instruction 1"), std::string::npos);
+  EXPECT_NE(refused.error.find("scratchpad"), std::string::npos);
+  // The size in the diagnostic is the declared one, not one grown to fit.
+  EXPECT_NE(refused.error.find("32 byte region"), std::string::npos);
+
+  // Control: the same instructions with a scratchpad that genuinely holds them
+  // run clean, so it is the declared size doing the refusing above and not
+  // something else about the program.
+  Program bigEnough = programWith(36);
+  SimResult ok = Simulator(bigEnough).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_TRUE(ok.error.empty()) << ok.error;
+  EXPECT_EQ(ok.outputs[0], (std::vector<float>{0.0f, 2.0f, 0.0f, 4.0f}));
+}
+
+TEST(Simulator, ScratchpadIsSizedFromTheDeclaredFieldOnly) {
+  // The declaration is what provides the room. These instructions work in the
+  // last four cells of a 4096 byte declaration while referencing nothing in
+  // between, so the run can only succeed if the scratchpad was sized from the
+  // declared field. This pins the other direction of the change: sizing is not
+  // narrowed to what the instructions happen to reference either.
+  Program p;
+  p.dramBytes = 32;
+  p.scratchpadBytes = 4096;
+  p.inputs.push_back({0, {4}});
+  p.outputs.push_back({16, {4}});
+  Instruction relu;
+  relu.op = Opcode::Relu;
+  relu.resultAddr = 4080; // spans [4080, 4096), exactly filling the declaration
+  relu.resultShape = {4};
+  relu.operandAddrs = {0};
+  p.instructions = {load(0, {4}, 0), relu, store(4080, {4}, 16), halt()};
+
+  SimResult r = Simulator(p).run({{-1.0f, 2.0f, -3.0f, 4.0f}});
+  EXPECT_TRUE(r.error.empty()) << r.error;
+  EXPECT_EQ(r.outputs[0], (std::vector<float>{0.0f, 2.0f, 0.0f, 4.0f}));
 }
 
 TEST(CostModelArithmetic, MatchesFormulas) {

@@ -30,6 +30,12 @@ struct Stats {
 struct SimResult {
   std::vector<std::vector<float>> outputs; // parallel to Program::outputs
   Stats stats;
+
+  // Empty on a clean run. Set when a memory access was refused, naming the
+  // instruction and what it tried to touch. A validated program cannot trigger
+  // this, but the simulator is also reachable as a library and from hand built
+  // Program values, so it reports rather than trusting the caller.
+  std::string error;
 };
 
 class Simulator {

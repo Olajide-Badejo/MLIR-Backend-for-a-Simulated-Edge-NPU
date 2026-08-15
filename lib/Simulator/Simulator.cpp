@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <string>
 
 namespace npu {
 
@@ -119,34 +120,100 @@ std::string Stats::toJson() const {
 }
 
 SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
-  // Size DRAM and the scratchpad. The scratchpad must cover every assigned
-  // address, so take the larger of the reported high water and what the
-  // instructions actually reference.
-  int64_t spBytes = program.scratchpadBytes;
-  for (const Instruction &in : program.instructions)
-    if (in.resultAddr >= 0)
-      spBytes = std::max(spBytes, in.resultAddr + numElements(in.resultShape) * 4);
-
+  // Size both memories strictly from what the program declares. A loop used to
+  // stand here that grew the scratchpad to cover every resultAddr it found, so
+  // an address past the end of the declared budget was quietly accommodated
+  // instead of refused, and the growing arithmetic ran on unvalidated input at
+  // the exact entry point the bounds checking exists to defend. The declared
+  // budget is the hardware the program asked for, and a program that writes
+  // outside it is wrong rather than in need of more memory.
   std::vector<float> dram(std::max<int64_t>(1, program.dramBytes / 4), 0.0f);
-  std::vector<float> sp(std::max<int64_t>(1, spBytes / 4), 0.0f);
+  std::vector<float> sp(std::max<int64_t>(1, program.scratchpadBytes / 4), 0.0f);
 
-  auto dramAt = [&](int64_t addr) { return dram.data() + addr / 4; };
-  auto spAt = [&](int64_t addr) { return sp.data() + addr / 4; };
+  // Bounds checked access, replacing the raw "data() + addr / 4" lambdas.
+  //
+  // Those did no checking at all, so a negative or oversized address was an out
+  // of bounds read or write straight into the heap. Program::validate now
+  // rejects such a program before it can be run, but the simulator is also
+  // reachable as a library and from hand built Program values in tests, and
+  // "the caller validated it" is not a memory safety argument.
+  //
+  // Every access is checked, in every build mode: there is no assert here and
+  // no release build path that skips the check. A refused access records its
+  // message in SimResult.error and returns nullptr, and every caller tests the
+  // returned pointer and skips the access rather than dereferencing it. Only
+  // the first refusal is recorded, because it is the one that explains the run;
+  // the rest are consequences of it. Execution then continues to the end, so
+  // the caller gets a result carrying a diagnostic rather than a crash.
+  bool trapped = false;
+  std::string trapMessage;
+  auto checkedAt = [&](std::vector<float> &memory, int64_t addr,
+                       int64_t elements, const char *space,
+                       size_t index) -> float * {
+    int64_t total = static_cast<int64_t>(memory.size());
+    bool ok = addr >= 0 && (addr % 4) == 0 && elements >= 0 &&
+              addr / 4 <= total - elements;
+    if (!ok) {
+      if (!trapped) {
+        trapped = true;
+        std::ostringstream os;
+        os << "instruction " << index << ": " << space << " access of "
+           << elements << " element(s) at byte address " << addr
+           << " is outside the " << (total * 4) << " byte region";
+        trapMessage = os.str();
+      }
+      return nullptr;
+    }
+    return memory.data() + addr / 4;
+  };
 
-  for (size_t i = 0; i < program.constants.size(); ++i)
-    std::memcpy(dramAt(program.constants[i].dramOffset),
-                program.constantData[i].data(),
-                program.constantData[i].size() * sizeof(float));
-  for (size_t i = 0; i < inputs.size() && i < program.inputs.size(); ++i)
-    std::memcpy(dramAt(program.inputs[i].dramOffset), inputs[i].data(),
-                inputs[i].size() * sizeof(float));
+  size_t pc = 0; // current instruction, for diagnostics
+  auto dramAt = [&](int64_t addr, int64_t elements = 0) {
+    return checkedAt(dram, addr, elements, "DRAM", pc);
+  };
+  auto spAt = [&](int64_t addr, int64_t elements = 0) {
+    return checkedAt(sp, addr, elements, "scratchpad", pc);
+  };
+
+  for (size_t i = 0; i < program.constants.size(); ++i) {
+    int64_t n = static_cast<int64_t>(program.constantData[i].size());
+    if (float *dst = dramAt(program.constants[i].dramOffset, n))
+      std::memcpy(dst, program.constantData[i].data(), n * sizeof(float));
+  }
+  for (size_t i = 0; i < inputs.size() && i < program.inputs.size(); ++i) {
+    int64_t n = static_cast<int64_t>(inputs[i].size());
+    // An input longer than its declared region is refused rather than written
+    // past the end. npu-sim also checks this against the file size, but the
+    // library entry point has to defend itself.
+    int64_t declared = numElements(program.inputs[i].shape);
+    if (n > declared)
+      n = declared;
+    if (float *dst = dramAt(program.inputs[i].dramOffset, n))
+      std::memcpy(dst, inputs[i].data(), n * sizeof(float));
+  }
 
   std::map<int64_t, std::vector<int64_t>> shapeAt;
   Stats stats;
 
-  for (const Instruction &in : program.instructions) {
+  for (size_t index = 0; index < program.instructions.size(); ++index) {
+    const Instruction &in = program.instructions[index];
+    pc = index;
     ++stats.instructions;
+    if (!isValidOpcode(in.op)) {
+      // Unreachable for a validated program. Falling through a switch on an out
+      // of range enum is undefined behaviour, so refuse rather than rely on it.
+      if (!trapped) {
+        trapped = true;
+        std::ostringstream os;
+        os << "instruction " << index << ": opcode "
+           << static_cast<uint16_t>(in.op) << " is not a defined instruction";
+        trapMessage = os.str();
+      }
+      break;
+    }
     auto opShape = [&](size_t k) { return shapeAt[in.operandAddrs[k]]; };
+    // Elements held at an operand address, from whichever instruction wrote it.
+    auto opElements = [&](size_t k) { return numElements(opShape(k)); };
     switch (in.op) {
     case Opcode::Nop:
       stats.cycles += cost.issueOverhead;
@@ -156,7 +223,11 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
       break;
     case Opcode::DmaLoad: {
       int64_t n = numElements(in.resultShape);
-      std::memcpy(spAt(in.resultAddr), dramAt(in.dramAddr), n * sizeof(float));
+      float *dst = spAt(in.resultAddr, n);
+      const float *src = dramAt(in.dramAddr, n);
+      if (!dst || !src)
+        break;
+      std::memcpy(dst, src, n * sizeof(float));
       shapeAt[in.resultAddr] = in.resultShape;
       stats.dramBytesRead += n * 4;
       stats.cycles += cost.dmaCycles(n * 4);
@@ -164,38 +235,61 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
     }
     case Opcode::DmaStore: {
       int64_t n = numElements(in.resultShape);
-      std::memcpy(dramAt(in.dramAddr), spAt(in.operandAddrs[0]),
-                  n * sizeof(float));
+      float *dst = dramAt(in.dramAddr, n);
+      const float *src = spAt(in.operandAddrs[0], n);
+      if (!dst || !src)
+        break;
+      std::memcpy(dst, src, n * sizeof(float));
       stats.dramBytesWritten += n * 4;
       stats.cycles += cost.dmaCycles(n * 4);
       break;
     }
     case Opcode::Conv2D: {
-      const float *bias =
-          in.operandAddrs.size() == 3 ? spAt(in.operandAddrs[2]) : nullptr;
-      conv2d(spAt(in.operandAddrs[0]), opShape(0), spAt(in.operandAddrs[1]),
-             opShape(1), bias, spAt(in.resultAddr), in.resultShape, in.strides,
-             in.pads, in.dilations, in.group, in.activation);
+      auto inS = opShape(0), wS = opShape(1);
+      if (inS.size() != 4 || wS.size() != 4 || in.resultShape.size() != 4)
+        break;
+      const float *bias = in.operandAddrs.size() == 3
+                              ? spAt(in.operandAddrs[2], opElements(2))
+                              : nullptr;
+      if (in.operandAddrs.size() == 3 && !bias)
+        break;
+      const float *x = spAt(in.operandAddrs[0], opElements(0));
+      const float *w = spAt(in.operandAddrs[1], opElements(1));
+      float *o = spAt(in.resultAddr, numElements(in.resultShape));
+      if (!x || !w || !o)
+        break;
+      conv2d(x, inS, w, wS, bias, o, in.resultShape, in.strides, in.pads,
+             in.dilations, in.group, in.activation);
       shapeAt[in.resultAddr] = in.resultShape;
-      auto wS = opShape(1);
       int64_t macs = numElements(in.resultShape) * wS[1] * wS[2] * wS[3];
       stats.cycles += cost.macCycles(macs);
       break;
     }
     case Opcode::MatMul: {
-      const float *bias =
-          in.operandAddrs.size() == 3 ? spAt(in.operandAddrs[2]) : nullptr;
       auto lS = opShape(0), rS = opShape(1);
-      matmul(spAt(in.operandAddrs[0]), lS, spAt(in.operandAddrs[1]), rS, bias,
-             spAt(in.resultAddr), in.activation);
+      if (lS.size() != 2 || rS.size() != 2)
+        break;
+      const float *bias = in.operandAddrs.size() == 3
+                              ? spAt(in.operandAddrs[2], opElements(2))
+                              : nullptr;
+      if (in.operandAddrs.size() == 3 && !bias)
+        break;
+      const float *lhs = spAt(in.operandAddrs[0], opElements(0));
+      const float *rhs = spAt(in.operandAddrs[1], opElements(1));
+      float *o = spAt(in.resultAddr, numElements(in.resultShape));
+      if (!lhs || !rhs || !o)
+        break;
+      matmul(lhs, lS, rhs, rS, bias, o, in.activation);
       shapeAt[in.resultAddr] = in.resultShape;
       stats.cycles += cost.macCycles(lS[0] * lS[1] * rS[1]);
       break;
     }
     case Opcode::Relu: {
       int64_t n = numElements(in.resultShape);
-      const float *a = spAt(in.operandAddrs[0]);
-      float *o = spAt(in.resultAddr);
+      const float *a = spAt(in.operandAddrs[0], n);
+      float *o = spAt(in.resultAddr, n);
+      if (!a || !o)
+        break;
       for (int64_t i = 0; i < n; ++i)
         o[i] = std::max(0.0f, a[i]);
       shapeAt[in.resultAddr] = in.resultShape;
@@ -205,9 +299,11 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
     case Opcode::Add:
     case Opcode::Mul: {
       int64_t n = numElements(in.resultShape);
-      const float *a = spAt(in.operandAddrs[0]);
-      const float *b = spAt(in.operandAddrs[1]);
-      float *o = spAt(in.resultAddr);
+      const float *a = spAt(in.operandAddrs[0], n);
+      const float *b = spAt(in.operandAddrs[1], n);
+      float *o = spAt(in.resultAddr, n);
+      if (!a || !b || !o)
+        break;
       for (int64_t i = 0; i < n; ++i)
         o[i] = in.op == Opcode::Add ? a[i] + b[i] : a[i] * b[i];
       shapeAt[in.resultAddr] = in.resultShape;
@@ -216,8 +312,15 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
     }
     case Opcode::PoolMax:
     case Opcode::PoolAvg: {
-      pool(spAt(in.operandAddrs[0]), opShape(0), spAt(in.resultAddr),
-           in.resultShape, in.kernelShape, in.strides, in.pads,
+      auto inS = opShape(0);
+      if (inS.size() != 4 || in.resultShape.size() != 4 ||
+          in.kernelShape.size() != 2)
+        break;
+      const float *a = spAt(in.operandAddrs[0], opElements(0));
+      float *o = spAt(in.resultAddr, numElements(in.resultShape));
+      if (!a || !o)
+        break;
+      pool(a, inS, o, in.resultShape, in.kernelShape, in.strides, in.pads,
            in.op == Opcode::PoolMax);
       shapeAt[in.resultAddr] = in.resultShape;
       int64_t work = numElements(in.resultShape) * in.kernelShape[0] *
@@ -227,8 +330,11 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
     }
     case Opcode::Reshape: {
       int64_t n = numElements(in.resultShape);
-      std::memcpy(spAt(in.resultAddr), spAt(in.operandAddrs[0]),
-                  n * sizeof(float));
+      float *dst = spAt(in.resultAddr, n);
+      const float *src = spAt(in.operandAddrs[0], n);
+      if (!dst || !src)
+        break;
+      std::memcpy(dst, src, n * sizeof(float));
       shapeAt[in.resultAddr] = in.resultShape;
       stats.cycles += cost.issueOverhead;
       break;
@@ -240,10 +346,12 @@ SimResult Simulator::run(const std::vector<std::vector<float>> &inputs) {
   result.stats = stats;
   for (const MemRegion &out : program.outputs) {
     int64_t n = numElements(out.shape);
-    std::vector<float> data(n);
-    std::memcpy(data.data(), dramAt(out.dramOffset), n * sizeof(float));
+    std::vector<float> data(n, 0.0f);
+    if (const float *src = dramAt(out.dramOffset, n))
+      std::memcpy(data.data(), src, n * sizeof(float));
     result.outputs.push_back(std::move(data));
   }
+  result.error = trapMessage;
   return result;
 }
 

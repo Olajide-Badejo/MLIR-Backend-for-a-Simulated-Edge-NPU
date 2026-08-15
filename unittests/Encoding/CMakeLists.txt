@@ -1,7 +1,14 @@
-add_llvm_executable(NPUEncodingTests EncodingTest.cpp)
+add_llvm_executable(NPUEncodingTests
+  EncodingTest.cpp
+  ValidationTest.cpp
+  PropertyTest.cpp
+  FuzzTest.cpp
+  )
 llvm_update_compile_flags(NPUEncodingTests)
 target_link_libraries(NPUEncodingTests PRIVATE
   MLIRNPUEncoding
+  MLIRNPUSimulator
+  MLIRNPUDialect
   MLIRNPUISADialect
   MLIRParser
   MLIRIR

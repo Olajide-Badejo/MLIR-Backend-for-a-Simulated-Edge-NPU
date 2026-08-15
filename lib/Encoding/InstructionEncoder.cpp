@@ -109,6 +109,12 @@ FailureOr<Program> encodeFunction(func::FuncOp func) {
     program.scratchpadBytes = attr.getInt();
 
   // Instructions, in program order. Constants are data, not instructions.
+  //
+  // `emit` is false for the two ops that legitimately produce no instruction, a
+  // constant and the terminator. An op with no case at all is a different thing
+  // and is tracked separately, because it means the encoder was handed IR it
+  // does not understand and the resulting program would be missing work.
+  bool unencodable = false;
   for (Operation &op : block) {
     Instruction in;
     bool emit = true;
@@ -198,11 +204,20 @@ FailureOr<Program> encodeFunction(func::FuncOp func) {
         })
         .Default([&](Operation *bad) {
           emit = false;
+          unencodable = true;
           bad->emitError("cannot encode unexpected op");
         });
     if (emit)
       program.instructions.push_back(std::move(in));
   }
+
+  // The diagnostic above used to be the whole response: the op was skipped and
+  // the function returned the program anyway, so npu-translate printed an error,
+  // wrote the .nbin, and exited 0. The file it wrote was a program with the work
+  // silently removed. Fail instead, after the loop rather than inside it, so one
+  // run names every op it cannot encode instead of only the first.
+  if (unencodable)
+    return failure();
 
   program.instructions.push_back(Instruction{Opcode::Halt});
   return program;
