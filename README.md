@@ -33,18 +33,28 @@ correct the whole way down.**
 
 | Metric (LeNet, 1 MB scratchpad) | `-O0` | `-O1` | `-O2` |
 |---|---:|---:|---:|
-| Instructions | 91 | 82 | **70** |
+| Instructions | 28 | 25 | **21** |
 | Simulated cycles | 23,421 | 13,008 | **12,710** |
 | DRAM traffic | 339 KB | 177 KB | **177 KB** |
 | Max error vs onnxruntime | 3e-8 | 3e-8 | 3e-8 |
 
+The instruction counts are the simulator's own, taken from the `instructions`
+field of its statistics. This table used to print 91 / 82 / 70, which came from a
+regex over the final IR dump that matched inside type strings such as
+`!npuisa.buffer` and counted `npuisa.const`, which is DRAM data rather than an
+instruction. The disassembly further down, which says 21 instructions, was right
+all along and the table was the thing that disagreed with it.
+
 `-O1` canonicalization and dead code elimination strip out the dead transposed
-weight constants the importer leaves behind, roughly halving DRAM traffic. `-O2`
-fusion folds every activation into its convolution or matmul, cutting the
-instruction count and the cycle estimate. The error column is the point of the
-whole exercise: optimizing hard while staying numerically exact. Every
-performance number is a simulated estimate from an analytical cost model, and is
-labeled as such throughout.
+weight constants the importer leaves behind, roughly halving DRAM traffic and
+removing the three `DMA_LOAD`s that fetched them. `-O2` fusion folds every
+activation into its convolution or matmul, removing four more instructions and
+trimming the cycle estimate. The instruction deltas are small in absolute terms
+because most of the stream is the ten constant loads that any version has to
+issue; the cycle and DRAM columns are where the optimization shows. The error
+column is the point of the whole exercise: optimizing hard while staying
+numerically exact. Every performance number is a simulated estimate from an
+analytical cost model, and is labeled as such throughout.
 
 ---
 
@@ -88,20 +98,26 @@ npu-objdump lenet.nbin
 ```
 
 ```
+; npu-objdump
+; version 1
 ; scratchpad 198120 bytes, dram 180880 bytes
 ; 1 inputs, 1 outputs, 10 constants, 21 instructions
 
 .dram
-  input0  @0x0    [1x1x28x28]
+  input0  @0x0 [1x1x28x28]
   const3  @0x296e0 [6x1x5x5]
   output0 @0x2c268 [1x10]
+  ...
 
 .text
-  0: DMA_LOAD  sp[0x0]     <- dram[0x0]     [1x1x28x28]
-  4: DMA_LOAD  sp[0x296e0] <- dram[0x296e0] [6x1x5x5]
- 10: CONV2D    sp[...] <- sp[...], sp[...]  [1x6x24x24] act=relu
- 12: POOL_MAX  sp[...] <- sp[...]           [1x6x12x12]
- ...
+  0: DMA_LOAD sp[0x0] <- dram[0x0] [1x1x28x28]
+  4: DMA_LOAD sp[0x296e0] <- dram[0x296e0] [6x1x5x5]
+  ...
+  11: CONV2D sp[0x2c268] <- sp[0x0], sp[0x296e0], sp[0x29938] [1x6x24x24] act=relu stride=1,1
+  12: POOL_MAX sp[0x2f868] <- sp[0x2c268] [1x6x12x12] kernel=2,2 stride=2,2
+  15: RESHAPE sp[0x400] <- sp[0x0] [1x256]
+  16: MATMUL sp[0x0] <- sp[0x400], sp[0xb6e0], sp[0x2bf10] [1x120] act=relu
+  20: HALT
 ```
 
 That fused `CONV2D ... act=relu` is the operator fusion pass at work: the

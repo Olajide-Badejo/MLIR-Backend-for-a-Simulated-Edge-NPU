@@ -236,6 +236,34 @@ def test_count_ops_is_not_an_instruction_count():
     assert sum(counts.values()) > 2
 
 
+def test_readme_table_matches_the_results():
+    """The hand written README table must equal the default budget results.
+
+    The table is the most read number in the repository and is not generated,
+    so nothing stopped it from drifting. It did: it published the regex count
+    for a month while the recorded baseline said otherwise.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    default = {
+        r["opt_level"]: r for r in rows
+        if r["model"] == "lenet" and r["scratchpad_budget"] == 1048576
+    }
+    readme = (REPO / "README.md").read_text()
+    line = next(
+        (ln for ln in readme.splitlines() if ln.strip().startswith("| Instructions")),
+        None,
+    )
+    assert line is not None, "no Instructions row found in the README table"
+    figures = [int(m) for m in re.findall(r"\d+", line)]
+    assert figures == [
+        default[0]["instruction_count"],
+        default[1]["instruction_count"],
+        default[2]["instruction_count"],
+    ], f"README Instructions row is {figures} but the results say otherwise"
+
+
 def test_macros_match_the_committed_results():
     """The tex the report includes must equal the results it claims to come from.
 
