@@ -4,6 +4,90 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U4: the ablation says two passes do nothing, and one is harmful
+
+**Not a bug.** The leave one out ablation the v2 specification called "the
+evaluation's backbone", finally built. Part 8 measured each pass on the IR it is
+handed. This measures what the finished program loses when a pass is removed
+from an otherwise complete `-O2`, which is a different question wherever passes
+interact.
+
+**What it found, at the 1 MB budget:**
+
+```
+canonicalize    instrs  +0   cycles    +0   dram  +0.0 KB
+npu-fuse-ops    instrs  +4   cycles  +298   dram  +0.0 KB
+symbol-dce      instrs  +0   cycles    +0   dram  +0.0 KB
+```
+
+Two of the three `-O2` passes make no difference at all. My first assumption was
+that the ablation was not ablating, so I checked it directly rather than
+reporting it: compile the model with `-canonicalize -npu-fuse-ops -canonicalize
+-symbol-dce` and with `-npu-fuse-ops -symbol-dce`, and diff the IR.
+
+```
+npu-dialect op count after full -O2 opt   : 18
+npu-dialect op count after -O2 minus canon: 18
+optimized IR identical? True
+lowered npuisa IR identical? True
+```
+
+Byte identical. The zero is real.
+
+**Root cause of the zero.** `FuseOps.cpp:72` runs `applyPatternsGreedily`. The
+greedy driver folds constants and erases dead operations as part of its fixed
+point loop, so by the time it has finished fusing there is nothing left for
+canonicalization to do. Canonicalization is not useless: at `-O1` it is the only
+pass and is responsible for the entire drop from 339 KB to 176 KB of DRAM. It is
+redundant *in the presence of fusion*.
+
+This is exactly the interaction the ablation exists to expose and that Part 8's
+per pass measurement cannot see. Measured in isolation, canonicalization at
+position 0 removes three operations, 28 down to 25. Measured by removal, it
+removes nothing, because something else would have.
+
+**The finding that matters more, at 140 KB:**
+
+```
+npu-fuse-ops    instrs  +2   cycles   -96   dram  -6.1 KB
+```
+
+The signs flip. Removing fusion at the tight budget makes the program *faster*
+and reduces DRAM traffic. Fusing an activation into its producer extends that
+value's live range across the fused op, and under a budget that already forces
+spilling, a longer live range buys a spill and its reload, which cost more than
+the instruction the fusion saved. `-O2` fusion is a win at 1 MB and a loss at
+140 KB.
+
+ASSESSMENT 5.1 predicted the passes would behave oppositely at the tight budget,
+which is why the work order insisted on both budgets. It was right, and an
+ablation table reporting only the generous budget would have concluded that
+fusion is the one pass worth having.
+
+**Design decision recorded.** `-canonicalize` appears twice at `-O2`. Ablating
+it removes every occurrence, because "is this pass worth having" is the question
+an ablation answers, and removing only the second occurrence answers "is running
+it twice worth it", which is narrower. Written down in
+`docs/DESIGN_DECISIONS.md` because both readings produce a row labelled
+`canonicalize` and they can disagree.
+
+**A trap avoided.** Ablation records live in `experiments/results/` alongside the
+full cells and carry the same `model`, `opt_level`, and `scratchpad_budget`
+keys. `plot_results.load()` and `results_to_tex.load_rows()` both key by those
+fields, so an ablation would have silently replaced the real `-O2` row in the
+figure and the results table, and which one would have depended on glob order.
+Both now filter on the presence of `ablated_pass`. The same collision would have
+hit five of the existing tests, which now ask for full rows explicitly.
+
+**Verification.** Four new tests. `test_every_o2_pass_has_an_ablation_row` takes
+the expected set from `_passes_for_level(2)` at assert time, so adding a pass
+without an ablation fails. `test_ablation_deltas_are_consistent` recomputes every
+delta from the two committed files, so a reader never has to trust the
+subtraction. `test_ablation_numerics_are_unchanged` holds every ablation to the
+end to end tolerance. `test_ablation_result_paths_follow_the_convention` checks
+they are covered by `staleness()` like any other result rather than being
+quietly exempt from the guard that keeps the published numbers honest.
+
 ## 2026-08-09 Phase U4: measuring each pass, without inventing a measurement
 
 **Not a bug.** The v2 specification called per pass ablation deltas "the

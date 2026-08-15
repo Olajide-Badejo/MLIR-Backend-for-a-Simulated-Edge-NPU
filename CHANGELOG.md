@@ -57,6 +57,31 @@ running the tools rather than reading the source.
 
 ### Added
 
+- Phase U4: leave one out ablations. For every distinct pass in `-O2`, the
+  harness compiles the model with that pass removed, encodes, simulates, and
+  checks against onnxruntime exactly as a normal cell does, recording the result
+  as `lenet_O2_ablate_<pass>_<budget>.json` with a `baseline_cell` naming the
+  full `-O2` result it is a delta against, absolute values, and
+  `delta_instruction_count`, `delta_simulated_cycles`, `delta_dram_bytes_total`,
+  and `delta_compile_ms`. Run at both budgets, and generated into
+  `report/generated/ablation_table.tex` and `docs/images/ablations.png`.
+
+  Two results worth naming. At the 1 MB budget only `-npu-fuse-ops` buys
+  anything (+4 instructions and +298 simulated cycles when removed); removing
+  `-canonicalize` or `-symbol-dce` produces a byte identical program, because
+  `-npu-fuse-ops` drives its patterns with `applyPatternsGreedily`, whose fixed
+  point loop already folds and erases dead ops. Canonicalization is still
+  responsible for the whole DRAM halving at `-O1`, where it is the only pass.
+
+  And at the 140 KB budget `-npu-fuse-ops` is **counterproductive**: removing it
+  saves 96 simulated cycles and 6.1 KB of DRAM traffic, because fusing an
+  activation into its producer extends that value's live range and under a
+  budget that already spills, a longer live range costs a spill and a reload. A
+  table reporting only the generous budget would have missed it.
+
+  An ablation whose numerics move beyond the end to end tolerance raises rather
+  than being recorded, since that would mean the pass is load bearing for
+  correctness rather than performance.
 - Phase U4: every benchmark result carries a `passes` array, one entry per pass
   in that cell's pipeline, in order, recording the pass name, its zero based
   position, the op histogram before and after it, both totals, and its wall

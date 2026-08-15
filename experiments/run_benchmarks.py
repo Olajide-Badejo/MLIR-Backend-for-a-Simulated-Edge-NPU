@@ -64,6 +64,11 @@ TIMING_INFRASTRUCTURE = {"Parser", "Output", "Rest", "Total"}
 
 PASS_TIMING_SOURCE = "--mlir-timing"
 
+# An ablated pipeline must still match onnxruntime as closely as the full one.
+# This is the end to end tolerance phase U1 set, just above the 2.98e-8 the
+# pipeline actually achieves.
+ABLATION_ERROR_TOLERANCE = 1e-5
+
 
 def bin_dir() -> Path:
     return Path(os.environ.get("NPU_BIN", str(REPO / "build" / "bin")))
@@ -406,6 +411,137 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
     }
 
 
+def ablatable_passes() -> list[str]:
+    """The distinct passes an -O2 ablation removes, in first appearance order.
+
+    Read from _passes_for_level(2) at run time, never hardcoded. Hardcoding the
+    four strings would mean the ablation table silently stops covering a pass
+    the day one is added, which is the failure this whole phase exists to stop.
+
+    Distinct, because -canonicalize appears twice at -O2 and the question an
+    ablation asks is "is this pass worth having", not "is this position worth
+    having". Removing every occurrence is what answers that. See
+    docs/DESIGN_DECISIONS.md.
+    """
+    seen: list[str] = []
+    for flag in npu_compile._passes_for_level(2):
+        name = pass_flag_name(flag)
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def ablation(model: str, pass_name: str, budget: int, seed: int) -> dict:
+    """Compile with the -O2 pipeline minus every occurrence of one pass.
+
+    Encoded, simulated, and checked against onnxruntime exactly as a normal cell
+    is. The numerics check is the point as much as the performance delta: if
+    removing a pass changes the answer, the pass is load bearing for correctness
+    rather than for performance, and that is a finding rather than a row.
+    """
+    bd = bin_dir()
+    full = npu_compile._passes_for_level(2)
+    kept = [f for f in full if pass_flag_name(f) != pass_name]
+    if len(kept) == len(full):
+        raise RuntimeError(
+            f"{pass_name!r} is not in the -O2 pipeline {full}; nothing was ablated"
+        )
+
+    lowering = [
+        "-npu-lower-to-npuisa",
+        f"-npu-allocate-scratchpad=budget={budget}",
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        onnx = model_generator.export(model, Path(tmp) / f"{model}.onnx", seed=seed)
+
+        t0 = time.perf_counter()
+        text = npu_compile.onnx_importer.import_model(onnx)
+        text = npu_compile._run_opt(bd / "npu-opt", text, kept)
+        isa = npu_compile._run_opt(bd / "npu-opt", text, lowering)
+        compile_ms = (time.perf_counter() - t0) * 1000
+
+        isa_path = Path(tmp) / "program.isa.mlir"
+        isa_path.write_text(isa)
+        nbin = Path(tmp) / f"{model}.nbin"
+        proc = subprocess.run(
+            [str(bd / "npu-translate"), str(isa_path), "-o", str(nbin)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"ablating {pass_name} at budget {budget} produced a program "
+                f"npu-translate refused:\n{proc.stderr}"
+            )
+
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(INPUT_SHAPES[model]).astype(np.float32)
+        y_sim, stats = simulate(nbin, x)
+
+        if "instructions" not in stats:
+            raise RuntimeError(
+                f"npu-sim stats for the {pass_name} ablation carry no "
+                f"'instructions' field; got keys {sorted(stats)}"
+            )
+
+        ref = ort.InferenceSession(str(onnx)).run(None, {"input": x})[0]
+        y_sim = y_sim.reshape(ref.shape)
+        max_abs_error = float(np.max(np.abs(y_sim - ref)))
+
+    # A removed optimization must not move the answer. If it does, the pass is
+    # doing something other than optimizing and the table would be reporting a
+    # performance delta for a correctness change.
+    if max_abs_error > ABLATION_ERROR_TOLERANCE:
+        raise RuntimeError(
+            f"ablating {pass_name} at budget {budget} changed the numerics: "
+            f"max absolute error {max_abs_error:.3e} exceeds "
+            f"{ABLATION_ERROR_TOLERANCE:.3e}. That pass is load bearing for "
+            f"correctness, not for performance, which is a finding rather than "
+            f"an ablation row."
+        )
+
+    baseline_name = result_path(model, 2, budget).name
+    baseline = json.loads((RESULTS / baseline_name).read_text())
+
+    absolute = {
+        "instruction_count": int(stats["instructions"]),
+        "simulated_cycles": stats["cycles"],
+        "dram_bytes_read": stats["dram_bytes_read"],
+        "dram_bytes_written": stats["dram_bytes_written"],
+        "dram_bytes_total": stats["dram_bytes_read"] + stats["dram_bytes_written"],
+        "compile_ms": compile_ms,
+    }
+
+    return {
+        "model": model,
+        "opt_level": 2,
+        "ablated_pass": pass_name,
+        "pipeline_without": [pass_flag_name(f) for f in kept],
+        "scratchpad_budget": budget,
+        # Named so a reader can recompute every delta below from two committed
+        # files rather than trusting the subtraction.
+        "baseline_cell": baseline_name,
+        **absolute,
+        "delta_instruction_count": absolute["instruction_count"]
+        - baseline["instruction_count"],
+        "delta_simulated_cycles": absolute["simulated_cycles"]
+        - baseline["simulated_cycles"],
+        "delta_dram_bytes_total": absolute["dram_bytes_total"]
+        - baseline["dram_bytes_total"],
+        "delta_compile_ms": absolute["compile_ms"] - baseline["compile_ms"],
+        "max_abs_error_vs_onnxruntime": max_abs_error,
+        "note": "simulated estimates, not measurements; deltas are ablated minus full -O2",
+        "manifest": manifest(seed),
+    }
+
+
+def ablation_path(model: str, pass_name: str, budget: int) -> Path:
+    """Same convention as result_path, so staleness() covers these too."""
+    tag = "default" if budget == DEFAULT_BUDGET else f"{budget}b"
+    return RESULTS / f"{model}_O2_ablate_{pass_name}_{tag}.json"
+
+
 def result_path(model: str, level: int, budget: int) -> Path:
     tag = "default" if budget == DEFAULT_BUDGET else f"{budget}b"
     return RESULTS / f"{model}_O{level}_{tag}.json"
@@ -547,6 +683,34 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             print(f"regenerating {path.name}: {why}")
         write_atomic(path, benchmark(model, level, budget, args.seed))
+
+    # Ablations run after the full cells, because each one records deltas
+    # against the -O2 result for its own budget and needs that file present and
+    # current. Both budgets, because the passes behave oppositely at the tight
+    # one and a table covering only the generous budget would hide it.
+    ablations = list(product(models, ablatable_passes(), budgets))
+    print(
+        f"planned {len(ablations)} ablation cells: "
+        f"{models} x {ablatable_passes()} x budgets {budgets}"
+    )
+    try:
+        from tqdm import tqdm as _tqdm
+
+        ablation_iterator = _tqdm(ablations, desc="ablations")
+    except ImportError:
+        ablation_iterator = ablations
+
+    for model, pass_name, budget in ablation_iterator:
+        path = ablation_path(model, pass_name, budget)
+        if path.exists() and not args.force:
+            why = staleness(path)
+            if why is None:
+                continue
+            if args.allow_stale:
+                print(f"reusing stale {path.name}: {why}")
+                continue
+            print(f"regenerating {path.name}: {why}")
+        write_atomic(path, ablation(model, pass_name, budget, args.seed))
 
     print(f"results in {RESULTS}")
     return 0
