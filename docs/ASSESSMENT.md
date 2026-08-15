@@ -591,6 +591,31 @@ runs one hardcoded pass pipeline that matches no `-O` level exactly, relative
 error is still not recorded in the benchmark results, and validation still
 uses a single standard normal draw rather than the spec's five input classes.
 
+**Status 2026-08-09, closed** (upgrade part 10, commits `4fda494`, `e4c4ef3`).
+All three of the open items:
+
+- The e2e test drives `compile_model(opt_level=...)`, so it exercises the real
+  `-O` pipelines rather than a hardcoded list matching none of them.
+- `max_rel_error_vs_onnxruntime` is recorded in every result and every ablation.
+- Validation is a thirty cell matrix: every model times three levels times two
+  budgets times the five input classes spec 9.6 names. Slow cells are markered
+  so the default run stays at one cell per level; CI runs all thirty.
+
+Both bounds are asserted separately rather than through
+`np.testing.assert_allclose`, whose combined criterion this section objected to.
+
+One finding came out of it, recorded in `docs/ENGINEERING_LOG.md`. A fixed
+absolute tolerance cannot span the input classes this section asked for. `ATOL`
+was calibrated on a standard normal input, whose LeNet outputs are of order 0.15
+where 1e-6 is about 67 float32 ulps. The `large_pos` and `large_neg` classes
+produce outputs of order 25, where 1e-6 is half an ulp and therefore
+unsatisfiable by any correct implementation; the measured error there is 8 ulps,
+the same arithmetic quality as the 2 ulps on `normal`. The absolute bound is now
+expressed as ulps at the output scale with `ATOL` as a floor, so the `normal`
+cells are checked exactly as strictly as before and nothing was loosened to make
+a failure disappear. Worst across the matrix: absolute 1.526e-5 at `-O0`, 1 MB,
+`large_pos`; relative 4.848e-6 at `-O0`, 1 MB, `zeros`, against a 1e-5 bound.
+
 ### 4.5 Test suite is thin in specific places
 
 13 lit tests, 11 GoogleTests, 12 pytest tests. The gaps, by name:
