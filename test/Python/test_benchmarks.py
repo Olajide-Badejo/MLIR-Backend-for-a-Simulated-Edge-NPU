@@ -136,6 +136,31 @@ def test_committed_results_are_current():
     assert not stale, f"stale results, rerun experiments/run_benchmarks.py: {stale}"
 
 
+def test_no_result_traces_to_a_missing_commit():
+    """Every result's git_sha must be a commit that exists in this repository.
+
+    The published numbers were once generated at git_sha 8095dbec, which is not
+    a commit here and never was, so nobody could reproduce them or even say what
+    code produced them. staleness() compares the recorded sha against HEAD but
+    says nothing about whether it is real, so a fabricated or rebased away sha
+    passes every other check in this file.
+    """
+    results = sorted((REPO / "experiments" / "results").glob("*.json"))
+    if not results:
+        pytest.skip("no recorded results in the working tree")
+    missing = {}
+    for path in results:
+        sha = json.loads(path.read_text())["manifest"]["git_sha"]
+        proc = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=REPO,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            missing[path.name] = sha
+    assert not missing, f"results tracing to commits that do not exist: {missing}"
+
+
 def test_cost_model_constants_match_the_cpp_header():
     """The Python mirror of the cost model must not drift from the C++ source.
 
