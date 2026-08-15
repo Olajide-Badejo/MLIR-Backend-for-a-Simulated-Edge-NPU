@@ -109,6 +109,18 @@ running the tools rather than reading the source.
 
 ### Changed
 
+- The six benchmark results are regenerated on the clean post U3 tree, so
+  `experiments/results/*.json` traces to a commit that exists and matches HEAD.
+  No measured number moved: `instruction_count`, `simulated_cycles`, the DRAM
+  counters, and `max_abs_error_vs_onnxruntime` are identical across all six
+  cells, and only `manifest.git_sha`, `manifest.timestamp`, and the wall clock
+  `compile_ms` differ. That is the expected outcome, since U3 was validation and
+  diagnostics and added no optimization.
+- `test_no_result_traces_to_a_missing_commit` now asserts that every recorded
+  `git_sha` resolves with `git cat-file -e`. The staleness guard compares the
+  recorded sha against HEAD but never asked whether it was real, which is how
+  results generated at `8095dbec`, a commit that has never existed in this
+  repository, passed every check for a month.
 - Phase U3 (**behaviour change, deliberate**): the simulator sizes its
   scratchpad strictly from the declared `scratchpadBytes`. It used to grow the
   scratchpad to cover every `resultAddr` it found in the instruction stream,
