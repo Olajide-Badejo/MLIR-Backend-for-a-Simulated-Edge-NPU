@@ -11,6 +11,7 @@ replaced it. See docs/ASSESSMENT.md section 4.2.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -159,6 +160,54 @@ def test_no_result_traces_to_a_missing_commit():
         if proc.returncode != 0:
             missing[path.name] = sha
     assert not missing, f"results tracing to commits that do not exist: {missing}"
+
+
+def test_macros_match_the_committed_results():
+    """The tex the report includes must equal the results it claims to come from.
+
+    report/generated/ was gitignored, so nothing enforced spec 23.1: the PDFs
+    could cite numbers no committed result contained, and did. The directory is
+    tracked now, and this test is what makes tracking it mean something.
+    """
+    macros_path = REPO / "report" / "generated" / "macros.tex"
+    if not macros_path.exists():
+        pytest.skip("report/generated/macros.tex not built")
+    macros = dict(
+        re.findall(r"\\newcommand\{\\(\w+)\}\{([^}]*)\}", macros_path.read_text())
+    )
+
+    rows = [
+        json.loads(p.read_text())
+        for p in sorted((REPO / "experiments" / "results").glob("*.json"))
+    ]
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+
+    shas = {r["manifest"]["git_sha"][:12] for r in rows}
+    assert len(shas) == 1, f"results disagree on git_sha: {shas}"
+    assert macros["GitSha"] == shas.pop(), (
+        f"macros.tex cites GitSha {macros['GitSha']} but the results were "
+        f"generated at a different commit"
+    )
+
+    default = {
+        r["opt_level"]: r
+        for r in rows
+        if r["model"] == "lenet" and r["scratchpad_budget"] == 1048576
+    }
+    expected = {
+        "OaInstr": default[0]["instruction_count"],
+        "OcInstr": default[2]["instruction_count"],
+        "OaCycles": default[0]["simulated_cycles"],
+        "OcCycles": default[2]["simulated_cycles"],
+        "OaDram": default[0]["dram_bytes_total"] // 1024,
+        "ObDram": default[1]["dram_bytes_total"] // 1024,
+    }
+    for name, value in expected.items():
+        assert macros[name] == str(value), (
+            f"macros.tex has {name}={macros[name]} but the committed result "
+            f"says {value}"
+        )
 
 
 def test_cost_model_constants_match_the_cpp_header():

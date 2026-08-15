@@ -148,3 +148,25 @@ committed in the form that produced them, so the published numbers were not
 reproducible from any point in the history. That is the failure mode this rule
 exists to prevent, and it is why the check treats an unrecognised sha as stale
 rather than assuming it is merely old.
+
+## The generated report tex is tracked
+
+`report/generated/` holds `macros.tex` and `results_table.tex`, which both PDFs
+include and which are produced from `experiments/results/` by
+`report/scripts/results_to_tex.py`. It was gitignored, on the reasonable looking
+argument that generated files do not belong in version control.
+
+That argument is wrong here, and 2026-08-09 is when it was reversed. The rule
+this repository actually needs is that every number in a published artifact
+traces to a committed result. While the generated tex was untracked, nothing
+connected the two: the PDFs were committed, the results were committed, and the
+file carrying numbers from one to the other was not, so the two could disagree
+indefinitely and nothing would notice. They did disagree. The committed
+`macros.tex` sitting in the working tree read `GitSha 38af13633388` while the
+committed results said something else again, and both PDFs cited `8095dbec`.
+
+Tracking the directory makes the link checkable, and
+`test_macros_match_the_committed_results` checks it: the `\GitSha` macro and
+every cited figure must equal what the committed results say. The cost is that
+regenerating the tex shows up as a diff, which is the point. A generated file is
+worth tracking exactly when it is the evidence linking two other tracked things.
