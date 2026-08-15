@@ -21,7 +21,7 @@
   "dram_bytes_written": 166600,
   "dram_bytes_total": 514000,
   "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
-  "compile_ms": 23.153488989919424,
+  "compile_ms": 22.072606981964782,
   "passes": [
     {
       "name": "canonicalize",
@@ -81,7 +81,7 @@
       },
       "ops_before_total": 25,
       "ops_after_total": 37,
-      "wall_ms": 0.3
+      "wall_ms": 0.2
     },
     {
       "name": "npu-allocate-scratchpad",
@@ -120,7 +120,7 @@
   "pass_timing_source": "--mlir-timing",
   "note": "simulated estimates, not measurements",
   "manifest": {
-    "git_sha": "7f886d6789f54a87dfcf8b49bfb724152767e62d",
+    "git_sha": "1e9c89c6ddca1045c554edeae357a3d75adf41f5",
     "llvm_tag": "llvmorg-22.1.8",
     "python": "3.14.4",
     "onnxruntime": "1.27.0",
@@ -133,7 +133,7 @@
     },
     "seed": 0,
     "model_generator_version": 1,
-    "timestamp": "2026-08-15T18:35:46.552176+00:00",
+    "timestamp": "2026-08-15T18:47:17.907379+00:00",
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "wall_clock_note": "compile_ms and passes[].wall_ms are wall clock measured on the machine named in cpu_model; they are not portable and not simulated estimates. Every other performance figure here is a simulated estimate from the analytical cost model."
   }

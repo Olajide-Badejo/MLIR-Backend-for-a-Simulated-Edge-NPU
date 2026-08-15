@@ -1,0 +1,42 @@
+{
+  "model": "lenet",
+  "opt_level": 2,
+  "ablated_pass": "symbol-dce",
+  "pipeline_without": [
+    "canonicalize",
+    "npu-fuse-ops",
+    "canonicalize"
+  ],
+  "scratchpad_budget": 1048576,
+  "baseline_cell": "lenet_O2_default.json",
+  "instruction_count": 21,
+  "simulated_cycles": 12710,
+  "dram_bytes_read": 180840,
+  "dram_bytes_written": 40,
+  "dram_bytes_total": 180880,
+  "compile_ms": 23.330651019932702,
+  "delta_instruction_count": 0,
+  "delta_simulated_cycles": 0,
+  "delta_dram_bytes_total": 0,
+  "delta_compile_ms": 0.03151703276671469,
+  "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
+  "note": "simulated estimates, not measurements; deltas are ablated minus full -O2",
+  "manifest": {
+    "git_sha": "1e9c89c6ddca1045c554edeae357a3d75adf41f5",
+    "llvm_tag": "llvmorg-22.1.8",
+    "python": "3.14.4",
+    "onnxruntime": "1.27.0",
+    "numpy": "2.5.1",
+    "cost_model": {
+      "macs_per_cycle": 256,
+      "dram_bytes_per_cycle": 16,
+      "lanes": 16,
+      "issue_overhead": 1
+    },
+    "seed": 0,
+    "model_generator_version": 1,
+    "timestamp": "2026-08-15T18:47:18.665719+00:00",
+    "cpu_model": "Intel(R) Core(TM) i7-14700K",
+    "wall_clock_note": "compile_ms and passes[].wall_ms are wall clock measured on the machine named in cpu_model; they are not portable and not simulated estimates. Every other performance figure here is a simulated estimate from the analytical cost model."
+  }
+}
