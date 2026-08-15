@@ -409,10 +409,32 @@ totals, and its wall clock in milliseconds.
   --mlir-output-format=json`, recorded with a `pass_timing_source` field and a
   `cpu_model` in the manifest, since it is a measurement rather than a
   simulated estimate. A pass with no timing raises rather than recording zero.
-- **One pass at a time ablations: not yet.** That is upgrade part 9, which
-  consumes this schema. The measurement here answers "what does this pass do to
-  the IR it is handed"; the ablation answers "what does the final program lose
-  without it", and the two differ wherever passes interact.
+- **One pass at a time ablations: done** (upgrade part 9, commits `1e9c89c`,
+  `7bd44d3`, `fbc64ff`). Every distinct `-O2` pass is ablated at both budgets,
+  with deltas against the full `-O2` cell, a numerics check that raises rather
+  than recording a row, a generated table and figure, and `docs/PASSES.md`
+  citing measured deltas instead of qualitative claims.
+
+**Status 2026-08-09, section closed. All three requirements met**, and the
+ablation immediately earned its keep by contradicting two things the report had
+been implying:
+
+1. At the 1 MB budget, removing `-canonicalize` or `-symbol-dce` from `-O2`
+   produces a byte identical program. Verified by diffing the IR rather than
+   trusting the zero. `-npu-fuse-ops` drives its patterns with
+   `applyPatternsGreedily`, whose fixed point loop already folds and erases dead
+   ops, so it subsumes canonicalization here. Canonicalization is still
+   responsible for the entire DRAM halving at `-O1`, where it is the only pass.
+   The per pass measurement of the previous part cannot see this: in isolation
+   canonicalization does remove operations, and by removal it removes none,
+   because something else would have.
+2. At the 140 KB budget `-npu-fuse-ops` is counterproductive. Removing it saves
+   96 simulated cycles and 6.1 KB of DRAM. Fusing an activation into its
+   producer extends that value's live range, and under a budget that already
+   spills, that costs a spill and a reload worth more than the instruction
+   saved. Section 5.1 predicted the passes would behave oppositely under
+   pressure; it was right, and running the ablations at only the generous budget
+   would have concluded that fusion is the one pass worth having.
 
 ### 3.6 The simulator has no progress reporting
 
