@@ -397,6 +397,23 @@ question the project was built to answer.
 U4 (`UPGRADE_SPEC_V3.md` section 12), now the largest remaining gap between
 what the report claims to evaluate and what is measured.
 
+**Status 2026-08-09, two of the three done** (upgrade part 8, commits `7f886d6`,
+`72151ee`). Every result now carries a `passes` array covering that cell's whole
+pipeline in order, with the op histogram before and after each pass, both
+totals, and its wall clock in milliseconds.
+
+- **IR op counts before and after each pass: done.** From `npu-opt`'s own
+  `print-op-stats` in JSON form, not from a regex over the dump, which is the
+  source Part 7 had just finished removing from the instruction count.
+- **Wall clock compile time per pass: done.** From `--mlir-timing
+  --mlir-output-format=json`, recorded with a `pass_timing_source` field and a
+  `cpu_model` in the manifest, since it is a measurement rather than a
+  simulated estimate. A pass with no timing raises rather than recording zero.
+- **One pass at a time ablations: not yet.** That is upgrade part 9, which
+  consumes this schema. The measurement here answers "what does this pass do to
+  the IR it is handed"; the ablation answers "what does the final program lose
+  without it", and the two differ wherever passes interact.
+
 ### 3.6 The simulator has no progress reporting
 
 Spec section 9 requires a TTY aware single line progress bar over the instruction
