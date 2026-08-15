@@ -59,7 +59,11 @@ const char *opcodeName(Opcode op) {
 
 namespace {
 
-// Little endian byte stream helpers.
+// Byte stream helpers. These copy the object representation straight in and out
+// of the stream, so the encoding is host byte order, not a fixed endianness.
+// On every machine this project targets that is little endian, but a .nbin is
+// not portable across byte orders and nothing here swaps. See the byte order
+// section of docs/ISA_MANUAL.md.
 struct Writer {
   std::vector<uint8_t> bytes;
   template <typename T> void put(T value) {

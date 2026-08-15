@@ -131,6 +131,18 @@ Semantic Versioning once a release is tagged.
 
 ### Fixed
 
+- Phase U3: the `.nbin` format was documented as "a fixed header followed by
+  tagged records, little endian" in `docs/ISA_MANUAL.md`, in the
+  `include/NPU/Encoding/Program.h` header comment, and in a
+  `docs/DESIGN_DECISIONS.md` heading. Both halves were false. There are no tags:
+  every field sits at a position determined by the fields before it, so nothing
+  can skip an unrecognised field, which is exactly why the version field exists.
+  And the helpers copy the object representation in and out of the stream, so the
+  encoding is host byte order, not a fixed little endian; a `.nbin` is not
+  portable across byte orders. All three now say what is true, and the code
+  comment claiming little endian helpers says so too. No byte swapping was added:
+  that is a format change. `docs/ASSESSMENT.md` 13.4 item 7 had found two of the
+  three places.
 - Phase U3: `Fuzz.DecodeUnvalidatedNeverCrashesEither` accumulated the fields it
   touches into a signed `int64_t`, and the corpus holds a file declaring
   `INT64_MAX` bytes of scratchpad, which `decodeUnvalidated` returns by design.

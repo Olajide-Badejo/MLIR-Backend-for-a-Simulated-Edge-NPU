@@ -6,8 +6,11 @@
 //===----------------------------------------------------------------------===//
 //
 // In memory model of an encoded npuisa program and the .nbin binary format.
-// The format is a fixed header followed by tagged records; it is deliberately
-// simple to get right rather than bit packed. See docs/ISA_MANUAL.md.
+// The format is a fixed header followed by fixed order sections, each repeated
+// section prefixed by a u32 count. There are no tags, so a reader cannot skip a
+// field it does not recognise; the version field is what carries compatibility
+// instead. Byte oriented rather than bit packed, and written in host byte order.
+// See docs/ISA_MANUAL.md.
 //
 //===----------------------------------------------------------------------===//
 
