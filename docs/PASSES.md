@@ -80,6 +80,45 @@ offsets and spills to DRAM when the working set exceeds the budget (see
 
 The benchmark suite records this. At the 1 MB budget on the LeNet model, moving
 from O0 to O1 removes the dead transposed Gemm weight constants (the instruction
-count drops and DRAM traffic roughly halves), and O2 fusion folds the activations
-(the instruction count and simulated cycles drop further). The exact numbers live
-in `experiments/results/` and are simulated estimates.
+count drops from 28 to 25 and DRAM traffic roughly halves, 339 KB to 176 KB), and
+O2 fusion folds the activations (25 to 21 instructions, 13,008 to 12,710 simulated
+cycles). The exact numbers live in `experiments/results/` and are simulated
+estimates.
+
+## What each pass buys, measured
+
+The level numbers above are cumulative and cannot say what one pass contributes.
+`run_benchmarks.py` records a leave one out ablation for every `-O2` pass at both
+budgets: the full pipeline minus that pass, compiled, encoded, simulated, and
+checked against onnxruntime. The deltas below are ablated minus full `-O2`, so a
+positive number is what removing the pass costs. They regenerate with the results
+and are plotted in `docs/images/ablations.png`.
+
+| Pass | 1 MB: instrs, cycles | 140 KB: instrs, cycles, DRAM |
+|---|---|---|
+| `-canonicalize` (all occurrences) | +0, +0 | +0, +0, +0 |
+| `-npu-fuse-ops` | **+4, +298** | +2, **-96**, **-6.1 KB** |
+| `-symbol-dce` | +0, +0 | +0, +0, +0 |
+
+Three things these numbers say that the level table cannot.
+
+**Canonicalization is redundant at `-O2`, and load bearing at `-O1`.** Removing
+both of its occurrences from `-O2` produces a byte identical program.
+`-npu-fuse-ops` drives its patterns with `applyPatternsGreedily`, whose fixed
+point loop folds constants and erases dead ops as a side effect, so it already
+does everything canonicalization contributed here. At `-O1`, where it is the only
+pass, it is responsible for the entire DRAM halving. A pass can be worth having
+at one level and redundant at another, and only the ablation shows it.
+
+**Fusion is counterproductive under memory pressure.** At the tight budget,
+removing it *saves* 96 simulated cycles and 6.1 KB of DRAM traffic. Folding an
+activation into its producer extends that value's live range, and under a budget
+that already forces spilling, a longer live range buys a spill and a reload that
+cost more than the fused instruction saved. Fusion is a win at 1 MB and a loss at
+140 KB, which is an argument for making it budget aware rather than
+unconditional.
+
+**`-symbol-dce` earns nothing measurable on this model.** It removes unused
+private functions and LeNet has none after import. It is cheap and correct to
+keep, but no number here justifies it; that is worth stating rather than implying
+otherwise.
