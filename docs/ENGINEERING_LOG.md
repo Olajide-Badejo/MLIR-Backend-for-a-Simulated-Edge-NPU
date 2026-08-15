@@ -4,6 +4,79 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U4: the headline number was never an instruction count
+
+**Symptom.** The repository committed two different answers to the same
+question and shipped both. `experiments/results/lenet_O2_default.json` said
+`instruction_count: 70`. `test/baseline/baseline.json` said `instructions: 21`
+for the same cell. The README printed 70 in its headline table and, three
+screens further down, a real disassembly excerpt reading "1 inputs, 1 outputs,
+10 constants, 21 instructions". Nobody noticed for a month, which is the part
+worth thinking about.
+
+**Root cause.** `run_benchmarks.py` computed the scalar as
+
+```python
+"instruction_count": int(sum(isa_ops.values()))
+```
+
+where `isa_ops = count_ops(isa, "npuisa")` and `count_ops` is
+
+```python
+dict(Counter(re.findall(rf"{dialect}\.[a-z_0-9]+", mlir_text)))
+```
+
+A regex over the printed IR. It inflates the count two ways, and both are
+visible in one line of LeNet IR:
+
+```
+%0 = npuisa.dma_load %x : (tensor<4xf32>) -> !npuisa.buffer<tensor<4xf32>>
+```
+
+That is one instruction. The regex sees `npuisa.dma_load` and `npuisa.buffer`,
+because a type is text too and `!npuisa.buffer<...>` matches the same pattern as
+an op mnemonic. Separately it counts `npuisa.const`, which the encoder turns
+into a DRAM region and never emits into the instruction stream at all. For
+LeNet the two together turn 21 into 70.
+
+The simulator has been reporting the real number in `stats.instructions` since
+it was written, and `simulate()` already parsed and returned that JSON. The
+harness had the right answer in a local variable and used the wrong one.
+
+**Why it survived.** Two committed artifacts disagreed and no test compared
+them. The baseline recorded the truth in U0 precisely so drift would be visible,
+but it compared each run against the previous run, never against the results the
+report publishes. The disagreement was between two files that nothing read at
+the same time.
+
+**Chosen fix.** Take the scalar from the simulator, and refuse rather than fall
+back:
+
+```python
+if "instructions" not in stats:
+    raise RuntimeError(...)
+"instruction_count": int(stats["instructions"]),
+```
+
+The fall back matters. A silent `except KeyError: use the regex` would reinstate
+the defect the first time the stats format shifted, and it would do it quietly,
+which is exactly how the number got published the first time.
+
+`count_ops` and the `npuisa_op_counts` histogram stay. The histogram is real
+data and Part 8 builds on it; only its use as a scalar was wrong. Its docstring
+now states both failure modes so nobody reaches for `sum(...)` again.
+
+**Verification.** All six cells regenerated, and every one now equals the
+recorded baseline for its cell: 28, 28, 25, 31, 21, 29 against baseline entries
+of the same. Four new tests: `test_instruction_count_comes_from_the_simulator`
+asserts the value is not the regex sum and is smaller than it,
+`test_results_agree_with_the_recorded_baseline` ends the committed
+contradiction, `test_count_ops_is_not_an_instruction_count` exercises both
+inflation modes on a three line dump so the reason is executable rather than
+only written down, and `test_readme_table_matches_the_results` pins the hand
+written table to the generated numbers so it cannot drift again. The README
+objdump excerpt was regenerated from a real run and confirms 21.
+
 ## 2026-08-09 Republishing the numbers, and why they had gone stale
 
 **Symptom.** Both committed PDFs were byte identical to their 2026-07-15 builds.

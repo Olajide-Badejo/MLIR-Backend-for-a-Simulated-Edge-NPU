@@ -6,6 +6,31 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Headline change: the published instruction counts were wrong and are corrected
+
+**The LeNet instruction counts in the README, the report, and the plots change
+from 91 / 82 / 70 to 28 / 25 / 21 at `-O0` / `-O1` / `-O2`.** The tight budget
+cells change from 91 / 94 / 86 to 28 / 31 / 29. Nothing about the compiler
+changed; the old numbers were never the instruction count.
+
+`run_benchmarks.py` computed `instruction_count` as
+`sum(count_ops(ir, "npuisa").values())`, a regex over the final IR dump. That
+regex matches inside type strings, so every `!npuisa.buffer<...>` was counted as
+an occurrence of an op named `npuisa.buffer`, and it counts `npuisa.const`,
+which the encoder emits as DRAM data and never as an instruction. The simulator
+has reported the true count in `stats.instructions` all along and the harness
+ignored it.
+
+The repository committed both answers side by side: `experiments/results/*.json`
+said 91 / 82 / 70 while `test/baseline/baseline.json` recorded 28 / 25 / 21 for
+the same six cells, and the README's own disassembly excerpt said "21
+instructions" three screens below a table claiming 70. All six cells now agree
+with the recorded baseline exactly.
+
+`count_ops` and `npuisa_op_counts` are kept: the per op histogram is real data
+and is useful as a histogram. Only the scalar was wrong. A missing
+`instructions` field now raises rather than falling back to the regex.
+
 ### Phase U3 summary: the user visible surface
 
 Everything below is detailed in its own entry; this is what changed for someone

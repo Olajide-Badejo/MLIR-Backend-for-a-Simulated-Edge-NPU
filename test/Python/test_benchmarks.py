@@ -162,6 +162,80 @@ def test_no_result_traces_to_a_missing_commit():
     assert not missing, f"results tracing to commits that do not exist: {missing}"
 
 
+def _committed_results() -> list[dict]:
+    return [
+        json.loads(p.read_text())
+        for p in sorted((REPO / "experiments" / "results").glob("*.json"))
+    ]
+
+
+def test_instruction_count_comes_from_the_simulator():
+    """instruction_count must be the simulator's number, not the IR regex sum.
+
+    The harness used to set it to sum(npuisa_op_counts.values()), a regex over
+    the final IR dump that matches inside type strings such as !npuisa.buffer
+    and counts npuisa.const, which is DRAM data rather than an instruction. For
+    LeNet that inflated 21 to 70. See docs/ASSESSMENT.md section 4.3.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        regex_sum = sum(r["npuisa_op_counts"].values())
+        assert r["instruction_count"] != regex_sum, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"instruction_count {r['instruction_count']} equals the regex sum, "
+            f"so it came from the IR dump rather than the simulator"
+        )
+        assert r["instruction_count"] < regex_sum, (
+            "the simulator count should be the smaller of the two, since the "
+            "regex over counts"
+        )
+
+
+def test_results_agree_with_the_recorded_baseline():
+    """The results and test/baseline/baseline.json must not disagree.
+
+    Both were committed, saying 91 / 82 / 70 and 28 / 25 / 21 for the same
+    cells, which is ASSESSMENT 13.4 item 4: two contradictory instruction counts
+    committed side by side. Whichever was right, committing both was the defect.
+    """
+    baseline_path = REPO / "test" / "baseline" / "baseline.json"
+    if not baseline_path.exists():
+        pytest.skip("no recorded baseline")
+    cells = json.loads(baseline_path.read_text())["cells"]
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+
+    for r in rows:
+        tag = "default" if r["scratchpad_budget"] == 1048576 else "tight"
+        name = f"{r['model']}_O{r['opt_level']}_{tag}"
+        if name not in cells:
+            continue
+        assert r["instruction_count"] == cells[name]["instructions"], (
+            f"{name}: results say {r['instruction_count']} but the recorded "
+            f"baseline says {cells[name]['instructions']}"
+        )
+
+
+def test_count_ops_is_not_an_instruction_count():
+    """Document why count_ops is unfit as a scalar, by exercising both faults."""
+    dump = (
+        "%0 = npuisa.dma_load %x : (tensor<4xf32>) -> !npuisa.buffer<tensor<4xf32>>\n"
+        "%1 = npuisa.const dense<1.0> : tensor<4xf32>\n"
+        "%2 = npuisa.relu %0 : (!npuisa.buffer<tensor<4xf32>>)"
+        " -> !npuisa.buffer<tensor<4xf32>>\n"
+    )
+    counts = run_benchmarks.count_ops(dump, "npuisa")
+    # It counts the type string as though it were an op.
+    assert counts.get("npuisa.buffer", 0) == 3
+    # And it counts constant data as though it were an instruction.
+    assert counts.get("npuisa.const", 0) == 1
+    # So the sum is far above the two real instructions in this dump.
+    assert sum(counts.values()) > 2
+
+
 def test_macros_match_the_committed_results():
     """The tex the report includes must equal the results it claims to come from.
 

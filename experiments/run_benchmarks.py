@@ -77,6 +77,20 @@ def manifest(seed: int) -> dict:
 
 
 def count_ops(mlir_text: str, dialect: str) -> dict:
+    """Histogram of textual `dialect.name` occurrences in an IR dump.
+
+    This is a regex over text, not a semantic count, and it is deliberately kept
+    as one because the per op histogram is useful as a histogram. What it is not
+    is an instruction count, for two reasons that both inflate it:
+
+    - it matches inside type strings, so `!npuisa.buffer<...>` is counted as an
+      occurrence of an op named `npuisa.buffer`;
+    - it counts `npuisa.const`, which the encoder emits as DRAM data rather than
+      as an instruction.
+
+    For LeNet the difference is 91 / 82 / 70 from this function against the
+    simulator's true 28 / 25 / 21. Take `instruction_count` from the simulator.
+    """
     return dict(Counter(re.findall(rf"{dialect}\.[a-z_0-9]+", mlir_text)))
 
 
@@ -126,6 +140,18 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
         x = rng.standard_normal(INPUT_SHAPES[model]).astype(np.float32)
         y_sim, stats = simulate(nbin, x)
 
+        # The instruction count is the simulator's own, not a regex over the IR.
+        # A missing field is an error rather than a fall back to the regex: the
+        # regex answer is wrong by a factor of three and silently reinstating it
+        # is how the wrong number got published in the first place.
+        if "instructions" not in stats:
+            raise RuntimeError(
+                f"npu-sim stats for {model} -O{level} at budget {budget} carry no "
+                f"'instructions' field; got keys {sorted(stats)}. Refusing to "
+                f"fall back to the IR regex, which counts type strings and "
+                f"npuisa.const and is not an instruction count."
+            )
+
         ref = ort.InferenceSession(str(onnx)).run(None, {"input": x})[0]
         y_sim = y_sim.reshape(ref.shape)
         max_abs_error = float(np.max(np.abs(y_sim - ref)))
@@ -135,7 +161,7 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
         "opt_level": level,
         "scratchpad_budget": budget,
         "npuisa_op_counts": isa_ops,
-        "instruction_count": int(sum(isa_ops.values())),
+        "instruction_count": int(stats["instructions"]),
         "simulated_cycles": stats["cycles"],
         "dram_bytes_read": stats["dram_bytes_read"],
         "dram_bytes_written": stats["dram_bytes_written"],

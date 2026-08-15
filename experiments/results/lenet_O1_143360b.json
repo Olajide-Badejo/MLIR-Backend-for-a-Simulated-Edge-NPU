@@ -15,16 +15,16 @@
     "npuisa.reshape": 1,
     "npuisa.matmul": 3
   },
-  "instruction_count": 94,
+  "instruction_count": 31,
   "simulated_cycles": 33834,
   "dram_bytes_read": 347400,
   "dram_bytes_written": 166600,
   "dram_bytes_total": 514000,
   "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
-  "compile_ms": 22.678606008412316,
+  "compile_ms": 22.224348009331152,
   "note": "simulated estimates, not measurements",
   "manifest": {
-    "git_sha": "7e4016538745e9a36d31095e8000d02b8ea8f8f9",
+    "git_sha": "4ef6249a67d9edb76405d55adee14c47ea7a8393",
     "llvm_tag": "llvmorg-22.1.8",
     "python": "3.14.4",
     "onnxruntime": "1.27.0",
@@ -37,6 +37,6 @@
     },
     "seed": 0,
     "model_generator_version": 1,
-    "timestamp": "2026-08-15T18:12:50.710654+00:00"
+    "timestamp": "2026-08-15T18:23:06.345910+00:00"
   }
 }
