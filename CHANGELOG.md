@@ -57,6 +57,31 @@ running the tools rather than reading the source.
 
 ### Added
 
+- Phase U4: `test/Python/test_end_to_end.py` is now a parametrized matrix of
+  every model times three optimization levels times both scratchpad budgets
+  times five input classes (`normal`, `zeros`, `large_pos`, `large_neg`,
+  `relu_knee`), thirty cells, replacing two tests that ran one hardcoded pass
+  list matching no `-O` level and validated against a single standard normal
+  draw. Compilation goes through `compile_model(opt_level=...)`, so the tests
+  exercise the pipelines that ship.
+
+  Both bounds are asserted separately rather than through
+  `np.testing.assert_allclose`, whose combined `atol + rtol * |b|` criterion lets
+  an absolute allowance absorb a relative failure. The absolute bound is scale
+  aware, expressed as float32 ulps at the magnitude of the output with `ATOL` as
+  a floor: `large_pos` and `large_neg` produce outputs two orders of magnitude
+  larger than `normal`, where a fixed `1e-6` is half an ulp and unsatisfiable by
+  any correct implementation. Nothing that passed before is loosened, since the
+  floor still dominates at the `normal` scale. Worst observed across the matrix:
+  absolute 1.526e-5 (8 ulps at that scale), relative 4.848e-6 against a 1e-5
+  bound.
+
+  Cells outside the fast subset carry a `slow` marker and `pyproject.toml` sets
+  `addopts = "-m 'not slow'"`, so the default run is one cell per level in about
+  a second while CI runs the whole matrix.
+- Phase U4: every result records `max_rel_error_vs_onnxruntime` alongside the
+  absolute error. The absolute error alone cannot tell a small error on a small
+  output from a small error on a large one.
 - Phase U4: leave one out ablations. For every distinct pass in `-O2`, the
   harness compiles the model with that pass removed, encodes, simulates, and
   checks against onnxruntime exactly as a normal cell does, recording the result

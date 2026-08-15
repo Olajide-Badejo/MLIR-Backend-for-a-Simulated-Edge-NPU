@@ -4,6 +4,76 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U4: a fixed absolute tolerance cannot survive a scale change
+
+**Symptom.** The new end to end matrix went red on twelve of its thirty cells,
+every `large_pos` and `large_neg` cell at all three levels and both budgets:
+
+```
+AssertionError: absolute error 1.526e-05 exceeds 1.000e-06
+```
+
+**Root cause, and it is not the compiler.** `ATOL = 1e-6` was set in phase U1
+against the observed 2.98e-8, measured on a standard normal input. That input
+produces LeNet outputs of order 0.15, where a float32 ulp is 1.49e-8, so 1e-6 is
+about 67 ulps of headroom and the bound is generous.
+
+The `large_pos` and `large_neg` classes drive a constant $\pm$1e3 through the
+network. The outputs come out of order 25, where a float32 ulp is 1.91e-6. The
+measured absolute error there is 1.526e-5, which is **8 ulps**: the same
+arithmetic quality as the 2 ulps seen on `normal`, from the same cause,
+reordered but mathematically identical fp32 accumulation. Meanwhile 1e-6 is half
+an ulp at that scale, so the bound is not merely tight, it is unsatisfiable by
+any correct implementation, including onnxruntime compared against itself in a
+different summation order.
+
+The relative bound passed comfortably in all twelve cells. Relative error across
+the whole matrix peaks at 4.85e-6 against a 1e-5 budget. So every signal that
+scales correctly said the results were fine, and the one fixed constant said
+they were not.
+
+**The rule this ran into.** The work order says never loosen a tolerance to make
+a cell pass, and separately says to keep `ATOL = 1e-6`. Those instructions
+conflict once input classes with different output magnitudes are introduced,
+which is what the same work order asks for. Loosening the constant to 2e-5 would
+have been exactly the forbidden move: it would weaken the `normal` cells, where
+1e-6 is doing real work, in order to accommodate a different scale.
+
+**Chosen fix.** Express the absolute bound as what it always meant, a number of
+ulps at the scale of the output being checked, with `ATOL` as a floor:
+
+```python
+ULP_BUDGET = 16
+
+def absolute_bound(reference):
+    scale = float(np.max(np.abs(reference)))
+    if scale == 0.0:
+        return ATOL
+    return max(ATOL, ULP_BUDGET * float(np.spacing(np.float32(scale))))
+```
+
+At the `normal` scale, 16 ulps is 2.4e-7 and the 1e-6 floor still dominates, so
+those cells are checked exactly as strictly as before and nothing that passed is
+loosened. At the large scale the budget is 3.05e-5 against a measured 1.53e-5,
+so a genuine doubling of the error still fails. Near zero outputs keep an
+absolute guarantee from the floor.
+
+This is a deviation from the work order and is recorded as one rather than
+applied quietly.
+
+**A smaller decision.** The `zeros` class was expected to make the relative
+bound vacuous by driving the reference to exactly zero. It does not: LeNet has
+biases, so a zero input produces a non zero output and the relative check is
+meaningful, and in fact `zeros` is where the worst relative error in the whole
+matrix occurs, 4.85e-6. The skip for an exactly zero reference is kept because
+it is the correct guard for a model without biases, but it does not fire here,
+and saying so is better than implying the class is untested.
+
+**Verification.** Thirty cells, all green, full matrix in 3.4 seconds. Worst
+absolute error across the matrix 1.526e-5 at `-O0`, 1 MB, `large_pos`; worst
+relative error 4.848e-6 at `-O0`, 1 MB, `zeros`. The default run is 3 cells plus
+the two meta tests in under a second; CI runs all thirty.
+
 ## 2026-08-09 Phase U4: the ablation says two passes do nothing, and one is harmful
 
 **Not a bug.** The leave one out ablation the v2 specification called "the
