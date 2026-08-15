@@ -14,7 +14,11 @@ recorded experiment. Table~\ref{tab:results} is generated from those files.
   \input{generated/results_table}
   \caption{Per cell results: instruction count, simulated cycles, total DRAM
     traffic, and maximum absolute error against onnxruntime. Cycle and DRAM
-    figures are simulated estimates.}
+    figures are simulated estimates. The error column is the absolute error on a
+    standard normal input; each result also records a relative error, and the end
+    to end test suite asserts both bounds separately, an absolute
+    $1\times10^{-6}$ and a relative $1\times10^{-5}$, across a matrix of three
+    optimization levels, two budgets, and five input classes.}
   \label{tab:results}
 \end{table}
 

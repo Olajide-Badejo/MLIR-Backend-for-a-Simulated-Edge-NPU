@@ -264,6 +264,28 @@ def test_readme_table_matches_the_results():
     ], f"README Instructions row is {figures} but the results say otherwise"
 
 
+def test_results_record_relative_error():
+    """Every result records a relative error, and it is within the e2e bound.
+
+    Only the absolute error was recorded, which cannot tell a small error on a
+    small output from a small error on a large one. ASSESSMENT 4.4 asks for both.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    rtol = 1e-5
+    for r in rows:
+        assert "max_rel_error_vs_onnxruntime" in r, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']} records "
+            f"no relative error"
+        )
+        assert r["max_rel_error_vs_onnxruntime"] <= rtol, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"relative error {r['max_rel_error_vs_onnxruntime']:.3e} exceeds "
+            f"{rtol:.3e}"
+        )
+
+
 def _ablation_rows() -> list[dict]:
     return [r for r in _committed_results() if "ablated_pass" in r]
 

@@ -70,6 +70,19 @@ PASS_TIMING_SOURCE = "--mlir-timing"
 ABLATION_ERROR_TOLERANCE = 1e-5
 
 
+def relative_error(got: np.ndarray, ref: np.ndarray) -> float:
+    """Max relative error, computed the same way the end to end matrix does.
+
+    Only the absolute error was recorded before, which cannot distinguish a
+    small error on a small output from a small error on a large one. The
+    denominator is floored at the smallest positive float32 so an exactly zero
+    reference element does not divide by zero; where the reference really is
+    zero the absolute error is the only meaningful bound.
+    """
+    denom = np.maximum(np.abs(ref), np.finfo(np.float32).tiny)
+    return float(np.max(np.abs(got - ref) / denom))
+
+
 def bin_dir() -> Path:
     return Path(os.environ.get("NPU_BIN", str(REPO / "build" / "bin")))
 
@@ -391,6 +404,7 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
         ref = ort.InferenceSession(str(onnx)).run(None, {"input": x})[0]
         y_sim = y_sim.reshape(ref.shape)
         max_abs_error = float(np.max(np.abs(y_sim - ref)))
+        max_rel_error = relative_error(y_sim, ref)
 
     return {
         "model": model,
@@ -403,6 +417,7 @@ def benchmark(model: str, level: int, budget: int, seed: int) -> dict:
         "dram_bytes_written": stats["dram_bytes_written"],
         "dram_bytes_total": stats["dram_bytes_read"] + stats["dram_bytes_written"],
         "max_abs_error_vs_onnxruntime": max_abs_error,
+        "max_rel_error_vs_onnxruntime": max_rel_error,
         "compile_ms": compile_ms,
         "passes": passes,
         "pass_timing_source": PASS_TIMING_SOURCE,
@@ -488,6 +503,7 @@ def ablation(model: str, pass_name: str, budget: int, seed: int) -> dict:
         ref = ort.InferenceSession(str(onnx)).run(None, {"input": x})[0]
         y_sim = y_sim.reshape(ref.shape)
         max_abs_error = float(np.max(np.abs(y_sim - ref)))
+        max_rel_error = relative_error(y_sim, ref)
 
     # A removed optimization must not move the answer. If it does, the pass is
     # doing something other than optimizing and the table would be reporting a
@@ -531,6 +547,7 @@ def ablation(model: str, pass_name: str, budget: int, seed: int) -> dict:
         - baseline["dram_bytes_total"],
         "delta_compile_ms": absolute["compile_ms"] - baseline["compile_ms"],
         "max_abs_error_vs_onnxruntime": max_abs_error,
+        "max_rel_error_vs_onnxruntime": max_rel_error,
         "note": "simulated estimates, not measurements; deltas are ablated minus full -O2",
         "manifest": manifest(seed),
     }
