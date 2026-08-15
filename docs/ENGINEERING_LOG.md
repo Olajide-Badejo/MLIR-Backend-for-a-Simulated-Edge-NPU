@@ -4,6 +4,96 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U4: measuring each pass, without inventing a measurement
+
+**Not a bug.** The v2 specification called per pass ablation deltas "the
+evaluation's backbone". `run_benchmarks.py` iterated
+`product(models, levels, budgets)` and stored one total `compile_ms` and one
+post lowering op histogram, so the report could say what `-O2` buys over `-O0`
+and nothing about any individual pass.
+
+**The trap this part had to avoid.** Part 7 had just finished removing a scalar
+that came from the wrong source, and the obvious way to build this one would
+have repeated the mistake: regex the IR dump before and after each pass and
+count. That is the same wrong measurement, applied six times per cell instead of
+once. `npu-opt` calls `registerAllPasses()`, so the compiler will answer both
+questions itself and neither needs new C++.
+
+**Op counts.** `--print-op-stats` prints a text table by default:
+
+```
+Operations encountered:
+-----------------------
+  builtin.module     , 1
+     func.func       , 1
+```
+
+The work order allowed parsing that behind a pinning test, but `--help-list`
+shows the pass takes a `json` option, reachable through the textual pipeline
+form:
+
+```
+--pass-pipeline=builtin.module(print-op-stats{json=true})
+```
+
+which prints a plain JSON object. Used that, so there is no whitespace sensitive
+parser to pin in the first place. The parser that remains raises on the old text
+form, on truncated JSON, and on an empty object, because an empty histogram
+would record every pass as having changed nothing, and that reads as data rather
+than as a failure.
+
+**Wall clock.** `--mlir-timing --mlir-output-format=json` emits a tree, and the
+names in it are C++ class display names rather than command line flags:
+`Canonicalizer` for `-canonicalize`, `NPUFuseOps` for `-npu-fuse-ops`. Nested
+pipelines appear as `'func.func' Pipeline` groups. Walking the tree and taking
+the leaves in document order gives the passes in pipeline order once `Parser`,
+`Output`, `Rest`, and `Total` are dropped.
+
+The mapping from flag to display name is written down explicitly and checked
+position by position. That matters for `-O2`, where `-canonicalize` appears
+twice and a name based lookup would be ambiguous; matching by position with the
+name as a check catches a pipeline change that nobody taught the harness about,
+and a pass with no entry in the map raises rather than being recorded unnamed.
+
+**What the measurement says.** For the `-O2` default cell:
+
+```
+ 0 canonicalize                   28 -> 25   0.40 ms
+ 1 npu-fuse-ops                   25 -> 21   0.20 ms
+ 2 canonicalize                   21 -> 21   0.10 ms
+ 3 symbol-dce                     21 -> 21   0.10 ms
+ 4 npu-lower-to-npuisa            21 -> 33   0.20 ms
+ 5 npu-allocate-scratchpad        33 -> 33   0.10 ms
+```
+
+Two things worth noting before Part 9 reads too much into it. The second
+`canonicalize` and `symbol-dce` change no op count at all on this model, which
+is a fact about LeNet rather than about the passes. And lowering *raises* the op
+count from 21 to 33, which is correct: one `npu` op becomes several `npuisa`
+ops plus the DMA that feeds it. An op count is not a cost.
+
+**A limit to record.** `--mlir-timing` rounds to four decimal places of a
+second, so 0.1 ms is the smallest non zero value it can report. Every pass on
+LeNet lands between 0.10 and 0.40 ms, comfortably above the floor, but on a
+smaller model a pass could round to zero and the "every pass has a positive wall
+clock" test would fail. That is the correct failure: it would mean the timing
+source can no longer resolve the thing being measured, which is worth stopping
+for rather than recording a zero.
+
+**Runtime.** The whole harness is 2.8 seconds for six cells, against a five
+minute budget. Each cell now runs `npu-opt` once for timings plus twice per pass
+for the before and after histograms, so roughly fifteen extra invocations per
+cell, and it does not matter at this size.
+
+**Verification.** Five new tests. `test_every_pass_in_the_pipeline_has_a_record`
+reads the expected pipeline from `_passes_for_level` at assert time rather than
+hardcoding it, so adding a pass without instrumenting it fails.
+`test_o0_has_no_optimization_passes` is the negative case that would catch a
+hardcoded enumeration. `test_every_pass_has_a_wall_clock` rejects a zero.
+`test_op_stats_parser_pins_the_format` and
+`test_pass_timing_parser_raises_on_a_missing_pass` pin both external formats,
+including that a pipeline pass missing from the timing output raises.
+
 ## 2026-08-09 Phase U4: the headline number was never an instruction count
 
 **Symptom.** The repository committed two different answers to the same

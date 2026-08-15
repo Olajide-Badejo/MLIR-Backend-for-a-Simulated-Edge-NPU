@@ -57,6 +57,29 @@ running the tools rather than reading the source.
 
 ### Added
 
+- Phase U4: every benchmark result carries a `passes` array, one entry per pass
+  in that cell's pipeline, in order, recording the pass name, its zero based
+  position, the op histogram before and after it, both totals, and its wall
+  clock in milliseconds. The v2 specification called per pass measurement "the
+  evaluation's backbone" and the harness recorded one total `compile_ms` and one
+  post lowering histogram, so the report could say what `-O2` buys over `-O0`
+  but not what canonicalization buys, or fusion, or symbol DCE.
+
+  Op counts come from `npu-opt`'s own `print-op-stats` pass in JSON form, not
+  from a regex over the printed IR. Wall clock comes from `--mlir-timing
+  --mlir-output-format=json`, recorded in a `pass_timing_source` field so a
+  reader can tell it was measured. A pass in the pipeline with no timing raises
+  rather than recording zero, and a `print-op-stats` format shift raises rather
+  than returning an empty histogram, which would record every pass as having
+  changed nothing.
+
+  The pipeline is read from `_passes_for_level` at run time, so a pass added to
+  a level is instrumented without editing the harness, and `-O0` correctly
+  records only the two lowering passes.
+- Phase U4: the result manifest records `cpu_model` and a `wall_clock_note`.
+  Per pass wall clock and `compile_ms` are real measurements rather than
+  simulated estimates, so they mean nothing without the machine attached and
+  must not be compared across machines.
 - Phase U3: `npu-sim` accepts `--input` once per declared input region, in
   declaration order, and checks each file's float count against that region's
   shape. It used to keep a single input path, so a two input program ran with

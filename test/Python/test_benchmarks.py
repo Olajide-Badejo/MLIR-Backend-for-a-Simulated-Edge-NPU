@@ -264,6 +264,128 @@ def test_readme_table_matches_the_results():
     ], f"README Instructions row is {figures} but the results say otherwise"
 
 
+def _expected_pipeline(row: dict) -> list[str]:
+    from npu_frontend.compile import _passes_for_level
+
+    return [
+        run_benchmarks.pass_flag_name(f) for f in _passes_for_level(row["opt_level"])
+    ] + ["npu-lower-to-npuisa", "npu-allocate-scratchpad"]
+
+
+def test_every_pass_in_the_pipeline_has_a_record():
+    """`passes` must cover the cell's pipeline exactly, in order, with no gaps.
+
+    The pipeline is read from _passes_for_level at assert time rather than
+    hardcoded here, so adding a pass to a level without instrumenting it fails
+    this test instead of quietly producing a table that omits it.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        assert "passes" in r, f"{r['model']} -O{r['opt_level']} has no passes array"
+        recorded = [p["name"] for p in r["passes"]]
+        assert recorded == _expected_pipeline(r), (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"recorded {recorded}, pipeline is {_expected_pipeline(r)}"
+        )
+        positions = [p["position"] for p in r["passes"]]
+        assert positions == list(
+            range(len(recorded))
+        ), f"positions are {positions}, expected 0..{len(recorded) - 1}"
+
+
+def test_every_pass_has_a_wall_clock():
+    """A pass with no timing is an error, never a zero.
+
+    A zero would read as a free pass, which is a claim about the compiler that
+    no measurement supports.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        assert r.get("pass_timing_source") == "--mlir-timing", (
+            f"{r['model']} -O{r['opt_level']}: pass_timing_source is "
+            f"{r.get('pass_timing_source')!r}, so a reader cannot tell whether "
+            f"the numbers were measured"
+        )
+        for p in r["passes"]:
+            assert p["wall_ms"] > 0, (
+                f"{r['model']} -O{r['opt_level']} pass {p['name']} at position "
+                f"{p['position']} recorded wall_ms {p['wall_ms']}"
+            )
+            assert p["ops_before_total"] == sum(p["ops_before"].values())
+            assert p["ops_after_total"] == sum(p["ops_after"].values())
+
+
+def test_o0_has_no_optimization_passes():
+    """The negative case: -O0 records only the two lowering passes.
+
+    If the enumeration were hardcoded rather than read from _passes_for_level,
+    -O0 would carry optimization passes it never ran and every other test here
+    would still pass.
+    """
+    rows = [r for r in _committed_results() if r["opt_level"] == 0]
+    if not rows:
+        pytest.skip("no -O0 results in the working tree")
+    for r in rows:
+        assert [p["name"] for p in r["passes"]] == [
+            "npu-lower-to-npuisa",
+            "npu-allocate-scratchpad",
+        ], f"-O0 at {r['scratchpad_budget']} recorded {[p['name'] for p in r['passes']]}"
+
+
+def test_op_stats_parser_pins_the_format():
+    """The op stats parser must decode a real sample and raise on a broken one.
+
+    npu-opt's print-op-stats output is an external format. If it shifts, an
+    empty histogram would record every pass as changing nothing, which looks
+    like data rather than like a failure.
+    """
+    sample = (
+        '{\n  "builtin.module" : 1,\n  "func.func" : 1,\n'
+        '  "npu.conv2d" : 2,\n  "npu.relu" : 4\n}'
+    )
+    assert run_benchmarks.parse_op_stats(sample) == {
+        "builtin.module": 1,
+        "func.func": 1,
+        "npu.conv2d": 2,
+        "npu.relu": 4,
+    }
+
+    # The older text form, a truncated object, and an empty histogram all raise.
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("Operations encountered:\n  npu.conv2d , 2\n")
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("{ not json at all ")
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("{}")
+
+
+def test_pass_timing_parser_raises_on_a_missing_pass():
+    """A pipeline pass absent from the timing output must raise, not be zeroed."""
+    two = ["-canonicalize", "-symbol-dce"]
+    only_one = json.dumps(
+        [
+            {"wall": {"duration": 0.001}, "name": "Parser", "passes": [{}]},
+            {"wall": {"duration": 0.002}, "name": "Canonicalizer", "passes": [{}]},
+            {"wall": {"duration": 0.003}, "name": "Total"},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="pipeline has"):
+        run_benchmarks.parse_pass_timings(only_one, two)
+
+    mismatched = json.dumps(
+        [
+            {"wall": {"duration": 0.002}, "name": "Canonicalizer", "passes": [{}]},
+            {"wall": {"duration": 0.002}, "name": "SomeOtherPass", "passes": [{}]},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="disagree"):
+        run_benchmarks.parse_pass_timings(mismatched, two)
+
+
 def test_macros_match_the_committed_results():
     """The tex the report includes must equal the results it claims to come from.
 
