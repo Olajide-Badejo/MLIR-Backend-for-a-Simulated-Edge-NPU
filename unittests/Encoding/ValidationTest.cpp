@@ -325,6 +325,28 @@ TEST(Validation, RejectsNegativeScratchpadSize) {
   expectRejected(p, "scratchpad-size");
 }
 
+TEST(Validation, RejectsScratchpadSizeAboveTheFormatLimit) {
+  // The other half of the scratchpad-size rule. A declared size the format does
+  // not permit has to be refused before the simulator tries to allocate it.
+  Program p = validProgram();
+  p.scratchpadBytes = kMaxScratchpadBytes + 4;
+  expectRejected(p, "scratchpad-size");
+}
+
+TEST(Validation, RejectsNegativeDramSize) {
+  // The dram-size rule had no test at all until the manual was written against
+  // the fail() call sites and the gap showed up. Both of its branches are here.
+  Program p = validProgram();
+  p.dramBytes = -1;
+  expectRejected(p, "dram-size");
+}
+
+TEST(Validation, RejectsDramSizeAboveTheFormatLimit) {
+  Program p = validProgram();
+  p.dramBytes = kMaxDramBytes + 4;
+  expectRejected(p, "dram-size");
+}
+
 TEST(Validation, DecodeRejectsAndReportsWhy) {
   Program p = validProgram();
   p.instructions[2].operandAddrs = {0};
