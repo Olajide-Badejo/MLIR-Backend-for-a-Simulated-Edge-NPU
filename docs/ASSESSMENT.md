@@ -513,6 +513,19 @@ inherit the regex numbers; the CHANGELOG defers the correction to phase U4
 explicitly. See also section 13.4 item 4 for what this does to the README's
 objdump excerpt.
 
+**Status 2026-08-09, done** (upgrade part 7, commits `4cc7fc8`, `71feacb`,
+`f1c4de7`). `instruction_count` is `int(stats["instructions"])`, and a missing
+field raises rather than falling back to the regex, since a silent fallback
+would reinstate the defect the next time the stats format shifted. All six cells
+regenerated: 28 / 25 / 21 at the default budget and 28 / 31 / 29 at the tight
+one, matching `test/baseline/baseline.json` exactly, so the committed
+contradiction is gone. The README table, the generated macros, the plot, and the
+report PDF all follow. `count_ops` and `npuisa_op_counts` are kept as a
+histogram, with a docstring naming both inflation modes. Four tests pin it,
+including `test_readme_table_matches_the_results` so the hand written table
+cannot drift again, and `test_count_ops_is_not_an_instruction_count`, which
+demonstrates both faults on a three line dump rather than only describing them.
+
 ### 4.4 Tolerances are asserted loosely and reported tightly
 
 `test_end_to_end.py` asserts `rtol=1e-3, atol=1e-3`. The README reports a max error
@@ -1718,6 +1731,17 @@ the first time.
    excerpt says "21 instructions", which matches the simulator's true `-O2`
    count exactly, so the excerpt was probably genuine all along and it is the
    headline table that is wrong.
+
+   **Status 2026-08-09, done, and the suspicion was right** (upgrade part 7).
+   The excerpt was genuine: regenerating it from a fresh
+   `model_generator.export(lenet, seed=0)` compiled at `-O2` reproduces "1
+   inputs, 1 outputs, 10 constants, 21 instructions" exactly, and the
+   disassembly below it matches instruction for instruction. The table was the
+   thing that disagreed with it. Both now come from the same run, all six
+   results equal the recorded baseline, and
+   `test_results_agree_with_the_recorded_baseline` makes committing two answers
+   to the same question a test failure rather than something to notice a month
+   later.
 5. **The type checker validates a different Python than the one that runs.**
    mypy, ruff, black, and the CI lint job all target Python 3.12; the venv,
    the baseline manifest, and the README badge say 3.14. mypy's scope is also
