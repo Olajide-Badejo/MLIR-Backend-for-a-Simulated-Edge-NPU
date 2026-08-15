@@ -4,6 +4,69 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Republishing the numbers, and why they had gone stale
+
+**Symptom.** Both committed PDFs were byte identical to their 2026-07-15 builds.
+The committed results had been regenerated since. `report/generated/macros.tex`
+in the working tree read `GitSha 38af13633388`, one regeneration behind the
+results, which themselves read `66e5af5a`. Three artifacts, three different
+answers to "what commit produced this".
+
+**Root cause, and it is not the one the work order expected.** The plan assumed
+the rebuild had simply been forgotten after commit `cc99973` reverted the
+rebuilt PDFs out of the U2 merge. Running `make -C report` said:
+
+```
+make: Nothing to be done for 'all'.
+```
+
+The rule was
+
+```make
+main.pdf: main.tex references.bib $(wildcard sections/*.tex)
+```
+
+`main.tex` does `\input{generated/macros}`, and those macros are generated from
+`experiments/results/`. Neither the generated tex nor the results were
+dependencies. So regenerating the numbers could never rebuild the report: make
+correctly observed that `main.tex` had not changed and did nothing. The rebuild
+was not forgotten, it was unbuildable by the normal command. Anyone who ran the
+documented command and saw "nothing to be done" would reasonably conclude the
+PDF was current.
+
+That also explains how the state persisted for a month across people who were
+presumably running `make`.
+
+**Chosen fix.** Three things, each independently necessary:
+
+1. Regenerate the six results on the clean post U3 tree. No measured number
+   moved: instruction counts, cycles, DRAM counters and max absolute error are
+   identical across all six cells, and only `git_sha`, `timestamp`, and the wall
+   clock `compile_ms` differ. That is the expected result for a validation and
+   diagnostics phase, and checking it was the point of doing the diff.
+2. Track `report/generated/`. It was gitignored, so the file linking committed
+   results to committed PDFs was the one file not under version control. Now
+   `test_macros_match_the_committed_results` compares the two on every run.
+3. Add the results to the PDF's dependencies in `report/Makefile`, so the
+   failure cannot recur silently. `make clean && make` was needed this once to
+   get past the stale timestamps.
+
+**A caveat worth recording.** The gate for this part checks
+`strings report/main.pdf | grep -c 8095dbec` and expects 0. It was 0 before any
+of this work as well. `\GitSha` is defined in `macros.tex` but no `.tex` file
+cites it, so the sha never reaches either PDF and that check cannot distinguish
+a rebuilt PDF from a stale one. What actually demonstrates the rebuild is that
+both files changed size, 111648 to 112023 bytes and 31532 to 31890, and that the
+figures they print are the ones in the committed results. A report that stated
+its own provenance would make the check meaningful; that is a change to the
+document and is left for a part that owns the report prose.
+
+**Verification.** `test_committed_results_are_current` green for the first time
+since the tree was audited, `test_no_result_traces_to_a_missing_commit` and
+`test_macros_match_the_committed_results` green, 27 of 27 pytest, and the
+evaluation section prints 91, 70, 23421, and 12710, matching the committed
+results exactly.
+
 ## 2026-08-09 Phase U3 landed: what the phase was actually about
 
 **Not a bug.** The closing entry for the phase, written at the merge.
