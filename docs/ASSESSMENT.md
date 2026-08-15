@@ -1654,6 +1654,15 @@ Consequence for the order of work: when U3 lands, regenerate the six results
 on the clean tree (the numbers should not move; U3 adds no optimization), and
 rebuild the report from them in the same sitting, as separate commits.
 
+**Status 2026-08-09, done and the prediction held** (upgrade part 5, commits
+`8c41cc3`, `89517a5`, `212cec3`). Regenerated on the clean post U3 tree and no
+measured number moved: `instruction_count`, `simulated_cycles`, both DRAM
+counters and `max_abs_error_vs_onnxruntime` are identical across all six cells,
+with only `manifest.git_sha`, `manifest.timestamp` and the wall clock
+`compile_ms` differing. `test_committed_results_are_current` is green, pytest is
+28 of 28 with no exceptions, and the regression baseline reports no drift for
+the first time.
+
 ### 13.4 New findings, not in the first audit
 
 1. **Nothing since 2026-08-07 has been pushed.** `origin/main` is `7de39c6`;
@@ -1682,6 +1691,24 @@ rebuild the report from them in the same sitting, as separate commits.
    section 23.1 requirement that every PDF number traces to a committed
    result; until something does, treat "results changed, rebuild both PDFs"
    as a standing manual step.
+
+   **Status 2026-08-09, done, and the root cause was not the one assumed**
+   (upgrade part 5, commit `212cec3`). The follow up rebuild had not merely been
+   forgotten: it was unbuildable by the documented command. `report/Makefile`
+   declared `main.pdf` as depending on `main.tex`, `references.bib` and
+   `sections/*.tex`, none of which change when the results do, so
+   `make -C report` printed "Nothing to be done for 'all'" and anyone running it
+   would conclude the PDF was current. The results are a dependency of the rule
+   now, so a stale PDF cannot recur silently, and this stops being a standing
+   manual step. `report/generated/` is tracked, and
+   `test_macros_match_the_committed_results` enforces spec 23.1 rather than
+   leaving it to discipline. Both PDFs rebuilt from the current results.
+
+   One caveat: `\GitSha` is defined in `macros.tex` but cited by no `.tex` file,
+   so no sha ever reaches either PDF and the `strings ... | grep -c 8095dbec`
+   check is satisfied trivially. Citing it in the report prose would make the
+   artifact state its own provenance; that is a change to the document and was
+   left out of this part's scope.
 4. **Two contradictory instruction counts are committed side by side.**
    `experiments/results/*.json` records the regex count (91 / 82 / 70);
    `test/baseline/baseline.json` records the simulator's count (28 / 25 / 21)
@@ -1747,6 +1774,15 @@ Nothing here changes the tiers in section 7 or the phase order in
    tree, rebuild both PDFs from them, and commit results, tex, and PDFs as
    their own commits (13.3, 13.4 item 3). That finally retires the 8095dbec
    numbers from the tree.
+
+   **Status 2026-08-09, done** (upgrade part 5). Three separate commits as
+   asked: results, generated tex plus figures, PDFs. No number moved. The only
+   remaining mentions of `8095dbec` are historical narrative in
+   `docs/ASSESSMENT.md`, `docs/DESIGN_DECISIONS.md`, `docs/ENGINEERING_LOG.md`,
+   `CHANGELOG.md`, `UPGRADE_SPEC_V3.md`, and the docstring of the new
+   `test_no_result_traces_to_a_missing_commit`, which exists so that a result
+   citing a commit that does not exist can never pass again. Item 3 below is
+   next and needs push access.
 3. **Push and prove.** Push everything, dispatch `llvm-image.yml`, get the
    new CI green on GitHub, then run the four fault class proofs of spec
    section 10.2 and record the URLs. Until this step completes, the badge
