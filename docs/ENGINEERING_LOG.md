@@ -4,6 +4,53 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U3 landed: what the phase was actually about
+
+**Not a bug.** The closing entry for the phase, written at the merge.
+
+U3 was scoped as "harden the binary interface", and the shape of the work turned
+out to be consistent enough to be worth naming. Every defect fixed in it was the
+same defect: **a check that could not fail.**
+
+- `shapeElements()` tested its product against the cap after multiplying, so the
+  guard performed the overflow it existed to catch.
+- The simulator grew its scratchpad to cover every result address before
+  checking whether result addresses were in range, so the bounds check was
+  answering a question it had already made true.
+- The trap path called `assert(false)`, so in the build most people compile, the
+  refusal path aborted instead of refusing.
+- `validate()` recorded an element count per address and then only asked whether
+  the address existed, so an over read validated.
+- `getCount()` capped counts at 2^28 and called that a bound on work, while the
+  vector sized from it was 2 GiB.
+- `encodeFunction` emitted an error and returned success.
+- `npu-sim` compared its input against the program's declared inputs only for
+  input 0.
+- A test asserted that hostile input cannot cause undefined behaviour, in a way
+  that was itself undefined behaviour.
+
+Eight defects, one pattern. The lesson is not "write more checks", it is that a
+check needs a test that proves it can *fail*, and the corpus, the negative tests,
+and the two build modes are what turn that from an intention into a fact. The
+validation suite's habit of asserting **which** rule rejected a program, rather
+than only that something did, is what caught two of these; a suite asserting only
+rejection would have been green throughout.
+
+**What landed.** `Program::validate()` with 22 named rules, `decode` meaning
+decode plus validate, `decodeUnvalidated` for the disassembler, a bounds checked
+simulator that refuses gracefully in every build mode and sizes strictly from the
+declared budget, diagnostics in `npu-sim`, `npu-translate`, and
+`AllocateScratchpad`, one `--input` per declared region, 36 validation tests, a
+1000 iteration property test, a 358 case fuzz corpus, and a manual that documents
+the format, the byte order, every check name, and the version policy.
+
+**Gate.** 51 of 51 encoding, 9 of 9 simulator, 14 of 14 lit, 25 of 26 pytest,
+ASan and UBSan clean over both GoogleTest binaries, dash-lint clean. The one red
+pytest is `test_committed_results_are_current`, the provenance guard that is
+stale by design for the whole phase and is Part 5's to clear; it is also the only
+item the regression baseline reports as drift. No benchmark number moved, which
+is what a validation and diagnostics phase should do.
+
 ## 2026-08-09 Phase U3: the fuzz test was the thing with undefined behaviour
 
 **Symptom.** The gate for this part is the first to run the whole fuzz corpus

@@ -6,6 +6,30 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase U3 summary: the user visible surface
+
+Everything below is detailed in its own entry; this is what changed for someone
+running the tools rather than reading the source.
+
+- `Program::decode()` now means decode **and** validate. A `.nbin` that decodes
+  but violates an invariant is refused, naming the rule and the offending
+  construct, instead of being handed to the simulator. `npu-objdump` keeps the
+  old permissive path through `decodeUnvalidated()` and warns.
+- `npu-sim` takes one `--input` per declared input region, refuses a count that
+  does not match the program, refuses an input file whose float count does not
+  match its region, and writes every output rather than only the first.
+- `npu-translate` refuses a multi function module instead of encoding the first
+  function and dropping the rest, and refuses an op it cannot encode instead of
+  printing an error, writing the `.nbin`, and exiting 0.
+- `AllocateScratchpad` refuses a multi block function instead of silently
+  allocating for the first block.
+- The simulator sizes its scratchpad from the declared budget only, so a program
+  writing outside it is refused rather than accommodated, and it refuses an out
+  of bounds access gracefully in every build mode rather than aborting under
+  asserts.
+- `docs/ISA_MANUAL.md` documents the real format, the byte order, every
+  validation rule by check name, and the version policy.
+
 ### Added
 
 - Phase U3: `npu-sim` accepts `--input` once per declared input region, in

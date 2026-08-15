@@ -10,6 +10,17 @@ GoogleTests pass, 12 pytest tests pass, `dash-lint.sh` is clean, and the LeNet e
 to end path matches onnxruntime to 3e-8. That is real and it works. This document
 is about everything that sits outside that one path.
 
+**Re-audit 2026-08-09:** the repository was re-audited at `6d62406` (phases U0,
+U1, and U2 merged) plus the uncommitted phase U3 working tree, with every suite
+re-run. Findings below now carry inline **Status 2026-08-09** notes recording
+what each has become; section 13 holds the re-run evidence, the findings that
+are new since the first audit, and the updated next actions. Headline of the
+re-run: 13/13 lit, 39/42 encoding GoogleTests (the 3 red are phase U3
+validation checks whose tests exist but whose implementation is unfinished),
+7/7 simulator GoogleTests, 24/25 pytest (the 1 red is the staleness guard
+correctly refusing a dirty tree), reachability green with 6 exemptions dated
+2026-12-31, and all six benchmark cells still at 2.98e-8 against onnxruntime.
+
 ---
 
 ## 1. Executive summary
@@ -30,6 +41,20 @@ The five things that matter most, ranked:
 | 5 | The entire evaluation is one model, with no per pass ablations, and the recorded results are untracked and stale | High | `experiments/` |
 
 Everything else is below.
+
+**Status 2026-08-09, row by row:** (1) closed as a loud failure in phase U1: the
+importer and the verifiers now reject a batch greater than 1 with a message
+naming the tensor and the tracking phase; the real batched kernels remain phase
+U6 and `Simulator.cpp` still hardcodes `n = 0`. (2) unchanged in code, now
+tracked as dated reachability exemptions expiring 2026-12-31, scheduled phase
+U7. (3) unchanged: `-npu-fold-batchnorm` is still in no optimization level and
+`npu.batch_norm` is still unimportable, scheduled phases U7 and U8. (4)
+`ci.yml` now builds and runs every suite in four jobs (phase U2), but none of
+it has executed on GitHub: phases U0 through U2 are unpushed, the badge still
+shows the old lint only workflow's green, and the LLVM container image the new
+CI pulls does not exist yet (section 13.4). (5) results are now tracked and
+staleness guarded (phase U1); the suite is still one model and the per pass
+ablations are still missing (phase U4).
 
 ### Decisions taken
 
@@ -104,6 +129,14 @@ crashes. Two fixes are needed, and both should land:
 2. **Real fix.** Add the batch loop to `conv2d` and `pool`, and add a batched
    `matmul`. Then add a batch 4 model to the test suite so it stays fixed.
 
+**Status 2026-08-09:** fix 1 landed in phase U1 at both layers:
+`check_unbatched_activation` in the importer and `verifyUnbatchedActivation`
+called from the `conv2d`, both pool, and `batch_norm` verifiers, pinned by four
+pytest and four lit cases including the two controls. Fix 2 has not started:
+`Simulator.cpp:43` still reads `int64_t n = 0` and `pool()` still never sees
+the batch dimension. That is phase U6, and until then the guard makes it loud
+instead of wrong.
+
 ### 2.2 Three dialect ops cannot be lowered
 
 `npu.transpose`, `npu.concat`, and `npu.batch_norm` are defined in ODS, have
@@ -127,6 +160,13 @@ when folding did not fire) or, at minimum, to make the failure a diagnosed
 compiler error rather than a generic legalization failure. Implementing them is the
 right answer, because `concat` is what unlocks any branching topology such as an
 inception block or a residual connection.
+
+**Status 2026-08-09:** unchanged. The registered patterns are still exactly
+Constant, Conv, MatMul, Relu, Reshape, Add, Mul, and the two pools; there is
+still no pre flight diagnostic, so the three ops still die with MLIR's generic
+legalization error, and no `TRANSPOSE` or `CONCAT` opcode exists in the ISA
+yet. The gap is at least visible debt now: the reachability gate lists all
+three ops as exempt until 2026-12-31, scheduled phase U7.
 
 ### 2.3 The `.nbin` decoder trusts its input, and the simulator has no bounds checks
 
@@ -157,6 +197,28 @@ produce a diagnostic, not memory corruption. Add a `Program::validate()` that ru
 after decode and before simulation, and make every `spAt`/`dramAt` access bounds
 checked in a debug build.
 
+**Status 2026-08-09: this is the in flight phase U3, mid implementation and not
+yet landable.** The uncommitted working tree adds `Program::validate()` with
+structured errors naming the instruction and the violated rule, checking the
+version field, opcode range, per opcode operand arity from an explicit table,
+result and operand addresses against the scratchpad, DMA regions against DRAM,
+attribute arities and signs, and a written before read walk; the simulator's
+raw `spAt` lambda was replaced by an always on `checkedAt` that refuses the
+access and reports it in `SimResult.error`; `npu-sim` now rejects an input file
+whose size differs from the declared region and validates before running. 39
+of the 42 encoding tests pass. The remaining 3 failures, and the further
+defects found in the new code by adversarial testing, are itemized in section
+13.2 and must be fixed before the phase lands.
+
+**Status 2026-08-09, closed.** Phase U3 landed. All five defects of 13.2 are
+fixed (upgrade parts 1 to 3), the documentation is corrected and the validation
+rules and version policy are written down (part 4), and the phase merged to
+`main` after the full 11.3 gate: 51 of 51 encoding tests, 9 of 9 simulator, 14
+of 14 lit, a 358 case fuzz corpus, 1000 iteration property test, and ASan and
+UBSan clean over both GoogleTest binaries. `decode()` now means decode plus
+validate, so the decoder no longer trusts its input and the simulator's bounds
+checks can actually fire.
+
 ### 2.4 Average pooling divides by zero on all pad windows
 
 `pool()` counts contributing elements and divides by `count`. A window entirely
@@ -164,6 +226,11 @@ inside the padding gives `count == 0`. Unreachable with the current pad sizes,
 reachable with large pads. It also silently disagrees with ONNX, whose
 `AveragePool` has a `count_include_pad` attribute the importer ignores entirely,
 so any model setting it imports to a kernel with different semantics.
+
+**Status 2026-08-09:** unchanged, and still reachable: the in flight
+`validate()` requires pads to be non negative but does not bound them below
+the kernel size, so an all padding window still divides 0.0f by zero and
+returns NaN. `count_include_pad` is still ignored. Scheduled phase U7.
 
 ### 2.5 `_attr` cannot distinguish an absent attribute from a falsy one
 
@@ -179,6 +246,9 @@ An attribute legitimately equal to an empty list returns `default` instead. The
 function also ignores `AttributeProto.type`, which is the field that actually says
 what kind of attribute it is. Rewrite it to switch on `a.type`.
 
+**Status 2026-08-09:** unchanged, scheduled phase U7 (`UPGRADE_SPEC_V3.md`
+section 15.1 item 7).
+
 ### 2.6 Shape verification is structural, not arithmetic
 
 `Conv2DOp::verify` checks ranks and attribute lengths. It never checks that the
@@ -193,6 +263,15 @@ The `InferTypeOpInterface` header is already included in `NPUOps.td` but no op
 implements it. Implementing `inferReturnTypes` for conv, matmul, and the pools
 would give shape checking, better error messages, and result type inference for
 free.
+
+**Status 2026-08-09: partially fixed.** The verifiers are no longer purely
+structural for five ops: `matmul` checks the contraction dimension, `reshape`
+the element count, `transpose` the permutation, `concat` the axis sums, and
+`batch_norm` the parameter length against the channel count. Still missing:
+any arithmetic output shape check for `conv2d` and the pools, the bias length
+checks, the group divisibility checks, and positivity of strides and
+dilations; `InferTypeOpInterface` is still included and still implemented by no
+op. The remainder is phase U7.
 
 ---
 
@@ -215,6 +294,13 @@ which they do not. Fix the docstring today, implement the ops after.
 The importer also never checks the model's opset version despite opset 17 being a
 pinned assumption, and it rejects any dynamic dimension because `_collect_shapes`
 reads `dim_value` and ignores `dim_param`.
+
+**Status 2026-08-09:** the docstring was corrected in phase U1 and now lists
+seven implemented and six missing ops. One wart: it discusses `Identity` as
+the op that blocks any `do_constant_folding=False` import, but leaves it out
+of the missing list, while `UPGRADE_SPEC_V3.md` section 15.1 counts seven
+missing importer ops including `Identity`. The opset version is still never
+checked and `dim_param` is still rejected; both remain phase U7.
 
 ### 3.2 The BatchNorm folding pass can never fire on a real model
 
@@ -240,6 +326,12 @@ the benchmark models with `do_constant_folding=False`, wire
 `-npu-fold-batchnorm` into `-O2`, and add a model with batch norm to the suite so
 the pass shows up as an ablation row with an actual delta.
 
+**Status 2026-08-09:** unchanged, and now enforced as visible debt: the
+reachability gate lists `npu.batch_norm` as unreachable at every layer, exempt
+until 2026-12-31, and `-npu-fold-batchnorm` is still absent from every
+optimization level. The plan in the paragraph above is now phases U7 and U8 of
+`UPGRADE_SPEC_V3.md`.
+
 ### 3.3 Fusion covers activation only, not bias
 
 The spec asks for "conv/matmul + bias + activation" fusion. `FuseOps.cpp` fuses
@@ -254,6 +346,11 @@ the name overstates what is tested.
 Missing fusion opportunities beyond bias: conv plus conv chains, pool folding, and
 `Clip` as a `relu6` style bounded activation (the `Activation` enum has exactly two
 cases, `none` and `relu`).
+
+**Status 2026-08-09:** unchanged. `FuseOps.cpp` still contains exactly
+`FuseReluIntoConv` and `FuseReluIntoMatMul`, the enum still has two cases, and
+bias fusion is still absent. Scheduled phase U7, which also renames the
+misleading lit test.
 
 ### 3.4 Only one test model exists
 
@@ -279,6 +376,10 @@ models would immediately exercise most of the gaps listed above:
 | Dilated conv stack | dilation, `pads` asymmetry |
 | Batched LeNet, N=4 | the batch bug from section 2.1 |
 
+**Status 2026-08-09:** unchanged. `MODELS` still contains exactly `lenet`. The
+proposed suite became the seven row model table of `UPGRADE_SPEC_V3.md`
+section 16, phase U8.
+
 ### 3.5 No per pass ablations
 
 The spec calls the per pass ablation deltas "the evaluation's backbone" and section
@@ -291,6 +392,11 @@ So the report can say what `-O2` buys over `-O0` in aggregate, but not what
 canonicalization buys, or fusion, or DCE, individually. That is precisely the
 question the project was built to answer.
 
+**Status 2026-08-09:** unchanged. `run_benchmarks.py` still records one total
+`compile_ms` and one post lowering op count per cell. The ablations are phase
+U4 (`UPGRADE_SPEC_V3.md` section 12), now the largest remaining gap between
+what the report claims to evaluate and what is measured.
+
 ### 3.6 The simulator has no progress reporting
 
 Spec section 9 requires a TTY aware single line progress bar over the instruction
@@ -298,6 +404,10 @@ stream. `npu-sim.cpp` has none. `npu-compile --verbose` does print per stage
 timings, and `run_benchmarks.py` does use `tqdm`, so two of the three progress
 requirements are met; this one is not. The "projected wall clock printed up front"
 requirement is also unmet.
+
+**Status 2026-08-09:** unchanged; no progress reporting of any kind in
+`npu-sim` (verified by grep for progress, isatty, and carriage returns across
+the tools). Scheduled phase U4.
 
 ### 3.7 Missing from the repository layout
 
@@ -313,6 +423,14 @@ requirement is also unmet.
 - The license is MIT; the spec pins Apache-2.0 with LLVM exceptions. This looks
   like a deliberate change (commit `48a0be3` says "relicense to MIT") but it is a
   deviation from a pinned assumption and is not recorded in `DESIGN_DECISIONS.md`.
+
+**Status 2026-08-09: mostly closed.** `report.yml` now exists and builds both
+PDFs in CI (phase U2). `mypy` is configured in `pyproject.toml`, in pre-commit,
+and in the CI lint job (phase U2), though scoped to `python/npu_frontend` only
+and targeting Python 3.12 while the venv runs 3.14 (section 13.4). The MIT
+decision is now recorded in `docs/DESIGN_DECISIONS.md`, and `UPGRADE_SPEC_V3.md`
+adopts MIT as a corrected pin. `NPUTypes.td` and a separate `Memory` component
+remain absent, by design.
 
 ---
 
@@ -336,6 +454,17 @@ already in the repo. Build `Dockerfile.llvm` once, push it to GHCR, and make
 `ci.yml` a second job that pulls the image, configures, builds, and runs all three
 test suites. Then the badge means something.
 
+**Status 2026-08-09:** the workflow side is fixed (phase U2): `ci.yml` now has
+lint, build and test, sanitizer, and coverage jobs, and `llvm-image.yml`
+builds the prebuilt LLVM image. What is not fixed is everything that requires
+GitHub: the phases are unpushed, `origin/main` is still the pre upgrade
+commit, the green badge on the README is the old lint only workflow's run from
+2026-08-07, and `ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8` answers an
+anonymous manifest probe with 403, meaning the image has never been published
+and the new CI would fail at container pull on first push. The four fault
+class proof runs required by `UPGRADE_SPEC_V3.md` section 10.2 are likewise
+outstanding. Sequencing in section 13.5.
+
 ### 4.2 Recorded results are untracked and stale
 
 `git ls-files experiments/results/` returns one file: `.gitkeep`. The six JSON
@@ -351,6 +480,13 @@ parses as JSON, so a stale result is never regenerated without `--force`. It sho
 compare the manifest's `git_sha` and cost model constants against the current ones
 and invalidate on mismatch. And the results should be committed, since
 reproducibility from a clean clone is a stated requirement.
+
+**Status 2026-08-09: closed in phase U1**, with the correction recorded at
+roadmap item 3: the stale results' `git_sha: 8095dbec` was never a commit in
+this repository at all. The results are now tracked, regenerated at `66e5af5`,
+and guarded by `staleness()` plus `test_committed_results_are_current`. The
+committed PDFs, however, still embed the July 15 numbers that trace to that
+nonexistent commit; see section 13.4.
 
 ### 4.3 `instruction_count` is measured by regex and counts non instructions
 
@@ -368,6 +504,14 @@ So the headline table's "Instructions: 91 / 82 / 70" is not the number of
 instructions in the `.nbin`. The simulator already reports a true instruction count
 in its stats JSON (`stats.instructions`), and `run_benchmarks.py` ignores it in
 favour of the regex. Use the simulator's number.
+
+**Status 2026-08-09:** unchanged in `run_benchmarks.py`, and the contradiction
+is now committed in duplicate: `experiments/results/*.json` says 91 / 82 / 70
+(regex) while `test/baseline/baseline.json` records the simulator's true
+28 / 25 / 21 for the same cells. The README table, the report, and the plots
+inherit the regex numbers; the CHANGELOG defers the correction to phase U4
+explicitly. See also section 13.4 item 4 for what this does to the README's
+objdump excerpt.
 
 ### 4.4 Tolerances are asserted loosely and reported tightly
 
@@ -388,6 +532,13 @@ Numerical validation also uses a single random input per model. One draw from a
 standard normal is not evidence about a ReLU network's edge cases. Add a handful of
 inputs including zeros, large magnitudes, and values that straddle the ReLU knee.
 
+**Status 2026-08-09: partially closed.** Phase U1 tightened the e2e tolerance
+to `rtol=1e-5, atol=1e-6` with the observed 2.98e-8 recorded alongside. Still
+open, all phase U4 (`UPGRADE_SPEC_V3.md` sections 9.6 and 12): the e2e test
+runs one hardcoded pass pipeline that matches no `-O` level exactly, relative
+error is still not recorded in the benchmark results, and validation still
+uses a single standard normal draw rather than the spec's five input classes.
+
 ### 4.5 Test suite is thin in specific places
 
 13 lit tests, 11 GoogleTests, 12 pytest tests. The gaps, by name:
@@ -407,6 +558,28 @@ inputs including zeros, large magnitudes, and values that straddle the ReLU knee
   generated `Program` structures would be twenty lines and would cover the encoder
   better than the four tests that exist.
 
+**Status 2026-08-09: transformed for the encoder, unchanged elsewhere.** The
+in flight phase U3 adds exactly what the last two bullets asked for: a 1000
+iteration seeded round trip property test, a 322 case malformed `.nbin` fuzz
+corpus behind four fuzz tests, and 32 validation tests that each pin one
+`validate()` rule by name. Three of those are red until the defects in section
+13.2 are fixed. The simulator gaps are untouched: still no `POOL_MAX`,
+`DMA_LOAD`/`DMA_STORE`, grouped, dilated, or asymmetric padding test
+(`UPGRADE_SPEC_V3.md` section 9.3). The allocator still has no fragmentation,
+oversized buffer, or spill address reuse test.
+
+**Status 2026-08-09, encoder half closed with U3.** The encoding suite is 51
+tests: 36 validation tests pinning every one of the 22 `validate()` check names
+by name, 4 fuzz tests over a 358 case corpus, 2 property tests at 1000
+iterations, and the round trip and encode tests that were there before. Writing
+the manual's validation table from the `fail()` call sites found the last gap,
+`dram-size`, which had no test at all; both of its branches now do, as does the
+untested over limit branch of `scratchpad-size`. The simulator suite gained two
+tests for scratchpad sizing but the gaps this section names are still open:
+still no `POOL_MAX`, `DMA_LOAD`/`DMA_STORE`, grouped, dilated, or asymmetric
+padding test, and the allocator still has no fragmentation, oversized buffer, or
+spill address reuse test.
+
 ### 4.6 `scripts/coverage.sh` swallows failures
 
 ```bash
@@ -417,6 +590,11 @@ Coverage is collected whether or not the lit suite passed. A build where every l
 test fails still produces a coverage number, and that number is what the README
 badge reports. Drop the `|| true`. The script also writes to `build-coverage` while
 the repo contains a stale `build-cov` directory from an earlier run.
+
+**Status 2026-08-09: closed in phase U1.** The script runs under
+`set -euo pipefail`, the tree name is unified to `build-cov`, `npu-sim` is
+instrumented, and a failing suite aborts before any percentage prints. The
+badge itself is a different problem; see section 13.4 item 6.
 
 ### 4.7 Smaller items
 
@@ -439,6 +617,15 @@ the repo contains a stale `build-cov` directory from an earlier run.
   by scratchpad address, populated by whatever wrote that address last. It works
   because operands are live, but it is fragile by construction. Encode operand
   shapes per instruction instead.
+
+**Status 2026-08-09:** the first two items are fixed in the in flight tree:
+`npu-translate` now refuses a multi function module with a counted diagnostic
+and refuses to write a program that fails `validate()`, and `npu-sim` now
+writes every output, numbering the files past the first. Still true: hand
+rolled argv parsing in both tools (an unrecognized token silently becomes the
+input path), the dead `NOP` opcode, the importer materializing every
+initializer, and the address keyed shape map, which `validate()` now has to
+mirror with a written before read walk of its own.
 
 ---
 
@@ -469,6 +656,12 @@ evaluation, and it points at a real upgrade: the spill victim heuristic is
 value is reloaded. A cost aware heuristic (spill cost = bytes moved times number of
 reloads, minimized) is a well understood improvement and would make a genuinely
 good ablation.
+
+**Status 2026-08-09:** the results are tracked now, and the regeneration at
+`66e5af5` reproduces these numbers exactly, so the finding is stable across
+the U1 and U2 changes; at the tight budget `-O2` is also slower than `-O1`
+(33,930 versus 33,834 cycles). The spill heuristic is unchanged. The write up
+is roadmap item 14 (phase U4); the heuristic fix is phase U9.
 
 ### 5.2 The allocator is O(n^3) in the worst case
 
@@ -507,12 +700,26 @@ the spec and the manual describe, or correct the manual to say fixed record. The
 format also has no checksum, no section offsets, no explicit endianness marker, and
 does not check the version field it writes.
 
+**Status 2026-08-09, with two corrections:** the record is six length prefixed
+vectors plus five scalars per instruction, not five and five, and the in
+flight phase U3 now checks the version field on read. Still true: no tags, no
+checksum, no section offsets, and the byte order is actually host native
+despite a comment claiming little endian helpers. The "tagged records" phrase
+survives in both `docs/ISA_MANUAL.md` and the `Program.h` header comment; fix
+both together in U3's documentation pass.
+
 ### 5.6 Single block, single function, no control flow
 
 `AllocateScratchpad` operates on `func.getBody().front()` and ignores every other
 block. `encodeFunction` does the same. This is consistent with the "no branches"
 design decision and is fine, but it should be enforced with a diagnostic rather
 than silently ignoring blocks two and up.
+
+**Status 2026-08-09:** the in flight phase U3 adds exactly that diagnostic to
+`AllocateScratchpad` (single block enforced with a counted error), and
+`npu-translate` now diagnoses multi function modules. The encoder itself is
+unchanged and still assumes a single block, but the allocator's diagnostic
+runs earlier in every real pipeline.
 
 ### 5.7 Stretch goals never started
 
@@ -540,6 +747,17 @@ The docs are generally good and generally honest. Four corrections:
 4. `DIALECT_REFERENCE.md` is generated by the `npu-dialect-doc` target, which is
    good, but nothing verifies it is current. Add a CI step that regenerates it and
    fails on a diff, which is what "docs cannot drift" in the spec actually requires.
+
+**Status 2026-08-09:** item 1 was fixed in phase U1 (with the `Identity`
+undercount noted at section 3.1). Item 2 inverted rather than resolved: the
+excerpt's "21 instructions" matches the simulator's true `-O2` instruction
+count exactly (28 / 25 / 21 per `test/baseline/baseline.json`), so the excerpt
+now looks genuine and it is the table's regex derived 70 that is wrong; phase
+U4 reconciles them. Item 3: the script is fixed, but the badge is still a hand
+written shields.io URL claiming 90 / 89 while CI enforces only C++ at 85
+percent and no Python threshold at all (section 13.4 item 6). Item 4: the
+target still exists and no CI step regenerates or diffs it; that gate is
+scheduled with phase U7.
 
 ---
 
@@ -594,17 +812,38 @@ Ordered by value divided by effort. Tiers are cumulative.
    access is CI itself going green and red, so the four fault class proof runs
    required by `UPGRADE_SPEC_V3.md` section 10.2 are outstanding. Until they are
    done the badge still claims more than has been demonstrated.
+   **Blocker confirmed 2026-08-09:** none of it has reached GitHub.
+   `origin/main` is still `7de39c6`, the GHCR image answers 403 anonymously
+   (never published), and the badge's green comes from the old lint only
+   workflow. Push order in section 13.5.
 8. `Program::validate()` plus bounds checked memory access in the simulator, plus
    an input size check in `npu-sim`. Add a corrupted input GoogleTest.
+   **IN FLIGHT (phase U3, uncommitted, 2026-08-09).** All the pieces exist in
+   the working tree, plus a property test and a 322 case fuzz corpus, and 39
+   of 42 encoding tests pass. Not landable yet: the three red tests and the
+   further defects in section 13.2 (the overflow guard that itself overflows,
+   the scratchpad auto expansion that swallows the result bounds check, an
+   unaligned constant in one test, operand read extents that `validate()`
+   never compares, and an `assert(false)` on the trap path). Land it on an
+   `upgrade/u3-...` branch per ground rule 11.
 9. Per pass ablations in `run_benchmarks.py`: op counts before and after each pass,
    per pass wall clock, one pass at a time deltas. This is the spec's stated
    backbone and it is missing.
 10. Use the simulator's `stats.instructions` instead of the regex count.
+    **Note 2026-08-09:** both counts are now committed side by side, 91 / 82 /
+    70 in the results JSONs versus 28 / 25 / 21 in `test/baseline/baseline.json`.
+    Phase U4, and the README table moves with it.
 11. e2e validation at every optimization level, not one hardcoded pipeline.
 12. Add `mypy` to `pyproject.toml`, pre-commit, and CI.
+    **DONE (phase U2), early.** Configured in all three places, scoped to
+    `python/npu_frontend` with a Python 3.12 target; widening the scope and
+    aligning the target version with the 3.14 venv is noted in section 13.4
+    item 5.
 13. TTY aware progress bar in `npu-sim`.
 14. Write up the tight budget regression (section 5.1) in the evaluation. It is the
     best empirical result in the repo.
+    **Note 2026-08-09:** re-verified in the regenerated results; unchanged and
+    still unwritten.
 15. **SCALE-Sim cross validation (decision D2).** Three pieces, in order:
     - `experiments/scalesim_export.py`: walk the allocated `npuisa` IR and emit a
       SCALE-Sim topology CSV plus an architecture config. The conv and matmul rows
@@ -1216,3 +1455,302 @@ items 31, 33, and 37 is clear:
   Chipyard integration) should be split out, either as a sibling repository or as a
   subdirectory behind a CMake flag, because Chipyard, Chisel, and a RISC-V
   toolchain have nothing to do with this repository's build.
+
+---
+
+## 13. Re-audit, 2026-08-09
+
+The repository was re-audited two days after the first audit, at `6d62406`
+(phases U0, U1, U2 merged) plus the uncommitted phase U3 working tree. Method
+as before: everything below was established by building the tree and running
+every suite, not by reading alone. The inline **Status 2026-08-09** notes in
+sections 2 through 7 record what each original finding has become; this
+section holds the evidence, the defects that are new since the first audit,
+and the updated order of work.
+
+### 13.1 What the three merged phases delivered, verified by execution
+
+- **U0, baseline and safety net.** `scripts/regression_baseline.py` records
+  five suites test by test and six benchmark cells with golden fp32 outputs,
+  `--check` classifies drift against notes, `ninja baseline-check` exists, and
+  `docs/BREAKING_CHANGES.md` establishes the protocol (still reading "None
+  yet"). Notably the baseline records the simulator's true instruction
+  counts, 28 / 25 / 21 at the default budget, which is what exposed the regex
+  inflation as a committed contradiction (section 4.3 status).
+- **U1, stop being wrong.** The batch guard at two layers, the corrected
+  docstring, tracked and regenerated results, `staleness()` with nine pinning
+  tests, the tightened e2e tolerance, and the fixed `coverage.sh`. Roadmap
+  items 1 through 6 are genuinely done as annotated.
+- **U2, CI that actually tests.** Four real jobs in `ci.yml` (lint with black,
+  mypy, and reachability; build and test running every suite plus the
+  baseline check; ASan and UBSan; coverage with an enforced 85 percent C++
+  threshold), `report.yml` building both PDFs, `llvm-image.yml` for the
+  prebuilt LLVM image, a two stage rewrite of `Dockerfile.llvm`, and
+  `scripts/check-reachability.py` enforcing spec section 5.2 with dated
+  exemptions (its first run found six unreachable ops, three more than the
+  first audit had). All of it runs and passes locally. None of it has run on
+  GitHub; see 13.4.
+
+### 13.2 The in flight phase U3, and why it cannot land yet
+
+The working tree holds phase U3 (spec section 11) uncommitted: ten modified
+files plus three new test files. What already works: `Program::validate()`
+with structured errors, `decode()` now meaning decode plus validate,
+`decodeUnvalidated()` for the disassembler (which deliberately dumps suspect
+files, prefixed with a warning), an always on bounds checked accessor in the
+simulator, input size checking and multi output writing in `npu-sim`, a multi
+function diagnostic in `npu-translate`, a multi block diagnostic in
+`AllocateScratchpad`, 32 validation tests, a 1000 iteration round trip
+property test, and a 322 case fuzz corpus. 39 of 42 encoding tests pass. The
+three failures, root caused:
+
+1. `Validation.RejectsShapeThatWouldOverflow` fails because `shapeElements()`
+   checks its running product against the 2^40 cap only after multiplying, so
+   the multiply itself is the overflow (UBSan confirms signed overflow at
+   `Program.cpp:197`). A shape like `{2^40, 2^24}` wraps to 0 elements and the
+   guard accepts exactly what it exists to reject. Fix shape: test
+   `d > kLimit / n` before multiplying.
+
+   **Status 2026-08-09, done** (upgrade part 1, commit `fb3d4cf` on
+   `upgrade/u3-harden-the-binary-interface`). Fixed in the equivalent form
+   `n > kLimit / d` tested before the multiply, with `kLimit` and the signature
+   unchanged so all three callers keep their contract.
+   `Validation.RejectsShapeThatWouldOverflow` is green, and
+   `Validation.RejectsShapeAtTheOverflowBoundary` was added to pin both sides
+   of the cap by asserting which rule fires. UBSan over `Validation.*` now
+   reports nothing at `Program.cpp`.
+2. `Validation.SimulatorRefusesAnOutOfBoundsAccessInsteadOfCorruptingMemory`
+   fails because a pre existing convenience, the simulator growing the
+   scratchpad to cover every result write before execution
+   (`Simulator.cpp:127`), absorbs the out of range `resultAddr` the test
+   plants. The auto expansion neutralizes the new result bounds check
+   entirely for scratchpad writes: only a negative or misaligned address can
+   trap. The sizing loop also runs before any validation, so a hostile
+   program can still drive `resultAddr + elements * 4` into int64 overflow or
+   an absurd allocation at exactly the entry point the hardening targets.
+   Either gate the expansion behind validation or size strictly from the
+   declared `scratchpadBytes`.
+
+   **Status 2026-08-09, done** (upgrade part 2, commit `304df3c` on
+   `upgrade/u3-harden-the-binary-interface`). Sized strictly from the declared
+   field, which is the second of the two options: it removes the arithmetic on
+   unvalidated input rather than reordering it behind a validation step. The
+   test is green. Nothing real regressed, because
+   `-npu-allocate-scratchpad` writes its high water mark to
+   `npuisa.scratchpad_bytes` and the encoder emits that as `scratchpadBytes`,
+   so a compiled program declares exactly the extent it uses; lit and the end
+   to end LeNet pytest are unchanged and no `docs/BREAKING_CHANGES.md` entry
+   was needed. The six hand built programs in `SimulatorTest.cpp` did depend on
+   the expansion and now declare explicit sizes.
+3. `Validation.RejectsRegionPastTheEndOfDram` fails for a test authoring
+   reason: its `dramOffset = 8190` is not 4 byte aligned, so the alignment
+   rule fires first and the test never reaches the rule it names. Use an
+   aligned offset such as 8160.
+
+   **Status 2026-08-09, done** (upgrade part 1, commit `42edd39` on
+   `upgrade/u3-harden-the-binary-interface`). 8160 it is: aligned at 4 * 2040,
+   and the 10 element fp32 output still spans [8160, 8200), ending 8 bytes past
+   an 8192 byte DRAM, so the alignment rule passes and `region-in-range` fires.
+   No decoder code changed; the rule was correct and simply had no test that
+   reached it.
+
+Two further defects found in the new code by adversarial testing (the harness
+and logs are kept in WSL `/tmp/npuverify/`):
+
+4. `validate()` never compares operand read extents to what was written: the
+   written before read walk checks membership only. A validated program can
+   therefore still trap in the simulator (verified: a `DMA_STORE` reading 100
+   elements from a 4 element buffer at the scratchpad top passes `validate()`
+   and then traps at run time), which contradicts the contract comment on
+   `Program.h` that it checks every invariant the simulator relies on.
+   Interior over reads that stay inside the scratchpad are silently permitted
+   and read stale data.
+
+   **Status 2026-08-09, done with a stated gap** (upgrade part 3, commit
+   `a33f9dc` on `upgrade/u3-harden-the-binary-interface`). A new
+   `operand-extent` rule requires the recorded count to cover what the consumer
+   reads, naming instruction, operand, needed and written. It is exact for
+   `DMA_STORE`, `RELU`, `ADD`, `MUL` and `RESHAPE`, a lower bound of
+   `resultElements` for the two pools, and for `CONV2D` and `MATMUL` only a non
+   zero recorded count. That last is the gap and is deliberate: their extents
+   follow from the recorded tensor shapes and the walk tracks element counts,
+   so a real check needs shape tracking, which is not attempted here. Both the
+   trapping case and the interior over read are now rejected, each with its own
+   test, and an exact extent read is kept passing by a third.
+5. The trap path contains `assert(false)` (`Simulator.cpp:164`), so any
+   assert enabled build aborts the process on the first refused access
+   instead of returning `SimResult.error`, and the comment above it describes
+   a clamping behavior the code does not have. The graceful refusal contract
+   currently exists only under NDEBUG.
+
+   **Status 2026-08-09, done** (upgrade part 2, commit `7e3ed6b` on
+   `upgrade/u3-harden-the-binary-interface`). The assert and the now unused
+   `<cassert>` include are deleted, and the comment rewritten to describe the
+   code: every access checked in every build mode, the first refusal recorded
+   in `SimResult.error`, `nullptr` returned, the caller skipping the access.
+   Verified by running the target test in a `-DCMAKE_BUILD_TYPE=Debug` tree and
+   a `-DCMAKE_BUILD_TYPE=Release` tree, which is the pair that diverged before.
+   All eleven `spAt` and `dramAt` call sites were audited for a null test,
+   since a missing one becomes a null dereference once the assert stops
+   aborting first; all eleven already had one.
+
+Smaller items in the same change set, worth fixing while the files are open:
+the decoder's 2^28 element cap still permits roughly 2 GiB single vector
+allocations from a tiny crafted file, and the corpus never probes just under
+the cap; `encodeFunction`'s `.Default` case emits an error diagnostic for an
+unencodable op but still returns success, so `npu-translate` can print an
+error yet write the `.nbin` and exit 0 when the op's result is unused;
+`npu-sim` accepts exactly one `--input`, so a multi input program runs its
+other declared inputs as zeros with no warning.
+
+**Status 2026-08-09, all three done** (upgrade part 3, on
+`upgrade/u3-harden-the-binary-interface`).
+
+- The allocation cap, commit `1a21f73`. The probes turned the request into a
+  defect report: the 36 near cap cases were already refused, but refusing them
+  cost 2.0 GiB peak RSS and 43 seconds for under four kilobytes of input, so
+  the cap bounded the number and not the work. `getCount` now also takes the
+  least space one element can occupy and refuses a count the remaining bytes
+  cannot back. The same 36 cases now cost 6 MB and no measurable time. Corpus
+  322 to 358, now pinned exactly rather than only floored at 200.
+- `encodeFunction`'s `.Default`, commit `b326979`. Measured before the fix on
+  an unlowered `npu.relu`: exit code 0 and a 150 byte `.nbin` holding the
+  program with the relu deleted from it. It returns failure now, after the loop
+  so one run names every unencodable op. Covered by a unit test and by
+  `test/Encoding/unencodable.mlir`, which runs the real tool and checks nonzero
+  exit, the diagnostic, and the absence of an output file. Note the finding
+  underneath it: `not` was not a substituted tool in `test/lit.cfg.py`, so no
+  negative tool test was writable for this suite before now.
+- `npu-sim` multi input, commit `2e05b7f`. Implemented rather than refused.
+  One `--input` per declared region, in declaration order, each size checked
+  against its own region, and a count mismatch refused with both numbers named.
+  `docs/ISA_MANUAL.md` now documents `npu-sim` at all, including the numbered
+  multi output files.
+
+One further defect surfaced by this part's gate, which is the first to run the
+whole fuzz corpus under UBSan rather than `Validation.*` only: the corpus test
+itself accumulated touched fields into a signed `int64_t`, and the corpus holds
+a program declaring `INT64_MAX` bytes of scratchpad, so the test asserting that
+hostile input cannot cause undefined behaviour was itself undefined behaviour.
+Pre-existing, unchanged since before this part, fixed in commit `0e9c923`.
+
+**Status 2026-08-09, section closed.** All five defects fixed, the two further
+defects found by adversarial testing fixed, and all three smaller items fixed,
+across upgrade parts 1 to 4. The phase merged to `main` after the full 11.3
+gate with output shown. The process note below is answered: the work moved to
+`upgrade/u3-harden-the-binary-interface` in part 1 and `main` was never
+committed to directly.
+
+Process note: this work sits uncommitted on the `main` checkout. Ground rule
+11 of `UPGRADE_SPEC_V3.md` gives every phase an `upgrade/uN-name` branch; move
+it there before committing.
+
+### 13.3 One red pytest, and why that is correct
+
+`test_committed_results_are_current` fails on this tree because `staleness()`
+counts uncommitted edits to compiler inputs, and the U3 edits touch `lib/` and
+`tools/`. That is the guard doing its job on a dirty tree, not a defect.
+Consequence for the order of work: when U3 lands, regenerate the six results
+on the clean tree (the numbers should not move; U3 adds no optimization), and
+rebuild the report from them in the same sitting, as separate commits.
+
+### 13.4 New findings, not in the first audit
+
+1. **Nothing since 2026-08-07 has been pushed.** `origin/main` is `7de39c6`;
+   all twelve commits of U0 through U2 exist only locally. The README's green
+   CI badge is the old lint only workflow's run at `7de39c6`. The U2 gate in
+   spec section 10.3 (one green URL, four deliberate fault red URLs) is not
+   just outstanding but impossible until a push happens.
+2. **The LLVM container image does not exist.** An anonymous manifest probe
+   for `ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8` returns 403 (never
+   published; `llvm-image.yml` is dispatch only and unpushed). Pushing main
+   today would turn the badge red at container pull for three of the four
+   jobs. Push order that avoids advertising a red badge is in 13.5. One risk
+   to plan for: the image build compiles LLVM on a 2 core public runner under
+   a 6 hour job limit; if it times out, build the image locally in WSL with
+   the same Dockerfile and push it once by hand, which the workflow's manual
+   dispatch design already tolerates.
+3. **The committed PDFs still embed numbers from a commit that does not
+   exist.** Both PDFs in the tree are byte identical to the 2026-07-15
+   builds, whose results carried `git_sha: 8095dbec`, the sha
+   `docs/DESIGN_DECISIONS.md` itself calls the failure mode the staleness rule
+   exists to prevent. Commit `cc99973` deliberately reverted the rebuilt PDFs
+   out of the U2 merge to keep that commit clean, which was reasonable, but
+   the follow up rebuild never happened. `report/generated/` is gitignored
+   and its local `macros.tex` still says `GitSha 38af13633388`, one
+   regeneration behind the committed results. Nothing enforces the spec
+   section 23.1 requirement that every PDF number traces to a committed
+   result; until something does, treat "results changed, rebuild both PDFs"
+   as a standing manual step.
+4. **Two contradictory instruction counts are committed side by side.**
+   `experiments/results/*.json` records the regex count (91 / 82 / 70);
+   `test/baseline/baseline.json` records the simulator's count (28 / 25 / 21)
+   for the same cells. The README table, the report, and the plots inherit
+   the regex numbers; the CHANGELOG openly defers the correction to phase U4.
+   This also inverts first audit section 6 item 2: the README's objdump
+   excerpt says "21 instructions", which matches the simulator's true `-O2`
+   count exactly, so the excerpt was probably genuine all along and it is the
+   headline table that is wrong.
+5. **The type checker validates a different Python than the one that runs.**
+   mypy, ruff, black, and the CI lint job all target Python 3.12; the venv,
+   the baseline manifest, and the README badge say 3.14. mypy's scope is also
+   only `python/npu_frontend`: `experiments/`, `scripts/`, and `test/Python`
+   are unchecked. Cheap to widen; fold into U4 with the other measurement
+   integrity work.
+6. **The README still advertises what does not run.** The pipeline diagram
+   and the passes table both show the BatchNorm fold, which no `-O` level
+   contains and no importable model can reach (exempt until 2026-12-31), and
+   the coverage badge is a hand written shields.io URL claiming 90 / 89 while
+   CI enforces only C++ at 85 percent and no Python threshold at all.
+7. **The false "tagged records" phrase lives in two places**,
+   `docs/ISA_MANUAL.md` and the `Program.h` header comment, and the format is
+   additionally host endian despite a comment claiming little endian helpers.
+   Fix all three in U3's documentation pass; the U3 gate requires the ISA
+   manual to document validation and the version policy anyway.
+
+   **Status 2026-08-09, done, and it was three places not two** (upgrade part 4,
+   commit `0e3de30`). `docs/DESIGN_DECISIONS.md` carried the false phrase in a
+   heading as well, which this item had not found. All three now describe fixed
+   order, length prefixed sections with no tags, and the byte order is documented
+   as host order with a note that a `.nbin` is not portable across byte orders.
+   The code comment claiming little endian helpers says so too. No byte swapping
+   was added; that is a format change. The manual also gained the validation
+   table, generated from the `fail()` call sites, and the version policy.
+8. **Small docstring undercount from U1:** `op_mapping.py` says six ops are
+   missing but discusses `Identity` as import blocking in the same breath;
+   the spec's U7 list names seven. One line fix next time the file is
+   touched.
+9. **The CI coverage step greps the first `lines:` figure from the gcovr
+   log**, which breaks silently if gcovr's summary format shifts or another
+   figure prints first. Switch to a `--json-summary` parse when U4 touches
+   measurement anyway.
+
+### 13.5 Updated order of work
+
+Nothing here changes the tiers in section 7 or the phase order in
+`UPGRADE_SPEC_V3.md`. It sharpens the immediate queue to this:
+
+1. **Finish U3.** Fix the five defects in 13.2 (overflow safe
+   `shapeElements`, gate or retire the scratchpad auto expansion so the
+   result bounds check can fire, align the test constant, compare operand
+   read extents in `validate()`, replace the `assert(false)` trap with the
+   documented graceful refusal), get 42 of 42, move the work to its phase
+   branch, and land it together with the U3 documentation items, including
+   the ISA manual and header corrections from 13.4 item 7.
+
+   **Status 2026-08-09, done** (upgrade parts 1 to 4). All five defects fixed
+   plus the two adversarial findings and the three smaller items, 51 of 51
+   encoding tests rather than the 42 this item asked for, the work moved to
+   `upgrade/u3-harden-the-binary-interface` without ever committing to `main`,
+   and the phase merged after the full 11.3 gate. Item 2 below is next.
+2. **Regenerate and republish the numbers.** Rerun the six cells on the clean
+   tree, rebuild both PDFs from them, and commit results, tex, and PDFs as
+   their own commits (13.3, 13.4 item 3). That finally retires the 8095dbec
+   numbers from the tree.
+3. **Push and prove.** Push everything, dispatch `llvm-image.yml`, get the
+   new CI green on GitHub, then run the four fault class proofs of spec
+   section 10.2 and record the URLs. Until this step completes, the badge
+   claims more than has been demonstrated, which is the exact failure mode U2
+   exists to end.
+4. **Proceed to U4** (measurement integrity), which now also picks up 13.4
+   items 4, 5, and 9 explicitly.
