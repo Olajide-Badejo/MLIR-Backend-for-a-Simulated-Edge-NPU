@@ -21,10 +21,77 @@
   "dram_bytes_written": 40,
   "dram_bytes_total": 347440,
   "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
-  "compile_ms": 98.70612400118262,
+  "compile_ms": 100.45359400101006,
+  "passes": [
+    {
+      "name": "npu-lower-to-npuisa",
+      "position": 0,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 13,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.relu": 4,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 13,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 14,
+        "npuisa.dma_store": 1,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.relu": 4,
+        "npuisa.reshape": 1
+      },
+      "ops_before_total": 28,
+      "ops_after_total": 43,
+      "wall_ms": 0.3
+    },
+    {
+      "name": "npu-allocate-scratchpad",
+      "position": 1,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 13,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 14,
+        "npuisa.dma_store": 1,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.relu": 4,
+        "npuisa.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 13,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 14,
+        "npuisa.dma_store": 1,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.relu": 4,
+        "npuisa.reshape": 1
+      },
+      "ops_before_total": 43,
+      "ops_after_total": 43,
+      "wall_ms": 0.1
+    }
+  ],
+  "pass_timing_source": "--mlir-timing",
   "note": "simulated estimates, not measurements",
   "manifest": {
-    "git_sha": "71feacb1ea980f03d7cc83e68e38bc92ebfb79ab",
+    "git_sha": "7f886d6789f54a87dfcf8b49bfb724152767e62d",
     "llvm_tag": "llvmorg-22.1.8",
     "python": "3.14.4",
     "onnxruntime": "1.27.0",
@@ -37,6 +104,8 @@
     },
     "seed": 0,
     "model_generator_version": 1,
-    "timestamp": "2026-08-15T18:27:37.031543+00:00"
+    "timestamp": "2026-08-15T18:35:46.058064+00:00",
+    "cpu_model": "Intel(R) Core(TM) i7-14700K",
+    "wall_clock_note": "compile_ms and passes[].wall_ms are wall clock measured on the machine named in cpu_model; they are not portable and not simulated estimates. Every other performance figure here is a simulated estimate from the analytical cost model."
   }
 }
