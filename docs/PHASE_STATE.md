@@ -20,7 +20,8 @@ costs more than writing these lines did.
 
 **P3, the ONNX frontend and the model suite.** Branch
 `phase/p3-onnx-frontend`, cut from `main` at `316f3b8`, which is the P2 merge.
-Six commits, not pushed.
+Nine commits, not pushed. The ninth is the one that carries this table, so it
+is the branch tip and is named by subject rather than by a sha it cannot know.
 
 | Commit | Subject |
 |---|---|
@@ -30,6 +31,9 @@ Six commits, not pushed.
 | `bf1dc82` | `feat(frontend): add the ONNX importer for the opset 23 operator set` |
 | `677aeb6` | `feat(frontend): add the seeded model suite of Section 15` |
 | `98603d5` | `ci: switch on mypy and pytest` |
+| `fa71f43` | `docs: record the P3 defects and hand off the phase` |
+| `16724ea` | `docs(readme): correct a phase line that has been wrong since P1` |
+| tip | `docs: refresh the phase state commit table` |
 
 A note on the branch point, since the previous phase had a scare about exactly
 this. Local `main` was at the P1 merge `6da2a3f` when this session began; a
