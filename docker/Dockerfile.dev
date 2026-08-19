@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# The developer convenience image: the CI LLVM image plus this project's
+# Python toolchain, so a contributor without a local LLVM build can still
+# configure, build, test, and run the linters.
+#
+# This image is not on the P0 critical path. Nothing in CI pulls it. It exists
+# so that "how do I build this without spending an hour on LLVM" has an answer
+# that is a command rather than a paragraph.
+#
+# Base pin, and the one place this file knowingly departs from the digest rule
+# in Section 3's environment hardening. That rule wants both Dockerfiles
+# pinned by sha256, and the base here is npu-mlir-llvm, which does not exist
+# until .github/workflows/llvm-image.yml publishes it for the first time.
+# There is no digest to write down yet. So the base is pinned by its immutable
+# content tag, llvmorg-22.1.8, which is itself built from a digest pinned
+# ubuntu, and this file is repinned by digest in the commit that follows the
+# first successful publish:
+#
+#   docker buildx imagetools inspect \
+#     ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+#
+# then replace the tag below with @sha256:<the linux/amd64 manifest digest>
+# and delete this paragraph down to the FROM line.
+FROM ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+
+LABEL org.opencontainers.image.title="npu-mlir-dev" \
+      org.opencontainers.image.description="npu-mlir development image: LLVM and MLIR llvmorg-22.1.8 plus the pinned Python toolchain" \
+      org.opencontainers.image.source="https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The tools a person uses interactively and CI does not: an editor's language
+# server wants clangd, `git diff` wants a pager, and gcovr's report step wants
+# the gcov that came with gcc.
+RUN apt-get update && apt-get install --no-install-recommends --yes \
+      clang-format \
+      clang-tidy \
+      clangd \
+      less \
+      vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# A virtualenv rather than --break-system-packages, because this is the image
+# a person works in: the venv at /opt/npu-venv mirrors ~/npu-venv on the host,
+# so the paths in docs/BUILD.md read the same in both places.
+ENV VIRTUAL_ENV=/opt/npu-venv
+RUN python3 -m venv "${VIRTUAL_ENV}"
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# requirements-lock.txt is the fully resolved closure, not the direct
+# dependency list, so this reproduces the host environment rather than
+# re-resolving it. It carries an --extra-index-url line for the torch +cpu
+# wheels, which is why the file is passed with -r instead of the pins being
+# repeated here.
+COPY requirements-lock.txt /tmp/requirements-lock.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r /tmp/requirements-lock.txt \
+ && rm /tmp/requirements-lock.txt
+
+# The MLIR Python bindings are OFF in the base image, a narrowing recorded in
+# docker/Dockerfile.llvm and due for revisit at P3. Until then test/Python is
+# not collectable in this image, and PYTHONPATH is set to where the bindings
+# will land so that the wiring is already correct on the day they arrive.
+ENV PYTHONPATH="/opt/llvm/python_packages/mlir_core"
+
+RUN python -c "import black, ruff, pytest" 2>/dev/null || pip list
+
+WORKDIR /work
