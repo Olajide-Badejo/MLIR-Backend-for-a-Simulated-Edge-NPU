@@ -13,7 +13,10 @@
 # stays honest rather than quietly weakening.
 #
 # Active at P0: dash-lint and its self test, reuse lint, ruff, black --check,
-# configure, build, check-npu. Everything else prints its off line.
+# configure, build, check-npu.
+# Added at P1: check-reachability --skip-models, DIALECT_REFERENCE.md staleness.
+# Added at P2: NPUInterfaceTests, and the coverage job at a threshold of 0.
+# Everything else prints its off line.
 
 name: ci
 
@@ -237,14 +240,32 @@ jobs:
         run: ninja -C build check-npu
 
       # ---- GoogleTest binaries. Each guarded on its binary existing. --------
-      - name: "NPUInterfaceTests (activation table: P2)"
+      #
+      # NPUInterfaceTests: ON at P2. The guard stays in place rather than being
+      # deleted, for the same reason the reachability guard did at P1: it is what
+      # the activation table asks for. But now that the phase has arrived, an
+      # unsatisfied guard means the binary did not build, and reporting that as
+      # "waiting for a phase" would be the activation table's own failure mode.
+      # So the else branch fails rather than printing an off line.
+      #
+      # The binary building at all in this image is a P2 deliverable in its own
+      # right. An installed LLVM prefix exports neither the `llvm_gtest` target
+      # nor the bundled gtest headers, so the top level CMakeLists falls back to
+      # find_package(GTest) and docker/Dockerfile.llvm installs libgtest-dev for
+      # it to find. Before that pair of changes this step could never have run.
+      - name: "NPUInterfaceTests (activation table: P2, on)"
         run: |
           set -euo pipefail
           if [ -x build/bin/NPUInterfaceTests ]; then
             ./build/bin/NPUInterfaceTests
           else
-            echo "NPUInterfaceTests: OFF until P2 (activation table 19.0)."
-            echo "NPUInterfaceTests: guard is build/bin/NPUInterfaceTests existing."
+            echo "::error::NPUInterfaceTests did not build."
+            echo "NPUInterfaceTests: this step is ON from P2, so a missing binary"
+            echo "NPUInterfaceTests: is a build failure rather than a phase that has"
+            echo "NPUInterfaceTests: not arrived. Check the configure log for the"
+            echo "NPUInterfaceTests: 'GoogleTest:' line: the image must carry"
+            echo "NPUInterfaceTests: libgtest-dev for the system package fallback."
+            exit 1
           fi
 
       - name: "NPUAllocatorTests (activation table: P5)"
@@ -281,18 +302,21 @@ jobs:
       # collection exits 5 and that is not a pass. The guard is therefore a
       # test file existing, never the exit code.
       #
-      # There is a second reason it stays off at P0: the LLVM image is built
-      # with MLIR_ENABLE_BINDINGS_PYTHON=OFF, a narrowing recorded in
-      # docker/Dockerfile.llvm, so the bindings test/Python imports are not in
-      # this container at all. Turning pytest on at P3 means republishing the
-      # image with bindings enabled. That is a P3 deliverable, noted here so it
-      # is not discovered on the day.
+      # The second reason it stayed off at P0 is now resolved ahead of time. The
+      # image was built with MLIR_ENABLE_BINDINGS_PYTHON=OFF, so the bindings
+      # test/Python imports were not in the container at all, and turning pytest
+      # on at P3 was going to mean republishing the image. P2 needed a republish
+      # anyway to add googletest, so the bindings were switched on in the same
+      # change and P3 inherits the image it needs. What remains for P3 is the
+      # importer and the tests themselves.
       - name: "pytest (activation table: P3)"
         run: |
           set -euo pipefail
           echo "pytest: OFF until P3 (activation table 19.0)."
           echo "pytest: an empty collection exits 5 and is never read as a pass."
-          echo "pytest: also needs an image with MLIR_ENABLE_BINDINGS_PYTHON=ON, see docker/Dockerfile.llvm."
+          echo "pytest: the image carries the MLIR Python bindings from P2 at"
+          echo "pytest: /opt/llvm/python_packages/mlir_core, already on PYTHONPATH,"
+          echo "pytest: so P3 needs the importer and its tests and no republish."
 
       - name: "pytest slow cells (activation table: P10)"
         run: |
@@ -395,15 +419,58 @@ jobs:
   # -------------------------------------------------------------------------
   coverage:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     permissions:
       contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      # The threshold the activation table specifies between P2 and P8. It is an
+      # input to the script rather than a constant inside it, so that P8 sets the
+      # real number by editing one line here and the script itself does not
+      # change when the policy does.
+      NPU_COVERAGE_THRESHOLD: "0"
+      NPU_COVERAGE_JOBS: "4"
 
     steps:
-      - name: "coverage job is off (activation table: P2, thresholds at P8)"
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      # gcc rather than clang, and gcovr rather than llvm-cov. Section 17.7
+      # permits either; gcovr against gcc's --coverage is the pairing this
+      # project uses, and mixing clang's instrumentation with gcovr's gcov
+      # frontend is the combination that produces a plausible looking zero.
+      - name: "coverage (activation table: P2, on; thresholds at P8)"
         run: |
           set -euo pipefail
-          echo "coverage: OFF until P2 (activation table 19.0)."
-          echo "coverage: from P2 it runs scripts/coverage.sh with thresholds of 0, so the number is recorded and its trend visible without gating on it."
-          echo "coverage: P8 sets the real thresholds from what P8 measures, parsed from the JSON summaries."
+          echo "coverage: ON from P2 with a threshold of ${NPU_COVERAGE_THRESHOLD}."
+          echo "coverage: the number is recorded and its trend is visible from here;"
+          echo "coverage: P8 sets the real thresholds from what P8 measures."
+          echo ""
+          bash scripts/coverage.sh "${NPU_COVERAGE_THRESHOLD}"
+
+      # The JSON summary is the artifact, not the log. Section 17.7 is explicit
+      # that CI parses a JSON summary rather than grepping a percentage out of a
+      # log, and keeping the file is what lets P8 set its thresholds from a
+      # series of measurements rather than from one run somebody remembered.
+      - name: Upload the coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary
+          path: |
+            build-coverage/coverage.json
+            build-coverage/coverage.html
+          if-no-files-found: warn
+          retention-days: 30
