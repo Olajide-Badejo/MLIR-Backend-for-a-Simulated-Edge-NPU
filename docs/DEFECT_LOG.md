@@ -295,3 +295,21 @@ None.
   through the await. `NPUISAInterfaceTest.TheAwaitDeclaresNoEffectOfItsOwn`
   asserts that the await still declares no effects, so a later change that gives
   it one fails a test rather than silently making the skip unsound.
+
+### D-0010 the bindings image rebuild died at configure for want of python3-dev
+
+- **Found:** 2026-08-19, phase P2, by the llvm-image workflow on the first
+  rebuild with MLIR_ENABLE_BINDINGS_PYTHON=ON (run 32222527819).
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** build docker/Dockerfile.llvm at the P2 revision that turns the
+  bindings on. CMake fails inside MLIRDetectPythonEnv at FindPython3, and the
+  configure stops before a single source file compiles.
+- **What was wrong:** the builder stage installed python3, python3-pip and
+  python3-venv but not python3-dev. The bindings compile nanobind modules
+  against the interpreter's development headers, and FindPython3's Development
+  component refuses an interpreter that has none. The P0 image never noticed
+  because the bindings were off, so the interpreter-only install was
+  sufficient right up until the flag flipped.
+- **Resolution:** python3-dev added to the builder stage's package list. The
+  final stage is unchanged: it ships the built bindings, which need only the
+  interpreter and numpy at run time, not the headers.
