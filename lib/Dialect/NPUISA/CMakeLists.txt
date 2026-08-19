@@ -2,5 +2,4 @@
 #
 # SPDX-License-Identifier: MIT
 
-add_subdirectory(NPU)
-add_subdirectory(NPUISA)
+add_subdirectory(IR)

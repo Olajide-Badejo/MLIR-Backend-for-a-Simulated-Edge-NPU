@@ -25,6 +25,7 @@
 
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPU/Interfaces/NPUTilingInterfaceImpl.h"
+#include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
@@ -39,7 +40,7 @@ int main(int argc, char **argv) {
   mlir::registerAllDialects(registry);
   mlir::registerAllExtensions(registry);
 
-  registry.insert<mlir::npu::NPUDialect>();
+  registry.insert<mlir::npu::NPUDialect, mlir::npuisa::NPUISADialect>();
   mlir::npu::registerNPUTilingInterfaceExternalModels(registry);
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
