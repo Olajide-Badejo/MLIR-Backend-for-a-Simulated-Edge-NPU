@@ -36,15 +36,19 @@ Pin the toolchain at the versions below, all verified installed and working on
 | Item | Resolved |
 |---|---|
 | OS | Windows 11 Pro, WSL2 guest Ubuntu 26.04 |
-| Memory | 12 GB cap plus 8 GB swap, set in `~/.wslconfig` |
+| Memory | 15 GB cap plus 8 GB swap, set in `~/.wslconfig` (12 GB from 2026-07-14 until 2026-08-19, raised by the owner) |
 | Processors | 28 |
 | Free disk | 895 GB |
 
-The 12 GB cap is a hard ceiling and is not negotiable. Raising it has crashed
-this machine before. **`~/.wslconfig` is not edited by this project and no part
-of this project suggests editing it.** The practical consequence lives in
+The cap is a hard ceiling. It exists because this machine crashed in July 2026
+when WSL2 ran uncapped, and it was 12 GB until 2026-08-19, when the owner
+explicitly raised it to 15 GB, trading host headroom for guest capacity.
+**`~/.wslconfig` is edited only on the owner's instruction; no part of this
+project changes it on its own.** The practical consequence lives in
 `docs/BUILD.md`: keep memory hungry parallelism at six jobs or fewer, and cap
-link jobs at one if the LLVM contingency of Section 3.2 ever runs.
+link jobs at one if the LLVM contingency of Section 3.2 ever runs. Those
+numbers were measured under the 12 GB cap and remain the safe defaults; nothing
+has re-measured them at 15 GB.
 
 ### Build toolchain
 

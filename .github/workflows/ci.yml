@@ -195,8 +195,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_USE_LINKER=lld
 
-      # Section 3.3 writes -j6, which is right for the 12 GB WSL2 guest it was
-      # written for. A hosted runner is 4 vCPU, so -j4 is the matching number
+      # Section 3.3 writes -j6, which is right for the memory capped WSL2 guest
+      # it was written for. A hosted runner is 4 vCPU, so -j4 is the matching number
       # here: -j6 on four cores buys nothing and costs memory headroom.
       - name: "Build (activation table: P0, on)"
         run: |

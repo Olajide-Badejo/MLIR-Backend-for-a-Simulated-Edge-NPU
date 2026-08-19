@@ -19,8 +19,9 @@ upstream on the day of resolution rather than by copying a number out of a
 document. It also says never to pin a release candidate, and it says LLVM is
 built exactly once on this machine and then linked against.
 
-That last rule is not a preference. The guest has a hard 12 GB memory ceiling
-that has crashed the host when raised, and the only LLVM build this machine has
+That last rule is not a preference. The guest has a hard memory ceiling, 15 GB
+as of 2026-08-19 and 12 GB before that, set after running uncapped crashed the
+host, and the only LLVM build this machine has
 ever completed used `LLVM_PARALLEL_LINK_JOBS=1`. A rebuild is an hour or more of
 wall clock time with a real chance of an out of memory kill partway through, so
 a wrong pin here is expensive to undo in a way that a wrong pin of, say, a
@@ -104,7 +105,7 @@ features, LLVM's may not require them, and nothing relies on a C++20 feature
 crossing the ABI boundary.
 
 A move to 23.x later is a real migration with a budget: four known source
-breaks, no release notes, and a rebuild on a 12 GB machine. It is not a version
+breaks, no release notes, and a rebuild on a memory capped machine. It is not a version
 bump. Whoever attempts it should read this record first and then read Section
 3.2 before touching anything.
 

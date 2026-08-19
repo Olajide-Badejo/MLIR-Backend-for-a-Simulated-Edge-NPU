@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 *Diataxis type: tutorial plus how to.*
 
 This is the build documentation for **this hardware**: a Windows 11 host running
-a WSL2 Ubuntu 26.04 guest with a 12 GB memory cap, 28 processors, and an LLVM
+a WSL2 Ubuntu 26.04 guest with a 15 GB memory cap, 28 processors, and an LLVM
 already built at `~/llvm-project/build`. Nothing here is a general porting
 guide. The versions it names are the resolved matrix of
 [`adr/0003-resolved-tool-matrix.md`](adr/0003-resolved-tool-matrix.md).
@@ -55,7 +55,7 @@ was deleted, and the recovery is the contingency in Section 3.2 of the build
 specification and not a path fixup.
 
 `LLVM_USE_LINKER=lld` matters more here than it looks. `lld` is meaningfully
-faster than the default linker and, more importantly on a 12 GB guest, it uses
+faster than the default linker and, more importantly on a memory capped guest, it uses
 less memory to do the same link.
 
 `-j6` is not a suggestion. See the memory ceiling below.
@@ -162,10 +162,12 @@ ninja -C build npu-isa-doc                       # P6, the ISA_MANUAL.md opcode 
 
 ## The memory ceiling, and what to do when a build is killed
 
-`~/.wslconfig` sets `memory=12GB` with 8 GB of swap. **That is a hard ceiling.
-Raising it has crashed this machine before. Do not edit that file, and do not
-suggest editing it.** It is the single environmental constraint this project
-plans around rather than works against.
+`~/.wslconfig` sets `memory=15GB` with 8 GB of swap. **That is a hard ceiling.**
+It was 12 GB from July 2026, set after the machine crashed running WSL2
+uncapped, until 2026-08-19, when the owner raised it to 15 GB. That file is
+edited only on the owner's instruction; this project plans around the ceiling
+rather than working against it. The parallelism numbers below were measured
+under the 12 GB cap and stay in force at 15 GB until something re-measures them.
 
 What it means in practice:
 

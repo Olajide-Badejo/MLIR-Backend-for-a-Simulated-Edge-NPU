@@ -1563,3 +1563,30 @@ branches are published; `git -C ~/npu-mlir rev-parse HEAD` still reads
 `99408bc14b4f6331ce03ebf1dc0aecce1529afa8` with only the untracked
 `upgrade_parts/` dirty, which is the frozen fallback exactly as it was. The
 opset probe output is quoted verbatim in record 0002.
+
+## 2026-08-19 Phase 0: the owner raised the WSL2 memory cap to 15 GB
+
+Not a defect, a deliberate environment change, recorded because three project
+documents state the old value and because the ceiling is the one environmental
+constraint everything else plans around.
+
+The guest memory cap in the host `~/.wslconfig` went from 12 GB to 15 GB at my
+explicit instruction, mid Phase P0. The 12 GB figure dated from 2026-07-14,
+when running WSL2 uncapped crashed the machine outright; the cap is the crash
+mitigation, and the specification wrote it down as non negotiable on that
+history. Raising it to 15 GB trades about 3 GB of Windows headroom for guest
+capacity on a 31.7 GB host. The swap (8 GB), `autoMemoryReclaim=gradual`,
+`pageReporting`, and the 28 processors are all unchanged, and the guest
+verified the new ceiling after `wsl --shutdown` with `free -h` reporting 14Gi
+total.
+
+What deliberately did not change: the parallelism numbers. `-j6` for memory
+hungry compiles and `LLVM_PARALLEL_LINK_JOBS=1` for any forced LLVM rebuild
+were measured under the 12 GB cap, and nothing has re-measured them at 15 GB,
+so they stay in force as the known safe settings rather than being scaled up
+by arithmetic. If the host starts paging under combined load, the revert is
+one line in `~/.wslconfig` and a `wsl --shutdown`.
+
+Updated in the same commit: `docs/adr/0001`, `docs/adr/0003`, `docs/BUILD.md`,
+and one comment in `.github/workflows/ci.yml`. The v1 era entries above that
+cite 12 GB are history and stay as written.
