@@ -1685,3 +1685,37 @@ both are green and both say the step is waiting. The only way to tell them apart
 is to prove the step red on the day it activates, which is what the proof of
 failure discipline already asks for and what I did for all three of the
 reachability check's rules.
+
+## 2026-08-19 Phase 1: both new gates proven red on the day they activated
+
+The activation table says a step that switches on gets broken once,
+deliberately, because a step that has only ever been green is a step nobody
+has tested. P1 switched on two steps, and the proof ran as three commits on a
+scratch branch, phase/p1-activation-proof, deleted after use.
+
+First fault: one word changed in the committed `docs/DIALECT_REFERENCE.md`.
+Caught by build-and-test at the staleness step, which printed the diff and the
+regeneration command. Red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32216846851>.
+
+Second fault: the `Reachability: imported computation.` line removed from
+`npu.relu`'s ODS description, with the reference restored. This one fault
+turned both gates red at once, and that is the design agreeing with itself: the
+classification lives in the description, the description feeds the generated
+reference, so declassifying an operation cannot escape either check. lint
+failed at check-reachability and build-and-test failed at staleness. Red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32216983456>.
+
+Restore commit, everything green again:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32217118546>.
+
+Both faults were caught by the job and step designed to catch them, which is
+the finding worth recording: no fault had to be adjusted to fit its net.
+
+In the same phase, the llvm-image workflow's push trigger is retired. It
+existed to bootstrap the first publish, since workflow_dispatch only offers
+workflows already on the default branch. After the P0 merge it fired a
+redundant hour long rebuild of an image that already existed, whose only
+effects would have been runner time and a moved tag digest, and whose
+cancellation left a red X on the merge commit. Rebuilds are now a decision, a
+button, not a merge side effect.
