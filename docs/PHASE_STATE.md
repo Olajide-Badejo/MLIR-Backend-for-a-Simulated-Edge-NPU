@@ -134,17 +134,24 @@ moves.
 
 **The exit 5 arm, which is a separate claim and deserves its own perturbation.**
 The activation table says an empty collection returns 5 and is never read as a
-pass, and a green pytest step does not prove that arm works. In
-`pyproject.toml`:
+pass, and a green pytest step does not prove that arm works. The recipe this
+paragraph first carried, pointing `testpaths` at a directory with no tests, was
+run and proved nothing: the CI step passes `test/Python` on the command line,
+and a command line path makes pytest ignore `testpaths` entirely, so CI stayed
+green while a bare local pytest exited 5. The working perturbation deselects
+every test through an unsatisfiable default marker expression, which travels
+through any invocation. In `pyproject.toml`:
 
 ```
--testpaths = ["test/Python"]
-+testpaths = ["docs"]
+-addopts = "-m 'not slow'"
++addopts = "-m 'slow and not slow'"
 ```
 
-pytest then collects nothing, exits 5, and the step must fail with the
-`::error::pytest collected no tests and exited 5.` line rather than passing.
-Locally that arm is already proved: `python -m pytest docs -q` exits 5.
+pytest then deselects everything, exits 5 through the exact command CI runs,
+and the step fails with the `::error::pytest collected no tests and exited 5.`
+line rather than passing. Both runs, the no-op green and the real red, are in
+the engineering log with the lesson: rehearse a proof under the exact
+invocation the gate uses.
 
 ## Open questions
 

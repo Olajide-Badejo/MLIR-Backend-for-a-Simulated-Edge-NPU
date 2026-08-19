@@ -1991,3 +1991,40 @@ builder asks for `get_asm(enable_debug_info=True)` and the round trip asks for
 `--mlir-print-debuginfo`, which is what makes Section 11's requirement that
 every operation carries its ONNX node name something the next stage can actually
 see.
+
+## 2026-08-20 Phase 3: three activation proofs, and the one that proved nothing first
+
+P3 switched on two steps, mypy and pytest, and the pytest step carries a
+separate claim, that an empty collection exiting 5 is read as failure. Three
+proofs, on a scratch branch since deleted, each fault built so exactly one net
+could catch it.
+
+mypy: the opset pin annotated Final[str] while assigned 23. pytest, black and
+ruff have no opinion about an annotation contradiction; only mypy went red, in
+the lint job, run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32307339884>.
+
+pytest: one suite expectation turned wrong, the resnet block asserted to hold
+two Mul nodes where the generator emits one. Only the pytest step went red, in
+build-and-test, run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32307711201>.
+
+The exit 5 arm took two attempts, and the first is the lesson. The handoff
+recipe pointed testpaths at a directory with no tests, verified locally with a
+bare pytest invocation. CI stayed green, run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32307981414>,
+and the green was correct: the CI step passes test/Python on the command line,
+and a command line path makes pytest ignore testpaths entirely, so the
+perturbation never reached the step it was meant to break. A proof rehearsed
+under a different invocation than the gate uses proves the rehearsal, not the
+gate. The second attempt deselects every test through an unsatisfiable default
+marker expression, which travels through any invocation, was verified locally
+to exit 5 through the exact command CI runs, and went red where it should, run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32308435681>,
+with the step naming exit 5 and what it means. The restore went green in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32308808081>.
+
+One mechanical footnote: reverting the second perturbation also reverted that
+commit's bundled restoration of testpaths, so the restore took two commits. A
+proof commit that fixes one thing and breaks another makes its own revert a
+half measure; keep perturbation commits to exactly one change.
