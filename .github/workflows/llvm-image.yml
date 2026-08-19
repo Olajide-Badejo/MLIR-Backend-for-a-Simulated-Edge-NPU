@@ -9,22 +9,15 @@
 name: llvm-image
 
 on:
-  # Both triggers are here on purpose, and the push trigger is the one that
-  # actually publishes at P0. workflow_dispatch only ever offers workflows that
-  # exist on the default branch: this file is new on phase/p0-foundations and
-  # has never been on main, so until the phase branch merges there is no
-  # dispatch button to press. The push trigger fires from the phase branch and
-  # is what gets the image built the first time. Once main carries this file,
-  # workflow_dispatch becomes the normal way to rebuild it, which is what
-  # Section 19 means by "manually dispatchable".
+  # Dispatch only, which is what Section 19 means by "manually dispatchable".
+  # A push trigger existed for exactly one purpose: workflow_dispatch only
+  # offers workflows that exist on the default branch, and this file was born
+  # on phase/p0-foundations, so the first publish had to fire from a push.
+  # That publish happened on 2026-08-19 and the trigger was retired in the
+  # same phase: an LLVM rebuild is an hour of runner time and a moved tag
+  # digest, and it should happen because somebody decided it should, never as
+  # a side effect of a merge touching the Dockerfile.
   workflow_dispatch:
-  push:
-    branches:
-      - phase/p0-foundations
-      - main
-    paths:
-      - docker/Dockerfile.llvm
-      - .github/workflows/llvm-image.yml
 
 # An LLVM build is on the order of an hour of runner time. Two pushes in quick
 # succession to the same branch should not buy two of them, so the older run is
