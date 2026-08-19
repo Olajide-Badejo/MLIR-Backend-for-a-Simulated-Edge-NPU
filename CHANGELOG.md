@@ -6,6 +6,14 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P3: the ONNX frontend and the model suite
+
+- **`onnxscript` is a dependency now.** torch's dynamo exporter imports it at
+  export time and nothing else in the environment pulled it in, so the model
+  generator could not have run without it. `pyproject.toml` pins
+  `onnxscript==0.7.1` and `requirements-lock.txt` carries it and the
+  `onnx-ir==1.0.0` it resolved to.
+
 ### Phase P2: the `npuisa` dialect and the memory model
 
 - **The `npuisa` dialect exists.** `npu-opt` now parses, verifies and prints the

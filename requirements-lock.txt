@@ -62,7 +62,9 @@ networkx==3.6.1
 nodeenv==1.10.0
 numpy==2.5.1
 onnx==1.22.0
+onnx-ir==1.0.0
 onnxruntime==1.27.0
+onnxscript==0.7.1
 packaging==26.2
 pathspec==1.1.1
 pillow==12.3.0
