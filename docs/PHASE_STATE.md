@@ -19,19 +19,20 @@ costs more than writing these lines did.
 ## Current phase
 
 **P2, the `npuisa` dialect and the memory model.** Branch
-`phase/p2-npuisa-dialect`. Seven commits, not merged, not pushed.
+`phase/p2-npuisa-dialect`. Eight commits, not merged.
 
-**Read this before merging anything.** The branch was cut from
-`phase/p1-npu-dialect`, **not** from `main`, and P1 has never been merged. The
-merge base of `main` and this branch is `9bf5d5e`, the P0 merge, so
-`git log main..HEAD` shows twelve commits: P1's five and P2's seven. `main` is
-still at P0. That is not a mistake to correct by rebasing, since P2 genuinely
-depends on P1's dialect and its memory space attributes, but it does change the
-merge plan: **P1 merges first, then P2**, or the two merge together as one pull
-request that closes both gates. The P1 handoff assumed its own merge would have
-happened by now and this file recorded the branch as cut from `main`; it was not,
-and correcting that here is more useful than leaving a reader to discover it at
-the merge.
+**The merge plan scare below the previous revision of this paragraph is
+resolved, and the resolution is worth one paragraph.** This branch was cut from
+`phase/p1-npu-dialect` rather than from `main`, which is correct, since P2
+depends on P1's dialect. A session working from a stale local `main`, still at
+the P0 merge `9bf5d5e`, concluded from that ref that P1 had never merged and
+rewrote the merge plan around it. The remote disagreed: P1 merged through pull
+request 2 as `6da2a3f`, the fetch confirms `9e341f8` is an ancestor of
+`origin/main`, and this branch adds exactly its own eight commits over the
+remote. The merge plan is therefore the ordinary one, a single pull request for
+P2, and the lasting lesson went to the engineering log: a merge conclusion is
+drawn against `origin/main` after a fetch, never against a local ref that
+nobody has pulled.
 
 | Commit | Subject |
 |---|---|
