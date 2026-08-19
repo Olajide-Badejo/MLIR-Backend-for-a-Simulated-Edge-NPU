@@ -190,3 +190,145 @@ None.
   input to the computation whose answer it is reporting. The two lit cases in
   `test/Dialect/NPU/invalid.mlir` that assert on this message quote it in full,
   so a future edit that drops a term fails a test rather than degrading quietly.
+
+### D-0008 a null memory space crashed the operand type predicate
+
+- **Found:** 2026-08-19, phase P2, by running the inherited and uncommitted
+  `test/Dialect/NPUISA/invalid.mlir` for the first time.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** at commit `00cce3b`, write a memref with no memory space into a
+  position the dialect constrains to one of the two named spaces:
+
+      func.func @f(%src: memref<4x4xf32, #npu.dram>, %dst: memref<4x4xf32>) {
+        npuisa.dma_load %src, %dst
+          : memref<4x4xf32, #npu.dram> to memref<4x4xf32>
+        return
+      }
+
+  `npu-opt` on that file dies with a segmentation fault inside
+  `DmaLoadOp::verifyInvariants` and prints no diagnostic at all. Under lit it
+  showed up as the whole `invalid.mlir` file failing, because the crash takes the
+  process down partway through a `-split-input-file` run and the remaining
+  sections never execute.
+- **What was wrong:** the memory space predicate in `NPUISATypes.td` was written
+  as
+
+      ::llvm::isa<::mlir::npu::ScratchpadAttr>(
+          ::llvm::cast<::mlir::MemRefType>($_self).getMemorySpace())
+
+  A memref written without a memory space has a **null** memory space attribute.
+  `llvm::isa` on a null `Attribute` is undefined behaviour: it dereferences the
+  attribute to reach its type id. In a build with assertions that trips one and
+  names the problem. This project's default configuration sets no
+  `CMAKE_BUILD_TYPE` and therefore builds without `NDEBUG` handling either way,
+  and what happened here was a read through a null pointer.
+
+  The general lesson, which is the reason this is in the log rather than fixed
+  silently: `isa` is not a total function on MLIR's attribute and type handles.
+  It is total on a *non null* one. Any predicate that reads an optional part of a
+  type, and a memory space is optional by construction, has to use
+  `isa_and_present`. The whole family of `NPUISA_MemRefInSpace` predicates had
+  the same bug, generated once per space and per element type set, so a fix that
+  reached only the one case the test happened to exercise would have left the
+  others crashing.
+- **Resolution:** every predicate now uses `isa_and_present`, which answers false
+  for null and lets the ordinary operand type diagnostic report the wrong space.
+  Five regression cases in `test/Dialect/NPUISA/invalid.mlir` cover it from both
+  spaces and from three operation shapes: `@dma_load_into_the_default_space`,
+  `@dma_store_from_the_default_space`, `@relu_in_the_default_space`,
+  `@const_in_the_default_space`, and `@dma_load_with_a_dynamic_extent` for the
+  static shape half of the same predicate. All five failed with a segmentation
+  fault before the fix and produce their expected diagnostic after it.
+
+### D-0009 the overlap scan made two transfers in flight unrepresentable
+
+- **Found:** 2026-08-19, phase P2, by writing the canonicalization test for the
+  case where the fold must *not* fire.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** at commit `00cce3b`, write the double buffering shape, two
+  asynchronous loads to disjoint destinations with both awaits after both
+  producers:
+
+      %t1 = npuisa.dma_load_async %src1, %dst1 : ...
+      %t2 = npuisa.dma_load_async %src2, %dst2 : ...
+      npuisa.await %t1
+      npuisa.await %t2
+
+  `npu-opt` rejects it:
+
+      'npuisa.dma_load_async' op the operation npuisa.await lies between this
+      asynchronous transfer and its npuisa.await and does not implement
+      MemoryEffectOpInterface, so it cannot be shown not to touch the destination
+      buffer
+
+  The destinations are two distinct function arguments and provably disjoint. The
+  program is correct and the verifier refuses it.
+- **What was wrong:** the intervening operation scan of rule 4 treats an
+  operation that does not implement `MemoryEffectOpInterface` as a possible
+  conflict, which is right in general: an operation that cannot say what it
+  touches has not said it touches nothing. But `npuisa.await` declares no memory
+  effect *by design*, per Section 8, because what it does is order an effect the
+  asynchronous operation already declared. So the conservative branch caught the
+  one operation that is guaranteed harmless, and it caught it in exactly the
+  configuration asynchronous DMA exists for.
+
+  That last part is what makes this worth a log entry rather than a one line fix.
+  The rule was tested only in the shape where a compute instruction sits between
+  a transfer and its await. Nothing exercised two transfers outstanding at once,
+  and two transfers outstanding at once is not an edge case: it is the double
+  buffering of Section 5.1, the whole reason the asynchronous form is in the
+  dialect. A verifier can be wrong about its own reason for existing and still
+  pass every test somebody thought to write, and the way this one surfaced was a
+  test written for a different rule entirely.
+- **Resolution:** the scan skips an intervening `npuisa.await` by name, with the
+  soundness argument written at the skip: an await touches no memory, and the
+  bytes the transfer it waits for implies are already accounted for by that
+  transfer's own producer, which the same scan visits and checks. Counting them
+  twice would reject correct programs without catching a single incorrect one.
+
+  Both directions are pinned. `@two_transfers_in_flight` in
+  `test/Dialect/NPUISA/canonicalize.mlir` is the legal shape and asserts that
+  neither transfer folds; `@two_transfers_racing` in
+  `test/Dialect/NPUISA/invalid.mlir` is two transfers whose destinations are
+  views overlapping by 32 bytes over one flat buffer, and it is still rejected,
+  caught through the *other* asynchronous operation's declared write rather than
+  through the await. `NPUISAInterfaceTest.TheAwaitDeclaresNoEffectOfItsOwn`
+  asserts that the await still declares no effects, so a later change that gives
+  it one fails a test rather than silently making the skip unsound.
+
+### D-0010 the bindings image rebuild died at configure for want of python3-dev
+
+- **Found:** 2026-08-19, phase P2, by the llvm-image workflow on the first
+  rebuild with MLIR_ENABLE_BINDINGS_PYTHON=ON (run 32222527819).
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** build docker/Dockerfile.llvm at the P2 revision that turns the
+  bindings on. CMake fails inside MLIRDetectPythonEnv at FindPython3, and the
+  configure stops before a single source file compiles.
+- **What was wrong:** the builder stage installed python3, python3-pip and
+  python3-venv but not python3-dev. The bindings compile nanobind modules
+  against the interpreter's development headers, and FindPython3's Development
+  component refuses an interpreter that has none. The P0 image never noticed
+  because the bindings were off, so the interpreter-only install was
+  sufficient right up until the flag flipped.
+- **Resolution:** python3-dev added to the builder stage's package list. The
+  final stage is unchanged: it ships the built bindings, which need only the
+  interpreter and numpy at run time, not the headers.
+
+### D-0011 the coverage job flaked red on a gcov negative branch counter
+
+- **Found:** 2026-08-19, phase P2, by the coverage job on a docs only commit
+  (run 32290939959), two runs after the same code passed the same job.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** not deterministically. gcov's branch counters can go negative
+  under counter merging (gcc bug 68080); when one does, the text report says
+  "branch 2 taken -1" and gcovr's strict parser raises NegativeHits and exits
+  64. The trigger run hit it in the report for NPUISAOps.cpp.
+- **What was wrong:** nothing in this repository's code, which is the point of
+  recording it: the failing commit touched two markdown files. The defect is in
+  the gcov tool, and the coverage script's strictness turned a known upstream
+  artifact into a job failure.
+- **Resolution:** gcovr is invoked with
+  --gcov-ignore-parse-errors=negative_hits.warn_once_per_file, the remedy
+  gcovr's own error message names. The warn form keeps the artifact visible in
+  the log; the threshold arm and rule 2 of Section 17.7 (no percentage from a
+  failing suite) are unaffected.

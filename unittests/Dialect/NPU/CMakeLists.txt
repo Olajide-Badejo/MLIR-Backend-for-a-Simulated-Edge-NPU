@@ -12,16 +12,17 @@
 # add_llvm_executable rather than add_mlir_unittest. The latter is a thin
 # wrapper over LLVM's add_unittest, which exists only inside an LLVM build and
 # is not exported to an out of tree project, so it is simply not a command here.
-# What an out of tree project does have is the LLVM build tree's bundled gtest
-# static libraries and their headers, both of which the parent directory has
-# already located. That is a real difference between building in tree and out of
-# tree, and it is written here rather than being rediscovered by whoever adds
+# What an out of tree project has instead is whichever GoogleTest the top level
+# CMakeLists found, the LLVM build tree's bundled one or a system package, named
+# by NPU_GTEST_LIBRARIES and NPU_GTEST_INCLUDE_DIRS so that this file does not
+# have to know which. That is a real difference between building in tree and out
+# of tree, and it is written here rather than being rediscovered by whoever adds
 # the next test binary.
 #
-# The binary is built and run locally at P1. CI does not run it yet: the
-# activation table switches GoogleTest binaries on by name, and adding a row to
-# that table is a change to the table rather than something a phase does on its
-# own.
+# The binary is built and run locally at P1. CI does not run it: the activation
+# table switches GoogleTest binaries on by name and NPUTilingTests has no row,
+# because adding one is a change to the table rather than something a phase does
+# on its own.
 
 add_llvm_executable(NPUTilingTests
         TilingInterfaceTest.cpp
@@ -30,7 +31,7 @@ add_llvm_executable(NPUTilingTests
 llvm_update_compile_flags(NPUTilingTests)
 
 target_include_directories(NPUTilingTests SYSTEM PRIVATE
-        ${NPU_LLVM_GTEST_INCLUDE_DIRS}
+        ${NPU_GTEST_INCLUDE_DIRS}
         )
 
 target_link_libraries(NPUTilingTests
@@ -42,6 +43,5 @@ target_link_libraries(NPUTilingTests
         MLIRParser
         MLIRIR
         MLIRSupport
-        llvm_gtest
-        llvm_gtest_main
+        ${NPU_GTEST_LIBRARIES}
         )

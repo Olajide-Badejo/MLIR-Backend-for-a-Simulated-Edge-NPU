@@ -67,6 +67,7 @@ RUN apt-get update && apt-get install --no-install-recommends --yes \
       lld \
       ninja-build \
       python3 \
+      python3-dev \
       python3-pip \
       python3-venv \
     && rm -rf /var/lib/apt/lists/*
@@ -75,7 +76,25 @@ RUN apt-get update && apt-get install --no-install-recommends --yes \
 # rather than from the LLVM build tree because only the slim prefix survives
 # into the final stage, and --break-system-packages is the honest way to say
 # "this container is the environment" to a PEP 668 marked Debian python.
-RUN python3 -m pip install --no-cache-dir --break-system-packages lit==18.1.8
+#
+# nanobind, numpy and PyYAML are the build dependencies of
+# MLIR_ENABLE_BINDINGS_PYTHON, which is ON from this revision. MLIR generates
+# the binding sources at configure time from tablegen and compiles them against
+# nanobind's headers, so nanobind is a build requirement of this stage; numpy is
+# both a build and a runtime requirement, because the generated module imports it
+# to expose dense elements attributes as arrays.
+#
+# The three versions are exactly the ones in requirements-lock.txt, deliberately
+# and not coincidentally. The bindings this image ships are the ones the P3
+# importer imports, so a numpy in the image that differs from the numpy in the
+# lock file is two numpys in one pipeline and the kind of disagreement that shows
+# up as a dtype mismatch nobody can reproduce locally. If the lock file moves,
+# these move with it in the same commit.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      lit==18.1.8 \
+      nanobind==2.13.0 \
+      numpy==2.5.1 \
+      PyYAML==6.0.3
 
 # A shallow clone of one tag. --depth 1 against a tag is the whole reason this
 # fits: the full llvm-project history is several gigabytes of objects that no
@@ -98,22 +117,50 @@ RUN git clone --depth 1 --branch "${LLVM_TAG}" \
 # This flag is the difference between an image that builds this project and an
 # image that builds it and can also test it.
 #
-# MLIR_ENABLE_BINDINGS_PYTHON is OFF here, and that is a deliberate narrowing
-# rather than an oversight. The Python bindings are not needed by any CI step
-# that is active before P3: the pytest job is guarded off until then per the
-# activation table in Section 19.0. Leaving them out keeps the build shorter
-# and the shipped prefix smaller, which matters when disk is the binding
-# constraint. Revisit at P3, when test/Python starts collecting: turning this
-# ON means republishing the image under the same tag policy and adding the
-# nanobind build dependency, so the change is a P3 deliverable and not a knob
-# to flip in a hurry.
+# MLIR_ENABLE_BINDINGS_PYTHON is ON from this revision, where it was OFF at P0.
+# The change is made here at P2 rather than at P3, and one republish covers both
+# reasons, which is the whole point of doing it now:
+#
+#   - **P2 needs googletest in the final image** so the `NPUInterfaceTests` step
+#     the activation table switches on at P2 has a binary to run. Against an
+#     installed LLVM prefix there is no `llvm_gtest` target and no bundled gtest
+#     headers, so before this the unit tests were simply not built in CI.
+#   - **P3 needs the bindings**, because the ONNX importer of Section 11 is
+#     written against the MLIR Python bindings and the pytest job cannot collect
+#     a single test without them.
+#
+# Publishing this image is an hour of runner time, so doing the two together
+# costs one republish where doing them separately costs two. The P0 note this
+# replaces said the bindings change was a P3 deliverable; it lands a phase early
+# and P3 inherits it done.
+#
+# The build cost is real and is worth stating rather than eliding: the bindings
+# add the nanobind compilation of every dialect's Python module to a build that
+# was already the long pole. The slim prefix discipline is unchanged, though.
+# `ninja install` still writes only /opt/llvm and only /opt/llvm is copied into
+# the final stage; the bindings land inside that prefix rather than beside it.
+#
+# **Where the bindings land, which is the path P3 needs:**
+#
+#     /opt/llvm/python_packages/mlir_core
+#
+# That is the directory to put on PYTHONPATH. The `mlir` package itself is one
+# level below it, at /opt/llvm/python_packages/mlir_core/mlir, because MLIR's
+# MLIR_BINDINGS_PYTHON_INSTALL_PREFIX defaults to `python_packages/mlir_core/mlir`
+# and *ends at the package directory* rather than at the directory to import
+# from. Getting that one level wrong is the obvious mistake here and it produces
+# an ImportError naming `mlir` in an image that does contain it, so the two paths
+# are both written out. The default is used rather than overridden: the ENV below
+# and the smoke test at the end of the final stage both pin it, so an LLVM that
+# changed the default would fail this build rather than ship a broken image.
 RUN cmake -G Ninja -S llvm-project/llvm -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DLLVM_ENABLE_ASSERTIONS=ON \
       -DLLVM_ENABLE_PROJECTS=mlir \
       -DLLVM_TARGETS_TO_BUILD=Native \
       -DLLVM_INSTALL_UTILS=ON \
-      -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+      -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+      -DPython3_EXECUTABLE=/usr/bin/python3 \
       -DLLVM_ENABLE_RTTI=ON \
       -DLLVM_INCLUDE_TESTS=OFF \
       -DLLVM_INCLUDE_BENCHMARKS=OFF \
@@ -157,6 +204,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # prefix needs: a compiler, lld, cmake, ninja, python3 for lit and for the
 # repository's own scripts, git because CI checks out into this container, and
 # ccache because the workflow caches its directory across runs.
+#
+# libgtest-dev is the P2 addition and it is what makes the unit test binaries
+# buildable in CI at all. An installed LLVM prefix exports neither the
+# `llvm_gtest` target nor the bundled gtest headers, both of which live only in
+# an LLVM *build tree*, so the top level CMakeLists falls back to
+# `find_package(GTest)` and this package is what that finds. On this base it
+# ships prebuilt static libraries and a CMake package config at
+# /usr/lib/x86_64-linux-gnu/cmake/GTest, so no source build is needed; older
+# Debian derivatives shipped sources only, which is why the smoke test at the
+# end of this stage checks for the config file rather than assuming it.
 RUN apt-get update && apt-get install --no-install-recommends --yes \
       build-essential \
       ca-certificates \
@@ -164,14 +221,26 @@ RUN apt-get update && apt-get install --no-install-recommends --yes \
       clang \
       cmake \
       git \
+      libgtest-dev \
       lld \
       ninja-build \
       python3 \
+      python3-dev \
       python3-pip \
       python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --no-cache-dir --break-system-packages lit==18.1.8
+# numpy is a runtime dependency of the bindings this image now ships, so it is
+# installed here as well as in the builder stage: the builder's site-packages
+# does not survive into this stage, only /opt/llvm does.
+#
+# gcovr is what scripts/coverage.sh collects with, and the coverage job of the
+# activation table switches on at P2. Without it in the image that job would
+# fail at the tool check rather than measure anything.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      lit==18.1.8 \
+      numpy==2.5.1 \
+      gcovr==8.6
 
 COPY --from=builder /opt/llvm /opt/llvm
 
@@ -180,9 +249,15 @@ COPY --from=builder /opt/llvm /opt/llvm
 # the same: a workflow that depends on an environment variable set in an image
 # breaks silently the day the image changes, and the explicit -D flags are the
 # documentation of what the image is expected to contain.
+#
+# PYTHONPATH is the P2 addition, and it is the directory to import the bindings
+# *from*, not the package itself: the `mlir` package sits at
+# /opt/llvm/python_packages/mlir_core/mlir and Python has to be pointed at its
+# parent. P3's importer relies on this being set in the image.
 ENV PATH="/opt/llvm/bin:${PATH}" \
     MLIR_DIR="/opt/llvm/lib/cmake/mlir" \
-    LLVM_DIR="/opt/llvm/lib/cmake/llvm"
+    LLVM_DIR="/opt/llvm/lib/cmake/llvm" \
+    PYTHONPATH="/opt/llvm/python_packages/mlir_core"
 
 # A build argument cannot be read at container run time, so the tag is frozen
 # into the environment here. The result manifest of Section 3 reads it.
@@ -200,6 +275,14 @@ RUN mlir-opt --version \
  && command -v count \
  && command -v lit \
  && command -v ninja \
- && command -v ccache
+ && command -v ccache \
+ && command -v gcovr \
+ && command -v gcov \
+ && test -f /usr/lib/x86_64-linux-gnu/cmake/GTest/GTestConfig.cmake \
+ && test -f /usr/lib/x86_64-linux-gnu/libgtest.a \
+ && test -f /usr/lib/x86_64-linux-gnu/libgtest_main.a \
+ && test -d /opt/llvm/python_packages/mlir_core/mlir \
+ && python3 -c "import mlir.ir; ctx = mlir.ir.Context(); print('mlir bindings import ok')" \
+ && python3 -c "import numpy; print('numpy', numpy.__version__)"
 
 WORKDIR /work

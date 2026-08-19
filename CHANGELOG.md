@@ -6,6 +6,50 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P2: the `npuisa` dialect and the memory model
+
+- **The `npuisa` dialect exists.** `npu-opt` now parses, verifies and prints the
+  instruction level operations on memrefs in two memory spaces: `const`,
+  `dma_load`, `dma_store`, `dma_load_async`, `dma_store_async`, `await`,
+  `matmul`, `conv2d`, `add`, `mul`, `relu`, `pool_max`, `pool_avg`, `reshape`,
+  `transpose` and `concat`. `NOP` and `HALT` are properties of the encoding
+  rather than of the instruction stream and are not operations here; `QUANT` and
+  `DEQUANT` arrive with their integer kernels at P14.
+- **Every compute instruction is destination passing on memrefs** and has no
+  results, with `ins` read and one trailing `outs` written, implementing
+  `DestinationStyleOpInterface` and `MemoryEffectOpInterface`. The effects are
+  declared per operand, so a consumer can ask which buffer is written rather than
+  only whether memory is touched.
+- **`!npuisa.token` and the asynchronous transfers.** A token is a scheduling
+  handle with exactly one use, which must be an `npuisa.await` in the same block
+  and after its producer. No operation between an asynchronous transfer and its
+  await may access memory overlapping the destination, decided on declared memory
+  effects plus byte range arithmetic over `memref.view` and `memref.subview`
+  offsets, never on SSA identity. A non static offset is refused with a
+  diagnostic rather than assumed disjoint.
+- **An asynchronous transfer whose await is the very next operation canonicalizes
+  to the synchronous form.** This is a new observable rewrite: IR that entered
+  `-canonicalize` as `dma_load_async` plus `await` leaves it as `dma_load`.
+- **A memref with no memory space is now rejected with a diagnostic** where it
+  previously crashed `npu-opt` with no output at all (D-0008).
+- **Two asynchronous transfers in flight at once now verify** where they were
+  previously rejected (D-0009). This is the shape double buffering produces, so
+  the change is what makes the asynchronous form usable at all.
+- **`NPUInterfaceTests` is built and is on in CI**, covering the two interfaces
+  and the overlap arithmetic. The unit test binaries now build against either an
+  LLVM build tree's bundled gtest or a system GoogleTest package, so they build
+  in CI as well as locally.
+- **`scripts/coverage.sh`** measures C++ line and branch coverage in a separate
+  build directory, writes a gcovr JSON summary, and exits nonzero below a
+  threshold passed as its first argument, defaulting to 0.
+- **The CI coverage job is on**, at a threshold of 0, and uploads the JSON and
+  HTML summaries as an artifact. Real thresholds arrive at P8.
+- **The LLVM image gains googletest, the MLIR Python bindings, and gcovr.** The
+  bindings install to `/opt/llvm/python_packages/mlir_core`, which is on
+  `PYTHONPATH` in the image. This requires republishing the image.
+- **`docs/ARCHITECTURE.md`** records the memory model design and is binding on
+  later phases.
+
 ### Phase P1: the `npu` dialect
 
 - **The `npu` dialect exists.** `npu-opt` now parses, verifies and prints
