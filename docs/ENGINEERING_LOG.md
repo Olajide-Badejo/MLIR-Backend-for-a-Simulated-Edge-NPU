@@ -1391,3 +1391,84 @@ The reload `dma_load` reads from the same map, so it now finds the spill region.
 to a distinct DRAM offset (`dram[0x800]`, separate from the inputs at 0x0 and 0x400 and the
 outputs), and every benchmark cell, spilling or not, is back to 2.98e-08 against onnxruntime.
 Added an end to end pytest at a 140 KB budget to lock the fix in.
+
+---
+
+# v3 rebuild starts here (2026-08-19)
+
+Everything above this line is v1 and v2 era work against the old source tree,
+which the commit at the head of `phase/p0-foundations` removed from the working
+tree and left in history. Everything below is the v3 rebuild, which releases as
+`v2.0.0`. I keep both in one file on purpose: the debug report groups entries by
+theme rather than by era, and a defect I hit in v1 and hit again in v3 is worth
+more read next to itself than filed in a second document.
+
+## 2026-08-19 Phase 0: three traps in the scaffold, none of them in the compiler
+
+**Symptom.** None of the three showed up as a failing test. All three were
+things that looked configured and were not, which is the failure mode a
+skeleton is most exposed to, because at P0 there is no code whose behaviour
+would contradict a bad setting.
+
+**lit will not pass an empty suite.** The build specification says `ninja -C
+build check-npu` passes on an empty suite at P0. It does not. llvm-lit prints
+`did not discover any tests for provided path(s)` and exits 2, and
+`--allow-empty-runs` does not change that: `llvm/utils/lit/tests/selecting.py`
+in the pinned LLVM contains a test asserting the flag deliberately does not
+suppress that error, which is as clear a statement of intent as upstream ever
+gives. The flag only covers a suite that found tests and then filtered them all
+away.
+
+I could have made the target pass by making it not run lit. I did the opposite
+and gave the suite one real test: `test/Smoke/npu-opt-roundtrip.mlir` parses and
+prints a two operation module through `npu-opt` and checks the output with
+FileCheck. That is a test of the thing P0 actually delivers, which is the
+harness, and it means the gate is met by something that ran. If P1 opens with a
+broken dialect, this test having passed at P0 says the breakage is in the
+dialect and not in the build. Logged as D-0001.
+
+**The pytest PYTHONPATH wiring was set in a key nothing reads.** Section 3.3
+insists the MLIR bindings path be wired in three places and warns that missing
+it fails every Python test at import for a reason unrelated to the code under
+test. I wired it as `env = [...]` under `[tool.pytest.ini_options]`, which is
+the obvious spelling and is wrong here: `env` belongs to the `pytest-env`
+plugin, this environment does not have it, and pytest treats an unknown config
+key as a warning and carries on. The wiring would have passed review and done
+nothing.
+
+`test/Python/conftest.py` does it instead, with no plugin needed, and resolves
+the path from `MLIR_PYTHON_PACKAGES_DIR`, then from this repository's own CMake
+cache, then from the default. Reading the cache is the part I would keep if I
+kept only one: it means pytest and lit take the path from the same value the
+configure step computed, rather than from two hardcoded strings that have to be
+kept in step by hand. I proved it by running pytest with `PYTHONPATH` unset in
+the environment, and by writing `test_bindings_wiring.py`, which imports
+`mlir.ir` and builds a module so that a future break names the wiring instead of
+blaming whichever test ran first. Logged as D-0002.
+
+**A lock file that locks nothing.** `pip freeze` writes torch as
+`2.13.0+cpu`, because the installed build is the CPU one. That local version
+lives on the PyTorch CPU index and has never been on PyPI, so a clean install
+from the frozen file fails outright with `No matching distribution found`. The
+gate asks for proof that a clean venv installs from the lock, and the first
+attempt at that proof is what found this; the file had looked fine.
+
+The fix is `--extra-index-url https://download.pytorch.org/whl/cpu` written
+into the lock file itself, so the index travels with the pins. I want to record
+why I did not take the easier route of deleting the `+cpu` suffix: that makes
+PyPI resolve, and what it resolves to is the CUDA build. It would have turned a
+loud failure into a quiet one, changed what reference generation runs on, and
+pulled about two gigabytes of CUDA wheels onto a machine whose GPU this project
+deliberately does not use. Logged as D-0003.
+
+**A fourth thing, smaller, worth one line.** My configure time check for the
+MLIR Python bindings looked for `mlir/__init__.py` and warned that a perfectly
+working install was missing. The bindings are a namespace package and ship no
+`__init__.py`. The check looks for `mlir/ir.py` now.
+
+**Verification.** `cmake` configures clean, `ninja -C build -j6` builds
+`npu-opt`, `./build/bin/npu-opt --help` exits 0, `ninja -C build check-npu`
+reports 1 of 1, `python -m pytest -q` reports 2 passed with `PYTHONPATH` unset,
+`bash scripts/dash-lint.sh --self-test` meets 8 of 8 expectations,
+`bash scripts/dash-lint.sh` is clean over the tree, and `reuse lint` reports
+33 of 33 files carrying copyright and licence information.
