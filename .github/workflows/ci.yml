@@ -112,7 +112,10 @@ jobs:
       - name: pytest
         env:
           MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
-        run: python -m pytest test/Python -q
+        # The whole end to end matrix, not the fast subset. pyproject sets
+        # addopts = -m 'not slow' so a local run stays quick; this overrides it so
+        # CI enforces the spec 9.6 cross product rather than one cell per level.
+        run: python -m pytest test/Python -q -m "slow or not slow"
 
       - name: Reachability, including the benchmark model layer
         env:

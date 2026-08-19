@@ -20,6 +20,35 @@ ninja -C build check-npu            # lit and FileCheck
 python -m pytest test/Python        # importer, driver, end to end vs onnxruntime
 ```
 
+### The end to end matrix and the `slow` marker
+
+`test/Python/test_end_to_end.py` is a cross product: every model, times three
+optimization levels, times both scratchpad budgets, times five input classes
+(`normal`, `zeros`, `large_pos`, `large_neg`, `relu_knee`). Every cell compiles
+and simulates the model and compares against onnxruntime.
+
+The default run deselects most of it. `pyproject.toml` sets
+`addopts = "-m 'not slow'"`, and every cell outside the fast subset carries the
+`slow` marker, so `python -m pytest test/Python` runs one cell per optimization
+level: enough to catch an obvious break in an edit and rerun loop, in about a
+second.
+
+Run the whole matrix before you push, and CI runs it on every commit:
+
+```bash
+python -m pytest test/Python -q -m "slow or not slow"
+```
+
+Both bounds are asserted separately rather than through
+`np.testing.assert_allclose`, whose combined criterion lets an absolute
+allowance hide a relative failure. The absolute bound is scale aware, expressed
+as a number of float32 ulps at the magnitude of the output with `ATOL` as a
+floor, because the `large_pos` and `large_neg` classes produce outputs two
+orders of magnitude larger than `normal` and a fixed absolute bound calibrated on
+one is unsatisfiable on the other. Do not widen either bound to make a cell pass;
+if a cell needs a wider bound that is a finding, and the measured value belongs
+in `docs/ENGINEERING_LOG.md`.
+
 ## Style
 
 - C++ in LLVM style, formatted with the inherited `.clang-format`. TableGen

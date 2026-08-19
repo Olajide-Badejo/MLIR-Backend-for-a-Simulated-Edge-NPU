@@ -33,5 +33,36 @@ should say what was wrong with the old number.
 
 ## Entries
 
-None yet. The baseline was recorded at the start of the upgrade work and has not
-been deliberately broken since.
+## 2026-08-09: two end to end test names removed, superseded by the matrix
+
+**Moved:** the `pytest` suite's recorded test name list loses two entries:
+
+- `test.Python.test_end_to_end::test_lenet_matches_onnxruntime`
+- `test.Python.test_end_to_end::test_lenet_with_spilling_matches_onnxruntime`
+
+No instruction count, cycle count, DRAM figure, end to end error, or golden
+tensor moved. The pytest suite grows from 41 to 72 collected tests, so this is a
+rename and expansion rather than a reduction in coverage, but the baseline
+records test names and two of the recorded names no longer exist, which it
+correctly reports as drift.
+
+**Why this is correct:** both tests are replaced by cells of the new
+parametrized matrix in `test/Python/test_end_to_end.py`, and the replacement is
+strictly larger. `test_lenet_matches_onnxruntime` compiled with a hardcoded pass
+list and checked one standard normal draw at the 1 MB budget; that cell is now
+`test_matrix_cell[lenet-O2-1048576-normal]`, and the matrix additionally covers
+`-O0` and `-O1`, the 140 KB budget, and four further input classes.
+`test_lenet_with_spilling_matches_onnxruntime` is now
+`test_matrix_cell[lenet-O2-143360-normal]` plus the same expansion.
+
+The old tests were also validating a pipeline nobody can request: their pass
+list, `-canonicalize -npu-fuse-ops -npu-lower-to-npuisa
+-npu-allocate-scratchpad`, is `-O2` without the second `-canonicalize` and
+without `-symbol-dce`, so it matches no `-O` level. Keeping the names alive
+would have meant keeping that fiction alive alongside the matrix.
+
+Coverage of the two original cells was confirmed before the deletion rather than
+asserted after it: `test_matrix_covers_the_full_cross_product` fails if any cell
+id is missing from the collected set.
+
+**Commit:** `4fda494`

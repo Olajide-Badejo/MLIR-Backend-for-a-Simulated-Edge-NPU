@@ -32,3 +32,12 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["test/Python"]
+# The end to end matrix is one model times three levels times two budgets times
+# five input classes. Every cell compiles and simulates, so running all of them
+# is too slow for an edit and rerun loop but is exactly what CI should do. The
+# default deselects the slow cells, leaving one per optimization level; CI passes
+# -m "slow or not slow" to run the whole matrix. See docs/CONTRIBUTING.md.
+addopts = "-m 'not slow'"
+markers = [
+  "slow: a matrix cell outside the fast subset; run with -m 'slow or not slow'",
+]

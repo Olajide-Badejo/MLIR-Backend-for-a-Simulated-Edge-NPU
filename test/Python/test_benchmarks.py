@@ -162,6 +162,347 @@ def test_no_result_traces_to_a_missing_commit():
     assert not missing, f"results tracing to commits that do not exist: {missing}"
 
 
+def _committed_results() -> list[dict]:
+    return [
+        json.loads(p.read_text())
+        for p in sorted((REPO / "experiments" / "results").glob("*.json"))
+    ]
+
+
+def test_instruction_count_comes_from_the_simulator():
+    """instruction_count must be the simulator's number, not the IR regex sum.
+
+    The harness used to set it to sum(npuisa_op_counts.values()), a regex over
+    the final IR dump that matches inside type strings such as !npuisa.buffer
+    and counts npuisa.const, which is DRAM data rather than an instruction. For
+    LeNet that inflated 21 to 70. See docs/ASSESSMENT.md section 4.3.
+    """
+    rows = _full_rows()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        regex_sum = sum(r["npuisa_op_counts"].values())
+        assert r["instruction_count"] != regex_sum, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"instruction_count {r['instruction_count']} equals the regex sum, "
+            f"so it came from the IR dump rather than the simulator"
+        )
+        assert r["instruction_count"] < regex_sum, (
+            "the simulator count should be the smaller of the two, since the "
+            "regex over counts"
+        )
+
+
+def test_results_agree_with_the_recorded_baseline():
+    """The results and test/baseline/baseline.json must not disagree.
+
+    Both were committed, saying 91 / 82 / 70 and 28 / 25 / 21 for the same
+    cells, which is ASSESSMENT 13.4 item 4: two contradictory instruction counts
+    committed side by side. Whichever was right, committing both was the defect.
+    """
+    baseline_path = REPO / "test" / "baseline" / "baseline.json"
+    if not baseline_path.exists():
+        pytest.skip("no recorded baseline")
+    cells = json.loads(baseline_path.read_text())["cells"]
+    rows = _full_rows()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+
+    for r in rows:
+        tag = "default" if r["scratchpad_budget"] == 1048576 else "tight"
+        name = f"{r['model']}_O{r['opt_level']}_{tag}"
+        if name not in cells:
+            continue
+        assert r["instruction_count"] == cells[name]["instructions"], (
+            f"{name}: results say {r['instruction_count']} but the recorded "
+            f"baseline says {cells[name]['instructions']}"
+        )
+
+
+def test_count_ops_is_not_an_instruction_count():
+    """Document why count_ops is unfit as a scalar, by exercising both faults."""
+    dump = (
+        "%0 = npuisa.dma_load %x : (tensor<4xf32>) -> !npuisa.buffer<tensor<4xf32>>\n"
+        "%1 = npuisa.const dense<1.0> : tensor<4xf32>\n"
+        "%2 = npuisa.relu %0 : (!npuisa.buffer<tensor<4xf32>>)"
+        " -> !npuisa.buffer<tensor<4xf32>>\n"
+    )
+    counts = run_benchmarks.count_ops(dump, "npuisa")
+    # It counts the type string as though it were an op.
+    assert counts.get("npuisa.buffer", 0) == 3
+    # And it counts constant data as though it were an instruction.
+    assert counts.get("npuisa.const", 0) == 1
+    # So the sum is far above the two real instructions in this dump.
+    assert sum(counts.values()) > 2
+
+
+def test_readme_table_matches_the_results():
+    """The hand written README table must equal the default budget results.
+
+    The table is the most read number in the repository and is not generated,
+    so nothing stopped it from drifting. It did: it published the regex count
+    for a month while the recorded baseline said otherwise.
+    """
+    rows = _full_rows()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    default = {
+        r["opt_level"]: r for r in rows
+        if r["model"] == "lenet" and r["scratchpad_budget"] == 1048576
+    }
+    readme = (REPO / "README.md").read_text()
+    line = next(
+        (ln for ln in readme.splitlines() if ln.strip().startswith("| Instructions")),
+        None,
+    )
+    assert line is not None, "no Instructions row found in the README table"
+    figures = [int(m) for m in re.findall(r"\d+", line)]
+    assert figures == [
+        default[0]["instruction_count"],
+        default[1]["instruction_count"],
+        default[2]["instruction_count"],
+    ], f"README Instructions row is {figures} but the results say otherwise"
+
+
+def test_results_record_relative_error():
+    """Every result records a relative error, and it is within the e2e bound.
+
+    Only the absolute error was recorded, which cannot tell a small error on a
+    small output from a small error on a large one. ASSESSMENT 4.4 asks for both.
+    """
+    rows = _committed_results()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    rtol = 1e-5
+    for r in rows:
+        assert "max_rel_error_vs_onnxruntime" in r, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']} records "
+            f"no relative error"
+        )
+        assert r["max_rel_error_vs_onnxruntime"] <= rtol, (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"relative error {r['max_rel_error_vs_onnxruntime']:.3e} exceeds "
+            f"{rtol:.3e}"
+        )
+
+
+def _ablation_rows() -> list[dict]:
+    return [r for r in _committed_results() if "ablated_pass" in r]
+
+
+def _full_rows() -> list[dict]:
+    return [r for r in _committed_results() if "ablated_pass" not in r]
+
+
+def test_every_o2_pass_has_an_ablation_row():
+    """One ablation per distinct -O2 pass, at both budgets.
+
+    The expected set comes from _passes_for_level(2) at assert time, so adding a
+    pass to -O2 without an ablation fails here rather than silently leaving the
+    table one row short of the pipeline it claims to cover.
+    """
+    rows = _ablation_rows()
+    if not rows:
+        pytest.skip("no ablation results in the working tree")
+    expected = set(run_benchmarks.ablatable_passes())
+    for budget in (1048576, 143360):
+        got = {r["ablated_pass"] for r in rows if r["scratchpad_budget"] == budget}
+        assert got == expected, f"budget {budget}: ablations {got}, passes {expected}"
+
+
+def test_ablation_deltas_are_consistent():
+    """Each delta must equal ablated minus its named baseline_cell.
+
+    Recomputed from the two committed files, so a reader never has to trust the
+    subtraction and a stale delta cannot survive a regeneration.
+    """
+    rows = _ablation_rows()
+    if not rows:
+        pytest.skip("no ablation results in the working tree")
+    by_name = {
+        p.name: json.loads(p.read_text())
+        for p in (REPO / "experiments" / "results").glob("*.json")
+    }
+    for r in rows:
+        base = by_name[r["baseline_cell"]]
+        assert base["opt_level"] == 2 and "ablated_pass" not in base, (
+            f"{r['ablated_pass']} names {r['baseline_cell']} as its baseline, "
+            f"which is not a full -O2 cell"
+        )
+        assert base["scratchpad_budget"] == r["scratchpad_budget"]
+        for field in (
+            "instruction_count",
+            "simulated_cycles",
+            "dram_bytes_total",
+        ):
+            assert r[f"delta_{field}"] == r[field] - base[field], (
+                f"{r['ablated_pass']} at {r['scratchpad_budget']}: "
+                f"delta_{field} is {r[f'delta_{field}']} but "
+                f"{r[field]} - {base[field]} is {r[field] - base[field]}"
+            )
+
+
+def test_ablation_numerics_are_unchanged():
+    """No ablated pass may move the answer.
+
+    If removing a pass changes the numerics, that pass is load bearing for
+    correctness rather than for performance, and reporting a performance delta
+    for it would be reporting the wrong thing entirely.
+    """
+    rows = _ablation_rows()
+    if not rows:
+        pytest.skip("no ablation results in the working tree")
+    for r in rows:
+        assert (
+            r["max_abs_error_vs_onnxruntime"] <= run_benchmarks.ABLATION_ERROR_TOLERANCE
+        ), (
+            f"ablating {r['ablated_pass']} at {r['scratchpad_budget']} gives "
+            f"max abs error {r['max_abs_error_vs_onnxruntime']:.3e}"
+        )
+
+
+def test_ablation_result_paths_follow_the_convention():
+    """Ablation files must be picked up by staleness() like any other result.
+
+    They live in the same directory and are globbed by the same tests, so a
+    naming convention of their own would quietly exempt them from the staleness
+    guard that keeps every other published number honest.
+    """
+    rows = _ablation_rows()
+    if not rows:
+        pytest.skip("no ablation results in the working tree")
+    for r in rows:
+        path = run_benchmarks.ablation_path(
+            r["model"], r["ablated_pass"], r["scratchpad_budget"]
+        )
+        assert path.exists(), f"{path.name} does not follow ablation_path"
+        assert run_benchmarks.staleness(path) is None, (
+            f"{path.name} is stale: {run_benchmarks.staleness(path)}"
+        )
+
+
+def _expected_pipeline(row: dict) -> list[str]:
+    from npu_frontend.compile import _passes_for_level
+
+    return [
+        run_benchmarks.pass_flag_name(f) for f in _passes_for_level(row["opt_level"])
+    ] + ["npu-lower-to-npuisa", "npu-allocate-scratchpad"]
+
+
+def test_every_pass_in_the_pipeline_has_a_record():
+    """`passes` must cover the cell's pipeline exactly, in order, with no gaps.
+
+    The pipeline is read from _passes_for_level at assert time rather than
+    hardcoded here, so adding a pass to a level without instrumenting it fails
+    this test instead of quietly producing a table that omits it.
+    """
+    rows = _full_rows()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        assert "passes" in r, f"{r['model']} -O{r['opt_level']} has no passes array"
+        recorded = [p["name"] for p in r["passes"]]
+        assert recorded == _expected_pipeline(r), (
+            f"{r['model']} -O{r['opt_level']} at {r['scratchpad_budget']}: "
+            f"recorded {recorded}, pipeline is {_expected_pipeline(r)}"
+        )
+        positions = [p["position"] for p in r["passes"]]
+        assert positions == list(
+            range(len(recorded))
+        ), f"positions are {positions}, expected 0..{len(recorded) - 1}"
+
+
+def test_every_pass_has_a_wall_clock():
+    """A pass with no timing is an error, never a zero.
+
+    A zero would read as a free pass, which is a claim about the compiler that
+    no measurement supports.
+    """
+    rows = _full_rows()
+    if not rows:
+        pytest.skip("no recorded results in the working tree")
+    for r in rows:
+        assert r.get("pass_timing_source") == "--mlir-timing", (
+            f"{r['model']} -O{r['opt_level']}: pass_timing_source is "
+            f"{r.get('pass_timing_source')!r}, so a reader cannot tell whether "
+            f"the numbers were measured"
+        )
+        for p in r["passes"]:
+            assert p["wall_ms"] > 0, (
+                f"{r['model']} -O{r['opt_level']} pass {p['name']} at position "
+                f"{p['position']} recorded wall_ms {p['wall_ms']}"
+            )
+            assert p["ops_before_total"] == sum(p["ops_before"].values())
+            assert p["ops_after_total"] == sum(p["ops_after"].values())
+
+
+def test_o0_has_no_optimization_passes():
+    """The negative case: -O0 records only the two lowering passes.
+
+    If the enumeration were hardcoded rather than read from _passes_for_level,
+    -O0 would carry optimization passes it never ran and every other test here
+    would still pass.
+    """
+    rows = [r for r in _full_rows() if r["opt_level"] == 0]
+    if not rows:
+        pytest.skip("no -O0 results in the working tree")
+    for r in rows:
+        assert [p["name"] for p in r["passes"]] == [
+            "npu-lower-to-npuisa",
+            "npu-allocate-scratchpad",
+        ], f"-O0 at {r['scratchpad_budget']} recorded {[p['name'] for p in r['passes']]}"
+
+
+def test_op_stats_parser_pins_the_format():
+    """The op stats parser must decode a real sample and raise on a broken one.
+
+    npu-opt's print-op-stats output is an external format. If it shifts, an
+    empty histogram would record every pass as changing nothing, which looks
+    like data rather than like a failure.
+    """
+    sample = (
+        '{\n  "builtin.module" : 1,\n  "func.func" : 1,\n'
+        '  "npu.conv2d" : 2,\n  "npu.relu" : 4\n}'
+    )
+    assert run_benchmarks.parse_op_stats(sample) == {
+        "builtin.module": 1,
+        "func.func": 1,
+        "npu.conv2d": 2,
+        "npu.relu": 4,
+    }
+
+    # The older text form, a truncated object, and an empty histogram all raise.
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("Operations encountered:\n  npu.conv2d , 2\n")
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("{ not json at all ")
+    with pytest.raises(RuntimeError):
+        run_benchmarks.parse_op_stats("{}")
+
+
+def test_pass_timing_parser_raises_on_a_missing_pass():
+    """A pipeline pass absent from the timing output must raise, not be zeroed."""
+    two = ["-canonicalize", "-symbol-dce"]
+    only_one = json.dumps(
+        [
+            {"wall": {"duration": 0.001}, "name": "Parser", "passes": [{}]},
+            {"wall": {"duration": 0.002}, "name": "Canonicalizer", "passes": [{}]},
+            {"wall": {"duration": 0.003}, "name": "Total"},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="pipeline has"):
+        run_benchmarks.parse_pass_timings(only_one, two)
+
+    mismatched = json.dumps(
+        [
+            {"wall": {"duration": 0.002}, "name": "Canonicalizer", "passes": [{}]},
+            {"wall": {"duration": 0.002}, "name": "SomeOtherPass", "passes": [{}]},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="disagree"):
+        run_benchmarks.parse_pass_timings(mismatched, two)
+
+
 def test_macros_match_the_committed_results():
     """The tex the report includes must equal the results it claims to come from.
 
@@ -176,14 +517,13 @@ def test_macros_match_the_committed_results():
         re.findall(r"\\newcommand\{\\(\w+)\}\{([^}]*)\}", macros_path.read_text())
     )
 
-    rows = [
-        json.loads(p.read_text())
-        for p in sorted((REPO / "experiments" / "results").glob("*.json"))
-    ]
+    # Full cells only: the macros are generated from these, and an ablation row
+    # shares the model, level, and budget keys the default lookup below uses.
+    rows = _full_rows()
     if not rows:
         pytest.skip("no recorded results in the working tree")
 
-    shas = {r["manifest"]["git_sha"][:12] for r in rows}
+    shas = {r["manifest"]["git_sha"][:12] for r in _committed_results()}
     assert len(shas) == 1, f"results disagree on git_sha: {shas}"
     assert macros["GitSha"] == shas.pop(), (
         f"macros.tex cites GitSha {macros['GitSha']} but the results were "

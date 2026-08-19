@@ -397,6 +397,45 @@ question the project was built to answer.
 U4 (`UPGRADE_SPEC_V3.md` section 12), now the largest remaining gap between
 what the report claims to evaluate and what is measured.
 
+**Status 2026-08-09, two of the three done** (upgrade part 8, commits `7f886d6`,
+`72151ee`). Every result now carries a `passes` array covering that cell's whole
+pipeline in order, with the op histogram before and after each pass, both
+totals, and its wall clock in milliseconds.
+
+- **IR op counts before and after each pass: done.** From `npu-opt`'s own
+  `print-op-stats` in JSON form, not from a regex over the dump, which is the
+  source Part 7 had just finished removing from the instruction count.
+- **Wall clock compile time per pass: done.** From `--mlir-timing
+  --mlir-output-format=json`, recorded with a `pass_timing_source` field and a
+  `cpu_model` in the manifest, since it is a measurement rather than a
+  simulated estimate. A pass with no timing raises rather than recording zero.
+- **One pass at a time ablations: done** (upgrade part 9, commits `1e9c89c`,
+  `7bd44d3`, `fbc64ff`). Every distinct `-O2` pass is ablated at both budgets,
+  with deltas against the full `-O2` cell, a numerics check that raises rather
+  than recording a row, a generated table and figure, and `docs/PASSES.md`
+  citing measured deltas instead of qualitative claims.
+
+**Status 2026-08-09, section closed. All three requirements met**, and the
+ablation immediately earned its keep by contradicting two things the report had
+been implying:
+
+1. At the 1 MB budget, removing `-canonicalize` or `-symbol-dce` from `-O2`
+   produces a byte identical program. Verified by diffing the IR rather than
+   trusting the zero. `-npu-fuse-ops` drives its patterns with
+   `applyPatternsGreedily`, whose fixed point loop already folds and erases dead
+   ops, so it subsumes canonicalization here. Canonicalization is still
+   responsible for the entire DRAM halving at `-O1`, where it is the only pass.
+   The per pass measurement of the previous part cannot see this: in isolation
+   canonicalization does remove operations, and by removal it removes none,
+   because something else would have.
+2. At the 140 KB budget `-npu-fuse-ops` is counterproductive. Removing it saves
+   96 simulated cycles and 6.1 KB of DRAM. Fusing an activation into its
+   producer extends that value's live range, and under a budget that already
+   spills, that costs a spill and a reload worth more than the instruction
+   saved. Section 5.1 predicted the passes would behave oppositely under
+   pressure; it was right, and running the ablations at only the generous budget
+   would have concluded that fusion is the one pass worth having.
+
 ### 3.6 The simulator has no progress reporting
 
 Spec section 9 requires a TTY aware single line progress bar over the instruction
@@ -513,6 +552,19 @@ inherit the regex numbers; the CHANGELOG defers the correction to phase U4
 explicitly. See also section 13.4 item 4 for what this does to the README's
 objdump excerpt.
 
+**Status 2026-08-09, done** (upgrade part 7, commits `4cc7fc8`, `71feacb`,
+`f1c4de7`). `instruction_count` is `int(stats["instructions"])`, and a missing
+field raises rather than falling back to the regex, since a silent fallback
+would reinstate the defect the next time the stats format shifted. All six cells
+regenerated: 28 / 25 / 21 at the default budget and 28 / 31 / 29 at the tight
+one, matching `test/baseline/baseline.json` exactly, so the committed
+contradiction is gone. The README table, the generated macros, the plot, and the
+report PDF all follow. `count_ops` and `npuisa_op_counts` are kept as a
+histogram, with a docstring naming both inflation modes. Four tests pin it,
+including `test_readme_table_matches_the_results` so the hand written table
+cannot drift again, and `test_count_ops_is_not_an_instruction_count`, which
+demonstrates both faults on a three line dump rather than only describing them.
+
 ### 4.4 Tolerances are asserted loosely and reported tightly
 
 `test_end_to_end.py` asserts `rtol=1e-3, atol=1e-3`. The README reports a max error
@@ -538,6 +590,31 @@ open, all phase U4 (`UPGRADE_SPEC_V3.md` sections 9.6 and 12): the e2e test
 runs one hardcoded pass pipeline that matches no `-O` level exactly, relative
 error is still not recorded in the benchmark results, and validation still
 uses a single standard normal draw rather than the spec's five input classes.
+
+**Status 2026-08-09, closed** (upgrade part 10, commits `4fda494`, `e4c4ef3`).
+All three of the open items:
+
+- The e2e test drives `compile_model(opt_level=...)`, so it exercises the real
+  `-O` pipelines rather than a hardcoded list matching none of them.
+- `max_rel_error_vs_onnxruntime` is recorded in every result and every ablation.
+- Validation is a thirty cell matrix: every model times three levels times two
+  budgets times the five input classes spec 9.6 names. Slow cells are markered
+  so the default run stays at one cell per level; CI runs all thirty.
+
+Both bounds are asserted separately rather than through
+`np.testing.assert_allclose`, whose combined criterion this section objected to.
+
+One finding came out of it, recorded in `docs/ENGINEERING_LOG.md`. A fixed
+absolute tolerance cannot span the input classes this section asked for. `ATOL`
+was calibrated on a standard normal input, whose LeNet outputs are of order 0.15
+where 1e-6 is about 67 float32 ulps. The `large_pos` and `large_neg` classes
+produce outputs of order 25, where 1e-6 is half an ulp and therefore
+unsatisfiable by any correct implementation; the measured error there is 8 ulps,
+the same arithmetic quality as the 2 ulps on `normal`. The absolute bound is now
+expressed as ulps at the output scale with `ATOL` as a floor, so the `normal`
+cells are checked exactly as strictly as before and nothing was loosened to make
+a failure disappear. Worst across the matrix: absolute 1.526e-5 at `-O0`, 1 MB,
+`large_pos`; relative 4.848e-6 at `-O0`, 1 MB, `zeros`, against a 1e-5 bound.
 
 ### 4.5 Test suite is thin in specific places
 
@@ -1718,6 +1795,17 @@ the first time.
    excerpt says "21 instructions", which matches the simulator's true `-O2`
    count exactly, so the excerpt was probably genuine all along and it is the
    headline table that is wrong.
+
+   **Status 2026-08-09, done, and the suspicion was right** (upgrade part 7).
+   The excerpt was genuine: regenerating it from a fresh
+   `model_generator.export(lenet, seed=0)` compiled at `-O2` reproduces "1
+   inputs, 1 outputs, 10 constants, 21 instructions" exactly, and the
+   disassembly below it matches instruction for instruction. The table was the
+   thing that disagreed with it. Both now come from the same run, all six
+   results equal the recorded baseline, and
+   `test_results_agree_with_the_recorded_baseline` makes committing two answers
+   to the same question a test failure rather than something to notice a month
+   later.
 5. **The type checker validates a different Python than the one that runs.**
    mypy, ruff, black, and the CI lint job all target Python 3.12; the venv,
    the baseline manifest, and the README badge say 3.14. mypy's scope is also

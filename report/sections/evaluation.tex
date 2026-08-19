@@ -14,7 +14,11 @@ recorded experiment. Table~\ref{tab:results} is generated from those files.
   \input{generated/results_table}
   \caption{Per cell results: instruction count, simulated cycles, total DRAM
     traffic, and maximum absolute error against onnxruntime. Cycle and DRAM
-    figures are simulated estimates.}
+    figures are simulated estimates. The error column is the absolute error on a
+    standard normal input; each result also records a relative error, and the end
+    to end test suite asserts both bounds separately, an absolute
+    $1\times10^{-6}$ and a relative $1\times10^{-5}$, across a matrix of three
+    optimization levels, two budgets, and five input classes.}
   \label{tab:results}
 \end{table}
 
@@ -35,6 +39,50 @@ the total DRAM traffic falls from \OaDram{} KB to \ObDram{} KB. Moving to
 \texttt{-O2}, fusion folds the four activations into their producers, and the
 instruction count falls from \OaInstr{} to \OcInstr{} while the simulated cycles
 fall from \OaCycles{} to \OcCycles{}.
+
+\subsection{What each pass buys, one at a time}
+
+The level comparison above says what \texttt{-O2} buys over \texttt{-O0}. It
+cannot say what any single pass buys, because the levels are cumulative. Table
+\ref{tab:ablation} answers that directly: each row is the full \texttt{-O2}
+pipeline with one pass removed, compiled, encoded, simulated, and checked
+against onnxruntime exactly as a normal cell is. The deltas are ablated minus
+full \texttt{-O2}, so a positive number is what removing the pass costs, which
+is the pass earning its place.
+
+\begin{table}[h]
+  \centering
+  \input{generated/ablation_table}
+  \caption{Leave one out ablation of every \texttt{-O2} pass, at both scratchpad
+  budgets. Instructions, cycles, and DRAM are simulated estimates from the
+  analytical cost model, not measurements. Deltas are the ablated pipeline minus
+  full \texttt{-O2} at the same budget, so a positive delta means removing the
+  pass made the program worse. \texttt{canonicalize} is ablated everywhere it
+  appears, which is twice in the \texttt{-O2} pipeline.}
+  \label{tab:ablation}
+\end{table}
+
+At the generous budget only one pass buys anything: \BestPass{} is worth
+\BestPassCycles{} simulated cycles and \BestPassInstrs{} instructions, and
+removing either \texttt{canonicalize} or \texttt{symbol-dce} produces a byte
+identical program. That is not a measurement error. \texttt{-npu-fuse-ops}
+drives its patterns with a greedy rewriter whose fixed point loop folds
+constants and removes dead operations as a side effect, so on this model it
+subsumes everything canonicalization had to contribute. Canonicalization still
+matters at \texttt{-O1}, where it is the only pass and is responsible for the
+whole drop from \OaDram{} KB to \ObDram{} KB; it is redundant only in the
+presence of fusion. This is exactly the interaction a leave one out ablation
+exposes and a per pass measurement cannot, since measured in isolation
+canonicalization does remove operations.
+
+The tight budget reverses the sign. Removing \BestPass{} there changes the
+simulated cycles by \BestPassTightCycles{} and the DRAM traffic by
+\BestPassTightDram{} KB, both of which are improvements: fusion makes the
+program worse when the scratchpad cannot hold the working set. Fusing an
+activation into its producer extends that value's live range, and under a budget
+that already forces spilling, a longer live range costs a spill and its reload.
+A table reporting only the generous budget would have shown fusion as the one
+pass worth having and missed that it is counterproductive under pressure.
 
 The tight budget rows show the memory model at work. When the scratchpad cannot
 hold the working set, the allocator spills buffers to DRAM and reloads them, which

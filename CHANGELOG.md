@@ -6,6 +6,31 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Headline change: the published instruction counts were wrong and are corrected
+
+**The LeNet instruction counts in the README, the report, and the plots change
+from 91 / 82 / 70 to 28 / 25 / 21 at `-O0` / `-O1` / `-O2`.** The tight budget
+cells change from 91 / 94 / 86 to 28 / 31 / 29. Nothing about the compiler
+changed; the old numbers were never the instruction count.
+
+`run_benchmarks.py` computed `instruction_count` as
+`sum(count_ops(ir, "npuisa").values())`, a regex over the final IR dump. That
+regex matches inside type strings, so every `!npuisa.buffer<...>` was counted as
+an occurrence of an op named `npuisa.buffer`, and it counts `npuisa.const`,
+which the encoder emits as DRAM data and never as an instruction. The simulator
+has reported the true count in `stats.instructions` all along and the harness
+ignored it.
+
+The repository committed both answers side by side: `experiments/results/*.json`
+said 91 / 82 / 70 while `test/baseline/baseline.json` recorded 28 / 25 / 21 for
+the same six cells, and the README's own disassembly excerpt said "21
+instructions" three screens below a table claiming 70. All six cells now agree
+with the recorded baseline exactly.
+
+`count_ops` and `npuisa_op_counts` are kept: the per op histogram is real data
+and is useful as a histogram. Only the scalar was wrong. A missing
+`instructions` field now raises rather than falling back to the regex.
+
 ### Phase U3 summary: the user visible surface
 
 Everything below is detailed in its own entry; this is what changed for someone
@@ -32,6 +57,79 @@ running the tools rather than reading the source.
 
 ### Added
 
+- Phase U4: `test/Python/test_end_to_end.py` is now a parametrized matrix of
+  every model times three optimization levels times both scratchpad budgets
+  times five input classes (`normal`, `zeros`, `large_pos`, `large_neg`,
+  `relu_knee`), thirty cells, replacing two tests that ran one hardcoded pass
+  list matching no `-O` level and validated against a single standard normal
+  draw. Compilation goes through `compile_model(opt_level=...)`, so the tests
+  exercise the pipelines that ship.
+
+  Both bounds are asserted separately rather than through
+  `np.testing.assert_allclose`, whose combined `atol + rtol * |b|` criterion lets
+  an absolute allowance absorb a relative failure. The absolute bound is scale
+  aware, expressed as float32 ulps at the magnitude of the output with `ATOL` as
+  a floor: `large_pos` and `large_neg` produce outputs two orders of magnitude
+  larger than `normal`, where a fixed `1e-6` is half an ulp and unsatisfiable by
+  any correct implementation. Nothing that passed before is loosened, since the
+  floor still dominates at the `normal` scale. Worst observed across the matrix:
+  absolute 1.526e-5 (8 ulps at that scale), relative 4.848e-6 against a 1e-5
+  bound.
+
+  Cells outside the fast subset carry a `slow` marker and `pyproject.toml` sets
+  `addopts = "-m 'not slow'"`, so the default run is one cell per level in about
+  a second while CI runs the whole matrix.
+- Phase U4: every result records `max_rel_error_vs_onnxruntime` alongside the
+  absolute error. The absolute error alone cannot tell a small error on a small
+  output from a small error on a large one.
+- Phase U4: leave one out ablations. For every distinct pass in `-O2`, the
+  harness compiles the model with that pass removed, encodes, simulates, and
+  checks against onnxruntime exactly as a normal cell does, recording the result
+  as `lenet_O2_ablate_<pass>_<budget>.json` with a `baseline_cell` naming the
+  full `-O2` result it is a delta against, absolute values, and
+  `delta_instruction_count`, `delta_simulated_cycles`, `delta_dram_bytes_total`,
+  and `delta_compile_ms`. Run at both budgets, and generated into
+  `report/generated/ablation_table.tex` and `docs/images/ablations.png`.
+
+  Two results worth naming. At the 1 MB budget only `-npu-fuse-ops` buys
+  anything (+4 instructions and +298 simulated cycles when removed); removing
+  `-canonicalize` or `-symbol-dce` produces a byte identical program, because
+  `-npu-fuse-ops` drives its patterns with `applyPatternsGreedily`, whose fixed
+  point loop already folds and erases dead ops. Canonicalization is still
+  responsible for the whole DRAM halving at `-O1`, where it is the only pass.
+
+  And at the 140 KB budget `-npu-fuse-ops` is **counterproductive**: removing it
+  saves 96 simulated cycles and 6.1 KB of DRAM traffic, because fusing an
+  activation into its producer extends that value's live range and under a
+  budget that already spills, a longer live range costs a spill and a reload. A
+  table reporting only the generous budget would have missed it.
+
+  An ablation whose numerics move beyond the end to end tolerance raises rather
+  than being recorded, since that would mean the pass is load bearing for
+  correctness rather than performance.
+- Phase U4: every benchmark result carries a `passes` array, one entry per pass
+  in that cell's pipeline, in order, recording the pass name, its zero based
+  position, the op histogram before and after it, both totals, and its wall
+  clock in milliseconds. The v2 specification called per pass measurement "the
+  evaluation's backbone" and the harness recorded one total `compile_ms` and one
+  post lowering histogram, so the report could say what `-O2` buys over `-O0`
+  but not what canonicalization buys, or fusion, or symbol DCE.
+
+  Op counts come from `npu-opt`'s own `print-op-stats` pass in JSON form, not
+  from a regex over the printed IR. Wall clock comes from `--mlir-timing
+  --mlir-output-format=json`, recorded in a `pass_timing_source` field so a
+  reader can tell it was measured. A pass in the pipeline with no timing raises
+  rather than recording zero, and a `print-op-stats` format shift raises rather
+  than returning an empty histogram, which would record every pass as having
+  changed nothing.
+
+  The pipeline is read from `_passes_for_level` at run time, so a pass added to
+  a level is instrumented without editing the harness, and `-O0` correctly
+  records only the two lowering passes.
+- Phase U4: the result manifest records `cpu_model` and a `wall_clock_note`.
+  Per pass wall clock and `compile_ms` are real measurements rather than
+  simulated estimates, so they mean nothing without the machine attached and
+  must not be compared across machines.
 - Phase U3: `npu-sim` accepts `--input` once per declared input region, in
   declaration order, and checks each file's float count against that region's
   shape. It used to keep a single input path, so a two input program ran with

@@ -149,6 +149,28 @@ reproducible from any point in the history. That is the failure mode this rule
 exists to prevent, and it is why the check treats an unrecognised sha as stale
 rather than assuming it is merely old.
 
+## Ablating a pass means removing every occurrence of it
+
+`_passes_for_level(2)` is
+`["-canonicalize", "-npu-fuse-ops", "-canonicalize", "-symbol-dce"]`.
+`-canonicalize` runs twice, once before fusion and once after, so "ablate
+canonicalize" has two possible meanings: remove one occurrence, or remove the
+pass.
+
+The ablation removes **every** occurrence. The question an ablation answers is
+"is this pass worth having", and a table row that removed only the second
+occurrence would answer "is running it a second time worth it", which is a
+different and narrower question. Removing all occurrences is also the only
+version of the question whose answer generalises to a pipeline where the pass
+appears once.
+
+Recorded because the choice is invisible in the output: both readings produce a
+row labelled `canonicalize`, and they can disagree. On LeNet they do not, since
+removing both occurrences already changes nothing, but that is a fact about this
+model rather than a reason the choice does not matter. The evaluation prose
+states that the pass runs twice in the full pipeline so a reader is not misled by
+a single row.
+
 ## The generated report tex is tracked
 
 `report/generated/` holds `macros.tex` and `results_table.tex`, which both PDFs

@@ -4,6 +4,323 @@ Dated entries recorded as problems happen: symptom, root cause, options consider
 chosen fix and why, commit, verification. This log is the raw material for the debug
 report (report_debug) assembled at Phase 11.
 
+## 2026-08-09 Phase U4: a fixed absolute tolerance cannot survive a scale change
+
+**Symptom.** The new end to end matrix went red on twelve of its thirty cells,
+every `large_pos` and `large_neg` cell at all three levels and both budgets:
+
+```
+AssertionError: absolute error 1.526e-05 exceeds 1.000e-06
+```
+
+**Root cause, and it is not the compiler.** `ATOL = 1e-6` was set in phase U1
+against the observed 2.98e-8, measured on a standard normal input. That input
+produces LeNet outputs of order 0.15, where a float32 ulp is 1.49e-8, so 1e-6 is
+about 67 ulps of headroom and the bound is generous.
+
+The `large_pos` and `large_neg` classes drive a constant $\pm$1e3 through the
+network. The outputs come out of order 25, where a float32 ulp is 1.91e-6. The
+measured absolute error there is 1.526e-5, which is **8 ulps**: the same
+arithmetic quality as the 2 ulps seen on `normal`, from the same cause,
+reordered but mathematically identical fp32 accumulation. Meanwhile 1e-6 is half
+an ulp at that scale, so the bound is not merely tight, it is unsatisfiable by
+any correct implementation, including onnxruntime compared against itself in a
+different summation order.
+
+The relative bound passed comfortably in all twelve cells. Relative error across
+the whole matrix peaks at 4.85e-6 against a 1e-5 budget. So every signal that
+scales correctly said the results were fine, and the one fixed constant said
+they were not.
+
+**The rule this ran into.** The work order says never loosen a tolerance to make
+a cell pass, and separately says to keep `ATOL = 1e-6`. Those instructions
+conflict once input classes with different output magnitudes are introduced,
+which is what the same work order asks for. Loosening the constant to 2e-5 would
+have been exactly the forbidden move: it would weaken the `normal` cells, where
+1e-6 is doing real work, in order to accommodate a different scale.
+
+**Chosen fix.** Express the absolute bound as what it always meant, a number of
+ulps at the scale of the output being checked, with `ATOL` as a floor:
+
+```python
+ULP_BUDGET = 16
+
+def absolute_bound(reference):
+    scale = float(np.max(np.abs(reference)))
+    if scale == 0.0:
+        return ATOL
+    return max(ATOL, ULP_BUDGET * float(np.spacing(np.float32(scale))))
+```
+
+At the `normal` scale, 16 ulps is 2.4e-7 and the 1e-6 floor still dominates, so
+those cells are checked exactly as strictly as before and nothing that passed is
+loosened. At the large scale the budget is 3.05e-5 against a measured 1.53e-5,
+so a genuine doubling of the error still fails. Near zero outputs keep an
+absolute guarantee from the floor.
+
+This is a deviation from the work order and is recorded as one rather than
+applied quietly.
+
+**A smaller decision.** The `zeros` class was expected to make the relative
+bound vacuous by driving the reference to exactly zero. It does not: LeNet has
+biases, so a zero input produces a non zero output and the relative check is
+meaningful, and in fact `zeros` is where the worst relative error in the whole
+matrix occurs, 4.85e-6. The skip for an exactly zero reference is kept because
+it is the correct guard for a model without biases, but it does not fire here,
+and saying so is better than implying the class is untested.
+
+**Verification.** Thirty cells, all green, full matrix in 3.4 seconds. Worst
+absolute error across the matrix 1.526e-5 at `-O0`, 1 MB, `large_pos`; worst
+relative error 4.848e-6 at `-O0`, 1 MB, `zeros`. The default run is 3 cells plus
+the two meta tests in under a second; CI runs all thirty.
+
+## 2026-08-09 Phase U4: the ablation says two passes do nothing, and one is harmful
+
+**Not a bug.** The leave one out ablation the v2 specification called "the
+evaluation's backbone", finally built. Part 8 measured each pass on the IR it is
+handed. This measures what the finished program loses when a pass is removed
+from an otherwise complete `-O2`, which is a different question wherever passes
+interact.
+
+**What it found, at the 1 MB budget:**
+
+```
+canonicalize    instrs  +0   cycles    +0   dram  +0.0 KB
+npu-fuse-ops    instrs  +4   cycles  +298   dram  +0.0 KB
+symbol-dce      instrs  +0   cycles    +0   dram  +0.0 KB
+```
+
+Two of the three `-O2` passes make no difference at all. My first assumption was
+that the ablation was not ablating, so I checked it directly rather than
+reporting it: compile the model with `-canonicalize -npu-fuse-ops -canonicalize
+-symbol-dce` and with `-npu-fuse-ops -symbol-dce`, and diff the IR.
+
+```
+npu-dialect op count after full -O2 opt   : 18
+npu-dialect op count after -O2 minus canon: 18
+optimized IR identical? True
+lowered npuisa IR identical? True
+```
+
+Byte identical. The zero is real.
+
+**Root cause of the zero.** `FuseOps.cpp:72` runs `applyPatternsGreedily`. The
+greedy driver folds constants and erases dead operations as part of its fixed
+point loop, so by the time it has finished fusing there is nothing left for
+canonicalization to do. Canonicalization is not useless: at `-O1` it is the only
+pass and is responsible for the entire drop from 339 KB to 176 KB of DRAM. It is
+redundant *in the presence of fusion*.
+
+This is exactly the interaction the ablation exists to expose and that Part 8's
+per pass measurement cannot see. Measured in isolation, canonicalization at
+position 0 removes three operations, 28 down to 25. Measured by removal, it
+removes nothing, because something else would have.
+
+**The finding that matters more, at 140 KB:**
+
+```
+npu-fuse-ops    instrs  +2   cycles   -96   dram  -6.1 KB
+```
+
+The signs flip. Removing fusion at the tight budget makes the program *faster*
+and reduces DRAM traffic. Fusing an activation into its producer extends that
+value's live range across the fused op, and under a budget that already forces
+spilling, a longer live range buys a spill and its reload, which cost more than
+the instruction the fusion saved. `-O2` fusion is a win at 1 MB and a loss at
+140 KB.
+
+ASSESSMENT 5.1 predicted the passes would behave oppositely at the tight budget,
+which is why the work order insisted on both budgets. It was right, and an
+ablation table reporting only the generous budget would have concluded that
+fusion is the one pass worth having.
+
+**Design decision recorded.** `-canonicalize` appears twice at `-O2`. Ablating
+it removes every occurrence, because "is this pass worth having" is the question
+an ablation answers, and removing only the second occurrence answers "is running
+it twice worth it", which is narrower. Written down in
+`docs/DESIGN_DECISIONS.md` because both readings produce a row labelled
+`canonicalize` and they can disagree.
+
+**A trap avoided.** Ablation records live in `experiments/results/` alongside the
+full cells and carry the same `model`, `opt_level`, and `scratchpad_budget`
+keys. `plot_results.load()` and `results_to_tex.load_rows()` both key by those
+fields, so an ablation would have silently replaced the real `-O2` row in the
+figure and the results table, and which one would have depended on glob order.
+Both now filter on the presence of `ablated_pass`. The same collision would have
+hit five of the existing tests, which now ask for full rows explicitly.
+
+**Verification.** Four new tests. `test_every_o2_pass_has_an_ablation_row` takes
+the expected set from `_passes_for_level(2)` at assert time, so adding a pass
+without an ablation fails. `test_ablation_deltas_are_consistent` recomputes every
+delta from the two committed files, so a reader never has to trust the
+subtraction. `test_ablation_numerics_are_unchanged` holds every ablation to the
+end to end tolerance. `test_ablation_result_paths_follow_the_convention` checks
+they are covered by `staleness()` like any other result rather than being
+quietly exempt from the guard that keeps the published numbers honest.
+
+## 2026-08-09 Phase U4: measuring each pass, without inventing a measurement
+
+**Not a bug.** The v2 specification called per pass ablation deltas "the
+evaluation's backbone". `run_benchmarks.py` iterated
+`product(models, levels, budgets)` and stored one total `compile_ms` and one
+post lowering op histogram, so the report could say what `-O2` buys over `-O0`
+and nothing about any individual pass.
+
+**The trap this part had to avoid.** Part 7 had just finished removing a scalar
+that came from the wrong source, and the obvious way to build this one would
+have repeated the mistake: regex the IR dump before and after each pass and
+count. That is the same wrong measurement, applied six times per cell instead of
+once. `npu-opt` calls `registerAllPasses()`, so the compiler will answer both
+questions itself and neither needs new C++.
+
+**Op counts.** `--print-op-stats` prints a text table by default:
+
+```
+Operations encountered:
+-----------------------
+  builtin.module     , 1
+     func.func       , 1
+```
+
+The work order allowed parsing that behind a pinning test, but `--help-list`
+shows the pass takes a `json` option, reachable through the textual pipeline
+form:
+
+```
+--pass-pipeline=builtin.module(print-op-stats{json=true})
+```
+
+which prints a plain JSON object. Used that, so there is no whitespace sensitive
+parser to pin in the first place. The parser that remains raises on the old text
+form, on truncated JSON, and on an empty object, because an empty histogram
+would record every pass as having changed nothing, and that reads as data rather
+than as a failure.
+
+**Wall clock.** `--mlir-timing --mlir-output-format=json` emits a tree, and the
+names in it are C++ class display names rather than command line flags:
+`Canonicalizer` for `-canonicalize`, `NPUFuseOps` for `-npu-fuse-ops`. Nested
+pipelines appear as `'func.func' Pipeline` groups. Walking the tree and taking
+the leaves in document order gives the passes in pipeline order once `Parser`,
+`Output`, `Rest`, and `Total` are dropped.
+
+The mapping from flag to display name is written down explicitly and checked
+position by position. That matters for `-O2`, where `-canonicalize` appears
+twice and a name based lookup would be ambiguous; matching by position with the
+name as a check catches a pipeline change that nobody taught the harness about,
+and a pass with no entry in the map raises rather than being recorded unnamed.
+
+**What the measurement says.** For the `-O2` default cell:
+
+```
+ 0 canonicalize                   28 -> 25   0.40 ms
+ 1 npu-fuse-ops                   25 -> 21   0.20 ms
+ 2 canonicalize                   21 -> 21   0.10 ms
+ 3 symbol-dce                     21 -> 21   0.10 ms
+ 4 npu-lower-to-npuisa            21 -> 33   0.20 ms
+ 5 npu-allocate-scratchpad        33 -> 33   0.10 ms
+```
+
+Two things worth noting before Part 9 reads too much into it. The second
+`canonicalize` and `symbol-dce` change no op count at all on this model, which
+is a fact about LeNet rather than about the passes. And lowering *raises* the op
+count from 21 to 33, which is correct: one `npu` op becomes several `npuisa`
+ops plus the DMA that feeds it. An op count is not a cost.
+
+**A limit to record.** `--mlir-timing` rounds to four decimal places of a
+second, so 0.1 ms is the smallest non zero value it can report. Every pass on
+LeNet lands between 0.10 and 0.40 ms, comfortably above the floor, but on a
+smaller model a pass could round to zero and the "every pass has a positive wall
+clock" test would fail. That is the correct failure: it would mean the timing
+source can no longer resolve the thing being measured, which is worth stopping
+for rather than recording a zero.
+
+**Runtime.** The whole harness is 2.8 seconds for six cells, against a five
+minute budget. Each cell now runs `npu-opt` once for timings plus twice per pass
+for the before and after histograms, so roughly fifteen extra invocations per
+cell, and it does not matter at this size.
+
+**Verification.** Five new tests. `test_every_pass_in_the_pipeline_has_a_record`
+reads the expected pipeline from `_passes_for_level` at assert time rather than
+hardcoding it, so adding a pass without instrumenting it fails.
+`test_o0_has_no_optimization_passes` is the negative case that would catch a
+hardcoded enumeration. `test_every_pass_has_a_wall_clock` rejects a zero.
+`test_op_stats_parser_pins_the_format` and
+`test_pass_timing_parser_raises_on_a_missing_pass` pin both external formats,
+including that a pipeline pass missing from the timing output raises.
+
+## 2026-08-09 Phase U4: the headline number was never an instruction count
+
+**Symptom.** The repository committed two different answers to the same
+question and shipped both. `experiments/results/lenet_O2_default.json` said
+`instruction_count: 70`. `test/baseline/baseline.json` said `instructions: 21`
+for the same cell. The README printed 70 in its headline table and, three
+screens further down, a real disassembly excerpt reading "1 inputs, 1 outputs,
+10 constants, 21 instructions". Nobody noticed for a month, which is the part
+worth thinking about.
+
+**Root cause.** `run_benchmarks.py` computed the scalar as
+
+```python
+"instruction_count": int(sum(isa_ops.values()))
+```
+
+where `isa_ops = count_ops(isa, "npuisa")` and `count_ops` is
+
+```python
+dict(Counter(re.findall(rf"{dialect}\.[a-z_0-9]+", mlir_text)))
+```
+
+A regex over the printed IR. It inflates the count two ways, and both are
+visible in one line of LeNet IR:
+
+```
+%0 = npuisa.dma_load %x : (tensor<4xf32>) -> !npuisa.buffer<tensor<4xf32>>
+```
+
+That is one instruction. The regex sees `npuisa.dma_load` and `npuisa.buffer`,
+because a type is text too and `!npuisa.buffer<...>` matches the same pattern as
+an op mnemonic. Separately it counts `npuisa.const`, which the encoder turns
+into a DRAM region and never emits into the instruction stream at all. For
+LeNet the two together turn 21 into 70.
+
+The simulator has been reporting the real number in `stats.instructions` since
+it was written, and `simulate()` already parsed and returned that JSON. The
+harness had the right answer in a local variable and used the wrong one.
+
+**Why it survived.** Two committed artifacts disagreed and no test compared
+them. The baseline recorded the truth in U0 precisely so drift would be visible,
+but it compared each run against the previous run, never against the results the
+report publishes. The disagreement was between two files that nothing read at
+the same time.
+
+**Chosen fix.** Take the scalar from the simulator, and refuse rather than fall
+back:
+
+```python
+if "instructions" not in stats:
+    raise RuntimeError(...)
+"instruction_count": int(stats["instructions"]),
+```
+
+The fall back matters. A silent `except KeyError: use the regex` would reinstate
+the defect the first time the stats format shifted, and it would do it quietly,
+which is exactly how the number got published the first time.
+
+`count_ops` and the `npuisa_op_counts` histogram stay. The histogram is real
+data and Part 8 builds on it; only its use as a scalar was wrong. Its docstring
+now states both failure modes so nobody reaches for `sum(...)` again.
+
+**Verification.** All six cells regenerated, and every one now equals the
+recorded baseline for its cell: 28, 28, 25, 31, 21, 29 against baseline entries
+of the same. Four new tests: `test_instruction_count_comes_from_the_simulator`
+asserts the value is not the regex sum and is smaller than it,
+`test_results_agree_with_the_recorded_baseline` ends the committed
+contradiction, `test_count_ops_is_not_an_instruction_count` exercises both
+inflation modes on a three line dump so the reason is executable rather than
+only written down, and `test_readme_table_matches_the_results` pins the hand
+written table to the generated numbers so it cannot drift again. The README
+objdump excerpt was regenerated from a real run and confirms 21.
+
 ## 2026-08-09 Republishing the numbers, and why they had gone stale
 
 **Symptom.** Both committed PDFs were byte identical to their 2026-07-15 builds.

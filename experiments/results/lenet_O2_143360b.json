@@ -14,16 +14,191 @@
     "npuisa.reshape": 1,
     "npuisa.matmul": 3
   },
-  "instruction_count": 86,
+  "instruction_count": 29,
   "simulated_cycles": 33930,
   "dram_bytes_read": 350536,
   "dram_bytes_written": 169736,
   "dram_bytes_total": 520272,
   "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
-  "compile_ms": 23.73470799648203,
+  "max_rel_error_vs_onnxruntime": 5.066278845333727e-07,
+  "compile_ms": 24.226051988080144,
+  "passes": [
+    {
+      "name": "canonicalize",
+      "position": 0,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 13,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.relu": 4,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.relu": 4,
+        "npu.reshape": 1
+      },
+      "ops_before_total": 28,
+      "ops_after_total": 25,
+      "wall_ms": 0.3
+    },
+    {
+      "name": "npu-fuse-ops",
+      "position": 1,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.relu": 4,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_before_total": 25,
+      "ops_after_total": 21,
+      "wall_ms": 0.2
+    },
+    {
+      "name": "canonicalize",
+      "position": 2,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_before_total": 21,
+      "ops_after_total": 21,
+      "wall_ms": 0.1
+    },
+    {
+      "name": "symbol-dce",
+      "position": 3,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_before_total": 21,
+      "ops_after_total": 21,
+      "wall_ms": 0.1
+    },
+    {
+      "name": "npu-lower-to-npuisa",
+      "position": 4,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.constant": 10,
+        "npu.conv2d": 2,
+        "npu.matmul": 3,
+        "npu.max_pool2d": 2,
+        "npu.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 10,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 11,
+        "npuisa.dma_store": 1,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_before_total": 21,
+      "ops_after_total": 33,
+      "wall_ms": 0.2
+    },
+    {
+      "name": "npu-allocate-scratchpad",
+      "position": 5,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 10,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 11,
+        "npuisa.dma_store": 1,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npuisa.const": 10,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 15,
+        "npuisa.dma_store": 5,
+        "npuisa.matmul": 3,
+        "npuisa.pool_max": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_before_total": 33,
+      "ops_after_total": 41,
+      "wall_ms": 0.2
+    }
+  ],
+  "pass_timing_source": "--mlir-timing",
   "note": "simulated estimates, not measurements",
   "manifest": {
-    "git_sha": "7e4016538745e9a36d31095e8000d02b8ea8f8f9",
+    "git_sha": "0c68b112b09e6abafbd323b05084c3807eb60588",
     "llvm_tag": "llvmorg-22.1.8",
     "python": "3.14.4",
     "onnxruntime": "1.27.0",
@@ -36,6 +211,8 @@
     },
     "seed": 0,
     "model_generator_version": 1,
-    "timestamp": "2026-08-15T18:12:50.884052+00:00"
+    "timestamp": "2026-08-15T19:01:17.006527+00:00",
+    "cpu_model": "Intel(R) Core(TM) i7-14700K",
+    "wall_clock_note": "compile_ms and passes[].wall_ms are wall clock measured on the machine named in cpu_model; they are not portable and not simulated estimates. Every other performance figure here is a simulated estimate from the analytical cost model."
   }
 }
