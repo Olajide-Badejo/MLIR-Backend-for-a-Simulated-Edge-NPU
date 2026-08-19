@@ -435,16 +435,79 @@ func.func @matmul_bias_length(%a: tensor<4x16xf32>, %b: tensor<16x10xf32>,
 
 // -----
 
-// npu.add does not broadcast. The frontend materialises every broadcast it can
-// at import time and rejects the rest by name, with one carve out that becomes
-// a bias operand rather than a broadcasting add, so accepting a broadcast here
-// would give the same fact two representations.
-func.func @add_does_not_broadcast(%a: tensor<1x8x4x4xf32>,
-                                  %b: tensor<1x8x1x1xf32>,
-                                  %d: tensor<1x8x4x4xf32>)
+// The only broadcast npu.add represents is the rank 1 channel one. A
+// `1 x C x 1 x 1` rhs broadcasts perfectly well in numpy and is refused here:
+// the frontend materialises every broadcast it can at import time, normalises
+// the channel shaped ones to rank 1, and rejects the rest by name, so accepting
+// a second spelling of the same fact would let -npu-fuse-bias silently miss it.
+func.func @add_does_not_broadcast_a_rank_four_operand(%a: tensor<1x8x4x4xf32>,
+                                                      %b: tensor<1x8x1x1xf32>,
+                                                      %d: tensor<1x8x4x4xf32>)
     -> tensor<1x8x4x4xf32> {
-  // expected-error @+1 {{does not broadcast, so the rhs shape must equal the result shape}}
+  // expected-error @+1 {{the rhs must either have the result shape exactly or be the rank 1 channel broadcast of a rank 4 result}}
   %0 = npu.add ins(%a, %b : tensor<1x8x4x4xf32>, tensor<1x8x1x1xf32>)
+               outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
+  return %0 : tensor<1x8x4x4xf32>
+}
+
+// -----
+
+// A rank 1 rhs whose length is not the channel extent. 4 is the spatial extent
+// here, so this is the shape a rule that broadcast over the wrong axis would
+// have produced, and it must not verify.
+func.func @add_channel_broadcast_wrong_length(%a: tensor<1x8x4x4xf32>,
+                                              %b: tensor<4xf32>,
+                                              %d: tensor<1x8x4x4xf32>)
+    -> tensor<1x8x4x4xf32> {
+  // expected-error @+1 {{a rank 1 rhs is the channel broadcast, so its length must equal the result channel extent 8 under layout nchw (absent encoding), but the rhs is 'tensor<4xf32>'}}
+  %0 = npu.add ins(%a, %b : tensor<1x8x4x4xf32>, tensor<4xf32>)
+               outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
+  return %0 : tensor<1x8x4x4xf32>
+}
+
+// -----
+
+// Under NHWC the channel extent is dimension 3. A rhs of length 4 matches
+// dimension 1 and is still wrong, which is what makes reading the extent
+// through the layout load bearing rather than cosmetic.
+func.func @add_channel_broadcast_wrong_axis_under_nhwc(
+    %a: tensor<1x4x4x8xf32, #npu.layout<nhwc>>, %b: tensor<4xf32>,
+    %d: tensor<1x4x4x8xf32, #npu.layout<nhwc>>)
+    -> tensor<1x4x4x8xf32, #npu.layout<nhwc>> {
+  // expected-error @+1 {{result channel extent 8 under layout nhwc}}
+  %0 = npu.add ins(%a, %b : tensor<1x4x4x8xf32, #npu.layout<nhwc>>,
+                            tensor<4xf32>)
+               outs(%d : tensor<1x4x4x8xf32, #npu.layout<nhwc>>)
+       -> tensor<1x4x4x8xf32, #npu.layout<nhwc>>
+  return %0 : tensor<1x4x4x8xf32, #npu.layout<nhwc>>
+}
+
+// -----
+
+// The carve out is rank 4 only. A rank 2 result has no channel axis to
+// broadcast over, so a rank 1 rhs against one is refused rather than read as a
+// row or a column vector.
+func.func @add_channel_broadcast_needs_a_rank_four_result(%a: tensor<4x8xf32>,
+                                                          %b: tensor<8xf32>,
+                                                          %d: tensor<4x8xf32>)
+    -> tensor<4x8xf32> {
+  // expected-error @+1 {{the rhs must either have the result shape exactly or be the rank 1 channel broadcast of a rank 4 result}}
+  %0 = npu.add ins(%a, %b : tensor<4x8xf32>, tensor<8xf32>)
+               outs(%d : tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// Only the rhs may be the broadcast operand. One spelling of a channel
+// broadcast is the whole reason the rule is asymmetric, and the frontend
+// commutes rather than emitting this.
+func.func @mul_does_not_broadcast_the_lhs(%a: tensor<8xf32>,
+                                          %b: tensor<1x8x4x4xf32>,
+                                          %d: tensor<1x8x4x4xf32>)
+    -> tensor<1x8x4x4xf32> {
+  // expected-error @+1 {{the lhs is the activation and is never the broadcast operand}}
+  %0 = npu.mul ins(%a, %b : tensor<8xf32>, tensor<1x8x4x4xf32>)
                outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
   return %0 : tensor<1x8x4x4xf32>
 }
@@ -455,7 +518,7 @@ func.func @mul_does_not_broadcast(%a: tensor<1x8x1x1xf32>,
                                   %b: tensor<1x8x4x4xf32>,
                                   %d: tensor<1x8x4x4xf32>)
     -> tensor<1x8x4x4xf32> {
-  // expected-error @+1 {{does not broadcast, so the lhs shape must equal the result shape}}
+  // expected-error @+1 {{the lhs is the activation and is never the broadcast operand}}
   %0 = npu.mul ins(%a, %b : tensor<1x8x1x1xf32>, tensor<1x8x4x4xf32>)
                outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
   return %0 : tensor<1x8x4x4xf32>

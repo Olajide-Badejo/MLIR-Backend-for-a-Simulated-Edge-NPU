@@ -39,7 +39,7 @@ infrastructure rather than beside it.
 
 ### `npu.add` (npu::AddOp)
 
-_Elementwise addition._
+_Elementwise addition, with the channel broadcast carve out._
 
 Syntax:
 
@@ -54,16 +54,34 @@ Reachability: imported computation.
 ```mlir
 %r = npu.add ins(%a, %b : tensor<1x8x4x4xf32>, tensor<1x8x4x4xf32>)
              outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
+
+%s = npu.add ins(%a, %bias : tensor<1x8x4x4xf32>, tensor<8xf32>)
+             outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
 ```
 
-Both operands have the result shape exactly. This operation does **not**
-broadcast, and the omission is a decision rather than a gap: the frontend
-materialises every broadcast it can at import time and rejects the rest by
-name, with one carve out for the rank 1 channel shaped addend that a
-separate bias add produces, and that carve out is expressed as a bias
-operand on the consuming convolution rather than as a broadcasting add.
-Broadcasting here as well would give the same fact two representations and
-let the bias fusion pass silently miss one of them.
+The lhs always has the result shape exactly. The rhs either has the result
+shape exactly, or, when the result is rank 4, is rank 1 of length equal to
+the result's channel extent under its layout. Every other combination is
+refused.
+
+That second form is the **one** broadcast this dialect represents, and it is
+the shape a separate bias add has. It exists because `-npu-fuse-bias` folds
+`add(conv(x, w), b)` into the convolution's bias operand and guards on a
+channel shaped constant addend: an importer that expanded the addend into a
+full `N x C x H x W` constant would make that pass structurally unfireable
+on every model in the suite, and would inflate every published byte count by
+the expansion factor for a reason that is an importer artefact rather than a
+property of the model. Everything else the frontend can broadcast it
+materialises at import time, and what it cannot it refuses by name.
+
+**Only the rhs may be rank 1**, and that asymmetry is the point rather than
+an accident. One spelling of a channel broadcast means the fusion pass has
+one form to match rather than two. Addition is commutative, so the frontend
+commutes the operands when the rank 1 one arrives on the left, and the
+commutation is not observable in the result.
+
+Per channel arithmetic against a rank 4 activation is not a new idea here:
+it is what `npu.batch_norm` is built out of, and it lowers the same way.
 
 Traits: `AlwaysSpeculatableImplTrait`
 
@@ -577,7 +595,7 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `npu.mul` (npu::MulOp)
 
-_Elementwise multiplication._
+_Elementwise multiplication, with the channel broadcast carve out._
 
 Syntax:
 
@@ -592,9 +610,15 @@ Reachability: imported computation.
 ```mlir
 %r = npu.mul ins(%a, %b : tensor<1x8x4x4xf32>, tensor<1x8x4x4xf32>)
              outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
+
+%s = npu.mul ins(%a, %scale : tensor<1x8x4x4xf32>, tensor<8xf32>)
+             outs(%d : tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xf32>
 ```
 
-Same shape rules as `npu.add`, and the same reason for them.
+Same shape rules as `npu.add`, and the same reason for them. The rank 1 form
+here is a per channel scale, which is what a scaled residual branch applies
+before its addition, and it reaches this dialect as one ONNX `Mul` node with
+a channel shaped initializer.
 
 Traits: `AlwaysSpeculatableImplTrait`
 

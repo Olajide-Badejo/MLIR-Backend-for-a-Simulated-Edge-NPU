@@ -559,18 +559,41 @@ LogicalResult verifyElementwiseBinary(Operation *op, Value lhs, Value rhs,
   auto rhsType = cast<RankedTensorType>(rhs.getType());
   auto resultType = cast<RankedTensorType>(result.getType());
 
+  // The lhs is the activation and is never the broadcast side. Only the rhs
+  // may be rank 1, so a channel broadcast has exactly one spelling and
+  // -npu-fuse-bias has one form to match rather than two. The frontend commutes
+  // a node whose rank 1 operand arrived on the left, which it may do because
+  // both of these operations are commutative.
   if (lhsType.getShape() != resultType.getShape())
     return op->emitOpError()
-           << "does not broadcast, so the lhs shape must equal the result "
-              "shape, but the lhs is "
+           << "the lhs is the activation and is never the broadcast operand, "
+              "so its shape must equal the result shape, but the lhs is "
            << lhsType << " and the result is " << resultType;
-  if (rhsType.getShape() != resultType.getShape())
-    return op->emitOpError()
-           << "does not broadcast, so the rhs shape must equal the result "
-              "shape, but the rhs is "
-           << rhsType << " and the result is " << resultType;
 
-  return success();
+  if (rhsType.getShape() == resultType.getShape())
+    return success();
+
+  // The one carve out. A rank 1 rhs of length C against a rank 4 result whose
+  // channel extent is C, read through the layout so that the rule stays correct
+  // once -npu-assign-layout has moved the channel axis from 1 to 3. This is the
+  // shape a separate bias add and a per channel scale both have, and it is left
+  // unexpanded on purpose: expanding it would make -npu-fuse-bias unfireable
+  // and would inflate every published byte count by the expansion factor.
+  if (rhsType.getRank() == 1 && resultType.getRank() == 4) {
+    const int64_t channels = getChannelExtent(resultType);
+    if (rhsType.getDimSize(0) == channels)
+      return success();
+    return op->emitOpError()
+           << "a rank 1 rhs is the channel broadcast, so its length must equal "
+              "the result channel extent "
+           << channels << " under layout " << describeLayout(resultType)
+           << ", but the rhs is " << rhsType;
+  }
+
+  return op->emitOpError()
+         << "the rhs must either have the result shape exactly or be the rank 1 "
+            "channel broadcast of a rank 4 result, but the rhs is "
+         << rhsType << " and the result is " << resultType;
 }
 
 } // namespace

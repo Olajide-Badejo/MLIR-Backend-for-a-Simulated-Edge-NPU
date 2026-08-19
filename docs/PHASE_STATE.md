@@ -18,240 +18,228 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P2, the `npuisa` dialect and the memory model.** Branch
-`phase/p2-npuisa-dialect`. Eight commits, not merged.
-
-**The merge plan scare below the previous revision of this paragraph is
-resolved, and the resolution is worth one paragraph.** This branch was cut from
-`phase/p1-npu-dialect` rather than from `main`, which is correct, since P2
-depends on P1's dialect. A session working from a stale local `main`, still at
-the P0 merge `9bf5d5e`, concluded from that ref that P1 had never merged and
-rewrote the merge plan around it. The remote disagreed: P1 merged through pull
-request 2 as `6da2a3f`, the fetch confirms `9e341f8` is an ancestor of
-`origin/main`, and this branch adds exactly its own eight commits over the
-remote. The merge plan is therefore the ordinary one, a single pull request for
-P2, and the lasting lesson went to the engineering log: a merge conclusion is
-drawn against `origin/main` after a fetch, never against a local ref that
-nobody has pulled.
+**P3, the ONNX frontend and the model suite.** Branch
+`phase/p3-onnx-frontend`, cut from `main` at `316f3b8`, which is the P2 merge.
+Nine commits, not pushed. The ninth is the one that carries this table, so it
+is the branch tip and is named by subject rather than by a sha it cannot know.
 
 | Commit | Subject |
 |---|---|
-| `00cce3b` | `feat(dialect): add the npuisa dialect with the memory model and the token` |
-| `784cc68` | `fix(dialect): reject a null memory space and let two transfers be in flight` |
-| `cc640ba` | `test(dialect): add the npuisa round trip, verifier and canonicalization suites` |
-| `8e175af` | `test(dialect): add NPUInterfaceTests and find gtest from either source` |
-| `aefd7fa` | `build(coverage): add scripts/coverage.sh per Section 17.7` |
-| `487745d` | `ci: switch on NPUInterfaceTests and the coverage job, and rebuild the image` |
-| `8dd32a5` | `docs: record the memory model design and hand off P2` |
+| `4b289bd` | `build(deps): install onnxscript and relock the environment` |
+| `0a8bd84` | `docs(adr): record how the frontend emits npu dialect IR from Python` |
+| `0d23a76` | `feat(dialect): let add and mul take the rank 1 channel broadcast operand` |
+| `bf1dc82` | `feat(frontend): add the ONNX importer for the opset 23 operator set` |
+| `677aeb6` | `feat(frontend): add the seeded model suite of Section 15` |
+| `98603d5` | `ci: switch on mypy and pytest` |
+| `fa71f43` | `docs: record the P3 defects and hand off the phase` |
+| `16724ea` | `docs(readme): correct a phase line that has been wrong since P1` |
+| tip | `docs: refresh the phase state commit table` |
 
-The first commit is inherited from an interrupted session. Everything from
-`784cc68` onward is this session.
-
-Below those, and already on this branch because of the branch point above, are
-P1's five: `50b27f1`, `a7fdbba`, `cc8a889`, `ec45f99`, `9e341f8`.
+A note on the branch point, since the previous phase had a scare about exactly
+this. Local `main` was at the P1 merge `6da2a3f` when this session began; a
+fetch showed `origin/main` at `316f3b8`, the P2 merge, and local `main` was fast
+forwarded to it before the branch was cut. P2's lesson held: the conclusion was
+drawn against `origin/main` after a fetch, not against a local ref.
 
 ## Gate status
 
-The P2 gate is Section 23's: round trip and verifier failure coverage;
-`NPUInterfaceTests` green, including the overlap rule decided on effects plus
-view offsets rather than on SSA identity, and a test asserting `ins` and `outs`
-partition the operands exactly once; no compute operation reports itself free of
-effects; the design entry written in `docs/ARCHITECTURE.md` and treated as
-binding by later phases.
+The P3 gate is Section 23's, and every item is **met locally**. Item by item,
+with the test that proves it. Every test named runs in
+`python -m pytest test/Python -q`.
 
-Item by item, with what proves it. Every item is **met locally**; the CI half of
-two of them is **pending an image republish**, which is the orchestrator's next
-action and is not a gap in the work.
-
-### Met, proved locally
-
-- **Round trip coverage.** `test/Dialect/NPUISA/ops.mlir` pipes `npu-opt` output
-  back through `npu-opt` before checking, so an operation that prints something
-  it cannot read back fails rather than passing a parse. Every operation is
-  covered, plus the token in a function signature, both element types, the
-  optional bias on `matmul` and `conv2d`, a grouped convolution, a `ceil_mode = 1`
-  pool with its arithmetic written into the test, an in place relu, and the two
-  function level scratchpad attributes. `test/Dialect/NPUISA/ops-memref.mlir`
-  covers the memory model separately: the two spaces, `memref.alloc` in the
-  scratchpad, the flat buffer with views over it, and the boundary shape of a
-  lowered function.
-- **A verifier failure case per rule.** `test/Dialect/NPUISA/invalid.mlir`, run
-  under `-split-input-file -verify-diagnostics`, so an unexpected diagnostic
-  fails as loudly as a missing one. Every `expected-error` quotes the substring
-  the verifier actually emits rather than matching generically.
-- **The overlap rule decided on effects plus view offsets, never SSA identity.**
-  Three places, at three levels. `@intervening_write_to_a_partially_overlapping_view`
-  in `invalid.mlir` is the lit case: two `memref.view` results over one flat
-  buffer, bytes [0, 64) and [32, 96), different SSA values sharing 32 bytes.
-  `NPUISAInterfaceTest.PartiallyOverlappingViewsOverlap` asserts the same at the
-  arithmetic level and explicitly asserts the two values differ, so the test is
-  about something. `NPUISAInterfaceTest.TheVerifierRejectsAnOverlappingInterveningWrite`
-  and its disjoint sibling assert that the verifier calls the arithmetic, which
-  is a separate claim from the arithmetic being right.
-- **A non static offset is refused rather than assumed disjoint.**
-  `@async_destination_with_a_dynamic_offset` and
-  `@intervening_buffer_with_a_dynamic_offset` in `invalid.mlir`, and
-  `NPUISAInterfaceTest.ANonStaticOffsetIsUnknownAndNotDisjoint`, which asserts
-  `Unknown` and separately asserts *not* `Disjoint`.
-- **`ins` and `outs` partition the operands exactly once.**
-  `NPUISAInterfaceTest.InsAndOutsPartitionOperandsExactlyOnce` over all thirteen
-  table entries, counting coverage per operand so an operand in neither list and
-  an operand in both both fail. Plus `TheOptionalBiasDoesNotMoveTheDestination`,
-  because the destination is operand 2 without a bias and operand 3 with one, and
-  `TheVariadicConcatStillPartitions`, because `concat`'s destination index is not
-  a constant of the operation at all.
-- **No compute operation reports itself free of effects.**
-  `NPUISAInterfaceTest.NoComputeOperationIsFreeOfEffects`, checked two ways: an
-  empty effect list, and `isMemoryEffectFree`, which is what `isOpTriviallyDead`
-  consults. An operation that does not implement the interface at all would pass
-  one and fail the other. The transfers and the asynchronous forms have their own
-  tests. `@compute_instructions_survive_canonicalization` in `canonicalize.mlir`
-  asserts the same thing at the level a user would notice: the function does not
-  canonicalize to a bare `return`.
-- **The async with immediate await canonicalization.**
-  `test/Dialect/NPUISA/canonicalize.mlir`, both directions and both transfer
-  directions, plus the two negative cases that matter: an await two operations
-  later does not fold, and two transfers in flight do not fold.
-- **`docs/ARCHITECTURE.md` written**, Diataxis explanation type, covering the two
-  spaces, the scoped DMA boundary invariant with its three permitted producers,
-  offsets as SSA operands, the token and the overlap rule, and why
-  `TilingInterface` lives on `npu` and not here. It closes with a list of what it
-  binds on later phases.
+| Gate item | Proof |
+|---|---|
+| A pytest per converter in isolation | `test_onnx_importer.py` carries at least one positive case per registered converter: `test_conv_imports_with_its_bias_as_an_operand`, `test_gemm_with_transb_transposes_the_constant_at_import`, `test_matmul_is_rank_two_by_rank_two`, `test_same_shaped_operands_pass_straight_through`, `test_the_carve_out_reaches_mul_as_well_as_add`, `test_relu_imports`, `test_clip_with_a_zero_lower_bound_and_no_upper_bound_is_a_relu`, `test_a_chain_of_identities_is_imported_past_rather_than_refused`, `test_max_pool_imports_with_its_window`, `test_average_pool_with_count_include_pad_and_no_pads_is_accepted`, `test_global_average_pool_becomes_a_full_extent_pool`, `test_batch_normalization_imports_with_its_epsilon`, `test_a_flattening_reshape_keeps_the_batch`, `test_flatten_at_axis_one_keeps_the_batch`, `test_transpose_imports_with_its_permutation`, `test_concat_normalises_a_negative_axis` |
+| Plus the negative cases | Twenty six refusal tests, covering `auto_pad`, a `kernel_shape` disagreeing with the filter, a non constant filter, an impossible convolution extent, `alpha`, `transA`, a batched `MatMul`, a run time broadcast, relu6 and a non zero `Clip` lower bound, `MaxPool` indices, `count_include_pad` with real pads, `AveragePool` dilations, the batch norm training form and non constant parameters, a batch folding `Reshape`, `Flatten` at axis 0, `allowzero` with a literal zero, a non permutation `perm`, a dynamic extent, an integer input, another opset, a custom operator domain, the quantization pair, `Pad`, and an operator with no converter at all |
+| A structural pytest per model | `test_the_exported_graph_has_exactly_the_expected_nodes`, parametrized over all seven models, asserting **exact** node counts rather than a subset, because a subset check passes on a graph that gained a node |
+| Exactly one `Mul` surviving export in the ResNet block | `test_exactly_one_mul_survives_the_resnet_export`, plus `test_the_resnet_scale_is_a_channel_shaped_initializer` |
+| One `Transpose` in the dilated stack | `test_exactly_one_transpose_closes_the_dilated_stack`, which also asserts `perm = [0, 2, 3, 1]` |
+| The determinism test | `test_two_exports_at_the_same_seed_produce_identical_first_layer_weights` over all seven models, bit exact on the first rank 4 initializer, plus `test_a_different_seed_produces_different_weights` so a generator that ignored its seed cannot pass, plus `test_the_hand_built_models_are_deterministic_too` byte comparing the serialized model |
+| The batch preserving flatten test | `test_a_flattening_reshape_keeps_the_batch` and `test_a_reshape_that_folds_the_batch_away_is_refused`; `test_flatten_at_axis_one_keeps_the_batch` and `test_flatten_at_axis_zero_is_refused_by_name`; and `test_every_model_keeps_its_batch_dimension_end_to_end` over the whole suite |
+| The docstring agreement test | `test_the_module_docstring_lists_exactly_the_registered_converters`, asserted in both directions |
+| `Identity, Identity, Conv, BatchNormalization` imports past every `Identity` | `test_a_chain_of_identities_is_imported_past_rather_than_refused`, which asserts the convolution reads `%arg0` directly. The same sequence is at the head of `conv_bn_relu_stack`, so it is covered by a suite model as well as by a fixture |
+| A `Conv` followed by a rank 1 `Add` imports to a rank 1 addend | `test_a_conv_followed_by_a_rank_one_add_imports_to_a_rank_one_addend`, which also asserts the convolution has **no** bias operand, so `-npu-fuse-bias` has something left to fuse rather than a convolution the importer already completed |
+| Every compute operation carries a `tensor.empty` destination | `test_every_compute_operation_has_a_tensor_empty_destination` on a fixture and `test_every_compute_operation_in_every_model_has_its_own_destination` over all seven models. Both compare the sorted list of `outs(...)` operands against the sorted list of `tensor.empty` results, so a missing destination and a reused one both fail |
 
 ### Verification output
 
-Every command below was run on this branch at `487745d`, from
-`/home/elijah/npu-mlir-v2`.
+Every command below was run on this branch at `98603d5`, from
+`/home/elijah/npu-mlir-v2`, in `~/npu-venv`, with `PYTHONPATH` unset in the
+calling environment.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
 | `ninja -C build check-npu` | 7 discovered, 7 passed, 0 failed |
-| `./build/bin/NPUInterfaceTests` | 18 tests, 18 passed |
-| `./build/bin/NPUTilingTests` | 12 tests, 12 passed |
-| `bash scripts/coverage.sh` | 75.7 percent line, 68.1 percent branch, exit 0 |
-| `bash scripts/coverage.sh 99` | exit 1, names the number and the threshold |
+| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0 |
+| `python -m pytest test/Python -q -m "not slow"` | 142 passed, 7 deselected |
+| `python -m pytest test/Python -q -m "slow or not slow"` | 149 passed |
+| `mypy` | no issues found in 11 source files |
+| `black --check .` | 19 files unchanged |
+| `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 102 of 102 files |
-| `pre-commit run --all-files` | all hooks passed |
-| `python scripts/check-reachability.py --skip-models` | pass, exit 0 |
+| `reuse lint` | compliant, 116 of 116 files |
+| `pre-commit run --all-files` | all twelve hooks passed |
+| `python scripts/check-reachability.py --skip-models` | pass, exit 0, and the **import layer is decidable for the first time**: 12 imported computation operations, every one found in `op_mapping.py` |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `.github/workflows/ci.yml` | parses as YAML; job list and step order confirmed |
 | `git status --short` | empty |
 
-Both branches of the gtest search were verified, not just the one this machine
-takes. The build tree branch is what `build/` uses. The system package fallback
-was forced by configuring with `-DNPU_LLVM_THIRD_PARTY=/nonexistent-on-purpose`,
-which produced `GoogleTest: using the system GoogleTest package` and the same
-eighteen passing tests.
+Two extra verifications that are not gate items but are the evidence behind
+decisions taken this phase.
 
-### Met in CI, with the run URLs
+- **`bf1dc82` stands alone.** Checked out into a detached worktree and run on
+  its own: 76 passed, mypy clean. The importer commit does not depend on the
+  model generator commit that follows it, which is what makes the two a
+  sequence rather than one change split for appearances.
+- **The lock file installs on the CI image's interpreter.** A `--dry-run`
+  install of `requirements-lock.txt` inside `ubuntu:24.04`, which is what the
+  LLVM image is built from, resolves every pin on Python 3.12.3, including
+  `torch-2.13.0+cpu-cp312`. That is the single largest risk in the new pytest
+  step and it is measured rather than assumed.
 
-The republish and proof playbook a previous revision of this file laid out for
-the orchestrator has been executed in full, and the evidence is recorded here
-and in the engineering log.
+## Activation proofs, and the exact perturbations
 
-- **The image is republished.** The first attempt died at configure for want of
-  `python3-dev` in the builder stage, recorded as D-0010 with the failing run
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32222527819>.
-  The fixed rebuild published in run
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32223127919>,
-  moving the `llvmorg-22.1.8` tag to `sha256:43f2f9d6...`, an image carrying
-  googletest, the MLIR Python bindings at `/opt/llvm/python_packages/mlir_core`,
-  and `gcovr`. `docker/Dockerfile.dev` follows it by digest; the P0 digest stays
-  resolvable for reproducing the earlier runs.
-- **The branch is green across all four jobs** with the new image:
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32245240094>,
-  the first CI run in this repository to execute `NPUInterfaceTests` and the
-  coverage job for real.
-- **The activation proof ran as specified**: the one line count perturbation,
-  committed alone on a scratch branch since deleted. One fault turned both new
-  gates red in
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32245632105>,
-  `build-and-test` at the `NPUInterfaceTests` step and `coverage` before it
-  reported a number, which is the two nets agreeing. The revert went green in
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32246428660>.
-- **What is not provable until P8 remains P8's obligation**: that the coverage
-  threshold gate rejects a real regression. At a threshold of 0 the comparison
-  cannot fail, so the threshold-gate proof belongs to P8, where thresholds are
-  set from measured values; the perturbation there is deleting a test and
-  showing the job red against a real floor. Locally the arm is proved breakable:
-  `bash scripts/coverage.sh 99` exits 1 naming both numbers, and a non numeric
-  threshold exits 2.
-- **The merge plan concern is resolved** earlier in this file: P1 was merged on
-  the remote all along, so P2 merges as one ordinary pull request.
+Two steps switched on this phase, and Section 19.0 requires each to be broken
+once deliberately, shown red, and restored. Both recipes below break an
+**assertion** rather than the build, so each turns exactly one step red and
+leaves the rest of the pipeline green, which is what makes the proof say
+something about that step rather than about the compiler.
+
+**mypy.** In `python/npu_frontend/onnx_importer.py`:
+
+```
+-PINNED_OPSET: Final[int] = 23
++PINNED_OPSET: Final[str] = 23
+```
+
+The value is unchanged, so pytest, black and ruff all stay green and the C++
+build is untouched. Only mypy speaks. Verified locally: it reports two errors,
+the incompatible assignment itself and a knock on `arg-type` where
+`model_generator.py` passes the constant to `make_opsetid`, which is mypy
+following the type across the package and is a better proof of the step than
+one error would have been. pytest reported 142 passed on the same tree.
+
+**pytest.** In `test/Python/test_model_generator.py`:
+
+```
+-    assert node_counts(suite["resnet_block"]).get("Mul") == 1
++    assert node_counts(suite["resnet_block"]).get("Mul") == 2
+```
+
+One structural assertion, on the model that carries the only `Mul` in the suite.
+Verified locally: exactly one test fails, `mypy` stays green, and nothing else
+moves.
+
+**The exit 5 arm, which is a separate claim and deserves its own perturbation.**
+The activation table says an empty collection returns 5 and is never read as a
+pass, and a green pytest step does not prove that arm works. The recipe this
+paragraph first carried, pointing `testpaths` at a directory with no tests, was
+run and proved nothing: the CI step passes `test/Python` on the command line,
+and a command line path makes pytest ignore `testpaths` entirely, so CI stayed
+green while a bare local pytest exited 5. The working perturbation deselects
+every test through an unsatisfiable default marker expression, which travels
+through any invocation. In `pyproject.toml`:
+
+```
+-addopts = "-m 'not slow'"
++addopts = "-m 'slow and not slow'"
+```
+
+pytest then deselects everything, exits 5 through the exact command CI runs,
+and the step fails with the `::error::pytest collected no tests and exited 5.`
+line rather than passing. Both runs, the no-op green and the real red, are in
+the engineering log with the lesson: rehearse a proof under the exact
+invocation the gate uses.
 
 ## Open questions
 
-Four. None blocks the gate.
+Five. None blocks the gate.
 
-**`test/Dialect/NPUISA/dma-boundaries.mlir` does not exist yet, and Section 8
-names it.** The scoped DMA boundary invariant is asserted "immediately after
-lowering and before allocation", and there is no lowering until P4. A file
-asserting the invariant at P2 would have nothing to run it against: it could only
-hand write IR that already satisfies the shape, which asserts that I can write a
-correct example rather than that the pipeline produces one. The file therefore
-belongs to P4, with the lowering pass, and `docs/ARCHITECTURE.md` records the
-invariant and its three permitted producers now so that P4 implements against a
-written rule. Flagging it because a reader who greps Section 8 for that filename
-will not find it and should know why.
+**The `npu.add` and `npu.mul` relaxation is a P1 dialect change made at P3, and
+a reviewer should look at it as one.** The reasoning is in
+`docs/adr/0005-channel-broadcast-on-add-and-mul.md` and the conflict it resolves
+is D-0012. The short version: P1's rule made Section 11's carve out
+unimplementable for `Add`, because folding the addend into the convolution at
+import leaves `-npu-fuse-bias` nothing to fuse, and unrepresentable for `Mul`,
+because a per channel scale has no bias operand to be folded into. A frontend
+cannot be written against a dialect that refuses the IR the specification asks
+it to produce. It obliges P4 and P7: an add or a multiply with a rank 1 rhs
+lowers to a per channel broadcast, and the kernel reads that operand with a
+channel stride of one and a spatial stride of zero. Both are already implied by
+`npu.batch_norm`, which is why the relaxation is cheaper than it looks, but
+neither should be discovered from a verifier failure.
 
-**`npuisa.concat` cannot express an empty operand list in its custom assembly
-syntax.** `ins()` and `ins( : )` are both parse errors, because the format prints
-the variadic operands and their types around a literal `:` and with no operands
-there is nothing on either side for the parser to latch onto. The verifier rule
-that rejects an empty concatenation is still correct and still needed, because a
-pass building the operation programmatically can produce one, and the test spells
-it in the generic form. The question I am leaving open rather than deciding
-unilaterally is whether the assembly format should grow an optional group so the
-empty case is writable. My inclination is no: it would add syntax for a form
-nobody should write, and the generic form already covers the test. Recorded so
-that it is a decision rather than an omission.
+**`GlobalAveragePool` does not come from the model Section 15 assigns it to.**
+The dynamo exporter on torch 2.13 lowers every spelling of adaptive average
+pooling to `ReduceMean`, which is not in this project's operator set, so the
+depthwise separable block pools with an `AveragePool` whose kernel is the full
+spatial extent. That is global average pooling and it imports to the same
+`npu.avg_pool2d`, so nothing the pipeline sees is different, but the ONNX node
+type differs from what Section 15 implies and the `GlobalAveragePool` converter
+gets its suite model in the conv plus batch norm stack instead. Recorded rather
+than quietly done, because a reader comparing the suite against Section 15's
+table will notice the difference and should find the reason here.
 
-**`docs/DIALECT_REFERENCE.md` covers the `npu` dialect only, and the `npuisa`
-dialect has no generated reference.** That is deliberate and matches the
-specification rather than being an omission: Section 5.4 puts the opcode table,
-operand encoding, semantics, memory model, validation rules, byte order policy
-and version policy in `docs/ISA_MANUAL.md`, written like a small processor
-manual, and the activation table schedules its staleness gate at P6 with the
-binary format it documents. So the `npuisa` operations are documented today by
-their ODS descriptions, which are unusually full, and by
-`docs/ARCHITECTURE.md`; the manual and its gate arrive at P6. The `npu-dialect-doc`
-target and its CI staleness step are unchanged and still green. Recorded because
-a reader who sees a P1 dialect with a generated reference and a P2 dialect
-without one will reasonably wonder which of the two is the mistake.
+**mypy checks `python/npu_frontend` and `scripts`, not `test/Python`.** That is
+P0's configuration and the activation table guards the step on
+`python/npu_frontend/` existing, so the scope and the guard agree and nothing
+was weakened here. Widening it to the tests would be strictly better and is real
+work: the fixtures would need annotating under `disallow_untyped_defs`, and the
+lint job would need `pytest` installed for its `py.typed` marker. Left as a
+decision for whoever next touches the mypy configuration rather than taken
+silently in a phase that had no reason to take it.
 
-**The gtest fallback depends on `libgtest-dev` shipping prebuilt libraries.** On
-this base image it ships `libgtest.a`, `libgtest_main.a` and a CMake package
-config, which is what `find_package(GTest)` needs. Older Debian derivatives
-shipped headers and sources only, with no library and no config, and on one of
-those the fallback would find nothing and the unit tests would silently not
-build. The Dockerfile smoke test checks for the config file and both libraries
-explicitly rather than trusting the package name, so a base image change that
-regressed this fails the image build rather than producing an image whose CI
-quietly stops running the unit tests. That is the mitigation; the dependency
-itself remains.
+**The five input classes and the tolerance work of Section 17.4 are not here,
+and should not be.** This phase produces models and IR; there is no simulator to
+compare against until P7 and no end to end pipeline until P8. The `slow` marker
+carries seven cells today, `test_every_model_imports_at_a_second_seed`
+parametrized over the suite, so the fast and slow split is real rather than
+declared and the CI step that runs the slow cells at P10 will have something to
+run. The matrix that marker is really for arrives with it.
+
+**`experiments/models/` does not exist, and `check-reachability.py` reads it for
+the model layer.** Models are generated into a caller supplied directory and
+`.onnx` files are never committed, so there is no directory for the full check to
+point at. The full check is off until P8 per the activation table and the
+`--skip-models` form is what runs today, so nothing is broken. But whoever turns
+the full check on at P8 has to decide where the model layer looks: either the
+benchmark harness generates into `experiments/models/` before the check runs, or
+`LAYER_HOMES["model"]` moves to the generator's registry in
+`python/npu_frontend/model_generator.py`, which is where the answer actually
+lives.
 
 ## Next command
 
 ```bash
-gh workflow run llvm-image.yml --ref phase/p2-npuisa-dialect
+git push -u origin phase/p3-onnx-frontend
 ```
 
-Wait for it to publish, then push the branch, then perform the proofs in the
-order given, then open the merge pull request.
+Then watch CI. Expect `lint` to run `mypy` for the first time, and
+`build-and-test` to install the Python dependencies and run `pytest` for the
+first time; that install is a few hundred megabytes on the first run and cached
+on every one after, keyed on the lock file's hash. Then perform the two
+activation proofs above, each as its own pull request so the `pull_request`
+trigger fires, record which job and which step caught each in
+`docs/ENGINEERING_LOG.md` with the run URLs, revert them, and open the merge
+pull request.
+
+**No image republish is needed.** P2 switched the MLIR Python bindings on in the
+image and they are at `/opt/llvm/python_packages/mlir_core`, already on
+`PYTHONPATH` there. The new pytest step installs its Python dependencies into
+the running container from `requirements-lock.txt` rather than needing them
+baked into the image.
 
 ## Next phase
 
-**P3, the ONNX frontend and the model suite.** The importer per Section 11 and
-the seven model generator per Section 15, at the opset P0 resolved.
-
-P3 inherits two things from P2 that it would otherwise have had to do itself.
-The image already carries the MLIR Python bindings at
-`/opt/llvm/python_packages/mlir_core`, already on `PYTHONPATH`, so the pytest
-activation at P3 needs the importer and its tests and no image republish. And
-`onnxscript` must be installed before that phase starts: torch's dynamo exporter
-imports it and Section 15 forbids the `dynamo=False` escape, so a missing
-`onnxscript` is the single most likely blocker there.
+**P4, lowering to `npuisa`.** `ConversionTarget`, `TypeConverter`,
+`applyPartialConversion`, with the `one-shot-bufferize` attempt made and its
+outcome recorded either way. Two things P3 leaves on P4's desk beyond the
+roadmap entry: `npu.add` and `npu.mul` with a rank 1 rhs need a per channel
+broadcast lowering, and `test/Dialect/NPUISA/dma-boundaries.mlir`, which Section
+8 names and which P2's handoff correctly deferred to the phase that has a
+lowering to assert against.
 
 ## The frozen v1 fallback
 

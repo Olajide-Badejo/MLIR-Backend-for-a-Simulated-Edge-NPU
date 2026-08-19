@@ -165,11 +165,53 @@ func.func @add(%a: tensor<2x8x4x4xf32>, %b: tensor<2x8x4x4xf32>,
   return %0 : tensor<2x8x4x4xf32>
 }
 
+// The channel broadcast carve out on npu.add: a rank 1 rhs of length C against
+// a rank 4 result of channel extent C. This is the shape a separate bias add
+// has, it is what -npu-fuse-bias guards on, and it is the one broadcast this
+// dialect represents rather than expanding at import.
+// CHECK-LABEL: func.func @add_channel_broadcast
+func.func @add_channel_broadcast(%a: tensor<2x8x4x4xf32>, %b: tensor<8xf32>,
+                                 %d: tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32> {
+  // CHECK: npu.add ins(%{{.*}}, %{{.*}} : tensor<2x8x4x4xf32>, tensor<8xf32>)
+  // CHECK-SAME: outs(%{{.*}} : tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32>
+  %0 = npu.add ins(%a, %b : tensor<2x8x4x4xf32>, tensor<8xf32>)
+               outs(%d : tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32>
+  return %0 : tensor<2x8x4x4xf32>
+}
+
+// The same carve out with the channel axis moved by the layout encoding. The
+// rhs length is still 8 and the result extent that has to match it is still the
+// channel one, which under NHWC is dimension 3 rather than dimension 1. A rule
+// written against dimension 1 would accept a rhs of length 4 here.
+// CHECK-LABEL: func.func @add_channel_broadcast_nhwc
+func.func @add_channel_broadcast_nhwc(
+    %a: tensor<2x4x4x8xf32, #npu.layout<nhwc>>, %b: tensor<8xf32>,
+    %d: tensor<2x4x4x8xf32, #npu.layout<nhwc>>)
+    -> tensor<2x4x4x8xf32, #npu.layout<nhwc>> {
+  // CHECK: npu.add ins(%{{.*}}, %{{.*}} : tensor<2x4x4x8xf32, #npu.layout<nhwc>>, tensor<8xf32>)
+  %0 = npu.add ins(%a, %b : tensor<2x4x4x8xf32, #npu.layout<nhwc>>,
+                            tensor<8xf32>)
+               outs(%d : tensor<2x4x4x8xf32, #npu.layout<nhwc>>)
+       -> tensor<2x4x4x8xf32, #npu.layout<nhwc>>
+  return %0 : tensor<2x4x4x8xf32, #npu.layout<nhwc>>
+}
+
 // CHECK-LABEL: func.func @mul
 func.func @mul(%a: tensor<2x8x4x4xf32>, %b: tensor<2x8x4x4xf32>,
                %d: tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32> {
   // CHECK: npu.mul ins(%{{.*}}, %{{.*}} : tensor<2x8x4x4xf32>, tensor<2x8x4x4xf32>)
   %0 = npu.mul ins(%a, %b : tensor<2x8x4x4xf32>, tensor<2x8x4x4xf32>)
+               outs(%d : tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32>
+  return %0 : tensor<2x8x4x4xf32>
+}
+
+// The per channel scale of a scaled residual branch, which is the second
+// operator the carve out reaches and the reason it is not called a bias rule.
+// CHECK-LABEL: func.func @mul_channel_broadcast
+func.func @mul_channel_broadcast(%a: tensor<2x8x4x4xf32>, %s: tensor<8xf32>,
+                                 %d: tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32> {
+  // CHECK: npu.mul ins(%{{.*}}, %{{.*}} : tensor<2x8x4x4xf32>, tensor<8xf32>)
+  %0 = npu.mul ins(%a, %s : tensor<2x8x4x4xf32>, tensor<8xf32>)
                outs(%d : tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32>
   return %0 : tensor<2x8x4x4xf32>
 }

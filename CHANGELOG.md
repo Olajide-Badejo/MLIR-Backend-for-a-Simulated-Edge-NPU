@@ -6,6 +6,64 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P3: the ONNX frontend and the model suite
+
+- **`onnxscript` is a dependency now.** torch's dynamo exporter imports it at
+  export time and nothing else in the environment pulled it in, so the model
+  generator could not have run without it. `pyproject.toml` pins
+  `onnxscript==0.7.1` and `requirements-lock.txt` carries it and the
+  `onnx-ir==1.0.0` it resolved to.
+- **The ONNX frontend exists.** `python/npu_frontend` imports an ONNX model at
+  opset 23 to `npu` dialect IR on tensors, over sixteen converters: `Add`,
+  `AveragePool`, `BatchNormalization`, `Clip`, `Concat`, `Conv`, `Flatten`,
+  `Gemm`, `GlobalAveragePool`, `Identity`, `MatMul`, `MaxPool`, `Mul`, `Relu`,
+  `Reshape` and `Transpose`. Anything else is refused by name, and
+  `QuantizeLinear`, `DequantizeLinear` and `Pad` are refused with a reason
+  rather than as merely unknown.
+- **Nothing leaves the frontend unverified.** `import_model` returns the text
+  `./build/bin/npu-opt` printed, so every module goes through the real parser,
+  the real verifiers and the real printer, and any `npu` operation carrying a
+  discardable attribute is rejected. `npu-opt` is a runtime dependency of the
+  package rather than a test one; when it cannot be found the importer raises
+  and names the three places it looked.
+- **Every compute operation gets a `tensor.empty` destination**, materialised
+  immediately before it, and every operation carries a `NameLoc` with its ONNX
+  node name which the returned text prints.
+- **`docs/ONNX_FRONTEND.md`** is the frontend's contract: the converter table,
+  the broadcasting policy and its channel carve out, the `Clip` policy, the
+  `AveragePool` and `Reshape` rules, and a how to section.
+- **The seeded model suite exists**, seven structurally distinct models from one
+  fixed seed: `lenet`, `depthwise_separable`, `resnet_block`,
+  `inception_block`, `conv_bn_relu_stack`, `dilated_stack` and `lenet_batched`.
+  Five are exported from PyTorch through the dynamo exporter at opset 23; the
+  conv plus batch norm stack and the dilated stack are built with the ONNX
+  construction API, for the two reasons Section 15 gives. `GENERATOR_VERSION` is
+  `1.0.0`. No `.onnx` file is committed; they are regenerated from the seed.
+- **`mypy` and `pytest` are on in CI.** `mypy` runs in the lint job over
+  `python/npu_frontend` and `scripts`, with `numpy` installed beside it because
+  it ships the type information the frontend is checked against. `pytest` runs
+  in `build-and-test`, after the build because it needs a built `npu-opt`, with
+  the Python dependencies installed from `requirements-lock.txt` and an
+  `actions/cache` on the pip cache keyed on that file's hash. An exit code of 5
+  is turned into a failure with a message: an empty collection is never read as
+  a pass.
+- **The depthwise block's global pooling exports as `AveragePool` with a full
+  extent kernel, not as `GlobalAveragePool`.** The dynamo exporter lowers every
+  spelling of adaptive average pooling in torch 2.13, including
+  `x.mean(dim=(2, 3))`, to a `ReduceMean` node, which is not in this project's
+  operator set. The two compute the same thing and import to the same
+  `npu.avg_pool2d`. `GlobalAveragePool` gets its suite model in the conv plus
+  batch norm stack instead.
+- **`npu.add` and `npu.mul` accept a rank 1 channel broadcast on the rhs.** IR
+  that `npu-opt` previously rejected now verifies: an addend or a scale of rank
+  1, whose length is the result's channel extent read through its layout,
+  against a rank 4 result. The lhs is still always the result shape and only the
+  rhs may be rank 1, so a channel broadcast has exactly one spelling. Nothing
+  that verified before is rejected now and no numerics move. This is Section
+  11's carve out made representable: without it a per channel `Mul` has nowhere
+  to go and `-npu-fuse-bias` has nothing to fuse. Reasoning in
+  `docs/adr/0005-channel-broadcast-on-add-and-mul.md`, and D-0012.
+
 ### Phase P2: the `npuisa` dialect and the memory model
 
 - **The `npuisa` dialect exists.** `npu-opt` now parses, verifies and prints the
