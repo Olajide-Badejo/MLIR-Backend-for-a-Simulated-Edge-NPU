@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+version = 1
+SPDX-PackageName = "npu-mlir"
+SPDX-PackageSupplier = "Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-PackageDownloadLocation = "https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU"
+
+# Everything in this file is here because the file itself cannot carry a
+# header. That is the whole test I apply before adding an entry: if a header
+# would work, the header goes in the file and not in here, because a header
+# travels with the file and a table entry does not.
+
+# The licence text of the project's own licence. Adding a copyright header to
+# the MIT text would be modifying the licence, which is not a thing anyone is
+# allowed to do.
+[[annotations]]
+path = "LICENSE"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
+# The four files carried forward from v1 as live files rather than as history.
+# They are my own work and are MIT like the rest of the project. They get their
+# tags here rather than in a header because the v1 tree removal commit promised
+# to carry them forward unmodified, and editing four files to add a header in
+# the very next commit would make that promise false for no gain.
+[[annotations]]
+path = [
+  "CHANGELOG.md",
+  "docs/ASSESSMENT.md",
+  "docs/ENGINEERING_LOG.md",
+  "report/references.bib",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
+# The dash linter fixture. Every byte of these files is the test: each one
+# exists to pin what the linter does with a particular sequence of characters,
+# and half of them are supposed to fail. A header would add lines the fixture
+# did not ask for and, in the .tex and .md cases, would put a comment syntax
+# into a file whose parsing is part of what is under test.
+[[annotations]]
+path = "scripts/testdata/dash-lint-fixture/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
