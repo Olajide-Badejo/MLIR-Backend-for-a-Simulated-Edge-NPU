@@ -332,3 +332,52 @@ None.
   gcovr's own error message names. The warn form keeps the artifact visible in
   the log; the threshold arm and rule 2 of Section 17.7 (no percentage from a
   failing suite) are unaffected.
+
+### D-0012 the dialect's no broadcast rule made Section 11's carve out unrepresentable
+
+- **Found:** 2026-08-19, phase P3, while writing the importer's broadcasting
+  helper against Section 11.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** on `main` at `316f3b8`, ask `npu-opt` to verify the IR that
+  Section 11's carve out and Section 15's ResNet block both describe:
+
+  ```mlir
+  func.func @f(%a: tensor<2x8x4x4xf32>, %s: tensor<8xf32>,
+               %d: tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32> {
+    %0 = npu.mul ins(%a, %s : tensor<2x8x4x4xf32>, tensor<8xf32>)
+                 outs(%d : tensor<2x8x4x4xf32>) -> tensor<2x8x4x4xf32>
+    return %0 : tensor<2x8x4x4xf32>
+  }
+  ```
+
+  It is rejected with `'npu.mul' op does not broadcast, so the rhs shape must
+  equal the result shape`.
+- **What was wrong:** two layers of the specification disagreed and the
+  disagreement sat in the tree for two phases. Section 11 keeps a rank 1 channel
+  shaped initializer unexpanded because `-npu-fuse-bias` guards on a channel
+  shaped constant addend, and Section 15 puts the same carve out on a per
+  channel `Mul` in the ResNet block. P1's `NPUOps.td` instead required both
+  operands of `npu.add` and `npu.mul` to have the result shape exactly, and
+  recorded that the carve out "is expressed as a bias operand on the consuming
+  convolution". That reading fails twice. Folding a `Conv` plus rank 1 `Add`
+  into the convolution's bias at import leaves `-npu-fuse-bias` nothing to fuse,
+  which is exactly the failure the carve out exists to prevent; and a per
+  channel scale has no bias operand anywhere to be folded into, so the rule had
+  no answer for `Mul` except expansion, which Section 11 forbids in the same
+  paragraph.
+
+  Nothing was silently wrong at runtime, because nothing had run: there was no
+  importer to emit the IR and no pass to consume it. What was wrong is that the
+  earliest layer had closed off a shape two later layers require, and it would
+  have surfaced at P6 as a fusion pass with a zero ablation row rather than as
+  an error anybody could act on.
+- **Resolution:** `npu.add` and `npu.mul` now accept a rank 1 rhs whose length
+  equals the result's channel extent under its layout, against a rank 4 result,
+  and refuse everything else. Only the rhs may be rank 1, which preserves P1's
+  actual concern that one fact should not have two representations. The
+  regression coverage is `@add_channel_broadcast`,
+  `@add_channel_broadcast_nhwc` and `@mul_channel_broadcast` in
+  `test/Dialect/NPU/ops.mlir`, which the previous verifier rejects and this one
+  accepts, plus five negative cases in `test/Dialect/NPU/invalid.mlir` that
+  bound the relaxation. Recorded as
+  `docs/adr/0005-channel-broadcast-on-add-and-mul.md`.

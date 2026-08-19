@@ -13,6 +13,15 @@ Semantic Versioning once a release is tagged.
   generator could not have run without it. `pyproject.toml` pins
   `onnxscript==0.7.1` and `requirements-lock.txt` carries it and the
   `onnx-ir==1.0.0` it resolved to.
+- **`npu.add` and `npu.mul` accept a rank 1 channel broadcast on the rhs.** IR
+  that `npu-opt` previously rejected now verifies: an addend or a scale of rank
+  1, whose length is the result's channel extent read through its layout,
+  against a rank 4 result. The lhs is still always the result shape and only the
+  rhs may be rank 1, so a channel broadcast has exactly one spelling. Nothing
+  that verified before is rejected now and no numerics move. This is Section
+  11's carve out made representable: without it a per channel `Mul` has nowhere
+  to go and `-npu-fuse-bias` has nothing to fuse. Reasoning in
+  `docs/adr/0005-channel-broadcast-on-add-and-mul.md`, and D-0012.
 
 ### Phase P2: the `npuisa` dialect and the memory model
 

@@ -39,3 +39,4 @@ parsed and frequently edited, and a generated index is none of those.
 | 0002 | [Pin the ONNX opset at 23, bound by the exporter](adr/0002-onnx-opset-pin.md) | Accepted | 2026-08-19 |
 | 0003 | [The resolved tool matrix, as installed on 2026-08-19](adr/0003-resolved-tool-matrix.md) | Accepted | 2026-08-19 |
 | 0004 | [Emit `npu` IR from Python through unregistered operations, verified by `npu-opt`](adr/0004-frontend-ir-emission-mechanism.md) | Accepted | 2026-08-19 |
+| 0005 | [`npu.add` and `npu.mul` take a rank 1 channel operand, and the importer normalises to it](adr/0005-channel-broadcast-on-add-and-mul.md) | Accepted | 2026-08-19 |
