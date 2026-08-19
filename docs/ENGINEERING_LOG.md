@@ -1849,3 +1849,145 @@ One process lesson closes the phase. A session working from a stale local main
 concluded P1 had never merged and rewrote the merge plan around that; the fetch
 showed P1 merged all along. A merge conclusion is drawn against origin/main
 after a fetch, never against a local ref nobody has pulled.
+
+## 2026-08-19 Phase 3: the frontend, and four things the exporter decided for me
+
+Four of this phase's decisions were not made by reading Section 11. They were
+made by exporting a model, looking at what came back, and finding that the
+document's premise did not hold on this toolchain. Recording all four together
+because they have the same shape: a rule that reads as arbitrary in the
+specification turns out to be describing a graph the exporter does not produce.
+
+**The exporter writes `count_include_pad = 1` on every `AveragePool`.** Section
+11 says to reject `count_include_pad = 1` with a diagnostic naming the node, and
+the reason it gives is that this project's kernel divides by the contributing
+count. Implemented literally, that rejects every average pool the dynamo
+exporter can emit, pads or no pads, because it sets the attribute
+unconditionally. The two settings disagree only when a window overlaps the
+padded region, so the rule became: refuse `count_include_pad = 1` when any pad
+is non zero, accept it when every pad is zero, and say which in the diagnostic.
+That is not a softening. The acceptance condition is checked, it is the
+condition under which the two behaviours are provably identical, and both halves
+have a test.
+
+The same shape again with `Reshape`: the exporter writes `allowzero = 1`
+unconditionally, and `allowzero` only changes anything when the target shape
+contains a zero. Same resolution, same reasoning, same pair of tests.
+
+**`AdaptiveAvgPool2d` does not export as `GlobalAveragePool`.** Section 15 puts
+global average pooling in the depthwise separable block. On torch 2.13 every
+spelling of it, `nn.AdaptiveAvgPool2d((1, 1))`, `F.adaptive_avg_pool2d`, and
+`x.mean(dim=(2, 3))`, lowers to a `ReduceMean` node, which is not in this
+project's operator set. `nn.AvgPool2d` with a kernel equal to the spatial extent
+does export as `AveragePool` and computes exactly the same thing, so the block
+keeps its purpose and the `GlobalAveragePool` converter got its suite model in
+the conv plus batch norm stack instead. The alternative was hand building a
+third model, which would have cost the suite its only torch exported grouped
+convolution.
+
+**The `Mul` that Section 15 calls a rank 1 per channel scale exports as a rank 4
+initializer.** Written in PyTorch as `scale.reshape(1, -1, 1, 1)`, which is the
+only way to write it, constant folding turns the reshape into an initializer of
+dims `[1, 8, 1, 1]`. A carve out that matched only a literally rank 1
+initializer would have expanded every per channel constant in the suite and
+fired on nothing. So the carve out is defined by what a constant broadcasts as
+rather than by the rank it was stored with.
+
+Which led straight into the phase's worst near miss, D-0014. Having widened the
+match, I widened it one shape too far and accepted `[C]` as well. ONNX
+broadcasting aligns from the trailing axis, so `[C]` against `N x C x H x W`
+broadcasts over the width and not over the channels, and on any model where the
+channel count and the width are equal that would have imported a per column
+vector as a per channel one. Legal IR, passes every verifier, wrong numbers, and
+nothing would have caught it before the end to end comparison at P8. The
+regression test is written on a `1 x 4 x 3 x 4` activation on purpose, where the
+two readings differ only if you know the rule.
+
+**The specification's own layers disagreed, and the dialect moved.** Section 11
+keeps a channel shaped constant unexpanded so that `-npu-fuse-bias` has a
+channel shaped addend to guard on; Section 15 puts the same carve out on a per
+channel `Mul`. P1's `NPUOps.td` had instead required both operands of `npu.add`
+and `npu.mul` to have the result shape, with the carve out becoming a bias
+operand on the consuming convolution. That reading fails both cases: folding the
+addend into the convolution at import leaves the fusion pass nothing to fuse,
+which is the outcome the carve out exists to prevent, and a per channel scale
+has no bias operand anywhere to be folded into. So the verifier relaxed, to a
+rank 1 rhs of the result's channel extent and nothing else, with only the rhs
+allowed to be the broadcast side so there is one spelling for the pass to match.
+D-0012 and `adr/0005`.
+
+## 2026-08-19 Phase 3: a suite that reported every test passing and then segfaulted
+
+**Symptom.** The first full run of the new pytest suite printed
+`13 failed, 122 passed` and then exited 139. The thirteen failures were fixture
+problems and were expected to be fixable. The 139 was not in the summary at all.
+
+**Root cause.** `ModuleBuilder` entered MLIR's `InsertionPoint` context in
+`begin_function` and left it in `end_function`, which is the happy path only.
+About a third of this suite's tests exist to make a converter raise, and every
+one of those unwound out of the builder without reaching `end_function`, leaving
+the insertion point on MLIR's thread local stack pointing into a module that was
+then freed. Nothing failed at the time. The crash came at interpreter shutdown,
+after the last test had reported a clean expected failure.
+
+**Why it is worth an entry rather than only a defect number.** The failure mode
+is a suite whose summary line says everything passed and whose exit code says
+the process died, and those are the two things a reader and a runner
+respectively look at. A CI step that grepped the summary would have called it
+green. The reason this project's would not is that the step checks the exit
+code, which is also what makes the exit 5 rule for an empty collection worth
+writing down: both are cases where the exit code is the only honest signal.
+
+**Chosen fix.** Two `contextlib.ExitStack`s, an outer one for the context and
+the location and an inner one for the function's insertion point, with
+`__exit__` closing both unconditionally. `ExitStack.close` is idempotent, so
+`end_function` closing the inner one on the happy path costs nothing. Verified
+in both directions: patched back to the old teardown the suite exits 139 on 74
+passing tests, restored it exits 0 on the same 74. D-0013.
+
+**One smaller trap from the same session, for the next person who adds a package
+directory.** `reuse lint` failed on the `__pycache__` files under the new,
+entirely untracked `python/` directory, even though `.gitignore` covers
+`__pycache__/` and `git check-ignore` agrees. Staging the directory made it
+pass. reuse's gitignore handling does not reach inside a directory git has never
+seen, so a new package root will fail reuse until its first `git add`. Not a
+defect in this repository, but it costs ten minutes if you go looking for a
+missing SPDX header that is not missing.
+
+## 2026-08-19 Phase 3: how the frontend emits IR, and the one hazard it buys
+
+The `npu` dialect is C++ only and there are no Python bindings for it, which
+Section 5.1 does not mention because it draws the importer and the dialect
+without saying how the first reaches the second. Three ways exist and the record
+is `adr/0004`; the chosen one is unregistered operations through the MLIR Python
+bindings with `./build/bin/npu-opt` as the verification gate, made mandatory
+rather than optional, so the text `npu-opt` prints is what `import_model`
+returns.
+
+The reason to write it in the log as well as in the record is the hazard, which
+took a probe to find and would not have been found by reading. MLIR promotes the
+inherent attributes of a registered operation into its properties when it parses
+a generic form, and an attribute whose name matches no inherent one is kept as a
+**discardable** attribute rather than rejected. So `"npu.conv2d"(...) {strydes =
+array<i64: 9, 9>}` parses, prints, verifies, and runs with `strides` at its ODS
+default. Nothing anywhere says a word about it.
+
+The probe that found it is worth repeating on any future dialect: print the
+module generically through `npu-opt --mlir-print-op-generic` and look at where
+each attribute landed. Properties print as `<{...}>` and discardables as a bare
+`{...}` after them, so the distinction is visible in text and the check is a
+parse rather than a judgement. The importer runs that scan on every module and
+refuses any `npu` operation carrying a discardable dictionary. No operation it
+emits has a legitimate one, so the rule is total and needs no exceptions list.
+
+Two smaller findings from the same probe. Optional and variadic operands need no
+`operandSegmentSizes` on any operation of this dialect, because each has at most
+one variadic group and MLIR infers the split; passing one anyway leaves it
+sitting in the discardable dictionary, which is how the hazard was noticed in
+the first place. And `str(module)` prints without debug information, so the
+`NameLoc` every operation carries was being dropped on the way to `npu-opt` and
+the round trip was handing back file and line locations pointing at stdin. The
+builder asks for `get_asm(enable_debug_info=True)` and the round trip asks for
+`--mlir-print-debuginfo`, which is what makes Section 11's requirement that
+every operation carries its ONNX node name something the next stage can actually
+see.
