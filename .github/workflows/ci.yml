@@ -192,10 +192,16 @@ jobs:
       - name: "Configure (activation table: P0, on)"
         run: |
           set -euxo pipefail
+          # LLVM_EXTERNAL_LIT: an installed LLVM does not ship the build tree's
+          # llvm-lit script, so against /opt/llvm the lit target must be told
+          # to use the pip installed lit. The local build against the LLVM
+          # build tree does not need this, which is exactly why CI caught it
+          # (D-0005).
           cmake -G Ninja -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
             -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \

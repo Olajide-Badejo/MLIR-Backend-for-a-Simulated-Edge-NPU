@@ -110,3 +110,23 @@ None.
   bash is present in the image, it just has to be requested by name. The
   failing run is the before evidence and the next push run is the after
   evidence; both URLs are in the engineering log.
+
+### D-0005 check-npu in CI asked for the build tree llvm-lit that an installed LLVM does not have
+
+- **Found:** 2026-08-19, phase P0, by CI on the first run that got past D-0004
+  (run 32213209291).
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** configure this repository against an installed LLVM prefix
+  (the /opt/llvm of the CI image) without LLVM_EXTERNAL_LIT and run
+  `ninja -C build check-npu`. The lit target invokes
+  `build/bin/llvm-lit`, which does not exist: that script is generated in an
+  LLVM build tree and is not part of `ninja install`.
+- **What was wrong:** the local build links against the LLVM build tree at
+  `~/llvm-project/build`, which carries `llvm-lit`, so the default lit path
+  works there and the omission was invisible. The CI image carries an install
+  tree, where the default is wrong and the pip installed `lit` is the intended
+  runner.
+- **Resolution:** the CI configure step passes
+  `-DLLVM_EXTERNAL_LIT="$(command -v lit)"`. The local configure stays as it
+  is, because against a build tree the default is correct and pinning the pip
+  lit there would add a dependency the local flow does not need.
