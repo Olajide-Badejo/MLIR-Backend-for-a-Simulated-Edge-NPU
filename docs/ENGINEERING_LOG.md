@@ -1618,3 +1618,70 @@ printing that it is off:
 Neither defect was in the compiler, both were in the difference between the
 environment the code was written in and the environment it ran in, and both
 were caught by the skeleton on its first day. Cheap net, first catch.
+
+## 2026-08-19 Phase 1: the dialect, and three things that were harder than the design implies
+
+The `npu` dialect landed in three commits: the operations with their verifiers,
+the tiling interface as external models, and the tests with the generated
+reference and the reachability script. Fourteen operations, three attributes,
+one shared piece of shape arithmetic, and no types of its own. What follows is
+what did not go the way the design's prose suggested it would.
+
+**The shared windowed arithmetic was the easy part, and the drop rule was not.**
+The design says the opset 19 pooling formula gains a rule: with `ceil_mode = 1`,
+a sliding window whose first element would start inside the right padded region
+is dropped. It says the rule is routinely missed. What it does not say, and what
+took a while to see, is that the rule is nearly untestable by accident. Most
+parameter sets where the drop fires are parameter sets where the ceiling and the
+floor already agree, so the drop takes the ceiling's answer back down to the
+floor's and the whole rule is invisible. A test written without noticing that
+would pass against an implementation that had never implemented the drop at all.
+
+The case in `ops.mlir` is therefore chosen rather than found: input 6, kernel 2,
+stride 3, pads 0 and 1. The ceiling gives 3, the floor gives 2, and the drop
+takes the ceiling's 3 down to 2. Beside it sits input 7 with the same kernel and
+stride and no padding, where the ceiling gives 3, the floor gives 2, and the drop
+does **not** fire because the last window starts at 6 and the input runs to 7.
+The pair is what pins the rule: an implementation without the drop passes the
+second and fails the first, and an implementation that always drops fails the
+second. The arithmetic for both is written into the test file as a comment,
+because a test that asserts a shape without saying where the shape came from is
+a test nobody can check.
+
+**Two ODS features the design would have let me use turned out to be wrong for
+this dialect, and both failed at link time rather than at their cause.**
+`useDefaultTypePrinterParser` generates declarations for `parseType` and
+`printType`; this dialect defines no types, so nothing defines them, and the
+build gets an undefined symbol at the final link of `npu-opt` with no indication
+that a one line TableGen flag caused it. And `SingleBlockImplicitTerminator`
+builds a terminator for an empty region by calling `YieldOp::build` with no
+operands, which does not exist and should not: `npu.yield` always carries the
+value it yields, and a fused region with an implicitly created empty yield would
+be a region yielding nothing while its operation has a result. Both are now
+`SingleBlock` plus an explicit verifier rule, and both have their reason written
+in the source beside them, because the next person to reach for the convenient
+flag will reach for it for the same reason I did.
+
+**The unit tests do not use `add_mlir_unittest`, and that is not a style
+choice.** `add_mlir_unittest` wraps LLVM's `add_unittest`, which lives inside
+the LLVM build and is not exported to an out of tree project, so it is simply
+not a command here. What an out of tree project against an LLVM *build tree* does
+have is the exported `llvm_gtest` target and the bundled gtest headers under
+`third-party/`. Against an installed LLVM *prefix*, which is what the CI image
+is, it has neither. So the unit test subdirectory is guarded on the target
+existing and the configure log says which of the two it found. The consequence is
+real and is not hidden: `NPUTilingTests` builds and passes locally and is not
+built in CI at all. That is the honest state at P1 and the activation table
+already keeps every GoogleTest binary guarded off until its own phase.
+
+**The reachability check found its own first defect before it checked anything
+else.** Switching the CI step on meant reading its guard, and the guard named
+`include/npu/NPUOps.td`, a path that has never existed in this repository. The
+step had been printing "OFF until P1" since P0 and would have gone on printing it
+forever. That is D-0006, and the general lesson is worth more than the fix: a
+guard whose condition can never be satisfied is a check that has been deleted
+rather than deferred, and the two are indistinguishable from the run log, because
+both are green and both say the step is waiting. The only way to tell them apart
+is to prove the step red on the day it activates, which is what the proof of
+failure discipline already asks for and what I did for all three of the
+reachability check's rules.

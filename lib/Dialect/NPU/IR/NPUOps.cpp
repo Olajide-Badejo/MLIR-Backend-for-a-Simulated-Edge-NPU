@@ -272,12 +272,18 @@ LogicalResult verifyPoolOp(Operation *op, Value input, Value destination,
            << getChannelExtent(resultType);
 
   SmallVector<int64_t> actual = getSpatialExtents(resultType);
-  if (actual[0] != shape.extents[0] || actual[1] != shape.extents[1])
+  if (actual[0] != shape.extents[0] || actual[1] != shape.extents[1]) {
+    SmallVector<int64_t> inputSpatial = getSpatialExtents(inputType);
     return op->emitOpError()
            << "result spatial extents must be " << shape.extents[0] << " by "
-           << shape.extents[1] << ", computed from the input " << actual.size()
-           << " dimensional window arithmetic, but got " << actual[0] << " by "
-           << actual[1];
+           << shape.extents[1] << ", computed from the input " << inputSpatial[0]
+           << " by " << inputSpatial[1] << " with kernel " << kernel[0] << " by "
+           << kernel[1] << ", strides " << strides[0] << " and " << strides[1]
+           << ", dilations " << dilations[0] << " and " << dilations[1]
+           << ", pads " << pads[0] << ", " << pads[1] << ", " << pads[2] << ", "
+           << pads[3] << " and ceil_mode " << ceilMode << ", but got "
+           << actual[0] << " by " << actual[1];
+  }
 
   return success();
 }

@@ -30,6 +30,22 @@ Semantic Versioning once a release is tagged.
   four windowed operations and is shared between `inferReturnTypes` and the
   verifiers, so the two paths cannot disagree.
 - **`InferTypeOpInterface`** on `constant`, `conv2d`, `matmul` and both pools.
+- **`TilingInterface` is implemented** on the ten compute operations, as
+  external models registered by `registerNPUTilingInterfaceExternalModels` and
+  promised by the dialect with `declarePromisedInterface`. No pass consumes it
+  yet, deliberately: an interface bug and a policy bug are told apart by not
+  writing them in the same session.
+- **`docs/DIALECT_REFERENCE.md` is generated and committed**, by the new
+  `npu-dialect-doc` build target. CI regenerates it and diffs, so the reference
+  cannot drift from the dialect it documents.
+- **`scripts/check-reachability.py`** enforces law 2 over the operation list,
+  reading each operation's classification out of its ODS description rather
+  than out of a table the script keeps. `--skip-models` runs the subset that
+  needs no built model, and both modes report which layers they actually
+  checked rather than reporting a bare pass.
+- **Two CI steps switch on** per the activation table: the
+  `check-reachability.py --skip-models` lint step and the
+  `DIALECT_REFERENCE.md` staleness step.
 
 ### Headline change: the published instruction counts were wrong and are corrected
 
