@@ -39,6 +39,14 @@ Semantic Versioning once a release is tagged.
   conv plus batch norm stack and the dilated stack are built with the ONNX
   construction API, for the two reasons Section 15 gives. `GENERATOR_VERSION` is
   `1.0.0`. No `.onnx` file is committed; they are regenerated from the seed.
+- **`mypy` and `pytest` are on in CI.** `mypy` runs in the lint job over
+  `python/npu_frontend` and `scripts`, with `numpy` installed beside it because
+  it ships the type information the frontend is checked against. `pytest` runs
+  in `build-and-test`, after the build because it needs a built `npu-opt`, with
+  the Python dependencies installed from `requirements-lock.txt` and an
+  `actions/cache` on the pip cache keyed on that file's hash. An exit code of 5
+  is turned into a failure with a message: an empty collection is never read as
+  a pass.
 - **The depthwise block's global pooling exports as `AveragePool` with a full
   extent kernel, not as `GlobalAveragePool`.** The dynamo exporter lowers every
   spelling of adaptive average pooling in torch 2.13, including

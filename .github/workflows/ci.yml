@@ -95,20 +95,34 @@ jobs:
       - name: "black --check (activation table: P0, on)"
         run: black --check --diff .
 
-      # mypy activates at P3, guarded on python/npu_frontend/ existing. The
-      # guard is the directory rather than a phase variable, because the
-      # directory is the thing mypy needs and a phase number in a file is one
-      # more thing to remember to update.
-      - name: "mypy (activation table: P3)"
+      # mypy: ON at P3. The guard is python/npu_frontend/ existing, which is the
+      # directory mypy is configured to check, and it is satisfied from this
+      # phase. It stays in place rather than being deleted for the same reason
+      # the reachability guard did at P1: it is what the activation table asks
+      # for. But now that the phase has arrived, an unsatisfied guard means the
+      # package moved rather than a phase that has not landed, so the else
+      # branch fails rather than printing an off line.
+      #
+      # numpy is installed alongside mypy and it is not optional. It ships type
+      # information, the frontend uses it throughout, and without it mypy stops
+      # at "cannot find implementation or library stub for module named numpy"
+      # instead of checking anything. Adding numpy to the ignore_missing_imports
+      # list in pyproject.toml would weaken the configuration to save twenty
+      # megabytes. The imports that are ignored there are ignored for a reason
+      # that does not apply to numpy: neither the MLIR bindings, which are not
+      # pip installed at all, nor onnx's protobuf generated classes carry type
+      # information usable here.
+      - name: "mypy (activation table: P3, on)"
         run: |
           set -euo pipefail
-          if [ -d python/npu_frontend ]; then
-            python -m pip install mypy==2.3.0
-            mypy
-          else
-            echo "mypy: OFF until P3 (activation table 19.0)."
-            echo "mypy: guard is python/npu_frontend/ existing; it does not yet."
+          if [ ! -d python/npu_frontend ]; then
+            echo "::error::python/npu_frontend/ is missing."
+            echo "mypy: this step is ON from P3, so an unsatisfied guard means the"
+            echo "mypy: package moved rather than a phase that has not arrived."
+            exit 1
           fi
+          python -m pip install mypy==2.3.0 numpy==2.5.1
+          mypy
 
       # check-reachability --skip-models: ON at P1. The guard stays in place
       # rather than being deleted, because it is what the activation table asks
@@ -223,7 +237,16 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DLLVM_USE_LINKER=lld
+            -DLLVM_USE_LINKER=lld \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core
+          # The bindings path is passed explicitly here and derived from
+          # LLVM_BINARY_DIR everywhere else. Against a build tree the derived
+          # path is right; against this image's installed prefix it resolves to
+          # /opt/llvm/tools/mlir/python_packages/mlir_core, which does not
+          # exist, because the install layout puts the package at
+          # /opt/llvm/python_packages/mlir_core instead. Passing it removes the
+          # configure warning and makes the cache, lit, and the pytest conftest
+          # agree on one directory rather than three.
 
       # Section 3.3 writes -j6, which is right for the memory capped WSL2 guest
       # it was written for. A hosted runner is 4 vCPU, so -j4 is the matching number
@@ -298,25 +321,68 @@ jobs:
             echo "NPUSimulatorTests: guard is build/bin/NPUSimulatorTests existing."
           fi
 
-      # ---- pytest. Off until P3, and the reason is in the table: an empty
-      # collection exits 5 and that is not a pass. The guard is therefore a
-      # test file existing, never the exit code.
+      # ---- pytest. ON at P3.
       #
-      # The second reason it stayed off at P0 is now resolved ahead of time. The
-      # image was built with MLIR_ENABLE_BINDINGS_PYTHON=OFF, so the bindings
-      # test/Python imports were not in the container at all, and turning pytest
-      # on at P3 was going to mean republishing the image. P2 needed a republish
-      # anyway to add googletest, so the bindings were switched on in the same
-      # change and P3 inherits the image it needs. What remains for P3 is the
-      # importer and the tests themselves.
-      - name: "pytest (activation table: P3)"
+      # Two things the image does not have and this step needs. The Python
+      # dependencies, which are installed from requirements-lock.txt because the
+      # lock file is the environment this project pins and a hand written short
+      # list here would be a second, quietly diverging one. And a built
+      # npu-opt, which is why this step is ordered after the build rather than
+      # beside it: the importer verifies every module it emits by round tripping
+      # it through npu-opt, and without the binary it raises rather than
+      # returning IR nobody checked.
+      #
+      # The pip cache is what keeps this sane. The torch CPU wheels alone are a
+      # few hundred megabytes, and the key is the hash of the lock file, so the
+      # download happens again only when the pinned environment actually moves.
+      - name: Restore the pip cache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements-lock.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: "Install the Python dependencies (activation table: P3, on)"
         run: |
-          set -euo pipefail
-          echo "pytest: OFF until P3 (activation table 19.0)."
-          echo "pytest: an empty collection exits 5 and is never read as a pass."
-          echo "pytest: the image carries the MLIR Python bindings from P2 at"
-          echo "pytest: /opt/llvm/python_packages/mlir_core, already on PYTHONPATH,"
-          echo "pytest: so P3 needs the importer and its tests and no republish."
+          set -euxo pipefail
+          # --break-system-packages because this image's python3 is a PEP 668
+          # marked Debian one and the container is the environment, which is the
+          # same argument docker/Dockerfile.llvm makes for its own installs.
+          python3 -m pip install --break-system-packages -r requirements-lock.txt
+          python3 -c "import torch, onnx, onnxruntime, onnxscript, numpy; print('deps ok')"
+
+      # An empty collection returns 5, and the activation table says that is
+      # never read as a pass. So the exit code is inspected rather than trusted:
+      # 5 is turned into a failure with a message saying what it means, and the
+      # guard on a test file existing is separate from it, because a missing
+      # file and an empty collection are different faults with different fixes.
+      - name: "pytest (activation table: P3, on)"
+        env:
+          # conftest.py resolves the bindings from this first, then from the
+          # CMake cache, then from a default. Setting it means the test suite
+          # does not depend on the configure step having got the path right.
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+        run: |
+          set -uo pipefail
+          if [ ! -f test/Python/test_onnx_importer.py ]; then
+            echo "::error::test/Python/test_onnx_importer.py is missing."
+            echo "pytest: this step is ON from P3, so a missing test file is a file"
+            echo "pytest: that moved rather than a phase that has not arrived."
+            exit 1
+          fi
+          python3 -m pytest test/Python -q
+          status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::pytest collected no tests and exited 5."
+            echo "pytest: exit code 5 means an empty collection, which the"
+            echo "pytest: activation table says is never read as a pass. Either the"
+            echo "pytest: testpaths setting in pyproject.toml no longer points at"
+            echo "pytest: any test, or every test was deselected by the default"
+            echo "pytest: marker expression."
+            exit 1
+          fi
+          exit "$status"
 
       - name: "pytest slow cells (activation table: P10)"
         run: |
