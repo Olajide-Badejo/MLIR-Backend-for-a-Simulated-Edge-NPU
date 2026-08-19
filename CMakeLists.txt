@@ -84,40 +84,75 @@ add_subdirectory(tools)
 add_subdirectory(test)
 
 # ---------------------------------------------------------------------------
-# GoogleTest, out of tree.
+# GoogleTest, out of tree, from either of two sources.
 #
 # LLVM's own `add_unittest` is not available to an out of tree project: it lives
-# inside the LLVM build and is not exported. What is available is the bundled
-# gtest that an LLVM *build tree* carries, as two static libraries and a pair of
-# header directories. An installed LLVM *prefix* carries neither, which is the
-# case in CI, so this whole section is guarded and says in the configure log
-# which of the two it found.
+# inside the LLVM build and is not exported. So this project finds a GoogleTest
+# for itself, and there are two places one can come from, which is why this is
+# a search with a fallback rather than a single guarded branch.
 #
-# A phase that runs its unit tests locally while CI cannot build them is not a
-# comfortable state, but it is the honest one at P1 and it is better stated here
-# than discovered as a missing target. The activation table already keeps every
-# GoogleTest binary guarded off in CI until its own phase.
+# 1. **An LLVM build tree** carries a bundled gtest as two static libraries,
+#    `llvm_gtest` and `llvm_gtest_main`, exported by LLVMConfig.cmake, plus a
+#    pair of header directories under `third-party` that are *not* on the
+#    exported target's interface and so are added by path. This is what a local
+#    developer checkout has and it is preferred when present, because it is the
+#    same gtest LLVM itself was built and tested against, so there is no chance
+#    of an ABI or flag mismatch between the two.
 #
-# The `llvm_gtest` and `llvm_gtest_main` targets themselves come from
-# LLVMConfig.cmake, which an LLVM build tree exports and an install prefix does
-# not, so the target existing is the guard. The headers are not on the exported
-# target's interface, so they are added by path.
+# 2. **A system GoogleTest package**, found through `find_package(GTest)`. This
+#    is what an image built around an installed LLVM *prefix* has, and CI is
+#    exactly that: an install prefix exports neither the `llvm_gtest` target nor
+#    the bundled headers, so before this fallback existed the unit test binaries
+#    simply were not built in CI and the P2 activation of `NPUInterfaceTests`
+#    would have had nothing to run. `docker/Dockerfile.llvm` installs
+#    `googletest` into the final image for this branch to find.
+#
+# Both paths end at the same two variables, `NPU_GTEST_LIBRARIES` and
+# `NPU_GTEST_INCLUDE_DIRS`, so no test CMakeLists below has to know which one
+# was taken. The configure log says which, because "the tests were not built"
+# and "the tests passed" must never look the same from the outside.
 # ---------------------------------------------------------------------------
 set(NPU_LLVM_THIRD_PARTY "${LLVM_BUILD_MAIN_SRC_DIR}/../third-party"
     CACHE PATH "LLVM's third-party directory, which carries the bundled gtest")
 
+set(NPU_GTEST_FOUND OFF)
+
 if(TARGET llvm_gtest
    AND EXISTS "${NPU_LLVM_THIRD_PARTY}/unittest/googletest/include/gtest/gtest.h")
-  message(STATUS "LLVM gtest found: building the unit test binaries")
-  set(NPU_LLVM_GTEST_INCLUDE_DIRS
+  message(STATUS
+    "GoogleTest: using the LLVM build tree's bundled gtest "
+    "(llvm_gtest, llvm_gtest_main). Building the unit test binaries.")
+  set(NPU_GTEST_LIBRARIES llvm_gtest llvm_gtest_main)
+  set(NPU_GTEST_INCLUDE_DIRS
       "${NPU_LLVM_THIRD_PARTY}/unittest/googletest/include"
       "${NPU_LLVM_THIRD_PARTY}/unittest/googlemock/include")
+  set(NPU_GTEST_FOUND ON)
+else()
+  # CONFIG mode is not required: a distribution's googletest ships a CMake
+  # package config on some systems and only FindGTest's module on others, and
+  # the default search tries both. GTest::gtest_main pulls GTest::gtest with it
+  # through its own interface, so linking the main library alone would be
+  # enough; both are named for symmetry with the branch above and because an
+  # older FindGTest that defines only the plain variables still populates
+  # GTEST_BOTH_LIBRARIES, which the imported targets cover.
+  find_package(GTest QUIET)
+  if(GTest_FOUND OR GTEST_FOUND)
+    message(STATUS
+      "GoogleTest: using the system GoogleTest package. Building the unit "
+      "test binaries.")
+    set(NPU_GTEST_LIBRARIES GTest::gtest GTest::gtest_main)
+    set(NPU_GTEST_INCLUDE_DIRS "")
+    set(NPU_GTEST_FOUND ON)
+  endif()
+endif()
+
+if(NPU_GTEST_FOUND)
   add_subdirectory(unittests)
 else()
   message(STATUS
-    "LLVM gtest not found: the unit test binaries are not built. This is "
-    "expected against an installed LLVM prefix, which exports neither the "
-    "llvm_gtest target nor the bundled gtest headers.")
+    "GoogleTest: not found in the LLVM build tree and no system package "
+    "either, so the unit test binaries are not built. Install googletest, or "
+    "point NPU_LLVM_THIRD_PARTY at an LLVM build tree's third-party directory.")
 endif()
 
 # ---------------------------------------------------------------------------
