@@ -3,8 +3,13 @@
 # SPDX-License-Identifier: MIT
 #
 # The target shape here follows mlir/examples/standalone/standalone-opt/
-# CMakeLists.txt from the LLVM project. The library list is shorter because
-# at P0 there is no project dialect to link in.
+# CMakeLists.txt from the LLVM project.
+#
+# MLIRNPU and MLIRNPUTilingInterfaceImpl are named explicitly below rather than
+# left to the MLIR_DIALECT_LIBS global property. They do land in that property,
+# because add_mlir_dialect_library appends to it, but the property is read here
+# before lib/ has been processed on a clean configure, so relying on it would
+# make the link line depend on subdirectory order.
 
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
@@ -18,6 +23,7 @@ set(LIBS
     MLIRRegisterAllDialects
     MLIRRegisterAllExtensions
     MLIRRegisterAllPasses
+    MLIRNPU
   )
 
 add_llvm_executable(npu-opt npu-opt.cpp)

@@ -11,13 +11,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The optimizer driver for this project. At P0 it registers upstream MLIR
-// dialects and passes and nothing else, because the npu dialect does not
-// exist until P1. That is deliberate: it proves the out of tree build, the
-// link line and the lit substitution are all correct before there is any
-// dialect code that could be blamed for a failure in them.
+// The optimizer driver for this project. It registers the upstream MLIR
+// dialects and passes, this project's own dialects, and the external interface
+// models those dialects promise.
 //
 //===----------------------------------------------------------------------===//
+
+#include "NPU/Dialect/NPU/IR/NPUDialect.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
@@ -31,6 +31,8 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   mlir::registerAllExtensions(registry);
+
+  registry.insert<mlir::npu::NPUDialect>();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "NPU optimizer driver\n", registry));
