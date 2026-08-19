@@ -277,6 +277,33 @@ LogicalResult verifyNoInterveningOverlap(Operation *op, Value destination,
 
   for (Operation *between = op->getNextNode(); between && between != await;
        between = between->getNextNode()) {
+    // An npuisa.await belonging to some *other* transfer is not a memory access
+    // and is not a conflict, and this case has to be named explicitly rather
+    // than falling through to the interface question below.
+    //
+    // Section 8 gives the await no memory effect of its own, deliberately: what
+    // it does is establish an ordering on an effect the asynchronous operation
+    // already declared, and inventing a duplicate write effect on a buffer it
+    // does not name as an operand would mean inventing the operand too. The
+    // consequence is that it does not implement MemoryEffectOpInterface at all,
+    // and the conservative branch below therefore refused it.
+    //
+    // That refusal made two transfers in flight at once unrepresentable, which
+    // is the one thing asynchronous DMA exists for: the double buffering of
+    // Section 5.1 issues the next tile's load before awaiting the current one,
+    // so both awaits necessarily sit inside the other transfer's window. See
+    // docs/DEFECT_LOG.md D-0009.
+    //
+    // Skipping it is sound rather than convenient. An await touches no memory;
+    // it waits. The transfer it waits for declared its own effects at its own
+    // producer, and that producer is itself an operation in this block that this
+    // same scan visits and checks. So the bytes an intervening await implies are
+    // already accounted for by the intervening asynchronous operation, and
+    // counting them twice would reject correct programs without catching a
+    // single incorrect one.
+    if (isa<AwaitOp>(between))
+      continue;
+
     auto effects = dyn_cast<MemoryEffectOpInterface>(between);
     if (!effects)
       return op->emitOpError()

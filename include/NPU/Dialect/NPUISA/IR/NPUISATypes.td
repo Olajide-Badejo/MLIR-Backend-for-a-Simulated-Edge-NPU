@@ -68,11 +68,21 @@ def NPUISA_TokenType : NPUISA_Type<"Token", "token"> {
 // dialect defines. Reusing it rather than defining a second one is what keeps
 // `memref<4x4xf32, #npu.scratchpad>` meaning the same thing on both sides of
 // the lowering.
+//
+// `isa_and_present` rather than `isa`, and the difference is not a style one.
+// A memref written without a memory space, `memref<4x4xf32>`, has a *null*
+// memory space attribute, and `llvm::isa` on a null attribute is undefined
+// behaviour: it dereferences the attribute to reach its type id. In a build
+// with assertions it trips one; in a build without, as this project's default
+// configuration is, it reads through a null pointer and the tool dies with no
+// diagnostic at all. `isa_and_present` answers false for null, which is the
+// right answer, and the default memory space is then rejected by the ordinary
+// operand type diagnostic like any other wrong space.
 class NPUISA_MemRefInSpace<string space, list<Type> allowedTypes>
     : Type<And<[
         MemRefOf<allowedTypes>.predicate,
         HasStaticShapePred,
-        CPred<"::llvm::isa<::mlir::npu::" # space # "Attr>("
+        CPred<"::llvm::isa_and_present<::mlir::npu::" # space # "Attr>("
               "::llvm::cast<::mlir::MemRefType>($_self).getMemorySpace())">
       ]>,
       "a statically shaped memref in the " # space # " memory space">;
@@ -88,7 +98,8 @@ def NPUISA_DramAny : NPUISA_MemRefInSpace<"Dram", [F32, I8]>;
 def NPUISA_AnyMemRef : Type<And<[
         MemRefOf<[F32, I8]>.predicate,
         HasStaticShapePred,
-        CPred<"::llvm::isa<::mlir::npu::ScratchpadAttr, ::mlir::npu::DramAttr>("
+        CPred<"::llvm::isa_and_present<::mlir::npu::ScratchpadAttr, "
+              "::mlir::npu::DramAttr>("
               "::llvm::cast<::mlir::MemRefType>($_self).getMemorySpace())">
       ]>,
       "a statically shaped memref in the scratchpad or dram memory space">;
