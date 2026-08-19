@@ -144,101 +144,41 @@ was forced by configuring with `-DNPU_LLVM_THIRD_PARTY=/nonexistent-on-purpose`,
 which produced `GoogleTest: using the system GoogleTest package` and the same
 eighteen passing tests.
 
-### Met locally, CI pending an image republish
+### Met in CI, with the run URLs
 
-Two gate items are green locally and cannot be green in CI until the image is
-rebuilt. This is a sequencing fact, not an unmet gate: the commit that requires
-the new image is on the branch, and the rebuild is the orchestrator's next
-action.
+The republish and proof playbook a previous revision of this file laid out for
+the orchestrator has been executed in full, and the evidence is recorded here
+and in the engineering log.
 
-- **`NPUInterfaceTests` in CI.** The step is switched on and now fails rather
-  than printing an off line if the binary is missing. The binary needs a
-  GoogleTest, and the current published image has none. `487745d` adds
-  `libgtest-dev` to the image for the CMake fallback to find. **Pushing before
-  the republish will turn `build-and-test` red at this step, and that is the
-  expected sequence rather than a defect.**
-- **The coverage job in CI.** Same cause: the job needs `gcovr`, which the same
-  Dockerfile revision adds.
-
-## What the orchestrator does next
-
-In this order. Steps 2 and 3 are the reason step 1 comes first.
-
-1. **Dispatch `llvm-image.yml` and let it publish.** This is the blocking step
-   and it is roughly an hour. The workflow is `workflow_dispatch` only since the
-   push trigger was retired at P1, so it has to be started by hand. The rebuilt
-   image must satisfy the smoke test at the end of `docker/Dockerfile.llvm`,
-   which now also checks for the GTest CMake config, the two gtest static
-   libraries, `gcovr`, `gcov`, the bindings directory, and an actual
-   `import mlir.ir` with a `Context` constructed.
-
-2. **Push the branch** and let CI run it green. Pushing before step 1 completes
-   will be red at `NPUInterfaceTests` and at the `coverage` job, for the reason
-   above.
-
-   ```bash
-   cd ~/npu-mlir-v2 && git push -u origin phase/p2-npuisa-dialect
-   ```
-
-3. **Prove the `NPUInterfaceTests` activation red, then green.** Section 19.0
-   requires this of every step on the day it switches on. The perturbation is
-   named here rather than left to be invented, and it is chosen to break the
-   *assertion* rather than the build, because a test binary that fails to compile
-   is caught by the build step and would prove the wrong thing:
-
-   ```bash
-   # In unittests/Dialect/NPUISA/InterfaceTest.cpp, in the test
-   # EveryComputeOperationHasARow, change the expected count from 10 to 9.
-   sed -i 's/EXPECT_EQ(covered.size(), 10u)/EXPECT_EQ(covered.size(), 9u)/' \
-     unittests/Dialect/NPUISA/InterfaceTest.cpp
-   ```
-
-   Commit that alone on a scratch branch, open a pull request so the
-   `pull_request` trigger fires, and show `build-and-test` failing at the step
-   named `NPUInterfaceTests (activation table: P2, on)` with the gtest failure
-   naming `EveryComputeOperationHasARow`. Then revert, show green, record both
-   run URLs in `docs/ENGINEERING_LOG.md`, and delete the scratch branch.
-
-   A second perturbation is available if a stronger proof is wanted, and it
-   exercises the product rather than the test: change `isa_and_present` back to
-   `isa` in one predicate in `NPUISATypes.td`. That turns `check-npu` red as well
-   as the unit tests, through a segmentation fault, which is a truthful
-   demonstration of D-0008 but a noisier run log. The count perturbation is the
-   cleaner proof of *this step*.
-
-4. **The coverage job, and why it gets a different treatment.** At a threshold of
-   0 the threshold comparison **cannot** be made to fail, because no measured
-   percentage is below zero. Perturbing the threshold to force a red would be
-   perturbing the gate's configuration rather than the thing it guards, which
-   proves nothing about the gate as configured. So the honest statement is:
-
-   - What **is** provable now, and should be the red proof recorded for this
-     job: break a test and show the coverage job red *before it ever reports a
-     number*. That is rule 2 of Section 17.7 working, coverage is only counted
-     from a run where every test passed, and it is the part of this job that
-     gates on something today. The same one line perturbation from step 3 does
-     it, since `scripts/coverage.sh` runs `NPUInterfaceTests`; the finding to
-     record is that one fault turns two jobs red, `build-and-test` and
-     `coverage`, which is the two nets agreeing rather than a surprise.
-   - What is **not** provable until P8: that the threshold gate rejects a real
-     regression. **P8 is where that proof belongs**, because P8 is where the
-     thresholds stop being 0 and are set from measured values. The perturbation
-     at P8 is to lower coverage by deleting a test and show the job red against
-     a real floor. This is written here so P8 inherits the obligation rather than
-     discovering it.
-
-   Locally the threshold arm was proved breakable at a non zero threshold,
-   `bash scripts/coverage.sh 99` exits 1 and names both numbers, and a
-   non numeric threshold exits 2. That is evidence the arm works; it is not the
-   CI proof, and it is labelled as such.
-
-5. **Merge, remembering that P1 is still unmerged.** `main` is at P0 and this
-   branch carries both phases. Either merge `phase/p1-npu-dialect` into `main`
-   first and then `phase/p2-npuisa-dialect`, which keeps one pull request per
-   gate and is the shape ground rule 11 implies, or merge this branch once and
-   say in the pull request body that it closes both gates. The first is tidier
-   and the second is fewer runs; either is defensible, but doing it without
-   noticing produces a P1 merge that appears to contain P2's work.
+- **The image is republished.** The first attempt died at configure for want of
+  `python3-dev` in the builder stage, recorded as D-0010 with the failing run
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32222527819>.
+  The fixed rebuild published in run
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32223127919>,
+  moving the `llvmorg-22.1.8` tag to `sha256:43f2f9d6...`, an image carrying
+  googletest, the MLIR Python bindings at `/opt/llvm/python_packages/mlir_core`,
+  and `gcovr`. `docker/Dockerfile.dev` follows it by digest; the P0 digest stays
+  resolvable for reproducing the earlier runs.
+- **The branch is green across all four jobs** with the new image:
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32245240094>,
+  the first CI run in this repository to execute `NPUInterfaceTests` and the
+  coverage job for real.
+- **The activation proof ran as specified**: the one line count perturbation,
+  committed alone on a scratch branch since deleted. One fault turned both new
+  gates red in
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32245632105>,
+  `build-and-test` at the `NPUInterfaceTests` step and `coverage` before it
+  reported a number, which is the two nets agreeing. The revert went green in
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32246428660>.
+- **What is not provable until P8 remains P8's obligation**: that the coverage
+  threshold gate rejects a real regression. At a threshold of 0 the comparison
+  cannot fail, so the threshold-gate proof belongs to P8, where thresholds are
+  set from measured values; the perturbation there is deleting a test and
+  showing the job red against a real floor. Locally the arm is proved breakable:
+  `bash scripts/coverage.sh 99` exits 1 naming both numbers, and a non numeric
+  threshold exits 2.
+- **The merge plan concern is resolved** earlier in this file: P1 was merged on
+  the remote all along, so P2 merges as one ordinary pull request.
 
 ## Open questions
 

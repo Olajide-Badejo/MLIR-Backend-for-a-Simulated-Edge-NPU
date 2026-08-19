@@ -1816,3 +1816,36 @@ directory rather than at the directory to import from. Getting that level wrong
 produces an `ImportError` naming a package the image does contain, so both paths
 are written into the Dockerfile and the smoke test imports `mlir.ir` and
 constructs a `Context` rather than merely checking that a directory exists.
+
+## 2026-08-19 Phase 2: an image republish with one defect, then both new gates proven red
+
+Closing P2 took one image republish and one proof cycle, and both left evidence.
+
+The republish came first, because the activation table switches NPUInterfaceTests
+on at P2 and the P0 image could not build a gtest target at all. The first
+attempt (run 32222527819) died at CMake configure inside MLIRDetectPythonEnv:
+the builder stage had the interpreter but not python3-dev, and FindPython3's
+Development component wants the headers. That is D-0010, invisible at P0 for
+the boring reason that the bindings were off and nothing asked for headers. One
+package name later the rebuild went through (run 32223127919) and the tag moved
+to sha256:43f2f9d6, an image that carries googletest, the MLIR Python bindings
+at /opt/llvm/python_packages/mlir_core, and gcovr. The dev image follows it by
+digest, and the P0 digest stays resolvable for reproducing the earlier runs.
+
+With the image in place the branch went green across all four jobs (run
+32245240094), which is the first CI run in this repository to execute the
+interface tests and the coverage job for real.
+
+Then the proof, per the activation discipline: one wrong expectation in
+InterfaceTest.cpp, a test failure rather than a build break, pushed on a scratch
+branch. One fault, two nets, both red in run 32245632105: build-and-test at the
+NPUInterfaceTests step, coverage before it reported a number. That second red is
+the honest form of the coverage proof at P2, because at a threshold of zero the
+threshold arm cannot fail and perturbing it would prove nothing; the
+threshold-gate proof belongs to P8, where the thresholds become real. The revert
+went green in run 32246428660 and the scratch branch is deleted.
+
+One process lesson closes the phase. A session working from a stale local main
+concluded P1 had never merged and rewrote the merge plan around that; the fetch
+showed P1 merged all along. A merge conclusion is drawn against origin/main
+after a fetch, never against a local ref nobody has pulled.
