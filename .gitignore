@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+# Build trees. Out of tree by construction, never committed.
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+venv/
+.venv/
+
+# Generated models and traces. Regenerated from a seed, never committed.
+*.onnx
+*.nbin
+
+# LaTeX intermediates. report/generated/ is deliberately NOT ignored: Section
+# 6 of the build specification makes it tracked, because that is what lets a
+# test assert the sha in macros.tex resolves to the committed results.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

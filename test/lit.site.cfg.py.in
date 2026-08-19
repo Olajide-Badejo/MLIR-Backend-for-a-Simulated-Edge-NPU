@@ -1,0 +1,27 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Derived in shape from mlir/examples/standalone/test/lit.site.cfg.py.in.
+
+config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
+config.mlir_obj_dir = "@MLIR_BINARY_DIR@"
+config.enable_bindings_python = @MLIR_ENABLE_BINDINGS_PYTHON@
+config.npu_obj_root = "@NPU_BINARY_DIR@"
+config.npu_src_root = "@NPU_SOURCE_DIR@"
+config.llvm_shlib_ext = "@SHLIBEXT@"
+
+# The MLIR Python bindings are not pip installed. They resolve only out of the
+# LLVM build tree, and lit has to be told where that tree is, because a lit run
+# does not inherit the developer's shell. Section 3.3 of the build
+# specification calls this wiring not optional and this is one of its three
+# places; the other two are pyproject.toml and the pytest configuration.
+config.mlir_python_packages_dir = "@MLIR_PYTHON_PACKAGES_DIR@"
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+
+# Let the main config do the real work.
+lit_config.load_config(config, "@NPU_SOURCE_DIR@/test/lit.cfg.py")
