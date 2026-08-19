@@ -13,6 +13,25 @@ Semantic Versioning once a release is tagged.
   generator could not have run without it. `pyproject.toml` pins
   `onnxscript==0.7.1` and `requirements-lock.txt` carries it and the
   `onnx-ir==1.0.0` it resolved to.
+- **The ONNX frontend exists.** `python/npu_frontend` imports an ONNX model at
+  opset 23 to `npu` dialect IR on tensors, over sixteen converters: `Add`,
+  `AveragePool`, `BatchNormalization`, `Clip`, `Concat`, `Conv`, `Flatten`,
+  `Gemm`, `GlobalAveragePool`, `Identity`, `MatMul`, `MaxPool`, `Mul`, `Relu`,
+  `Reshape` and `Transpose`. Anything else is refused by name, and
+  `QuantizeLinear`, `DequantizeLinear` and `Pad` are refused with a reason
+  rather than as merely unknown.
+- **Nothing leaves the frontend unverified.** `import_model` returns the text
+  `./build/bin/npu-opt` printed, so every module goes through the real parser,
+  the real verifiers and the real printer, and any `npu` operation carrying a
+  discardable attribute is rejected. `npu-opt` is a runtime dependency of the
+  package rather than a test one; when it cannot be found the importer raises
+  and names the three places it looked.
+- **Every compute operation gets a `tensor.empty` destination**, materialised
+  immediately before it, and every operation carries a `NameLoc` with its ONNX
+  node name which the returned text prints.
+- **`docs/ONNX_FRONTEND.md`** is the frontend's contract: the converter table,
+  the broadcasting policy and its channel carve out, the `Clip` policy, the
+  `AveragePool` and `Reshape` rules, and a how to section.
 - **`npu.add` and `npu.mul` accept a rank 1 channel broadcast on the rhs.** IR
   that `npu-opt` previously rejected now verifies: an addend or a scale of rank
   1, whose length is the result's channel extent read through its layout,
