@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Ground rule 3 wants the dash linter wired into pre-commit from P0, and this
+# is that wiring. Two of the hooks are deliberately local rather than pulled
+# from a remote repository: dash-lint is this project's own script and pinning
+# a copy of it somewhere else would let the two drift, and its self test has
+# to run against the fixture in this tree.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^scripts/testdata/
+      - id: trailing-whitespace
+        exclude: ^scripts/testdata/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/psf/black
+    rev: 26.5.1
+    hooks:
+      - id: black
+        # The fixture files are pinned content: they exist to prove what the
+        # dash linter does with a particular byte sequence, so a formatter is
+        # not allowed to rewrite them.
+        exclude: ^scripts/testdata/
+
+  # ruff lints; black formats. Running ruff-format as well would mean two
+  # formatters with two opinions on the same files, and the disagreement shows
+  # up as a hook that reformats on every run.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^scripts/testdata/
+
+  - repo: local
+    hooks:
+      - id: dash-lint
+        name: dash lint (no em dashes, no en dashes, no tex ligatures)
+        entry: bash scripts/dash-lint.sh
+        language: system
+        pass_filenames: true
+        exclude: ^scripts/testdata/
+
+      - id: dash-lint-self-test
+        name: dash lint self test against its fixture
+        entry: bash scripts/dash-lint.sh --self-test
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: reuse-lint
+        name: reuse lint (every file carries SPDX tags)
+        entry: reuse lint --quiet
+        language: system
+        pass_filenames: false
+        always_run: true
