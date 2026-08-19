@@ -1,214 +1,370 @@
-name: CI
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# The main CI pipeline of Section 19, with the per phase activation table of
+# Section 19.0 encoded literally.
+#
+# The rule that shapes this whole file: a step that is off says so in the run
+# log. Section 19.0 is explicit that silence and success must not look the
+# same, so every guarded off step below is a real step that prints what it is
+# and which phase turns it on. Reading the log of a green run tells you what
+# ran and what did not, which is the only way a gate that cannot yet be met
+# stays honest rather than quietly weakening.
+#
+# Active at P0: dash-lint and its self test, reuse lint, ruff, black --check,
+# configure, build, check-npu. Everything else prints its off line.
+
+name: ci
 
 on:
   push:
-    branches: [main]
+    branches:
+      - "phase/**"
+      - main
   pull_request:
-    branches: [main]
-  workflow_dispatch:
-
-# CI builds the compiler and runs every suite. It used to run dash-lint and ruff
-# and nothing else, while the README carried a badge that read as "the test
-# suite passes on every push". The heavy part is LLVM and MLIR, which are baked
-# into a prebuilt image at the pinned tag by llvm-image.yml and are never built
-# here.
-env:
-  LLVM_TAG: llvmorg-22.1.8
-  LLVM_IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+    branches:
+      - main
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # check-reachability compares against history when validating
-          # exemption dates, and the benchmark staleness test walks recent
-          # commits, so a shallow clone is not enough.
-          fetch-depth: 0
+env:
+  LLVM_TAG: llvmorg-22.1.8
+  # Lowercase owner is mandatory for GHCR; the account is Olajide-Badejo.
+  LLVM_IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
 
-      - name: No em or en dashes
+jobs:
+  # -------------------------------------------------------------------------
+  # lint. Plain runner, no LLVM needed. Activation table rows: dash-lint P0,
+  # reuse lint P0, ruff and black P0, mypy P3, check-reachability P1 and P8.
+  # -------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # The linters are installed by exact pin rather than from
+      # requirements-lock.txt, and the versions are the ones the lock file
+      # resolved to, kept identical on purpose. Installing the full lock here
+      # would pull torch, onnxruntime, and matplotlib into a job that runs four
+      # linters, which is several hundred megabytes and a couple of minutes
+      # bought for nothing. The pins are the contract; if the lock file moves,
+      # these move with it in the same commit.
+      - name: Install the linters
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install \
+            black==26.5.1 \
+            ruff==0.15.21 \
+            reuse==6.2.0
+
+      # Ground rule 3, on from the first commit. The linter is run twice on
+      # purpose: once over the tree, and once against its own fixture, because
+      # the fixture is what proves the verbatim exemption fires in both
+      # directions. A linter that passes everything is indistinguishable from a
+      # linter that checks nothing, and --self-test is what tells them apart.
+      - name: "dash lint (activation table: P0, on)"
         run: bash scripts/dash-lint.sh
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: "dash lint self test (activation table: P0, on)"
+        run: bash scripts/dash-lint.sh --self-test
 
-      - name: Install lint tooling
+      - name: "reuse lint (activation table: P0, on)"
+        run: reuse lint
+
+      - name: "ruff (activation table: P0, on)"
+        run: ruff check .
+
+      - name: "black --check (activation table: P0, on)"
+        run: black --check --diff .
+
+      # mypy activates at P3, guarded on python/npu_frontend/ existing. The
+      # guard is the directory rather than a phase variable, because the
+      # directory is the thing mypy needs and a phase number in a file is one
+      # more thing to remember to update.
+      - name: "mypy (activation table: P3)"
         run: |
-          python -m pip install --quiet \
-            "ruff==0.15.21" "black==24.10.0" "mypy==1.14.1" numpy
+          set -euo pipefail
+          if [ -d python/npu_frontend ]; then
+            python -m pip install mypy==2.3.0
+            mypy
+          else
+            echo "mypy: OFF until P3 (activation table 19.0)."
+            echo "mypy: guard is python/npu_frontend/ existing; it does not yet."
+          fi
 
-      - name: Python lint (ruff)
-        run: ruff check python test/Python experiments report/scripts scripts
+      # check-reachability --skip-models activates at P1, guarded on NPUOps.td.
+      - name: "check-reachability --skip-models (activation table: P1)"
+        run: |
+          set -euo pipefail
+          if [ -f scripts/check-reachability.py ] \
+             && [ -f include/npu/NPUOps.td ]; then
+            python scripts/check-reachability.py --skip-models
+          else
+            echo "check-reachability --skip-models: OFF until P1 (activation table 19.0)."
+            echo "check-reachability: guard is include/npu/NPUOps.td and the script existing."
+          fi
 
-      - name: Python format (black)
-        run: black --check python test/Python experiments report/scripts scripts
-
-      - name: Python types (mypy)
-        run: mypy
-
-      - name: Every npu op is reachable end to end, or dated exempt
-        # --skip-models here: exercising the benchmark models needs torch and
-        # onnxruntime and a built compiler. The build-and-test job runs the
-        # full check including that layer.
-        run: python scripts/check-reachability.py --skip-models
-
+  # -------------------------------------------------------------------------
+  # build-and-test. Runs inside the prebuilt LLVM image so that no job here
+  # ever compiles LLVM.
+  #
+  # FIRST PUSH WILL BE RED HERE, and that is expected rather than a defect.
+  # This job pulls ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8, which
+  # does not exist until llvm-image.yml has published it once. On the very
+  # first push of this branch both workflows start together, the image is
+  # roughly an hour away, and this job fails at the container pull before a
+  # single step runs. The fix is not a change to this file: it is to let
+  # llvm-image finish and then rerun this workflow.
+  # -------------------------------------------------------------------------
   build-and-test:
-    name: build and test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      # Reading the package is what the container pull needs. GITHUB_TOKEN is
+      # passed as the registry credential because the package is private until
+      # somebody makes it public, and a job cannot pull a private GHCR image
+      # anonymously.
+      packages: read
+
     container:
-      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Inside a job container the runner falls back to sh for run steps, and sh
+    # is dash on this image, which rejects set -o pipefail. bash is present in
+    # the image, it just has to be asked for by name.
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CCACHE_DIR: /work/.ccache
+      CCACHE_MAXSIZE: 2G
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Check out the repository
+        uses: actions/checkout@v5
 
-      - name: Trust the workspace
-        # The container runs as root while the checkout is owned by the runner
-        # user, so git refuses to operate on it without this.
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Report the image this job is running in
+        run: |
+          set -euxo pipefail
+          cat /opt/llvm/llvm-project-sha.txt
+          mlir-opt --version
+          clang --version
+          echo "expected LLVM tag: ${LLVM_TAG}"
 
-      - name: ccache
+      # Section 19: cache the build directory and ccache between runs, keyed on
+      # the LLVM tag. The tag is in the key because a different LLVM is a
+      # different ABI and reusing objects across it is how a confusing link
+      # error gets manufactured.
+      - name: Restore the ccache and build cache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ccache-${{ env.LLVM_TAG }}-${{ github.sha }}
-          restore-keys: ccache-${{ env.LLVM_TAG }}-
+          path: |
+            /work/.ccache
+            build
+          key: npu-build-${{ env.LLVM_TAG }}-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            npu-build-${{ env.LLVM_TAG }}-${{ runner.os }}-
 
-      - name: Configure
+      # The paths are the install prefix of docker/Dockerfile.llvm. They are
+      # written out rather than taken from the image's MLIR_DIR and LLVM_DIR,
+      # so that this file records what it expects the image to contain.
+      - name: "Configure (activation table: P0, on)"
         run: |
+          set -euxo pipefail
+          # LLVM_EXTERNAL_LIT: an installed LLVM does not ship the build tree's
+          # llvm-lit script, so against /opt/llvm the lit target must be told
+          # to use the pip installed lit. The local build against the LLVM
+          # build tree does not need this, which is exactly why CI caught it
+          # (D-0005).
           cmake -G Ninja -S . -B build \
-            -DMLIR_DIR="$MLIR_DIR" -DLLVM_DIR="$LLVM_DIR" \
-            -DLLVM_USE_LINKER=lld \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_USE_LINKER=lld
 
-      - name: Build
-        # -j6 matches the cap the development machine builds under; see
-        # docs/BUILD.md. The runner has fewer cores than that anyway.
-        run: ninja -C build -j6
+      # Section 3.3 writes -j6, which is right for the memory capped WSL2 guest
+      # it was written for. A hosted runner is 4 vCPU, so -j4 is the matching number
+      # here: -j6 on four cores buys nothing and costs memory headroom.
+      - name: "Build (activation table: P0, on)"
+        run: |
+          set -euxo pipefail
+          ninja -C build -j4
+          ccache --show-stats || true
 
-      - name: lit and FileCheck
+      - name: "check-npu (activation table: P0, on)"
+        # Permitted to report zero tests until P1 per the activation table. It
+        # currently runs one lit smoke test, so this is meaningful already.
         run: ninja -C build check-npu
 
-      - name: GoogleTest, encoding
-        run: ./build/bin/NPUEncodingTests
-
-      - name: GoogleTest, simulator
-        run: ./build/bin/NPUSimulatorTests
-
-      - name: Install Python test dependencies
-        run: pip install --no-cache-dir pytest onnx onnxruntime torch --index-url https://download.pytorch.org/whl/cpu || pip install --no-cache-dir pytest onnx onnxruntime torch
-
-      - name: pytest
-        env:
-          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
-        # The whole end to end matrix, not the fast subset. pyproject sets
-        # addopts = -m 'not slow' so a local run stays quick; this overrides it so
-        # CI enforces the spec 9.6 cross product rather than one cell per level.
-        run: python -m pytest test/Python -q -m "slow or not slow"
-
-      - name: Reachability, including the benchmark model layer
-        env:
-          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
-        run: python scripts/check-reachability.py
-
-      - name: Regression baseline
-        env:
-          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
+      # ---- GoogleTest binaries. Each guarded on its binary existing. --------
+      - name: "NPUInterfaceTests (activation table: P2)"
         run: |
-          NPU_VENV=/opt/venv NPU_LIT=/llvm-project/build/bin/llvm-lit \
-            bash scripts/regression-baseline.sh --check --no-build
+          set -euo pipefail
+          if [ -x build/bin/NPUInterfaceTests ]; then
+            ./build/bin/NPUInterfaceTests
+          else
+            echo "NPUInterfaceTests: OFF until P2 (activation table 19.0)."
+            echo "NPUInterfaceTests: guard is build/bin/NPUInterfaceTests existing."
+          fi
 
+      - name: "NPUAllocatorTests (activation table: P5)"
+        run: |
+          set -euo pipefail
+          if [ -x build/bin/NPUAllocatorTests ]; then
+            ./build/bin/NPUAllocatorTests
+          else
+            echo "NPUAllocatorTests: OFF until P5 (activation table 19.0)."
+            echo "NPUAllocatorTests: guard is build/bin/NPUAllocatorTests existing."
+          fi
+
+      - name: "NPUEncodingTests (activation table: P6)"
+        run: |
+          set -euo pipefail
+          if [ -x build/bin/NPUEncodingTests ]; then
+            ./build/bin/NPUEncodingTests
+          else
+            echo "NPUEncodingTests: OFF until P6 (activation table 19.0)."
+            echo "NPUEncodingTests: guard is build/bin/NPUEncodingTests existing."
+          fi
+
+      - name: "NPUSimulatorTests (activation table: P7)"
+        run: |
+          set -euo pipefail
+          if [ -x build/bin/NPUSimulatorTests ]; then
+            ./build/bin/NPUSimulatorTests
+          else
+            echo "NPUSimulatorTests: OFF until P7 (activation table 19.0)."
+            echo "NPUSimulatorTests: guard is build/bin/NPUSimulatorTests existing."
+          fi
+
+      # ---- pytest. Off until P3, and the reason is in the table: an empty
+      # collection exits 5 and that is not a pass. The guard is therefore a
+      # test file existing, never the exit code.
+      #
+      # There is a second reason it stays off at P0: the LLVM image is built
+      # with MLIR_ENABLE_BINDINGS_PYTHON=OFF, a narrowing recorded in
+      # docker/Dockerfile.llvm, so the bindings test/Python imports are not in
+      # this container at all. Turning pytest on at P3 means republishing the
+      # image with bindings enabled. That is a P3 deliverable, noted here so it
+      # is not discovered on the day.
+      - name: "pytest (activation table: P3)"
+        run: |
+          set -euo pipefail
+          echo "pytest: OFF until P3 (activation table 19.0)."
+          echo "pytest: an empty collection exits 5 and is never read as a pass."
+          echo "pytest: also needs an image with MLIR_ENABLE_BINDINGS_PYTHON=ON, see docker/Dockerfile.llvm."
+
+      - name: "pytest slow cells (activation table: P10)"
+        run: |
+          set -euo pipefail
+          echo "pytest slow cells: OFF until P10 (activation table 19.0)."
+          echo "pytest slow cells: the full matrix runs with -m 'slow or not slow'."
+
+      # ---- Staleness gates. -------------------------------------------------
+      - name: "DIALECT_REFERENCE.md staleness (activation table: P1)"
+        run: |
+          set -euo pipefail
+          if [ -f docs/DIALECT_REFERENCE.md ] \
+             && ninja -C build -t targets all 2>/dev/null | grep -q '^npu-dialect-doc'; then
+            ninja -C build npu-dialect-doc
+            git diff --exit-code -- docs/DIALECT_REFERENCE.md \
+              || { echo "docs/DIALECT_REFERENCE.md is stale."; \
+                   echo "Regenerate with: ninja -C build npu-dialect-doc"; \
+                   exit 1; }
+          else
+            echo "DIALECT_REFERENCE.md staleness: OFF until P1 (activation table 19.0)."
+            echo "staleness gate: guard is docs/DIALECT_REFERENCE.md and the npu-dialect-doc target existing."
+          fi
+
+      - name: "ISA staleness gate (activation table: P6)"
+        run: |
+          set -euo pipefail
+          if [ -f scripts/check-isa-staleness.sh ]; then
+            bash scripts/check-isa-staleness.sh
+          else
+            echo "ISA staleness gate: OFF until P6 (activation table 19.0)."
+            echo "ISA staleness gate: guard is scripts/check-isa-staleness.sh existing."
+          fi
+
+      # ---- Reachability, full. Off until P8, and the table explains why the
+      # guard is a phase rather than a file: the model suite lands at P3 but
+      # the full check also wants a lowering pattern (P4), an encoder case
+      # (P6), and a simulator case (P7) for every operation. P8 is the first
+      # phase at which it is passable rather than merely runnable, so a file
+      # guard would switch it on at P3 and fail for four phases.
+      - name: "check-reachability full (activation table: P8)"
+        run: |
+          set -euo pipefail
+          echo "check-reachability full: OFF until P8 (activation table 19.0)."
+          echo "check-reachability full: needs lowering (P4), encoding (P6), and simulation (P7) per operation; P8 is the first phase it can pass."
+
+  # -------------------------------------------------------------------------
+  # sanitizers. Off until P6. The job exists from P0 and says so in its log,
+  # rather than being commented out: a job that is absent is a job nobody can
+  # see is missing, and the point of the activation table is that the state of
+  # every gate is visible in a run.
+  # -------------------------------------------------------------------------
   sanitizers:
-    name: asan and ubsan
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Trust the workspace
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Configure with sanitizers
+      - name: "sanitizers job is off (activation table: P6)"
         run: |
-          cmake -G Ninja -S . -B build-san \
-            -DMLIR_DIR="$MLIR_DIR" -DLLVM_DIR="$LLVM_DIR" \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          set -euo pipefail
+          echo "sanitizers: OFF until P6 (activation table 19.0)."
+          echo "sanitizers: at P6 this becomes the same build with -fsanitize=address,undefined,"
+          echo "sanitizers: running the GoogleTests including the whole of MalformedInputTest,"
+          echo "sanitizers: plus the coverage guided target over the merged corpus in fuzz/corpus/."
+          echo "sanitizers: it is off now because there is no corpus to run."
 
-      - name: Build the test binaries
-        run: ninja -C build-san -j6 NPUEncodingTests NPUSimulatorTests npu-sim
-
-      - name: GoogleTest under ASan and UBSan
-        env:
-          # halt_on_error makes a UBSan finding fail the job instead of being a
-          # line of log nobody reads.
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          ASAN_OPTIONS: detect_leaks=1
-        # EncodeFunction.* is excluded, and the reason is not that it fails.
-        #
-        # Those tests construct an MLIRContext. LLVM is prebuilt without
-        # instrumentation, but BumpPtrAllocator and SmallVector are header only,
-        # so the copies instantiated in these ASan compiled translation units
-        # poison slab memory that the uninstrumented libMLIRIR.a then writes
-        # into. ASan reports a use-after-poison inside
-        # BuiltinDialect::initialize, entirely within MLIR's own call stack and
-        # nothing to do with this project. The only real fix is an ASan build of
-        # LLVM, which costs a second multi hour image for no benefit here.
-        #
-        # Nothing is lost by excluding them. This job exists to cover the
-        # memory unsafe surface, which is the .nbin decoder, Program::validate,
-        # the fuzz corpus, and the simulator's raw scratchpad and DRAM
-        # arithmetic. None of that touches MLIR. EncodeFunction.* still runs
-        # uninstrumented in build-and-test.
-        run: |
-          ./build-san/bin/NPUEncodingTests --gtest_filter=-EncodeFunction.*
-          ./build-san/bin/NPUSimulatorTests
-
+  # -------------------------------------------------------------------------
+  # coverage. Off until P2. The table is precise about the two dates: the job
+  # runs from P2 with thresholds of 0, so the number is recorded and its trend
+  # is visible from the start, and P8 is where the real thresholds are set from
+  # what P8 measures. Gating on a threshold before P8 would be gating on a
+  # number nobody has measured.
+  # -------------------------------------------------------------------------
   coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/olajide-badejo/npu-mlir-llvm:22.1.8
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Trust the workspace
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Install coverage tooling
-        run: pip install --no-cache-dir gcovr pytest pytest-cov onnx onnxruntime torch
-
-      - name: Run coverage
-        env:
-          MLIR_PYTHON_PACKAGES: /llvm-project/build/tools/mlir/python_packages/mlir_core
-        run: bash scripts/coverage.sh | tee coverage.log
-
-      - name: Enforce the thresholds
-        # UPGRADE_SPEC_V3.md section 9.8: at least 85 percent line coverage on
-        # lib/Dialect, lib/Encoding, and lib/Simulator, counted only from a run
-        # where every test passed. coverage.sh exits nonzero if any suite
-        # failed, so reaching this step already establishes the second half.
+      - name: "coverage job is off (activation table: P2, thresholds at P8)"
         run: |
-          pct=$(grep -oP 'lines: \K[0-9.]+' coverage.log | head -1)
-          echo "C++ line coverage: ${pct}%"
-          python -c "import sys; sys.exit(0 if float('${pct}') >= 85.0 else 1)" \
-            || { echo "C++ line coverage ${pct}% is below the 85% threshold"; exit 1; }
+          set -euo pipefail
+          echo "coverage: OFF until P2 (activation table 19.0)."
+          echo "coverage: from P2 it runs scripts/coverage.sh with thresholds of 0, so the number is recorded and its trend visible without gating on it."
+          echo "coverage: P8 sets the real thresholds from what P8 measures, parsed from the JSON summaries."

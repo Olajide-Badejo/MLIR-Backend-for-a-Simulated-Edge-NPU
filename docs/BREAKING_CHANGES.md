@@ -1,68 +1,46 @@
+<!--
+SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+
+SPDX-License-Identifier: MIT
+-->
+
 # Breaking changes
 
-Every entry here is a deliberate regression against the recorded baseline in
-`test/baseline/baseline.json`.
+*Diataxis type: reference.*
 
-The upgrade work runs under a prime directive: do not break working behaviour,
-and if you must, say so explicitly, in writing, before you do it. This file is
-where that gets said. `scripts/regression-baseline.sh --check` runs at every
-phase gate and fails on any drift in test outcomes, instruction counts,
-simulated cycles, DRAM traffic, end to end error, or the golden output tensors.
-When a change moves one of those on purpose, the fix is not to re-record the
-baseline quietly. It is to write the change down here first, then re-record.
+This file records every **deliberate** regression of the recorded baseline, and
+it records each one **before** the commit that causes it.
 
-An entry must say what moved, by how much, why the new behaviour is the correct
-one, and which commit did it. Numbers, not adjectives. If a golden tensor moved,
-give the max absolute delta. If a cycle count moved, give both figures.
+The prime directive of the build specification is that once a behaviour is in
+the baseline it does not change silently, and that if it must change I say so in
+writing first. This file is where that writing goes. From Phase P8 the
+repository carries a baseline of test names and counts, instruction counts,
+simulated cycles, DRAM bytes and golden output tensors, and every phase gate
+re-runs it. A gate that finds the baseline moved fails, and the only thing that
+turns that failure into a pass is an entry here that predicted the movement.
 
-Entries are newest first. `CHANGELOG.md` carries the user facing summary; this
-file carries the baseline accounting behind it.
+The ordering is the whole mechanism. An entry written after the number moved is
+an explanation; an entry written before it moved is a decision. Git commit order
+is what tells the two apart, so the entry lands in its own commit, strictly
+before the commit that changes the behaviour.
 
-## Format
+Two things do not belong here. A number that moved by accident is a defect and
+goes in `DEFECT_LOG.md` until it is understood. A user visible change that does
+not regress the baseline is a changelog line and goes in `CHANGELOG.md`. Some
+changes are both, and then they are written in both places rather than in
+whichever one was closer to hand.
 
-```
-## <date>: <one line summary>
+A baseline field that did not exist yet cannot have regressed. The baseline
+grows across phases with a `schema_version` bump each time, and the arrival of a
+new field is not a breaking change.
 
-**Moved:** which baseline fields changed, with before and after numbers.
+## Entry form
 
-**Why this is correct:** the reasoning. A regression that is genuinely a fix
-should say what was wrong with the old number.
-
-**Commit:** <sha>
-```
+Each entry names the date, the phase, which baseline fields move and in which
+direction, roughly how far, why the regression is worth taking, and the commit
+that causes it once it exists.
 
 ## Entries
 
-## 2026-08-09: two end to end test names removed, superseded by the matrix
-
-**Moved:** the `pytest` suite's recorded test name list loses two entries:
-
-- `test.Python.test_end_to_end::test_lenet_matches_onnxruntime`
-- `test.Python.test_end_to_end::test_lenet_with_spilling_matches_onnxruntime`
-
-No instruction count, cycle count, DRAM figure, end to end error, or golden
-tensor moved. The pytest suite grows from 41 to 72 collected tests, so this is a
-rename and expansion rather than a reduction in coverage, but the baseline
-records test names and two of the recorded names no longer exist, which it
-correctly reports as drift.
-
-**Why this is correct:** both tests are replaced by cells of the new
-parametrized matrix in `test/Python/test_end_to_end.py`, and the replacement is
-strictly larger. `test_lenet_matches_onnxruntime` compiled with a hardcoded pass
-list and checked one standard normal draw at the 1 MB budget; that cell is now
-`test_matrix_cell[lenet-O2-1048576-normal]`, and the matrix additionally covers
-`-O0` and `-O1`, the 140 KB budget, and four further input classes.
-`test_lenet_with_spilling_matches_onnxruntime` is now
-`test_matrix_cell[lenet-O2-143360-normal]` plus the same expansion.
-
-The old tests were also validating a pipeline nobody can request: their pass
-list, `-canonicalize -npu-fuse-ops -npu-lower-to-npuisa
--npu-allocate-scratchpad`, is `-O2` without the second `-canonicalize` and
-without `-symbol-dce`, so it matches no `-O` level. Keeping the names alive
-would have meant keeping that fiction alive alongside the matrix.
-
-Coverage of the two original cells was confirmed before the deletion rather than
-asserted after it: `test_matrix_covers_the_full_cross_product` fails if any cell
-id is missing from the collected set.
-
-**Commit:** `4fda494`
+None yet. The baseline does not exist before Phase P8, so nothing can have
+regressed against it.

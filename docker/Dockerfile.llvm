@@ -1,111 +1,205 @@
-# Dockerfile.llvm
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 #
-# Builds LLVM and MLIR once at the pinned tag and bakes the result into an image
-# CI uses as its base, so CI never rebuilds LLVM per push. Build and push this
-# image only when the pinned tag changes.
+# SPDX-License-Identifier: MIT
 #
-# In practice do not run this by hand. The .github/workflows/llvm-image.yml
-# workflow builds it on a runner and pushes to GHCR, because the development
-# machine's WSL2 guest is capped at 12 GB (docs/BUILD.md) and building LLVM
-# inside it alongside a container runtime thrashes. To do it locally anyway:
+# The prebuilt LLVM and MLIR image that every build-and-test job pulls.
 #
-#   docker build -f docker/Dockerfile.llvm -t ghcr.io/OWNER/npu-mlir-llvm:22.1.8 .
+# Section 0.4 of the build specification puts "rebuilding LLVM" out of scope
+# and then names exactly one exemption, which is this file: it builds the same
+# tag, llvmorg-22.1.8, on GitHub's hardware rather than on mine, so that CI
+# spends seconds pulling instead of an hour compiling. It never runs inside
+# WSL2.
 #
-# Two stages, because a single stage image is not shippable. The build tree for
-# a release build with assertions runs to tens of gigabytes, almost all of it
-# object files that nothing downstream reads. The final stage copies only what
-# an out of tree project actually links and runs against, at the same absolute
-# paths, because the CMake package files in the build tree hardcode them.
+# Section 19 says the binding constraint on a hosted runner is disk, not time:
+# roughly 14 GB free against an LLVM release build with assertions that lands
+# somewhere between 20 and 40 GB. Three mitigations are mandatory, and all
+# three are here or in the workflow that drives this file:
+#
+#   1. The workflow reclaims the runner's preinstalled toolchains before the
+#      build starts. That is in .github/workflows/llvm-image.yml, because it
+#      is a property of the runner rather than of the image.
+#   2. `ninja install` writes a slim prefix at /opt/llvm and only that prefix
+#      is copied into the final stage, so the multi tens of gigabytes build
+#      tree stays in the discarded builder layer and never ships.
+#   3. LLVM_TARGETS_TO_BUILD is Native and the only enabled project is MLIR.
+#
+# Base pin. Section 3's environment hardening wants the base pinned by sha256
+# digest rather than by tag at P0, because the image is published at P0 and
+# repinning a published image later means republishing it. The digest below is
+# the linux/amd64 manifest of ubuntu:24.04, resolved on 2026-08-19 with
+# docker 29.6.1 in WSL2 by two commands that agreed:
+#
+#   docker manifest inspect ubuntu:24.04
+#   docker buildx imagetools inspect ubuntu:24.04
+#
+# Both report the linux/amd64 child manifest as
+# sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316,
+# under the multi platform index sha256:d78ab76437b1afc5f01e223d6bf0172763f4
+# 04bb166441328845adbef44518cb. The platform specific digest is the one pinned
+# here rather than the index digest, because the runner and this image are
+# both linux/amd64 and pinning the child manifest removes the index as a
+# degree of freedom. The image annotates itself as ubuntu 24.04 built from
+# revision 461fbe29535e51d03451ae146a90f730671d950d on 2026-08-10.
+
+# ---------------------------------------------------------------------------
+# Stage 1: build LLVM and MLIR, install into a slim prefix, discard the rest.
+# ---------------------------------------------------------------------------
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS builder
 
 ARG LLVM_TAG=llvmorg-22.1.8
+ARG LLVM_PREFIX=/opt/llvm
+# A hosted runner is 4 vCPU and 16 GB. Compiling with -j4 uses the cores;
+# linking is the memory hungry half, so link jobs are held at 2 to keep two
+# concurrent lld invocations inside 16 GB rather than inviting the OOM killer
+# into a 40 minute build.
+ARG BUILD_JOBS=4
+ARG LINK_JOBS=2
 
-# ---------------------------------------------------------------------------
-# Stage 1: build
-# ---------------------------------------------------------------------------
-FROM ubuntu:24.04 AS builder
-
-ARG LLVM_TAG
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake ninja-build git lld ccache \
-      python3 python3-pip python3-venv python3-dev \
+RUN apt-get update && apt-get install --no-install-recommends --yes \
+      build-essential \
       ca-certificates \
+      ccache \
+      clang \
+      cmake \
+      git \
+      lld \
+      ninja-build \
+      python3 \
+      python3-pip \
+      python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir numpy nanobind pybind11
+# lit is what `ninja check-npu` drives the lit suite with. It comes from pip
+# rather than from the LLVM build tree because only the slim prefix survives
+# into the final stage, and --break-system-packages is the honest way to say
+# "this container is the environment" to a PEP 668 marked Debian python.
+RUN python3 -m pip install --no-cache-dir --break-system-packages lit==18.1.8
 
-RUN git clone --depth 1 --branch ${LLVM_TAG} \
-      https://github.com/llvm/llvm-project.git /llvm-project
+# A shallow clone of one tag. --depth 1 against a tag is the whole reason this
+# fits: the full llvm-project history is several gigabytes of objects that no
+# part of the build reads.
+WORKDIR /src
+RUN git clone --depth 1 --branch "${LLVM_TAG}" \
+      https://github.com/llvm/llvm-project.git llvm-project \
+ && git -C llvm-project rev-parse HEAD > /tmp/llvm-project-sha.txt \
+ && cat /tmp/llvm-project-sha.txt
 
-# No install step. The out of tree project consumes the build tree directly:
-# MLIR_DIR points into build/lib/cmake/mlir, lit and FileCheck come from
-# build/bin, and the Python bindings live under build/tools/mlir.
-RUN cmake -G Ninja -S /llvm-project/llvm -B /llvm-project/build \
-      -DLLVM_ENABLE_PROJECTS="mlir" \
-      -DLLVM_TARGETS_TO_BUILD="Native" \
+# Release plus assertions is the configuration this project develops against,
+# and assertions are the point: an MLIR verifier failure that fires as an
+# assertion in CI is a bug found, where the same build without assertions is a
+# bug shipped.
+#
+# LLVM_INSTALL_UTILS=ON is critical rather than cosmetic. Without it the
+# install prefix ships mlir-opt and the CMake packages but not FileCheck, not,
+# or count, and `ninja check-npu` cannot run a single lit test: lit resolves
+# FileCheck out of the LLVM tools directory and reports every test unresolved.
+# This flag is the difference between an image that builds this project and an
+# image that builds it and can also test it.
+#
+# MLIR_ENABLE_BINDINGS_PYTHON is OFF here, and that is a deliberate narrowing
+# rather than an oversight. The Python bindings are not needed by any CI step
+# that is active before P3: the pytest job is guarded off until then per the
+# activation table in Section 19.0. Leaving them out keeps the build shorter
+# and the shipped prefix smaller, which matters when disk is the binding
+# constraint. Revisit at P3, when test/Python starts collecting: turning this
+# ON means republishing the image under the same tag policy and adding the
+# nanobind build dependency, so the change is a P3 deliverable and not a knob
+# to flip in a hurry.
+RUN cmake -G Ninja -S llvm-project/llvm -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DLLVM_ENABLE_ASSERTIONS=ON \
-      -DLLVM_USE_LINKER=lld \
-      -DLLVM_PARALLEL_LINK_JOBS=1 \
+      -DLLVM_ENABLE_PROJECTS=mlir \
+      -DLLVM_TARGETS_TO_BUILD=Native \
+      -DLLVM_INSTALL_UTILS=ON \
+      -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+      -DLLVM_ENABLE_RTTI=ON \
+      -DLLVM_INCLUDE_TESTS=OFF \
       -DLLVM_INCLUDE_BENCHMARKS=OFF \
       -DLLVM_INCLUDE_EXAMPLES=OFF \
-      -DLLVM_INCLUDE_DOCS=OFF \
-      -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-      -DPython3_EXECUTABLE=/opt/venv/bin/python \
-    && ninja -C /llvm-project/build
+      -DLLVM_ENABLE_ZSTD=OFF \
+      -DLLVM_USE_LINKER=lld \
+      -DLLVM_PARALLEL_LINK_JOBS="${LINK_JOBS}" \
+      -DCMAKE_C_COMPILER=clang \
+      -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}"
 
-# Drop what the final stage will not copy anyway, so the layer that gets
-# exported is smaller and the copy is quicker.
-RUN find /llvm-project/build -name '*.o' -delete \
-    && rm -rf /llvm-project/.git
+# Build and install in one layer, then delete the build tree in that same
+# layer. Splitting these into separate RUN instructions would freeze the build
+# tree into an image layer, and a deletion in a later layer does not shrink an
+# earlier one: the tens of gigabytes would still have to be written to disk on
+# the runner as part of the builder image. Only the /opt/llvm prefix survives.
+RUN cmake --build build -- -j"${BUILD_JOBS}" \
+ && cmake --install build \
+ && cp /tmp/llvm-project-sha.txt "${LLVM_PREFIX}/llvm-project-sha.txt" \
+ && cp build/CMakeCache.txt "${LLVM_PREFIX}/llvm-CMakeCache.txt" \
+ && (clang --version > "${LLVM_PREFIX}/build-compiler-version.txt") \
+ && rm -rf /src/build /src/llvm-project \
+ && du -sh "${LLVM_PREFIX}"
 
 # ---------------------------------------------------------------------------
-# Stage 2: the shipped image
+# Stage 2: the shipped image. Runtime dependencies plus the slim prefix.
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+ARG LLVM_TAG=llvmorg-22.1.8
+ARG LLVM_PREFIX=/opt/llvm
+
+LABEL org.opencontainers.image.title="npu-mlir-llvm" \
+      org.opencontainers.image.description="LLVM and MLIR ${LLVM_TAG}, Release with assertions, Native target, installed at ${LLVM_PREFIX}" \
+      org.opencontainers.image.source="https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU" \
+      org.opencontainers.image.licenses="MIT"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake ninja-build git lld ccache \
-      python3 python3-pip python3-venv python3-dev \
-      ca-certificates curl \
+# What is left is only what building and testing this repository against the
+# prefix needs: a compiler, lld, cmake, ninja, python3 for lit and for the
+# repository's own scripts, git because CI checks out into this container, and
+# ccache because the workflow caches its directory across runs.
+RUN apt-get update && apt-get install --no-install-recommends --yes \
+      build-essential \
+      ca-certificates \
+      ccache \
+      clang \
+      cmake \
+      git \
+      lld \
+      ninja-build \
+      python3 \
+      python3-pip \
+      python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /opt/venv /opt/venv
+RUN python3 -m pip install --no-cache-dir --break-system-packages lit==18.1.8
 
-# Source headers. MLIRConfig.cmake and LLVMConfig.cmake in a build tree point
-# include paths at the source checkout, so these are not optional.
-COPY --from=builder /llvm-project/llvm/include /llvm-project/llvm/include
-COPY --from=builder /llvm-project/mlir/include /llvm-project/mlir/include
-COPY --from=builder /llvm-project/cmake /llvm-project/cmake
-COPY --from=builder /llvm-project/llvm/cmake /llvm-project/llvm/cmake
-COPY --from=builder /llvm-project/mlir/cmake /llvm-project/mlir/cmake
+COPY --from=builder /opt/llvm /opt/llvm
 
-# Generated headers, the static libraries and CMake package files, the tools
-# (llvm-lit, FileCheck, count, not, the tblgens), and the Python bindings.
-COPY --from=builder /llvm-project/build/include /llvm-project/build/include
-COPY --from=builder /llvm-project/build/tools/mlir/include \
-                    /llvm-project/build/tools/mlir/include
-COPY --from=builder /llvm-project/build/lib /llvm-project/build/lib
-COPY --from=builder /llvm-project/build/bin /llvm-project/build/bin
-COPY --from=builder /llvm-project/build/tools/mlir/python_packages \
-                    /llvm-project/build/tools/mlir/python_packages
-COPY --from=builder /llvm-project/build/CMakeCache.txt \
-                    /llvm-project/build/CMakeCache.txt
+# MLIR_DIR and LLVM_DIR are exported so a configure inside this image can be
+# written without repeating the paths, but ci.yml passes them explicitly all
+# the same: a workflow that depends on an environment variable set in an image
+# breaks silently the day the image changes, and the explicit -D flags are the
+# documentation of what the image is expected to contain.
+ENV PATH="/opt/llvm/bin:${PATH}" \
+    MLIR_DIR="/opt/llvm/lib/cmake/mlir" \
+    LLVM_DIR="/opt/llvm/lib/cmake/llvm"
 
-ENV PATH="/opt/venv/bin:/llvm-project/build/bin:$PATH"
-ENV MLIR_DIR=/llvm-project/build/lib/cmake/mlir
-ENV LLVM_DIR=/llvm-project/build/lib/cmake/llvm
-ENV MLIR_PYTHON_PACKAGES=/llvm-project/build/tools/mlir/python_packages/mlir_core
+# A build argument cannot be read at container run time, so the tag is frozen
+# into the environment here. The result manifest of Section 3 reads it.
+ENV NPU_LLVM_TAG="${LLVM_TAG}"
 
-# A cheap smoke test at build time, so a broken image fails here rather than in
-# somebody's CI run.
-RUN test -x /llvm-project/build/bin/FileCheck \
-    && test -x /llvm-project/build/bin/llvm-lit \
-    && test -f "$MLIR_DIR/MLIRConfig.cmake" \
-    && test -d "$MLIR_PYTHON_PACKAGES/mlir" \
-    && echo "llvm image looks sane"
+# Fail the build rather than publish an image that cannot test anything. Each
+# of these is a thing a CI job will ask for within minutes of the first pull,
+# and finding out here costs one build where finding out there costs a red run
+# and a bisect through a Dockerfile.
+RUN mlir-opt --version \
+ && test -f /opt/llvm/lib/cmake/mlir/MLIRConfig.cmake \
+ && test -f /opt/llvm/lib/cmake/llvm/LLVMConfig.cmake \
+ && command -v FileCheck \
+ && command -v not \
+ && command -v count \
+ && command -v lit \
+ && command -v ninja \
+ && command -v ccache
+
+WORKDIR /work

@@ -1,42 +1,34 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 #
-# dash-lint.sh
+# SPDX-License-Identifier: MIT
 #
-# Fail if any em dash (U+2014) or en dash (U+2013) appears anywhere in the
-# repository's text files. These characters are banned per the project style
-# rules (code, comments, commits, markdown, LaTeX). We match them by Unicode
-# codepoint through a PCRE pattern so this script itself contains no literal
-# dash for it to flag.
+# The dash linter of ground rule 3. Section 3.3 of the build specification
+# names this file, so this is the entry point, but the rules live in
+# dash_lint.py next to it: the verbatim exemption needs a state machine and a
+# brace matcher, and writing those in shell would make the one thing that has
+# to be exactly right the hardest thing in the repository to read.
 #
-# Exit code 0 means clean, 1 means at least one offending character was found.
+#   bash scripts/dash-lint.sh              lint every tracked file
+#   bash scripts/dash-lint.sh --self-test  check the linter against its fixture
+#   bash scripts/dash-lint.sh FILE...      lint the named files
+#
+# Exits nonzero on any violation, which is what pre-commit and CI read.
+
 set -euo pipefail
 
-PATTERN='[\x{2013}\x{2014}]'
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Operate from the repository root when we are inside a git tree, otherwise the
-# current directory. Prefer the git file list so build artifacts and vendored
-# third party trees are never scanned.
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  cd "$(git rev-parse --show-toplevel)"
-  mapfile -d '' FILES < <(git ls-files -z)
+# Prefer the project venv when it is there, so the linter runs on the same
+# interpreter as everything else, but do not require it: this script has no
+# third party dependencies and CI may call it before any venv exists.
+if [ -x "$HOME/npu-venv/bin/python" ]; then
+  python="$HOME/npu-venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  python="python3"
 else
-  mapfile -d '' FILES < <(find . -type f -not -path './.git/*' -print0)
+  echo "dash-lint: no python3 on PATH" >&2
+  exit 127
 fi
 
-hits=0
-for f in "${FILES[@]}"; do
-  # Skip files grep judges to be binary.
-  if grep -Iq . "$f" 2>/dev/null; then
-    if grep -nP "$PATTERN" "$f" >/dev/null 2>&1; then
-      grep -nP "$PATTERN" "$f" | sed "s|^|$f:|"
-      hits=1
-    fi
-  fi
-done
-
-if [ "$hits" -ne 0 ]; then
-  echo "dash-lint: found em dash (U+2014) or en dash (U+2013). Replace with ASCII." >&2
-  exit 1
-fi
-
-echo "dash-lint: clean"
+exec "$python" "$here/dash_lint.py" "$@"

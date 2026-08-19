@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# The scheduled long running suite of Section 19: the full benchmark suite, the
+# full end to end matrix, the long fuzz run, the mutation run, and the five
+# times flake run. These are the checks that catch a slow drift, which is
+# exactly the kind of failure that a per push pipeline never sees because none
+# of them is cheap enough to run per push.
+#
+# Section 19 says this file exists from P0 with every job guarded off, and the
+# jobs activate at the phases named in the 19.0 table. That is what this is: a
+# real workflow on a real schedule where every job runs and prints which phase
+# turns it on. A nightly that is added on the day its first job activates is a
+# nightly whose schedule, permissions, and syntax have never been exercised.
+
+name: nightly
+
+on:
+  # 03:30 UTC daily. Off the hour on purpose: scheduled workflows across GitHub
+  # bunch up at :00, and a job queued behind that crowd starts late for no
+  # reason. Nothing here is time of day sensitive.
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LLVM_TAG: llvmorg-22.1.8
+  LLVM_IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: "nightly fuzz job is off (activation table: P6)"
+        run: |
+          set -euo pipefail
+          echo "nightly fuzz: OFF until P6 (activation table 19.0)."
+          echo "nightly fuzz: at P6 this runs the long coverage guided run of build/bin/nbin_decode_fuzzer over fuzz/corpus/ for its budgeted time."
+          echo "nightly fuzz: it is off now because neither the fuzz target nor the corpus exists."
+
+  full-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: "nightly full matrix job is off (activation table: P10)"
+        run: |
+          set -euo pipefail
+          echo "nightly full matrix: OFF until P10 (activation table 19.0)."
+          echo "nightly full matrix: at P10 this runs the full end to end matrix including the slow cells, with -m 'slow or not slow', plus the full benchmark suite."
+          echo "nightly full matrix: it is off now because test/Python collects nothing and an empty collection exits 5, which is not a pass."
+
+  mutation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: "nightly mutation job is off (activation table: P15)"
+        run: |
+          set -euo pipefail
+          echo "nightly mutation: OFF until P15 (activation table 19.0)."
+          echo "nightly mutation: at P15 this runs scripts/mutation.sh, which Section 3.3 marks nightly only."
+          echo "nightly mutation: it is off now because scripts/mutation.sh does not exist and there is no test suite for it to mutate against."
+
+  flake:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: "nightly flake job is off (activation table: P15)"
+        run: |
+          set -euo pipefail
+          echo "nightly flake: OFF until P15 (activation table 19.0)."
+          echo "nightly flake: at P15 this runs the whole suite five times and fails on any test whose result is not identical across all five runs."
+          echo "nightly flake: it is off now because there is no suite large enough for the result to mean anything."

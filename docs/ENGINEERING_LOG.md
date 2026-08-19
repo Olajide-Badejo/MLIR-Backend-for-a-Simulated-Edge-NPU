@@ -1391,3 +1391,230 @@ The reload `dma_load` reads from the same map, so it now finds the spill region.
 to a distinct DRAM offset (`dram[0x800]`, separate from the inputs at 0x0 and 0x400 and the
 outputs), and every benchmark cell, spilling or not, is back to 2.98e-08 against onnxruntime.
 Added an end to end pytest at a 140 KB budget to lock the fix in.
+
+---
+
+# v3 rebuild starts here (2026-08-19)
+
+Everything above this line is v1 and v2 era work against the old source tree,
+which the commit at the head of `phase/p0-foundations` removed from the working
+tree and left in history. Everything below is the v3 rebuild, which releases as
+`v2.0.0`. I keep both in one file on purpose: the debug report groups entries by
+theme rather than by era, and a defect I hit in v1 and hit again in v3 is worth
+more read next to itself than filed in a second document.
+
+## 2026-08-19 Phase 0: three traps in the scaffold, none of them in the compiler
+
+**Symptom.** None of the three showed up as a failing test. All three were
+things that looked configured and were not, which is the failure mode a
+skeleton is most exposed to, because at P0 there is no code whose behaviour
+would contradict a bad setting.
+
+**lit will not pass an empty suite.** The build specification says `ninja -C
+build check-npu` passes on an empty suite at P0. It does not. llvm-lit prints
+`did not discover any tests for provided path(s)` and exits 2, and
+`--allow-empty-runs` does not change that: `llvm/utils/lit/tests/selecting.py`
+in the pinned LLVM contains a test asserting the flag deliberately does not
+suppress that error, which is as clear a statement of intent as upstream ever
+gives. The flag only covers a suite that found tests and then filtered them all
+away.
+
+I could have made the target pass by making it not run lit. I did the opposite
+and gave the suite one real test: `test/Smoke/npu-opt-roundtrip.mlir` parses and
+prints a two operation module through `npu-opt` and checks the output with
+FileCheck. That is a test of the thing P0 actually delivers, which is the
+harness, and it means the gate is met by something that ran. If P1 opens with a
+broken dialect, this test having passed at P0 says the breakage is in the
+dialect and not in the build. Logged as D-0001.
+
+**The pytest PYTHONPATH wiring was set in a key nothing reads.** Section 3.3
+insists the MLIR bindings path be wired in three places and warns that missing
+it fails every Python test at import for a reason unrelated to the code under
+test. I wired it as `env = [...]` under `[tool.pytest.ini_options]`, which is
+the obvious spelling and is wrong here: `env` belongs to the `pytest-env`
+plugin, this environment does not have it, and pytest treats an unknown config
+key as a warning and carries on. The wiring would have passed review and done
+nothing.
+
+`test/Python/conftest.py` does it instead, with no plugin needed, and resolves
+the path from `MLIR_PYTHON_PACKAGES_DIR`, then from this repository's own CMake
+cache, then from the default. Reading the cache is the part I would keep if I
+kept only one: it means pytest and lit take the path from the same value the
+configure step computed, rather than from two hardcoded strings that have to be
+kept in step by hand. I proved it by running pytest with `PYTHONPATH` unset in
+the environment, and by writing `test_bindings_wiring.py`, which imports
+`mlir.ir` and builds a module so that a future break names the wiring instead of
+blaming whichever test ran first. Logged as D-0002.
+
+**A lock file that locks nothing.** `pip freeze` writes torch as
+`2.13.0+cpu`, because the installed build is the CPU one. That local version
+lives on the PyTorch CPU index and has never been on PyPI, so a clean install
+from the frozen file fails outright with `No matching distribution found`. The
+gate asks for proof that a clean venv installs from the lock, and the first
+attempt at that proof is what found this; the file had looked fine.
+
+The fix is `--extra-index-url https://download.pytorch.org/whl/cpu` written
+into the lock file itself, so the index travels with the pins. I want to record
+why I did not take the easier route of deleting the `+cpu` suffix: that makes
+PyPI resolve, and what it resolves to is the CUDA build. It would have turned a
+loud failure into a quiet one, changed what reference generation runs on, and
+pulled about two gigabytes of CUDA wheels onto a machine whose GPU this project
+deliberately does not use. Logged as D-0003.
+
+**A fourth thing, smaller, worth one line.** My configure time check for the
+MLIR Python bindings looked for `mlir/__init__.py` and warned that a perfectly
+working install was missing. The bindings are a namespace package and ship no
+`__init__.py`. The check looks for `mlir/ir.py` now.
+
+**Verification.** `cmake` configures clean, `ninja -C build -j6` builds
+`npu-opt`, `./build/bin/npu-opt --help` exits 0, `ninja -C build check-npu`
+reports 1 of 1, `python -m pytest -q` reports 2 passed with `PYTHONPATH` unset,
+`bash scripts/dash-lint.sh --self-test` meets 8 of 8 expectations,
+`bash scripts/dash-lint.sh` is clean over the tree, and `reuse lint` reports
+33 of 33 files carrying copyright and licence information.
+
+## 2026-08-19 Phase 0: reconciling the upgrade line, and a push that would not push
+
+**Symptom.** Three separate things, none of which was a compiler bug and all
+three of which were in the way of the P0 gate. The reconcile itself went
+quietly. Then `git push origin main` hung, indefinitely, with no output and no
+prompt. Then, separately, the opset probe printed a number I had been told to
+expect, which is its own small trap because a confirmed prediction is the
+easiest kind of result to stop reading carefully.
+
+**The reconcile, and the four commits that netted to nothing.** The clone
+recipe of Section 0.5 leaves `upgrade/u4-measurement-integrity` checked out,
+because that is what the source repository had checked out, and it leaves `main`
+as a local branch materialised while `origin/*` still pointed at the local
+source. Merging u4 into `main` in the clone was the substantive half. The other
+half was four commits I had forgotten existed: `Update README.md`, four times,
+made through the GitHub web editor months apart. Two of them added text and two
+of them took the same text back out, so the net diff of all four against the
+merge base is empty.
+
+That is worth a paragraph rather than a footnote, because an empty net diff is
+exactly the shape of change that a reconcile can silently drop and nobody
+notices for a year. I merged them rather than resetting past them, at `52ed1da`,
+which keeps the four commits reachable and makes the reconcile a merge of the
+real remote history instead of an assertion that my local `main` was the truth.
+The tree after the merge is byte identical to the tree before it, and that
+identity is the check I ran rather than reading the four diffs and deciding they
+looked harmless.
+
+**Root cause of the hang: git-credential-manager on the Windows side.** WSL2
+inherits the Windows git credential helper, and this environment resolves it to
+`git-credential-manager`. That helper wants to raise a GUI prompt. From a
+non-interactive WSL shell there is nothing to raise it into, so it waits, and
+`git push` waits with it, forever, with no output at all. The failure gives no
+indication that credentials are what it is stuck on, which is the reason this
+cost more than it should have: a hang with no message reads as a network problem
+long before it reads as an authentication problem.
+
+**Options I considered.** Storing a token in `~/.git-credentials` was the
+obvious one and I did not take it: that writes a long lived credential to disk
+in plaintext for the sake of one push. Reconfiguring the global credential
+helper was the second, and it edits state outside this repository to fix a
+problem inside it. I wanted something scoped to the command.
+
+**The fix.** Pipe a token from `gh` into an inline credential helper that lives
+only for the duration of the push:
+
+```
+git -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' push origin main
+```
+
+with `GH_TOKEN` set from `gh auth token` in the same command. Nothing is
+written to disk and the global configuration is untouched.
+
+Two details cost me a second and third attempt, and both are about the token
+string rather than about git. First, capturing `gh auth token` through
+PowerShell gives back a **UTF-8 byte order mark** on the front of the string.
+Git sends it verbatim, GitHub rejects the credential, and the error is a plain
+authentication failure that says nothing about an invisible three byte prefix.
+Second, the same capture leaves a **trailing carriage return**, because
+PowerShell line endings are CRLF and the shell on the other side does not strip
+it. Same symptom, same uninformative message. Stripping both, the push went
+through first time.
+
+I am recording the two stripping steps as separate facts because they are
+separate bugs with an identical symptom, and fixing one and not the other looks
+exactly like the fix not working.
+
+**The opset probe, run rather than assumed.** Section 3.3 gives the probe and
+Section 0.3 predicts it resolves to 23. I ran it in `~/npu-venv` on this machine
+on 2026-08-19 rather than copying the number, which is what the specification
+asks for and is also the only thing that makes the pin a fact about this
+machine. Output: torch 2.13.0+cpu reports an exporter maximum of 23, onnx 1.22.0
+reports a checker ceiling of 27, onnxruntime is 1.27.0. Walking downward from
+27, opset 27 was rejected by the checker or the runtime with `Fail`, and 26 was
+accepted by both. So the pin is `min(23, 26) = 23`, bound by the exporter.
+
+The predicted number was right and the interesting part was not the number. It
+was the gap between onnx's declared ceiling of 27 and the 26 that actually round
+trips: the installed onnx announces support for an opset that its own checker or
+the installed runtime then refuses. Had I copied 23 out of the specification I
+would have got the same pin and would not have learned that the tools disagree
+with themselves one opset above where I am working. Recorded as
+`docs/adr/0002-onnx-opset-pin.md`.
+
+**Verification.** `git remote get-url origin` prints the GitHub URL and not a
+local path; `main` is at `52ed1da` and matches the remote; all six upgrade
+branches are published; `git -C ~/npu-mlir rev-parse HEAD` still reads
+`99408bc14b4f6331ce03ebf1dc0aecce1529afa8` with only the untracked
+`upgrade_parts/` dirty, which is the frozen fallback exactly as it was. The
+opset probe output is quoted verbatim in record 0002.
+
+## 2026-08-19 Phase 0: the owner raised the WSL2 memory cap to 15 GB
+
+Not a defect, a deliberate environment change, recorded because three project
+documents state the old value and because the ceiling is the one environmental
+constraint everything else plans around.
+
+The guest memory cap in the host `~/.wslconfig` went from 12 GB to 15 GB at my
+explicit instruction, mid Phase P0. The 12 GB figure dated from 2026-07-14,
+when running WSL2 uncapped crashed the machine outright; the cap is the crash
+mitigation, and the specification wrote it down as non negotiable on that
+history. Raising it to 15 GB trades about 3 GB of Windows headroom for guest
+capacity on a 31.7 GB host. The swap (8 GB), `autoMemoryReclaim=gradual`,
+`pageReporting`, and the 28 processors are all unchanged, and the guest
+verified the new ceiling after `wsl --shutdown` with `free -h` reporting 14Gi
+total.
+
+What deliberately did not change: the parallelism numbers. `-j6` for memory
+hungry compiles and `LLVM_PARALLEL_LINK_JOBS=1` for any forced LLVM rebuild
+were measured under the 12 GB cap, and nothing has re-measured them at 15 GB,
+so they stay in force as the known safe settings rather than being scaled up
+by arithmetic. If the host starts paging under combined load, the revert is
+one line in `~/.wslconfig` and a `wsl --shutdown`.
+
+Updated in the same commit: `docs/adr/0001`, `docs/adr/0003`, `docs/BUILD.md`,
+and one comment in `.github/workflows/ci.yml`. The v1 era entries above that
+cite 12 GB are history and stay as written.
+
+## 2026-08-19 Phase 0: the skeleton went red twice before it went green, and both reds were real
+
+The gate wants CI green with the image pulling, and the sequence that got there
+is worth its URLs because it is the proof of failure discipline arriving early
+and uninvited. The image published on the first attempt (run 32205653261,
+roughly two hours on the hosted runner). The first run of build-and-test with
+that image then died on its opening step: inside a job container the runner
+falls back to `sh` for run steps, dash rejects `set -o pipefail`, and every
+step in the job had been written against bash and had never once executed under
+the shell it actually got. That is D-0004, red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213043383>,
+fixed by a job level `defaults.run.shell: bash`.
+
+The next run got through configure and the build and then failed check-npu:
+`build/bin/llvm-lit: not found`. The local build links the LLVM build tree,
+which carries `llvm-lit`; the image carries an install tree, which does not,
+and the pip installed lit has to be named with `LLVM_EXTERNAL_LIT`. That is
+D-0005, red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213209291>.
+
+Green, with check-npu 1 of 1 inside the container and every guarded off step
+printing that it is off:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213397267>.
+
+Neither defect was in the compiler, both were in the difference between the
+environment the code was written in and the environment it ran in, and both
+were caught by the skeleton on its first day. Cheap net, first catch.

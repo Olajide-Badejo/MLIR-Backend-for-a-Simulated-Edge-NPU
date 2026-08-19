@@ -1,0 +1,13 @@
+\section{A flag inside a texttt span}
+
+The regression baseline is re-run with \texttt{--check}, and the fast pytest
+subset is selected with \texttt{-m "not slow"}. Both spans are typeset in a
+monospace face rather than as prose, so the double hyphen in the first one is
+not a ligature and is left alone.
+
+Nested braces have to survive too: \texttt{npu-opt --pass-pipeline="builtin.module(canonicalize)"}
+is one span and the linter must not stop reading it at the first closing brace
+it happens to find.
+
+Everything outside those spans is ordinary prose and uses ASCII hyphens only,
+as in out of tree, or in the phase name phase/p0-foundations.

@@ -1,0 +1,12 @@
+\section{An em dash inside the same verbatim environment}
+
+The environment below is the same kind of environment as the passing fixture
+uses, and the flag in it is fine. The em dash is not. The exemption covers the
+double hyphen only.
+
+\begin{verbatim}
+bash scripts/regression-baseline.sh --check
+echo "an em dash — inside verbatim is still rejected"
+\end{verbatim}
+
+The linter must report unicode-dash for this file.

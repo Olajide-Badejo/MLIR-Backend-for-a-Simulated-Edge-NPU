@@ -1,1 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# LLVM style, because this project's C++ is MLIR code that reads alongside
+# upstream MLIR code and a second house style would make every diff against
+# the standalone example harder to read than it needs to be.
+
 BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+ColumnLimit: 80

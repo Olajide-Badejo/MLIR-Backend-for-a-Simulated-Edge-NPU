@@ -1,42 +1,67 @@
-# Pre-commit hooks for npu-mlir.
-# Install once with:  pre-commit install
-# Run against everything with:  pre-commit run --all-files
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Ground rule 3 wants the dash linter wired into pre-commit from P0, and this
+# is that wiring. Two of the hooks are deliberately local rather than pulled
+# from a remote repository: dash-lint is this project's own script and pinning
+# a copy of it somewhere else would let the two drift, and its self test has
+# to run against the fixture in this tree.
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^scripts/testdata/
+      - id: trailing-whitespace
+        exclude: ^scripts/testdata/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/psf/black
+    rev: 26.5.1
+    hooks:
+      - id: black
+        # The fixture files are pinned content: they exist to prove what the
+        # dash linter does with a particular byte sequence, so a formatter is
+        # not allowed to rewrite them.
+        exclude: ^scripts/testdata/
+
+  # ruff lints; black formats. Running ruff-format as well would mean two
+  # formatters with two opinions on the same files, and the disagreement shows
+  # up as a hook that reformats on every run.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^scripts/testdata/
+
   - repo: local
     hooks:
       - id: dash-lint
-        name: dash-lint (no em or en dashes)
-        entry: scripts/dash-lint.sh
-        language: script
+        name: dash lint (no em dashes, no en dashes, no tex ligatures)
+        entry: bash scripts/dash-lint.sh
+        language: system
+        pass_filenames: true
+        exclude: ^scripts/testdata/
+
+      - id: dash-lint-self-test
+        name: dash lint self test against its fixture
+        entry: bash scripts/dash-lint.sh --self-test
+        language: system
         pass_filenames: false
         always_run: true
 
-  - repo: https://github.com/psf/black
-    rev: 24.10.0
-    hooks:
-      - id: black
-        files: ^(python|experiments|report/scripts|scripts|test/Python)/.*\.py$
-
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
-    hooks:
-      - id: ruff
-        files: ^(python|experiments|report/scripts|scripts|test/Python)/.*\.py$
-
-  # Types the frontend package. Configured in pyproject.toml, which also pins
-  # which paths it covers, so pass_filenames is off and mypy picks its own.
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
-    hooks:
-      - id: mypy
-        pass_filenames: false
-        additional_dependencies: [numpy]
-
-  - repo: local
-    hooks:
-      - id: check-reachability
-        name: every npu op is reachable end to end, or dated exempt
-        entry: python scripts/check-reachability.py --skip-models
+      - id: reuse-lint
+        name: reuse lint (every file carries SPDX tags)
+        entry: reuse lint --quiet
         language: system
         pass_filenames: false
-        files: ^(include/NPU/Dialect/NPU/IR/NPUOps\.td|lib/|python/npu_frontend/|docs/DESIGN_DECISIONS\.md)
+        always_run: true

@@ -1,0 +1,20 @@
+\section{A flag inside a verbatim environment}
+
+In prose I write a hyphen and nothing else. Inside the environment below the
+double hyphen is a flag and TeX will not typeset it as a ligature, so it
+stands as written.
+
+\begin{verbatim}
+bash scripts/regression-baseline.sh --check
+ninja -C build check-npu
+\end{verbatim}
+
+\begin{lstlisting}
+npu-opt --split-input-file --verify-diagnostics input.mlir
+\end{lstlisting}
+
+\begin{minted}{bash}
+reuse lint --quiet
+\end{minted}
+
+A comment is not typeset either, so this one is fine: % --check --self-test

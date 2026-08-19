@@ -1,127 +1,215 @@
-# Build instructions
+<!--
+SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 
-This project is a small out of tree MLIR/CMake project. It links against a prebuilt
-LLVM/MLIR that you build exactly once at the pinned tag. The project build itself takes
-seconds to minutes after that.
+SPDX-License-Identifier: MIT
+-->
 
-## 0. Pinned versions
+# Building and testing
 
-- LLVM/MLIR tag: `llvmorg-22.1.8` (current tip of `release/22.x`).
-- Build inside WSL2 Ubuntu. Do not attempt a native Windows LLVM build.
+*Diataxis type: tutorial plus how to.*
 
-## 1. Target machine budget (read this first)
+This is the build documentation for **this hardware**: a Windows 11 host running
+a WSL2 Ubuntu 26.04 guest with a 15 GB memory cap, 28 processors, and an LLVM
+already built at `~/llvm-project/build`. Nothing here is a general porting
+guide. The versions it names are the resolved matrix of
+[`adr/0003-resolved-tool-matrix.md`](adr/0003-resolved-tool-matrix.md).
 
-This machine runs WSL2 under a deliberate resource cap set in `~/.wslconfig`:
-`memory=12GB`, `processors=8`, `swap=8GB`, `autoMemoryReclaim=gradual`. That cap exists
-because its absence crashed the host on 2026-07-14 (WSL held roughly 12.8 GB and never
-released it, and Windows paged to death). Do not raise it to build faster.
+**Every command below is annotated with the phase at which it starts existing.**
+The project is mid rebuild, so a command marked P6 does not work today and that
+is not a broken environment. This page carries only the commands that exist as
+of Phase P0. The full list lives in Section 3.3 of the build specification, and
+commands are copied here as their phase lands.
 
-Because of the 12 GB ceiling, the classic out of memory failure is parallel links of large
-tools such as `mlir-opt`. Two mitigations, both applied below:
+## Before anything else: which directory
 
-- `LLVM_PARALLEL_COMPILE_JOBS=6`: at or below the 6 job guidance in `.wslconfig`.
-- `LLVM_PARALLEL_LINK_JOBS=1`: one link at a time keeps peak link memory bounded.
+Everything happens in **`~/npu-mlir-v2`**. That is the working clone, and it is
+the only repository this project writes to.
 
-If you still see the kernel OOM killer fire during linking, drop compile jobs to 4.
+`~/npu-mlir` is the **frozen v1 fallback**. Nothing writes to it, ever, and only
+the owner may retire it. Record 0001 states the rule in full along with its HEAD
+sha. The Windows side `npu-mlir\` folder is an independent stale clone and is
+read only wreckage; its path contains spaces, which breaks `lit` and `FileCheck`
+outright, so nothing is built there either.
 
-## 2. One time LLVM/MLIR build
-
-Prerequisites (already present or installed on this machine): cmake 3.24+, ninja, gcc or
-clang with C++20, git, lld, ccache, python3 with venv.
-
-```bash
-cd ~/llvm-project
-cmake -G Ninja -S llvm -B build \
-  -DLLVM_ENABLE_PROJECTS="mlir" \
-  -DLLVM_TARGETS_TO_BUILD="Native" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DLLVM_USE_LINKER=lld \
-  -DLLVM_PARALLEL_COMPILE_JOBS=6 \
-  -DLLVM_PARALLEL_LINK_JOBS=1 \
-  -DLLVM_CCACHE_BUILD=ON \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-  -DPython3_EXECUTABLE=$HOME/npu-venv/bin/python
-
-ninja -C build check-mlir
-```
-
-`LLVM_TARGETS_TO_BUILD="Native"` keeps the build to this host's architecture only, which
-saves both time and disk. `MLIR_ENABLE_BINDINGS_PYTHON=ON` requires nanobind and numpy in
-the venv pointed to by `Python3_EXECUTABLE`, plus the Python development headers.
-
-Watch Ninja's native progress display. Do not wrap it.
-
-## 3. Building this project against that LLVM
-
-The canonical repository lives in WSL native storage at `~/npu-mlir` (that is,
-`/home/elijah/npu-mlir`). It is deliberately not under the Windows `/mnt/c` project folder:
-that folder's path contains spaces, and LLVM's lit and FileCheck do not support spaces in
-paths. WSL native storage is also much faster to build in than the 9p `/mnt/c` mount. From
-Windows the repo is reachable at `\\wsl.localhost\Ubuntu\home\elijah\npu-mlir`.
+## First build, from a fresh shell
 
 ```bash
-cd ~/npu-mlir
+cd ~/npu-mlir-v2
+
 cmake -G Ninja -S . -B build \
   -DMLIR_DIR=$HOME/llvm-project/build/lib/cmake/mlir \
   -DLLVM_DIR=$HOME/llvm-project/build/lib/cmake/llvm \
   -DLLVM_USE_LINKER=lld
-ninja -C build npu-opt
-ninja -C build check-npu
+
+ninja -C build -j6                 # P0
+ninja -C build check-npu           # P0, lit and FileCheck
 ```
 
-## 3a. Python tooling
+Three things about that configure line are worth knowing rather than copying.
 
-The frontend and the checks around it need, beyond the runtime dependencies
-(`numpy`, `onnx`, `onnxruntime`, `torch`, `tqdm`):
+`MLIR_DIR` and `LLVM_DIR` point at an existing build tree, not at an install
+prefix. This is an out of tree MLIR project in the shape of
+`mlir/examples/standalone`, and it finds MLIR through `MLIRConfig.cmake` in that
+tree. If the configure fails at `find_package(MLIR)`, the build tree moved or
+was deleted, and the recovery is the contingency in Section 3.2 of the build
+specification and not a path fixup.
 
-| Tool | Used by |
-|---|---|
-| `pytest` | `test/Python` |
-| `pytest-cov`, `gcovr` | `scripts/coverage.sh` |
-| `ruff`, `black` | lint and format, and the CI lint job |
-| `mypy` | type checks `python/npu_frontend`, configured in `pyproject.toml` |
-| `pyyaml` | only if you want to validate the workflow files locally |
+`LLVM_USE_LINKER=lld` matters more here than it looks. `lld` is meaningfully
+faster than the default linker and, more importantly on a memory capped guest, it uses
+less memory to do the same link.
+
+`-j6` is not a suggestion. See the memory ceiling below.
+
+The build produces `build/bin/npu-opt`. Check it answers:
+
+```bash
+./build/bin/npu-opt --help         # P0
+```
+
+## The Python environment
+
+The virtual environment is `~/npu-venv`, CPython 3.14.4. It is **reused, not
+recreated**, and it lives outside both repositories, so it survives anything
+done to either of them.
 
 ```bash
 source ~/npu-venv/bin/activate
-pip install pytest pytest-cov gcovr ruff black mypy
+export PYTHONPATH=$HOME/llvm-project/build/tools/mlir/python_packages/mlir_core
 ```
 
-## 3b. What CI runs, and how to run it here
+**That `PYTHONPATH` is not optional and it is not a convenience.** The MLIR
+Python bindings are built by the LLVM build and are not pip installed anywhere.
+They resolve only out of that path. Without it, every test under `test/Python`
+fails at import, with a traceback that says nothing about the code under test.
 
-`.github/workflows/ci.yml` has four jobs, and every one of them can be
-reproduced locally.
+The wiring exists in three places so that an interactive shell is not the only
+thing that knows about it: `CMakeLists.txt` derives
+`MLIR_PYTHON_PACKAGES_DIR` from `MLIR_DIR` at configure time, `test/lit.cfg.py`
+reads it for the lit suite, and `test/Python/conftest.py` sets it for pytest.
+The conftest resolves the path from `MLIR_PYTHON_PACKAGES_DIR` if that is set in
+the environment, then from this repository's own CMake cache, then from the
+default location. It does that rather than hardcoding a string so that pytest
+and lit agree by construction. Exporting the variable by hand, as above, still
+works and still wins.
 
-| Job | Locally |
-|---|---|
-| `lint` | `bash scripts/dash-lint.sh`, `ruff check ...`, `black --check ...`, `mypy`, `python scripts/check-reachability.py` |
-| `build-and-test` | `ninja -C build -j6`, `ninja -C build check-npu`, both GoogleTest binaries, `pytest test/Python`, `scripts/regression-baseline.sh --check` |
-| `sanitizers` | configure a `build-san` tree with `-fsanitize=address,undefined`, then run the GoogleTests |
-| `coverage` | `bash scripts/coverage.sh` |
+One trap, already paid for once and recorded as D-0002: the wiring must **not**
+be written as `env = [...]` under `[tool.pytest.ini_options]`. That key belongs
+to the `pytest-env` plugin, which is not installed here, and pytest accepts an
+unknown key with a warning and then ignores it. The wiring would read as present
+in review and do nothing at run time.
 
-CI runs inside a prebuilt image holding LLVM and MLIR at the pinned tag. That
-image is produced by `.github/workflows/llvm-image.yml`, which is manual only
-and should be run when the tag changes and at no other time. Do not build it on
-this machine: the 12 GB guest ceiling in section 1 makes an LLVM build inside a
-container thrash.
+### Installing from the lock file
 
-One caveat on the sanitizer job. LLVM is prebuilt without instrumentation, but
-`BumpPtrAllocator` and `SmallVector` are header only, so the copies compiled
-into instrumented translation units poison memory that uninstrumented
-`libMLIRIR.a` then writes to. Any test that constructs an `MLIRContext`
-therefore reports a spurious use-after-poison inside
-`BuiltinDialect::initialize`. The job excludes `EncodeFunction.*` for that
-reason and no other. Everything ASan is actually there to protect, the decoder
-and the simulator's raw memory arithmetic, has no MLIR dependency and is fully
-covered.
+`pyproject.toml` pins the dependencies I chose. `requirements-lock.txt` pins
+everything those choices resolved to. To reproduce the environment from
+scratch:
 
-## 4. Measured wall clock times
+```bash
+python3 -m venv ~/npu-venv
+~/npu-venv/bin/pip install -r requirements-lock.txt
+```
 
-Recorded as they become real, replacing the spec's estimates. Do not quote estimates as if
-they were measurements.
+The lock file carries an `--extra-index-url https://download.pytorch.org/whl/cpu`
+line above its pins, and that line is load bearing. torch is pinned as
+`2.13.0+cpu` because the CPU build is what is installed, and a `+cpu` local
+version exists only on the PyTorch CPU index, never on PyPI. Removing the suffix
+so PyPI resolves would silently install the CUDA build and pull roughly two
+gigabytes of wheels onto a machine whose GPU this project does not use. That is
+D-0003.
 
-- One time LLVM/MLIR build (tag `llvmorg-22.1.8`, Release with assertions, mlir only,
-  Native target, lld, ccache cold, 6 compile / 1 link jobs, WSL2 at 12 GB / 8 proc):
-  about 28 minutes wall clock on the i7-14700K (measured 2026-07-15). Peak resident memory
-  stayed near 3 GB of the 12 GB budget.
+Missing packages are installed at the phase that first needs them rather than
+all at P0, and the lock file is regenerated in the same commit.
+
+## The checks that run on every commit
+
+```bash
+bash scripts/dash-lint.sh              # P0, lint every tracked file
+bash scripts/dash-lint.sh --self-test  # P0, check the linter against its fixture
+reuse lint                             # P0, every file carries SPDX tags
+```
+
+`dash-lint.sh` enforces ground rule 3: no em dashes and no en dashes anywhere,
+and no TeX ligature hazard in `.tex` prose. It carries a fixture that proves
+the verbatim exemption in both directions, so a `--check` flag inside a fenced
+code block passes and an em dash inside the same block fails. Run the self test
+after touching the linter and not otherwise.
+
+`reuse lint` enforces the SPDX headers. Every new file needs
+`SPDX-FileCopyrightText` and `SPDX-License-Identifier`, in a comment for code
+and in an HTML comment for markdown. A file that genuinely cannot carry a header
+gets an entry in `REUSE.toml` instead, and the test for which of the two applies
+is simply whether a header would work.
+
+Both are wired into `.pre-commit-config.yaml`, so:
+
+```bash
+pre-commit run --all-files             # P0, from the venv
+```
+
+runs them along with black, ruff, and the whitespace hooks.
+
+## Regenerating the generated documents
+
+```bash
+python scripts/gen-design-decisions.py           # P0, write the ADR index
+python scripts/gen-design-decisions.py --check   # P0, fail if it is stale
+ninja -C build npu-dialect-doc                   # P1, DIALECT_REFERENCE.md
+ninja -C build npu-isa-doc                       # P6, the ISA_MANUAL.md opcode table
+```
+
+`docs/DESIGN_DECISIONS.md` is a build artifact. Edit the record under
+`docs/adr/` and regenerate; an edit made in the index is lost on the next run.
+
+## The memory ceiling, and what to do when a build is killed
+
+`~/.wslconfig` sets `memory=15GB` with 8 GB of swap. **That is a hard ceiling.**
+It was 12 GB from July 2026, set after the machine crashed running WSL2
+uncapped, until 2026-08-19, when the owner raised it to 15 GB. That file is
+edited only on the owner's instruction; this project plans around the ceiling
+rather than working against it. The parallelism numbers below were measured
+under the 12 GB cap and stay in force at 15 GB until something re-measures them.
+
+What it means in practice:
+
+- **Compile jobs stay at six or fewer.** `ninja -C build -j6`, always. This
+  project itself builds in seconds and is nowhere near the ceiling, so the six
+  is habit rather than necessity today. It becomes necessary the moment
+  anything large is compiled.
+- **Test parallelism may use all 28 threads.** Tests are not memory hungry, and
+  the ceiling does not bind there.
+- **Link jobs stay at one** for anything LLVM sized. Parallel links of tools
+  like `mlir-opt` are the classic out of memory kill on a small guest, and one
+  is the only setting under which this machine has ever completed an LLVM link.
+  Two is not a conservative alternative; it is an out of memory kill waiting for
+  the wrong link to land at the wrong moment.
+
+**If a build dies with the compiler killed and no error message**, that is the
+out of memory killer, not a compiler bug. Look for the signature: a `ninja`
+job that reports `signal: Killed` or a bare nonzero exit with no diagnostic, and
+`dmesg | tail` naming `Out of memory: Killed process`. The fix is to lower the
+job count, never to raise the memory cap.
+
+### The LLVM contingency
+
+**LLVM is never rebuilt on this machine.** It was built once at
+`llvmorg-22.1.8`, the build at `~/llvm-project/build` is verified working, and
+this project links against it. Record 0001 has the reasoning, and it is not a
+preference: a rebuild is an hour or more of wall clock time on a guest that can
+plausibly run out of memory partway through.
+
+The one exception is deliberate and is not on this machine:
+`docker/Dockerfile.llvm` builds the same tag inside CI, on GitHub's hardware, so
+that the build and test workflow can pull an image instead of spending an hour
+per run.
+
+If the existing build is ever lost or found broken, follow **Section 3.2 of the
+build specification** exactly, inside WSL2, with `LLVM_PARALLEL_COMPILE_JOBS=6`
+and `LLVM_PARALLEL_LINK_JOBS=1`. Do not attempt a native Windows LLVM build. If
+free disk is under 80 GB, stop and report before starting.
+
+## Running a multi line command from the Windows side
+
+Write it to a `.sh` file and run `wsl -d Ubuntu -- bash <path>`. Nested quoting
+through PowerShell mangles anything more complicated than a single command, and
+the failures it produces look like the script being wrong rather than the
+quoting being wrong.

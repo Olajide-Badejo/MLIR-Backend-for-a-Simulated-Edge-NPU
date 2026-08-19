@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Fully resolved lock file for ~/npu-venv, CPython 3.14.4, generated on
+# 2026-08-19 from `pip freeze`. pyproject.toml pins the dependencies I chose;
+# this file pins everything those choices resolved to, which is the difference
+# between an environment that is described and one that is pinned.
+#
+# Regenerate with:
+#
+#   ~/npu-venv/bin/pip freeze > /tmp/freeze.txt
+#
+# then splice the frozen lines under this header, keeping the index line.
+#
+# There are no editable installs and no local path installs in this
+# environment: `pip freeze` produced no `-e ` line and no `@ file://` line, so
+# every requirement below resolves from an index.
+#
+# The extra index is load bearing and is the reason a clean install of this
+# file failed the first time I tried it. torch is pinned as 2.13.0+cpu because
+# that is the build that is installed, and the +cpu local version exists only
+# on the PyTorch CPU index, never on PyPI. Dropping the +cpu suffix to make
+# PyPI resolve it would be worse than a broken install: it would silently pull
+# the CUDA build, change what reference generation runs on, and pull roughly
+# two gigabytes of CUDA wheels onto a machine whose GPU this project does not
+# use. Section 3 records the installed torch as a +cpu build and this line is
+# what keeps that true on a rebuild.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+ast_serialize==0.8.0
+attrs==26.1.0
+black==26.5.1
+boolean.py==5.0
+cfgv==3.5.0
+click==8.4.2
+colorlog==6.10.1
+contourpy==1.3.3
+coverage==7.15.1
+cycler==0.12.1
+distlib==0.4.3
+filelock==3.29.0
+flatbuffers==25.12.19
+fonttools==4.63.0
+fsspec==2026.4.0
+gcovr==8.6
+identify==2.6.19
+iniconfig==2.3.0
+Jinja2==3.1.6
+kiwisolver==1.5.0
+librt==0.15.0
+license-expression==30.4.4
+lxml==6.1.1
+MarkupSafe==3.0.3
+matplotlib==3.11.0
+ml_dtypes==0.5.4
+mpmath==1.3.0
+mypy==2.3.0
+mypy_extensions==1.1.0
+nanobind==2.13.0
+networkx==3.6.1
+nodeenv==1.10.0
+numpy==2.5.1
+onnx==1.22.0
+onnxruntime==1.27.0
+packaging==26.2
+pathspec==1.1.1
+pillow==12.3.0
+platformdirs==4.10.0
+pluggy==1.6.0
+pre_commit==4.6.2
+protobuf==7.35.1
+Pygments==2.20.0
+pyparsing==3.3.2
+pytest==9.1.1
+pytest-cov==7.1.0
+python-dateutil==2.9.0.post0
+python-debian==1.1.1
+python-discovery==1.5.2
+python-magic==0.4.27
+pytokens==0.4.1
+PyYAML==6.0.3
+reuse==6.2.0
+ruff==0.15.21
+setuptools==78.1.0
+six==1.17.0
+sympy==1.14.0
+tomlkit==0.15.1
+torch==2.13.0+cpu
+tqdm==4.68.4
+typing_extensions==4.15.0
+virtualenv==21.7.4

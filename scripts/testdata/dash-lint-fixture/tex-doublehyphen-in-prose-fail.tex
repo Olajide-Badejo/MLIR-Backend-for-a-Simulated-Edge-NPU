@@ -1,0 +1,10 @@
+\section{A double hyphen in prose}
+
+This sentence contains a bare double hyphen -- outside any verbatim
+environment and outside any texttt span, so TeX would typeset it as an en dash
+and the rule exists to stop exactly that.
+
+This one is worse: it contains a triple hyphen --- which TeX typesets as an em
+dash, which is the character the project bans outright.
+
+The linter must report tex-ligature for this file.
