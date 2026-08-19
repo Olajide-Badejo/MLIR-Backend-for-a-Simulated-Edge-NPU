@@ -10,12 +10,16 @@ configurations, and two places to forget to add a module. Everything Python in
 this project lives here, including the reference interpreter when it arrives at
 P7.
 
+Two entry points matter today.
+
 ``import_model`` takes an ONNX model at the pinned opset and returns `npu`
-dialect IR as text, verified by `npu-opt` on the way out.
+dialect IR as text, verified by `npu-opt` on the way out. ``generate_model``
+builds one of the suite's seeded models and writes it as ONNX.
 
-    from npu_frontend import import_model_file
+    from npu_frontend import generate_model, import_model_file
 
-    print(import_model_file("model.onnx"))
+    path = generate_model("lenet", directory)
+    print(import_model_file(path))
 
 The package needs two things on top of its pip dependencies: the MLIR Python
 bindings on `sys.path`, which `test/Python/conftest.py` arranges for the test
@@ -29,17 +33,29 @@ from __future__ import annotations
 from . import attributes
 from .builder import find_npu_opt, verify
 from .diagnostics import ONNXImportError, VerificationError
+from .model_generator import (
+    GENERATOR_VERSION,
+    INPUT_SHAPES,
+    MODELS,
+    generate_all,
+    generate_model,
+)
 from .onnx_importer import PINNED_OPSET, import_model, import_model_file
 from .op_mapping import CONVERTERS, DEFERRED
 
 __all__ = [
     "CONVERTERS",
     "DEFERRED",
+    "GENERATOR_VERSION",
+    "INPUT_SHAPES",
+    "MODELS",
     "ONNXImportError",
     "PINNED_OPSET",
     "VerificationError",
     "attributes",
     "find_npu_opt",
+    "generate_all",
+    "generate_model",
     "import_model",
     "import_model_file",
     "verify",

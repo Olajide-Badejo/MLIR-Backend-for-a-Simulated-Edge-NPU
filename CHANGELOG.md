@@ -32,6 +32,20 @@ Semantic Versioning once a release is tagged.
 - **`docs/ONNX_FRONTEND.md`** is the frontend's contract: the converter table,
   the broadcasting policy and its channel carve out, the `Clip` policy, the
   `AveragePool` and `Reshape` rules, and a how to section.
+- **The seeded model suite exists**, seven structurally distinct models from one
+  fixed seed: `lenet`, `depthwise_separable`, `resnet_block`,
+  `inception_block`, `conv_bn_relu_stack`, `dilated_stack` and `lenet_batched`.
+  Five are exported from PyTorch through the dynamo exporter at opset 23; the
+  conv plus batch norm stack and the dilated stack are built with the ONNX
+  construction API, for the two reasons Section 15 gives. `GENERATOR_VERSION` is
+  `1.0.0`. No `.onnx` file is committed; they are regenerated from the seed.
+- **The depthwise block's global pooling exports as `AveragePool` with a full
+  extent kernel, not as `GlobalAveragePool`.** The dynamo exporter lowers every
+  spelling of adaptive average pooling in torch 2.13, including
+  `x.mean(dim=(2, 3))`, to a `ReduceMean` node, which is not in this project's
+  operator set. The two compute the same thing and import to the same
+  `npu.avg_pool2d`. `GlobalAveragePool` gets its suite model in the conv plus
+  batch norm stack instead.
 - **`npu.add` and `npu.mul` accept a rank 1 channel broadcast on the rhs.** IR
   that `npu-opt` previously rejected now verifies: an addend or a scale of rank
   1, whose length is the result's channel extent read through its layout,
