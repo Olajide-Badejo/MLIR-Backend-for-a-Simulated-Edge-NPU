@@ -19,8 +19,19 @@ costs more than writing these lines did.
 ## Current phase
 
 **P2, the `npuisa` dialect and the memory model.** Branch
-`phase/p2-npuisa-dialect`, cut from `main` after the P1 merge. Six commits, not
-merged, not pushed.
+`phase/p2-npuisa-dialect`. Seven commits, not merged, not pushed.
+
+**Read this before merging anything.** The branch was cut from
+`phase/p1-npu-dialect`, **not** from `main`, and P1 has never been merged. The
+merge base of `main` and this branch is `9bf5d5e`, the P0 merge, so
+`git log main..HEAD` shows twelve commits: P1's five and P2's seven. `main` is
+still at P0. That is not a mistake to correct by rebasing, since P2 genuinely
+depends on P1's dialect and its memory space attributes, but it does change the
+merge plan: **P1 merges first, then P2**, or the two merge together as one pull
+request that closes both gates. The P1 handoff assumed its own merge would have
+happened by now and this file recorded the branch as cut from `main`; it was not,
+and correcting that here is more useful than leaving a reader to discover it at
+the merge.
 
 | Commit | Subject |
 |---|---|
@@ -30,10 +41,13 @@ merged, not pushed.
 | `8e175af` | `test(dialect): add NPUInterfaceTests and find gtest from either source` |
 | `aefd7fa` | `build(coverage): add scripts/coverage.sh per Section 17.7` |
 | `487745d` | `ci: switch on NPUInterfaceTests and the coverage job, and rebuild the image` |
-| `<docs>` | `docs: record the memory model design and hand off P2` |
+| `8dd32a5` | `docs: record the memory model design and hand off P2` |
 
 The first commit is inherited from an interrupted session. Everything from
 `784cc68` onward is this session.
+
+Below those, and already on this branch because of the branch point above, are
+P1's five: `50b27f1`, `a7fdbba`, `cc8a889`, `ec45f99`, `9e341f8`.
 
 ## Gate status
 
@@ -217,8 +231,13 @@ In this order. Steps 2 and 3 are the reason step 1 comes first.
    non numeric threshold exits 2. That is evidence the arm works; it is not the
    CI proof, and it is labelled as such.
 
-5. **Merge `phase/p2-npuisa-dialect` into `main`** through a pull request with a
-   merge commit, once CI is green and the proofs are recorded.
+5. **Merge, remembering that P1 is still unmerged.** `main` is at P0 and this
+   branch carries both phases. Either merge `phase/p1-npu-dialect` into `main`
+   first and then `phase/p2-npuisa-dialect`, which keeps one pull request per
+   gate and is the shape ground rule 11 implies, or merge this branch once and
+   say in the pull request body that it closes both gates. The first is tidier
+   and the second is fewer runs; either is defensible, but doing it without
+   noticing produces a P1 merge that appears to contain P2's work.
 
 ## Open questions
 
