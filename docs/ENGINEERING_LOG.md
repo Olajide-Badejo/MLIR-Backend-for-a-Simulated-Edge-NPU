@@ -1590,3 +1590,31 @@ one line in `~/.wslconfig` and a `wsl --shutdown`.
 Updated in the same commit: `docs/adr/0001`, `docs/adr/0003`, `docs/BUILD.md`,
 and one comment in `.github/workflows/ci.yml`. The v1 era entries above that
 cite 12 GB are history and stay as written.
+
+## 2026-08-19 Phase 0: the skeleton went red twice before it went green, and both reds were real
+
+The gate wants CI green with the image pulling, and the sequence that got there
+is worth its URLs because it is the proof of failure discipline arriving early
+and uninvited. The image published on the first attempt (run 32205653261,
+roughly two hours on the hosted runner). The first run of build-and-test with
+that image then died on its opening step: inside a job container the runner
+falls back to `sh` for run steps, dash rejects `set -o pipefail`, and every
+step in the job had been written against bash and had never once executed under
+the shell it actually got. That is D-0004, red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213043383>,
+fixed by a job level `defaults.run.shell: bash`.
+
+The next run got through configure and the build and then failed check-npu:
+`build/bin/llvm-lit: not found`. The local build links the LLVM build tree,
+which carries `llvm-lit`; the image carries an install tree, which does not,
+and the pip installed lit has to be named with `LLVM_EXTERNAL_LIT`. That is
+D-0005, red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213209291>.
+
+Green, with check-npu 1 of 1 inside the container and every guarded off step
+printing that it is off:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213397267>.
+
+Neither defect was in the compiler, both were in the difference between the
+environment the code was written in and the environment it ran in, and both
+were caught by the skeleton on its first day. Cheap net, first catch.

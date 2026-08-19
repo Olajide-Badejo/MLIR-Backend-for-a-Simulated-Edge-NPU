@@ -61,18 +61,32 @@ The P0 gate is in the build specification's Section 23. Item by item.
   Actions are enabled, and `gh` is authenticated as `Olajide-Badejo`. The image
   publish runs through the CI `GITHUB_TOKEN`; the local token deliberately lacks
   `write:packages`.
+- **The four CI workflows exist**, including `nightly.yml`, with every job
+  guarded off per the activation table of Section 19.0, and each guarded off
+  step prints in the run log that it is off and until which phase.
+- **The GHCR LLVM image is published**:
+  `ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8`, built by
+  `llvm-image.yml` run 32205653261 on 2026-08-19, manifest digest
+  `sha256:008fcc743cd9b7be1685b6cd24922081e87a0aaef3f9f3e5423368d949b545d6`.
+  Both Dockerfile bases are pinned by `sha256` digest.
+- **CI is green on the skeleton**, with the image pulling successfully inside
+  `build-and-test` and `check-npu` passing 1 of 1 in the container. **The first
+  green run:**
+  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213397267>.
+  Getting there surfaced two real defects the skeleton caught, D-0004 (job
+  container run steps fall back to sh) and D-0005 (an installed LLVM has no
+  `llvm-lit`), both in `DEFECT_LOG.md` with the red run URLs in the engineering
+  log.
+- **The v1 line is separately preserved on GitHub** at the owner's request: the
+  `v1` branch at `52ed1da`, a Release pinned to the `v1.0.0` tag, and an active
+  ruleset blocking deletion and force pushes on `main` and `v1`.
 
-### In flight
+### Remaining
 
-- **The four CI workflows**, including `nightly.yml`, with every job guarded off
-  per the activation table of Section 19.0.
-- **The GHCR LLVM image**, published from CI, with both Dockerfile bases pinned
-  by `sha256` digest rather than by tag.
-- **CI green on the skeleton**, with the image pulling successfully, every
-  guarded off job saying in its log that it is off, and the first green run URL
-  recorded.
-- **The merge of `phase/p0-foundations` into `main`**, with `--no-ff`, which
-  happens only once everything above is green.
+- **The merge of `phase/p0-foundations` into `main`** through pull request 1
+  with a merge commit, which is the non fast forward merge the gate asks for.
+  It is the act that closes this gate and it is performed immediately after
+  the commit that writes this line.
 
 ## Open questions
 
@@ -87,18 +101,13 @@ write, and there are no MLIR release notes for either 22 or 23.
 
 ## Next command
 
-CI and the image are the other in flight workstream, so the next command here is
-the one that confirms this branch is still clean before that work merges into
-it:
+With the gate met and the merge landing, the next session opens P1 on a fresh
+branch cut from the merged `main`:
 
 ```bash
-cd ~/npu-mlir-v2 && source ~/npu-venv/bin/activate && \
-  pre-commit run --all-files && \
-  python scripts/gen-design-decisions.py --check
+cd ~/npu-mlir-v2 && git checkout main && git pull && \
+  git checkout -b phase/p1-npu-dialect
 ```
-
-Once CI is green and the image pulls, the P0 gate closes with the `--no-ff`
-merge into `main` and P1 opens on a branch cut from it.
 
 ## Next phase
 
