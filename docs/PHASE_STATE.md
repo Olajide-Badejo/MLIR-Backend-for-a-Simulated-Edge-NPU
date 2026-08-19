@@ -18,237 +18,280 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P1, the `npu` dialect.** Branch `phase/p1-npu-dialect`, cut from `main` at
-`9bf5d5e`. Three commits, not merged, not pushed.
+**P2, the `npuisa` dialect and the memory model.** Branch
+`phase/p2-npuisa-dialect`, cut from `main` after the P1 merge. Six commits, not
+merged, not pushed.
 
 | Commit | Subject |
 |---|---|
-| `50b27f1` | `feat(dialect): add the npu dialect with types, attributes, operations and verifiers` |
-| `a7fdbba` | `feat(dialect): implement TilingInterface on the npu operations as external models` |
-| `cc8a889` | `test(dialect): add the npu round trip and verifier suites, the generated reference, and the reachability check` |
+| `00cce3b` | `feat(dialect): add the npuisa dialect with the memory model and the token` |
+| `784cc68` | `fix(dialect): reject a null memory space and let two transfers be in flight` |
+| `cc640ba` | `test(dialect): add the npuisa round trip, verifier and canonicalization suites` |
+| `8e175af` | `test(dialect): add NPUInterfaceTests and find gtest from either source` |
+| `aefd7fa` | `build(coverage): add scripts/coverage.sh per Section 17.7` |
+| `487745d` | `ci: switch on NPUInterfaceTests and the coverage job, and rebuild the image` |
+| `<docs>` | `docs: record the memory model design and hand off P2` |
+
+The first commit is inherited from an interrupted session. Everything from
+`784cc68` onward is this session.
 
 ## Gate status
 
-The P1 gate is in the build specification's Section 23. Item by item, with the
-output each item was proved by.
+The P2 gate is Section 23's: round trip and verifier failure coverage;
+`NPUInterfaceTests` green, including the overlap rule decided on effects plus
+view offsets rather than on SSA identity, and a test asserting `ins` and `outs`
+partition the operands exactly once; no compute operation reports itself free of
+effects; the design entry written in `docs/ARCHITECTURE.md` and treated as
+binding by later phases.
 
-### Met
+Item by item, with what proves it. Every item is **met locally**; the CI half of
+two of them is **pending an image republish**, which is the orchestrator's next
+action and is not a gap in the work.
 
-- **A round trip lit test per operation.** `test/Dialect/NPU/ops.mlir`, which
-  pipes `npu-opt` output back through `npu-opt` before checking, so an
-  operation that prints something it cannot read back fails rather than passing
-  a parse. All fourteen operations are covered, plus the NHWC form, the
-  explicit `#npu.layout<nchw>` form, a depthwise convolution, a dilated
-  convolution, a dilated average pool, a three input concat on the batch axis,
-  and both memory space attributes.
-- **At least one verifier failure case per rule**, in
-  `test/Dialect/NPU/invalid.mlir`, each with `expected-error` on the substring
-  the verifier actually emits. Forty eight cases, one `expected-error` each.
-  The suite is run under
-  `-split-input-file -verify-diagnostics`, so an unexpected diagnostic fails as
-  loudly as a missing one.
-- **An arithmetically impossible convolution is rejected with the implied
-  extent quoted.** `@impossible_convolution`, a 3 by 3 kernel over a 2 by 2
-  input with no padding, expects
+### Met, proved locally
 
-  > on the height axis, input extent 2 with pads 0 and 0, kernel 3, dilation 1
-  > and stride 1 implies an output extent of 0, which is not a representable
-  > extent
-
-- **A `ceil_mode = 1` pooling case whose last window starts in the right
-  padding is shaped correctly, with the arithmetic written into the test.**
-  `@max_pool2d_ceil_mode_drops_right_padded_window` in `ops.mlir` and
-  `@ceil_mode_without_the_drop_rule` in `invalid.mlir` are the same parameters
-  from the accepting and the refusing side: input 6, kernel 2, stride 3, pads 0
-  and 1. The ceiling gives 3, the drop takes it to 2, the accepting test
-  declares 2 and the refusing test declares 3 and is refused. A companion case,
-  input 7 with no padding, is where the ceiling adds a window that is kept, so
-  the pair distinguishes an implementation without the drop from one that always
-  drops. Both carry their arithmetic as a comment.
-- **`ins` and `outs` partition the operands exactly once on every compute
-  operation.** `NPUTilingTest.InsAndOutsPartitionEveryComputeOperation` walks a
-  module holding all ten destination passing operations, plus `conv2d` and
-  `matmul` a second time in their optional bias forms, and asserts the
-  partition through the interface's own accessors rather than by recomputing the
-  split. The operation count is asserted at twelve, so a walk that silently
-  visited nine would fail rather than passing every assertion it made.
-- **`TilingInterface` unit tests covering grouped and batched iteration
-  domains, with no pass consuming it yet.** `NPUTilingTests`, twelve tests, all
-  passing:
-
-  ```
-  [==========] 12 tests from 1 test suite ran. (4 ms total)
-  [  PASSED  ] 12 tests.
-  ```
-
-  The grouped cases are a depthwise convolution (`group` 8 over 8 channels, so
-  G is 8 and Cout/G is 1) and a four group convolution (G is 4, Cout/G is 3,
-  Cin/G is 2), which between them rule out a domain that collapsed the two
-  dimensions. The batched cases carry batch 4, 2, 3 and 5 rather than 1.
-- **`DIALECT_REFERENCE.md` generated and committed with its staleness gate
-  active in CI.** `docs/DIALECT_REFERENCE.md`, 883 lines, generated by
-  `ninja -C build npu-dialect-doc` and committed. Regenerating it after the
-  commit produces no diff. The CI step is switched on and prints the diff and
-  the fix command when it fails.
-- **Everything in Section 7.1 and 7.2 that P1 owns.** The two tensor type
-  constraints, the two memory space attributes, the layout attribute with the
-  absent encoding meaning NCHW, thirteen operations plus `yield`,
-  `InferTypeOpInterface` on `constant`, `conv2d`, `matmul` and both pools, one
-  shared arithmetic helper between inference and verification, `Pure` where
-  correct, and batch as a first class dimension with its own verifier rule.
-- **`scripts/check-reachability.py` with `--skip-models`**, switched on in the
-  CI lint job. Green, and honest about what it checked:
-
-  ```
-  note: 14 operations: 12 imported computation, 2 structural.
-  note: structural: npu.fused_op, npu.yield
-  note: layers not yet decidable: import, lowering, encoding, simulation.
-  check-reachability: pass
-  ```
+- **Round trip coverage.** `test/Dialect/NPUISA/ops.mlir` pipes `npu-opt` output
+  back through `npu-opt` before checking, so an operation that prints something
+  it cannot read back fails rather than passing a parse. Every operation is
+  covered, plus the token in a function signature, both element types, the
+  optional bias on `matmul` and `conv2d`, a grouped convolution, a `ceil_mode = 1`
+  pool with its arithmetic written into the test, an in place relu, and the two
+  function level scratchpad attributes. `test/Dialect/NPUISA/ops-memref.mlir`
+  covers the memory model separately: the two spaces, `memref.alloc` in the
+  scratchpad, the flat buffer with views over it, and the boundary shape of a
+  lowered function.
+- **A verifier failure case per rule.** `test/Dialect/NPUISA/invalid.mlir`, run
+  under `-split-input-file -verify-diagnostics`, so an unexpected diagnostic
+  fails as loudly as a missing one. Every `expected-error` quotes the substring
+  the verifier actually emits rather than matching generically.
+- **The overlap rule decided on effects plus view offsets, never SSA identity.**
+  Three places, at three levels. `@intervening_write_to_a_partially_overlapping_view`
+  in `invalid.mlir` is the lit case: two `memref.view` results over one flat
+  buffer, bytes [0, 64) and [32, 96), different SSA values sharing 32 bytes.
+  `NPUISAInterfaceTest.PartiallyOverlappingViewsOverlap` asserts the same at the
+  arithmetic level and explicitly asserts the two values differ, so the test is
+  about something. `NPUISAInterfaceTest.TheVerifierRejectsAnOverlappingInterveningWrite`
+  and its disjoint sibling assert that the verifier calls the arithmetic, which
+  is a separate claim from the arithmetic being right.
+- **A non static offset is refused rather than assumed disjoint.**
+  `@async_destination_with_a_dynamic_offset` and
+  `@intervening_buffer_with_a_dynamic_offset` in `invalid.mlir`, and
+  `NPUISAInterfaceTest.ANonStaticOffsetIsUnknownAndNotDisjoint`, which asserts
+  `Unknown` and separately asserts *not* `Disjoint`.
+- **`ins` and `outs` partition the operands exactly once.**
+  `NPUISAInterfaceTest.InsAndOutsPartitionOperandsExactlyOnce` over all thirteen
+  table entries, counting coverage per operand so an operand in neither list and
+  an operand in both both fail. Plus `TheOptionalBiasDoesNotMoveTheDestination`,
+  because the destination is operand 2 without a bias and operand 3 with one, and
+  `TheVariadicConcatStillPartitions`, because `concat`'s destination index is not
+  a constant of the operation at all.
+- **No compute operation reports itself free of effects.**
+  `NPUISAInterfaceTest.NoComputeOperationIsFreeOfEffects`, checked two ways: an
+  empty effect list, and `isMemoryEffectFree`, which is what `isOpTriviallyDead`
+  consults. An operation that does not implement the interface at all would pass
+  one and fail the other. The transfers and the asynchronous forms have their own
+  tests. `@compute_instructions_survive_canonicalization` in `canonicalize.mlir`
+  asserts the same thing at the level a user would notice: the function does not
+  canonicalize to a bare `return`.
+- **The async with immediate await canonicalization.**
+  `test/Dialect/NPUISA/canonicalize.mlir`, both directions and both transfer
+  directions, plus the two negative cases that matter: an await two operations
+  later does not fold, and two transfers in flight do not fold.
+- **`docs/ARCHITECTURE.md` written**, Diataxis explanation type, covering the two
+  spaces, the scoped DMA boundary invariant with its three permitted producers,
+  offsets as SSA operands, the token and the overlap rule, and why
+  `TilingInterface` lives on `npu` and not here. It closes with a list of what it
+  binds on later phases.
 
 ### Verification output
 
-Every command below was run on this branch at `cc8a889`, from
+Every command below was run on this branch at `487745d`, from
 `/home/elijah/npu-mlir-v2`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 3 discovered, 3 passed, 0 failed |
+| `ninja -C build check-npu` | 7 discovered, 7 passed, 0 failed |
+| `./build/bin/NPUInterfaceTests` | 18 tests, 18 passed |
 | `./build/bin/NPUTilingTests` | 12 tests, 12 passed |
+| `bash scripts/coverage.sh` | 75.7 percent line, 68.1 percent branch, exit 0 |
+| `bash scripts/coverage.sh 99` | exit 1, names the number and the threshold |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
-| `reuse lint` | compliant, 79 of 79 files |
-| `pre-commit run --all-files` | 12 hooks, all passed |
+| `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
+| `reuse lint` | compliant, 102 of 102 files |
+| `pre-commit run --all-files` | all hooks passed |
 | `python scripts/check-reachability.py --skip-models` | pass, exit 0 |
-| `python scripts/gen-design-decisions.py --check` | index up to date |
-| `ninja -C build npu-dialect-doc` then `git diff` | no diff |
 | `git status --short` | empty |
 
-### Not met, and not attempted at P1
+Both branches of the gtest search were verified, not just the one this machine
+takes. The build tree branch is what `build/` uses. The system package fallback
+was forced by configuring with `-DNPU_LLVM_THIRD_PARTY=/nonexistent-on-purpose`,
+which produced `GoogleTest: using the system GoogleTest package` and the same
+eighteen passing tests.
 
-- **CI has not run this branch.** Nothing is pushed. Three of the four
-  verification commands above have no CI equivalent yet, and one of them,
-  `NPUTilingTests`, cannot run in CI at all at this phase (see the open
-  questions).
-- **The red then green proof of the two newly activated CI steps** has not been
-  run through CI, because that needs pushes. What to perturb is written below.
+### Met locally, CI pending an image republish
+
+Two gate items are green locally and cannot be green in CI until the image is
+rebuilt. This is a sequencing fact, not an unmet gate: the commit that requires
+the new image is on the branch, and the rebuild is the orchestrator's next
+action.
+
+- **`NPUInterfaceTests` in CI.** The step is switched on and now fails rather
+  than printing an off line if the binary is missing. The binary needs a
+  GoogleTest, and the current published image has none. `487745d` adds
+  `libgtest-dev` to the image for the CMake fallback to find. **Pushing before
+  the republish will turn `build-and-test` red at this step, and that is the
+  expected sequence rather than a defect.**
+- **The coverage job in CI.** Same cause: the job needs `gcovr`, which the same
+  Dockerfile revision adds.
 
 ## What the orchestrator does next
 
-Three things, in this order.
+In this order. Steps 2 and 3 are the reason step 1 comes first.
 
-1. **Push the branch** and let CI run it green. The two newly activated steps
-   are in `lint` (`check-reachability --skip-models`) and in `build-and-test`
-   (`DIALECT_REFERENCE.md staleness`).
+1. **Dispatch `llvm-image.yml` and let it publish.** This is the blocking step
+   and it is roughly an hour. The workflow is `workflow_dispatch` only since the
+   push trigger was retired at P1, so it has to be started by hand. The rebuilt
+   image must satisfy the smoke test at the end of `docker/Dockerfile.llvm`,
+   which now also checks for the GTest CMake config, the two gtest static
+   libraries, `gcovr`, `gcov`, the bindings directory, and an actual
+   `import mlir.ir` with a `Context` constructed.
 
-2. **Prove the `DIALECT_REFERENCE.md` staleness gate red, then green.** Section
-   19.0 requires this of every step on the day it activates, and Section 19.1
-   requires it of this step by name. The perturbation is one line, and it is
-   named here rather than left to be invented, so that the red run is a
-   perturbation of the committed file and not of the generator:
+2. **Push the branch** and let CI run it green. Pushing before step 1 completes
+   will be red at `NPUInterfaceTests` and at the `coverage` job, for the reason
+   above.
 
    ```bash
-   # In docs/DIALECT_REFERENCE.md, change the dialect summary line
-   #   _Tensor level operations for a simulated edge NPU._
-   # to
-   #   _Tensor level operations for a simulated edge TPU._
-   sed -i 's/simulated edge NPU\._/simulated edge TPU._/' docs/DIALECT_REFERENCE.md
+   cd ~/npu-mlir-v2 && git push -u origin phase/p2-npuisa-dialect
+   ```
+
+3. **Prove the `NPUInterfaceTests` activation red, then green.** Section 19.0
+   requires this of every step on the day it switches on. The perturbation is
+   named here rather than left to be invented, and it is chosen to break the
+   *assertion* rather than the build, because a test binary that fails to compile
+   is caught by the build step and would prove the wrong thing:
+
+   ```bash
+   # In unittests/Dialect/NPUISA/InterfaceTest.cpp, in the test
+   # EveryComputeOperationHasARow, change the expected count from 10 to 9.
+   sed -i 's/EXPECT_EQ(covered.size(), 10u)/EXPECT_EQ(covered.size(), 9u)/' \
+     unittests/Dialect/NPUISA/InterfaceTest.cpp
    ```
 
    Commit that alone on a scratch branch, open a pull request so the
    `pull_request` trigger fires, and show `build-and-test` failing at the step
-   named `DIALECT_REFERENCE.md staleness (activation table: P1, on)` with the
-   diff and the fix command printed. Then revert, show green, record both run
-   URLs in `docs/ENGINEERING_LOG.md`, and delete the scratch branch. The
-   perturbation is one word in one line rather than a deleted section, because
-   the point is to prove the gate notices a small drift and not that it notices
-   a large one.
+   named `NPUInterfaceTests (activation table: P2, on)` with the gtest failure
+   naming `EveryComputeOperationHasARow`. Then revert, show green, record both
+   run URLs in `docs/ENGINEERING_LOG.md`, and delete the scratch branch.
 
-3. **Prove the reachability step red, then green.** The three rules it holds
-   were each proved red locally, and the outputs are in this session's transcript
-   rather than in a file, so the CI proof is the one that goes in the log. The
-   cheapest perturbation is the one that matches how the check will actually be
-   broken in practice:
+   A second perturbation is available if a stronger proof is wanted, and it
+   exercises the product rather than the test: change `isa_and_present` back to
+   `isa` in one predicate in `NPUISATypes.td`. That turns `check-npu` red as well
+   as the unit tests, through a segmentation fault, which is a truthful
+   demonstration of D-0008 but a noisier run log. The count perturbation is the
+   cleaner proof of *this step*.
 
-   ```bash
-   # Delete the line "Reachability: imported computation." from npu.relu's
-   # description in include/NPU/Dialect/NPU/IR/NPUOps.td.
-   ```
+4. **The coverage job, and why it gets a different treatment.** At a threshold of
+   0 the threshold comparison **cannot** be made to fail, because no measured
+   percentage is below zero. Perturbing the threshold to force a red would be
+   perturbing the gate's configuration rather than the thing it guards, which
+   proves nothing about the gate as configured. So the honest statement is:
 
-   The `lint` job then fails at `check-reachability --skip-models (activation
-   table: P1, on)` with
+   - What **is** provable now, and should be the red proof recorded for this
+     job: break a test and show the coverage job red *before it ever reports a
+     number*. That is rule 2 of Section 17.7 working, coverage is only counted
+     from a run where every test passed, and it is the part of this job that
+     gates on something today. The same one line perturbation from step 3 does
+     it, since `scripts/coverage.sh` runs `NPUInterfaceTests`; the finding to
+     record is that one fault turns two jobs red, `build-and-test` and
+     `coverage`, which is the two nets agreeing rather than a surprise.
+   - What is **not** provable until P8: that the threshold gate rejects a real
+     regression. **P8 is where that proof belongs**, because P8 is where the
+     thresholds stop being 0 and are set from measured values. The perturbation
+     at P8 is to lower coverage by deleting a test and show the job red against
+     a real floor. This is written here so P8 inherits the obligation rather than
+     discovering it.
 
-   > error: npu.relu (NPU_ReluOp) carries no classification.
+   Locally the threshold arm was proved breakable at a non zero threshold,
+   `bash scripts/coverage.sh 99` exits 1 and names both numbers, and a
+   non numeric threshold exits 2. That is evidence the arm works; it is not the
+   CI proof, and it is labelled as such.
 
-   Note that this perturbation also turns the staleness gate red, because
-   deleting a description line changes the generated reference. That is not a
-   problem, it is the two gates agreeing, but the run log will show two red
-   steps and the engineering log entry should say why rather than leaving the
-   second one looking like a surprise.
-
-4. **Merge `phase/p1-npu-dialect` into `main`** through a pull request with a
-   merge commit, once CI is green and both proofs are recorded.
+5. **Merge `phase/p2-npuisa-dialect` into `main`** through a pull request with a
+   merge commit, once CI is green and the proofs are recorded.
 
 ## Open questions
 
-Three, and none of them blocks the gate.
+Four. None blocks the gate.
 
-**`NPUTilingTests` does not build in CI, and will not until the image changes.**
-LLVM's `add_unittest` is not exported to an out of tree project, so the binary is
-built against the `llvm_gtest` target and the bundled gtest headers that an LLVM
-*build tree* carries. The CI image is an installed *prefix*, which carries
-neither. The configure step says which of the two it found, and at P1 the unit
-tests run locally and not in CI. The activation table already keeps every
-GoogleTest binary guarded off until its own phase, so nothing is being skipped
-that the table expected to run; but P2 activates `NPUInterfaceTests`, and on
-that day this has to be solved rather than noticed. The two candidate fixes are
-to republish the LLVM image with the gtest artifacts included, which is also
-what P3 needs for the Python bindings, or to vendor a gtest into the project.
-Republishing the image once for both reasons is the cheaper of the two and it is
-a P2 deliverable either way.
+**`test/Dialect/NPUISA/dma-boundaries.mlir` does not exist yet, and Section 8
+names it.** The scoped DMA boundary invariant is asserted "immediately after
+lowering and before allocation", and there is no lowering until P4. A file
+asserting the invariant at P2 would have nothing to run it against: it could only
+hand write IR that already satisfies the shape, which asserts that I can write a
+correct example rather than that the pipeline produces one. The file therefore
+belongs to P4, with the lowering pass, and `docs/ARCHITECTURE.md` records the
+invariant and its three permitted producers now so that P4 implements against a
+written rule. Flagging it because a reader who greps Section 8 for that filename
+will not find it and should know why.
 
-**`getTiledImplementation` is deliberately incomplete for the windowed
-operations.** The elementwise operations generate real tiles; `conv2d` and the
-pools return failure, because the halo arithmetic belongs with the pass that
-will exercise it and a wrong tile returned here would be consumed by that pass
-and produce a program with a quietly wrong answer. This is written into the
-source and into the unit test that asserts the failure. It is a scoped gap
-rather than an unknown, and P13 is where it closes.
+**`npuisa.concat` cannot express an empty operand list in its custom assembly
+syntax.** `ins()` and `ins( : )` are both parse errors, because the format prints
+the variadic operands and their types around a literal `:` and with no operands
+there is nothing on either side for the parser to latch onto. The verifier rule
+that rejects an empty concatenation is still correct and still needed, because a
+pass building the operation programmatically can produce one, and the test spells
+it in the generic form. The question I am leaving open rather than deciding
+unilaterally is whether the assembly format should grow an optional group so the
+empty case is writable. My inclination is no: it would add syntax for a form
+nobody should write, and the generic form already covers the test. Recorded so
+that it is a decision rather than an omission.
 
-**One design point I resolved rather than asking about, and it is worth
-flagging.** `npu.reshape` takes no destination operand and implements no
-destination passing interface, which departs from the reflex of giving every
-operation one. The reason is that there is no tile of a reshape that a tiling
-pass could compute independently: a reshape crossing a tile boundary is not
-expressible as a per tile reshape, so a destination would be claiming an ability
-the operation does not have. The specification's Section 7.2 lists the
-destination passing operations explicitly and `reshape` is not among them, so
-this is agreement rather than a departure; it is here because it is the kind of
-thing that looks like an omission to a reader who does not know it was decided.
+**`docs/DIALECT_REFERENCE.md` covers the `npu` dialect only, and the `npuisa`
+dialect has no generated reference.** That is deliberate and matches the
+specification rather than being an omission: Section 5.4 puts the opcode table,
+operand encoding, semantics, memory model, validation rules, byte order policy
+and version policy in `docs/ISA_MANUAL.md`, written like a small processor
+manual, and the activation table schedules its staleness gate at P6 with the
+binary format it documents. So the `npuisa` operations are documented today by
+their ODS descriptions, which are unusually full, and by
+`docs/ARCHITECTURE.md`; the manual and its gate arrive at P6. The `npu-dialect-doc`
+target and its CI staleness step are unchanged and still green. Recorded because
+a reader who sees a P1 dialect with a generated reference and a P2 dialect
+without one will reasonably wonder which of the two is the mistake.
+
+**The gtest fallback depends on `libgtest-dev` shipping prebuilt libraries.** On
+this base image it ships `libgtest.a`, `libgtest_main.a` and a CMake package
+config, which is what `find_package(GTest)` needs. Older Debian derivatives
+shipped headers and sources only, with no library and no config, and on one of
+those the fallback would find nothing and the unit tests would silently not
+build. The Dockerfile smoke test checks for the config file and both libraries
+explicitly rather than trusting the package name, so a base image change that
+regressed this fails the image build rather than producing an image whose CI
+quietly stops running the unit tests. That is the mitigation; the dependency
+itself remains.
 
 ## Next command
 
 ```bash
-cd ~/npu-mlir-v2 && git push -u origin phase/p1-npu-dialect
+gh workflow run llvm-image.yml --ref phase/p2-npuisa-dialect
 ```
 
-Then watch the run, then perform the two red and green proofs above in the order
-given, then open the merge pull request.
+Wait for it to publish, then push the branch, then perform the proofs in the
+order given, then open the merge pull request.
 
 ## Next phase
 
-**P2, the `npuisa` dialect and the memory model.** Every instruction operation
-in destination passing style on memrefs in the two spaces, the token type and
-the three asynchronous operations with their verifiers, and
-`DestinationStyleOpInterface` and `MemoryEffectOpInterface` implemented with
-unit tests in `NPUInterfaceTests`. `TilingInterface` is **not** there: it lives
-on the `npu` operations and landed at P1. No pipeline uses tiling or
-asynchronous DMA yet.
+**P3, the ONNX frontend and the model suite.** The importer per Section 11 and
+the seven model generator per Section 15, at the opset P0 resolved.
 
-The two memory space attributes P2 needs already exist and already round trip;
-`test/Dialect/NPU/ops.mlir` has a function whose only purpose is to prove that
-`memref<4x4xf32, #npu.scratchpad>` and `memref<4x4xf32, #npu.dram>` parse and
-print exactly as written.
+P3 inherits two things from P2 that it would otherwise have had to do itself.
+The image already carries the MLIR Python bindings at
+`/opt/llvm/python_packages/mlir_core`, already on `PYTHONPATH`, so the pytest
+activation at P3 needs the importer and its tests and no image republish. And
+`onnxscript` must be installed before that phase starts: torch's dynamo exporter
+imports it and Section 15 forbids the `dynamo=False` escape, so a missing
+`onnxscript` is the single most likely blocker there.
 
 ## The frozen v1 fallback
 

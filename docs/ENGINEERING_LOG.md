@@ -1719,3 +1719,100 @@ redundant hour long rebuild of an image that already existed, whose only
 effects would have been runner time and a moved tag digest, and whose
 cancellation left a red X on the merge commit. Rebuilds are now a decision, a
 button, not a merge side effect.
+
+## 2026-08-19 Phase 2: two defects the tests found, and one the test harness hid
+
+Picking up P2 from an interrupted session, the dialect core was committed at
+`00cce3b` and the lit suites were on disk and untracked. Running them for the
+first time turned up two defects in the committed code, and both are the kind
+that survive review because the reasoning around them is right and only the
+mechanism is wrong.
+
+**A null memory space crashed the operand type predicate.** `memref<4x4xf32>`
+with no memory space has a null memory space attribute, and the predicates were
+written with `llvm::isa`, which dereferences its argument to reach its type id.
+`npu-opt` died with a segmentation fault and no diagnostic. `isa_and_present`
+answers false for null and is the right idiom. That is D-0008.
+
+The symptom is worth separating from the cause, because the symptom is what
+cost the time. Under lit this showed up as the whole of `invalid.mlir` failing,
+not as one case failing, because a crash partway through a `-split-input-file`
+run takes the process down and the remaining sections never execute. A file with
+thirty independent cases reported as one failure whose message was a stack
+trace. The instinct was to bisect the file; the faster route, which is what
+worked, was to count the `// -----` separators the tool printed before it died
+and read the section after that count. Worth remembering: with
+`-split-input-file`, the number of separators echoed on stdout before the crash
+is the index of the section that crashed.
+
+**The overlap scan made two transfers in flight unrepresentable.** This is the
+one I would not have found by reading. Rule 4 refuses an intervening operation
+that does not implement `MemoryEffectOpInterface`, on the correct grounds that an
+operation which cannot say what it touches has not said it touches nothing. But
+`npuisa.await` declares no memory effect deliberately, per Section 8, so the
+conservative branch caught the one operation guaranteed to be harmless. The
+consequence: two asynchronous loads to provably disjoint destinations, with both
+awaits after both producers, were rejected. That shape is not an edge case, it is
+the double buffering of Section 5.1, which is the entire reason the asynchronous
+form exists. The verifier was wrong about its own reason for existing. That is
+D-0009.
+
+What actually surfaced it was a test written for a different rule. I was pinning
+the canonicalization's *negative* half, the cases where an async operation must
+not fold back to the synchronous form, and one of those cases is two transfers in
+flight. It never reached the fold, because it never parsed. The general point,
+and the reason this is in the log rather than only in the defect file: the rule
+had been tested only in the shape where a compute instruction sits between a
+transfer and its await, and every test of it passed. A verifier can be
+comprehensively tested against the configuration its author had in mind and still
+refuse the configuration the feature was built for. Writing the negative cases for
+an unrelated rule is what covered the gap, which argues for writing them even when
+the positive cases look complete.
+
+**A test harness trap that cost a debugging round.** I drew the section banners
+in `canonicalize.mlir` with lines of dashes, matching the style of the other
+suites. `-split-input-file` looks for a comment line of dashes as its separator,
+so every banner silently became a split marker and the checks after each one
+landed in the wrong section. The failure presented as a `CHECK-LABEL` not finding
+a function that was plainly in the file. The banners in that file are drawn with
+`=` now and the reason is written at the top of it.
+
+Two smaller findings, recorded because each is a claim in a test that is not what
+it appears to be. `CHECK-SAME` continues a match on the *same output line*, and
+MLIR prints an operation on one line, so a `CHECK` ending in `%{{.*}}` consumes
+to end of line and leaves the `CHECK-SAME` nothing to match. Worse, the in place
+relu test used `%[[X:.*]]` to assert that the input and the destination are the
+same value, and the greedy capture swallowed the rest of the line, so the check
+that was supposed to prove aliasing was asserting nothing at all. Both are now
+`[^ ]*`. And `npuisa.concat`'s empty variadic form cannot be spelled in the
+custom assembly syntax at all: `ins()` and `ins( : )` are both parse errors,
+because the format wants operands and types around a literal colon and with no
+operands there is nothing on either side. The verifier rule that rejects an empty
+concatenation is still right, since a pass building the operation programmatically
+can produce one, but it is reachable only through the generic form, and that is
+how the test spells it now.
+
+**The CI gtest debt is paid, and the image republish covers P3 as well.** P1 left
+this open: the unit test binaries link `llvm_gtest`, which an LLVM *build tree*
+exports and an installed *prefix* does not, so they were built locally and not in
+CI. P2 activates `NPUInterfaceTests`, so it had to be solved. The fix is a search
+with a fallback in the top level CMakeLists, preferring the build tree's bundled
+gtest when present and falling back to `find_package(GTest)` otherwise, with both
+paths ending at the same two variables so no test CMakeLists knows which was
+taken. Both branches are proven to build and run the same 18 tests locally, the
+fallback by configuring against a deliberately nonexistent third-party directory.
+`docker/Dockerfile.llvm` installs `libgtest-dev` into the final image for the
+fallback to find; on this base it ships prebuilt static libraries and a CMake
+package config, which older Debian derivatives did not, so the image's smoke test
+checks for the config file rather than assuming it.
+
+Since publishing the image is an hour of runner time, the same revision also
+turns `MLIR_ENABLE_BINDINGS_PYTHON` on, which P3 needs and which the P0 notes had
+scheduled as a P3 deliverable. One republish now instead of two. The bindings land
+at `/opt/llvm/python_packages/mlir_core`, which is the directory to put on
+`PYTHONPATH`; the `mlir` package itself is one level below that, because MLIR's
+`MLIR_BINDINGS_PYTHON_INSTALL_PREFIX` defaults to a path ending *at* the package
+directory rather than at the directory to import from. Getting that level wrong
+produces an `ImportError` naming a package the image does contain, so both paths
+are written into the Dockerfile and the smoke test imports `mlir.ir` and
+constructs a `Context` rather than merely checking that a directory exists.
