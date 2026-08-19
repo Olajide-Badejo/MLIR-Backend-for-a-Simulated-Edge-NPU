@@ -313,3 +313,22 @@ None.
 - **Resolution:** python3-dev added to the builder stage's package list. The
   final stage is unchanged: it ships the built bindings, which need only the
   interpreter and numpy at run time, not the headers.
+
+### D-0011 the coverage job flaked red on a gcov negative branch counter
+
+- **Found:** 2026-08-19, phase P2, by the coverage job on a docs only commit
+  (run 32290939959), two runs after the same code passed the same job.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** not deterministically. gcov's branch counters can go negative
+  under counter merging (gcc bug 68080); when one does, the text report says
+  "branch 2 taken -1" and gcovr's strict parser raises NegativeHits and exits
+  64. The trigger run hit it in the report for NPUISAOps.cpp.
+- **What was wrong:** nothing in this repository's code, which is the point of
+  recording it: the failing commit touched two markdown files. The defect is in
+  the gcov tool, and the coverage script's strictness turned a known upstream
+  artifact into a job failure.
+- **Resolution:** gcovr is invoked with
+  --gcov-ignore-parse-errors=negative_hits.warn_once_per_file, the remedy
+  gcovr's own error message names. The warn form keeps the artifact visible in
+  the log; the threshold arm and rule 2 of Section 17.7 (no percentage from a
+  failing suite) are unaffected.

@@ -178,6 +178,13 @@ done
 # the operations, and counting thousands of generated lines would make the
 # percentage a measure of how much tablegen emitted rather than of what the
 # suite reaches.
+# --gcov-ignore-parse-errors=negative_hits.warn_once_per_file tolerates a known
+# gcov defect, gcc bug 68080: gcov's branch counters can go negative under
+# counter merging, gcov prints "taken -1", and gcovr's strict parser refuses the
+# file. It surfaced nondeterministically in CI on a docs only commit, run
+# 32290939959, which is what marks it as a tool artifact rather than a property
+# of this code. The warn form keeps the artifact visible in the log while the
+# run proceeds; the threshold arm below is unaffected. Recorded as D-0011.
 echo "coverage: collecting with gcovr"
 gcovr \
   --root "${root}" \
@@ -186,6 +193,7 @@ gcovr \
   --filter "${root}/lib/Simulator/" \
   --exclude '.*\.inc$' \
   --exclude '.*/build-coverage/.*' \
+  --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
   --json-summary-pretty \
   --json-summary "${summary_json}" \
   --html-details "${summary_html}" \
