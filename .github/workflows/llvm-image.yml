@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Build docker/Dockerfile.llvm and publish it to GHCR. Section 19 makes
+# publishing this image a P0 deliverable, because build-and-test pulls it and
+# nothing else in CI works until it exists.
+
+name: llvm-image
+
+on:
+  # Both triggers are here on purpose, and the push trigger is the one that
+  # actually publishes at P0. workflow_dispatch only ever offers workflows that
+  # exist on the default branch: this file is new on phase/p0-foundations and
+  # has never been on main, so until the phase branch merges there is no
+  # dispatch button to press. The push trigger fires from the phase branch and
+  # is what gets the image built the first time. Once main carries this file,
+  # workflow_dispatch becomes the normal way to rebuild it, which is what
+  # Section 19 means by "manually dispatchable".
+  workflow_dispatch:
+  push:
+    branches:
+      - phase/p0-foundations
+      - main
+    paths:
+      - docker/Dockerfile.llvm
+      - .github/workflows/llvm-image.yml
+
+# An LLVM build is on the order of an hour of runner time. Two pushes in quick
+# succession to the same branch should not buy two of them, so the older run is
+# cancelled. Cancelling in progress runs is safe here: the job's only effect is
+# a pushed tag, and a cancelled build pushes nothing.
+concurrency:
+  group: llvm-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Lowercase owner is mandatory. GHCR rejects a path with an uppercase
+  # character, and the GitHub account here is Olajide-Badejo, so the repository
+  # owner cannot be interpolated directly into the image name.
+  IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm
+  LLVM_TAG: llvmorg-22.1.8
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    # Generous by design. A 4 vCPU runner building MLIR with assertions is
+    # comfortably an hour, and a timeout that trips at the ninety minute mark
+    # would throw away a build that was going to succeed.
+    timeout-minutes: 360
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # Section 19: disk is the binding constraint, not job time. This step is
+      # the first of the three mandatory mitigations and it runs before
+      # anything else, because reclaiming space after the build tree has
+      # already filled the disk reclaims nothing. The other two mitigations
+      # (slim install prefix, Native target with MLIR only) are in the
+      # Dockerfile.
+      - name: Free disk space on the runner
+        run: |
+          set -euxo pipefail
+          echo "::group::disk before"
+          df -h /
+          echo "::endgroup::"
+          # The preinstalled toolchains. None of them is used by an LLVM build
+          # and between them they are the better part of twenty gigabytes.
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/local/lib/node_modules
+          sudo rm -rf /usr/lib/jvm
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}/Ruby"
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}/go"
+          # The preinstalled docker images are pulled by nothing here and the
+          # builder needs the space in the same filesystem.
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          echo "::group::disk after"
+          df -h /
+          echo "::endgroup::"
+
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No cache-to and no registry cache. The layer that matters is the LLVM
+      # build itself, exporting it would mean pushing tens of gigabytes of
+      # builder layers to the registry, and the whole point of the slim prefix
+      # is that those layers are thrown away rather than kept.
+      #
+      # push is unconditional: this workflow only runs on the two branches in
+      # the trigger and on manual dispatch, and a build that is not pushed has
+      # burned an hour of runner time to produce nothing.
+      - name: Build and push the LLVM image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.llvm
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ env.LLVM_TAG }}
+          build-args: |
+            LLVM_TAG=${{ env.LLVM_TAG }}
+            BUILD_JOBS=4
+            LINK_JOBS=2
+
+      - name: Report the published image and the disk left
+        run: |
+          set -euxo pipefail
+          echo "published ${IMAGE}:${LLVM_TAG}"
+          echo "build-and-test in ci.yml pulls exactly that reference"
+          df -h /

@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# Section 19: report.yml builds all three PDFs and uploads them as artifacts.
+# The 19.0 activation table puts the whole workflow at P16, which is where the
+# report is written, so at P0 this is one job that says it is off.
+#
+# The file exists now rather than at P16 for the same reason nightly.yml does:
+# the path filter, the trigger, and the permissions are the parts that are
+# fiddly to get right, and a workflow whose triggers have never fired is a
+# workflow nobody knows fires.
+
+name: report
+
+on:
+  push:
+    paths:
+      - "report/**"
+      - .github/workflows/report.yml
+  workflow_dispatch:
+
+concurrency:
+  group: report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-pdfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: "report job is off (activation table: P16)"
+        run: |
+          set -euo pipefail
+          echo "report: OFF until P16 (activation table 19.0)."
+          echo "report: at P16 this builds all three PDFs from report/ and uploads them as workflow artifacts."
+          echo "report: the dash lint rule about TeX ligatures applies to report/*.tex and is already enforced by the lint job in ci.yml, so report prose is checked from P0 even though this workflow is off."
+          echo "report: it is off now because report/ carries no document to typeset."
