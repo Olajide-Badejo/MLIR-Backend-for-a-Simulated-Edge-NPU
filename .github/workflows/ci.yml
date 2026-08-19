@@ -149,6 +149,13 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    # Inside a job container the runner falls back to sh for run steps, and sh
+    # is dash on this image, which rejects set -o pipefail. bash is present in
+    # the image, it just has to be asked for by name.
+    defaults:
+      run:
+        shell: bash
+
     env:
       CCACHE_DIR: /work/.ccache
       CCACHE_MAXSIZE: 2G

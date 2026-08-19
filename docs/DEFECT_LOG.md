@@ -92,3 +92,21 @@ None.
   on, and pull roughly two gigabytes of CUDA wheels onto a machine whose GPU
   this project does not use. Verified by installing into a clean venv and
   importing torch, onnx, onnxruntime and numpy there.
+
+### D-0004 build-and-test failed inside the container because run steps fell back to sh
+
+- **Found:** 2026-08-19, phase P0, by CI itself on the first run with the
+  published image (run 32213043383).
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** run the build-and-test job of ci.yml in the
+  npu-mlir-llvm container without a shell default. The first step dies at
+  `set: Illegal option -o pipefail` with exit code 2 before any real work.
+- **What was wrong:** on a plain runner VM the default shell for run steps is
+  bash, and every step in this job was written against bash. Inside a job
+  container the runner instead invokes `sh -e {0}`, and sh on this image is
+  dash, which does not implement `set -o pipefail`. The scripts were correct
+  for the shell they assumed and never ran under it.
+- **Resolution:** a job level `defaults.run.shell: bash` on build-and-test.
+  bash is present in the image, it just has to be requested by name. The
+  failing run is the before evidence and the next push run is the after
+  evidence; both URLs are in the engineering log.
