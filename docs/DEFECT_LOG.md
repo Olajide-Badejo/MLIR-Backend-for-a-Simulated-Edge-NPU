@@ -130,3 +130,63 @@ None.
   `-DLLVM_EXTERNAL_LIT="$(command -v lit)"`. The local configure stays as it
   is, because against a build tree the default is correct and pinning the pip
   lit there would add a dependency the local flow does not need.
+
+### D-0006 the CI reachability guard named a path that never existed
+
+- **Found:** 2026-08-19, phase P1, on switching the step on.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** check out the P0 tree and read the `check-reachability
+  --skip-models` step of `.github/workflows/ci.yml`. Its guard is
+  `[ -f include/npu/NPUOps.td ]`. No file has ever lived at that path: Section 6
+  of the build specification puts the operation definitions at
+  `include/NPU/Dialect/NPU/IR/NPUOps.td`, and the P0 scaffold created
+  `include/NPU/` accordingly.
+- **What was wrong:** the guard was written at P0 from the specification's prose
+  rather than from its repository layout, and the two differ in case and in
+  depth. Nothing caught it, because a guard that is never satisfied prints the
+  "OFF until P1" line and the job stays green, which is indistinguishable from
+  the intended behaviour right up until the phase that was supposed to switch it
+  on. The step would have gone on reporting that it was waiting for P1 for the
+  rest of the project.
+
+  This is the exact failure mode the activation table exists to prevent, arriving
+  through the table's own mechanism. A step that is off says so in the log, and
+  this one did, truthfully and forever.
+- **Resolution:** the guard now names the real path. It is also no longer a
+  silent fallthrough: from P1 the step is on, so an unsatisfied guard exits 1
+  with a message saying a file moved, rather than printing an off line for a
+  phase that has already passed. The engineering log entry for 2026-08-19 notes
+  the general lesson, which is that a guard whose condition can never be true is
+  a check that has been deleted rather than deferred, and that the way to catch
+  one is to prove it red on the day it activates.
+
+### D-0007 a pooling shape diagnostic printed a rank where it meant an extent
+
+- **Found:** 2026-08-19, phase P1, by reading the output of a verifier probe
+  before writing the tests against it.
+- **Status:** resolved 2026-08-19.
+- **Reproduce:** at commit `a7fdbba`, run `npu-opt` over a `npu.max_pool2d`
+  whose result spatial extents are wrong, for example an 8 by 8 input with a
+  2 by 2 kernel and stride 2 declaring a 3 by 4 result. The diagnostic reads
+
+      result spatial extents must be 4 by 4, computed from the input 2
+      dimensional window arithmetic, but got 3 by 4
+
+  The phrase "the input 2 dimensional window arithmetic" is not a description of
+  anything. The 2 is `actual.size()`, the rank of the spatial extent vector,
+  printed into a sentence that reads as though it were describing the input.
+- **What was wrong:** a stray value in a format string. Nothing computed wrongly
+  and no shape was accepted or refused incorrectly; the arithmetic behind the
+  message was right, and only the message was wrong.
+
+  It goes in this log anyway, and the reason is the standard this project holds
+  diagnostics to. Every failure message names the operation and quotes the
+  offending numbers, and a message that quotes a number which is not one of the
+  offending numbers is worse than one that quotes none: a reader who tries to
+  reconcile "2 dimensional" against the shapes in front of them is being sent to
+  look for a problem that is not there.
+- **Resolution:** the message now quotes the input extents, the kernel, the
+  strides, the dilations, the pads and the ceil mode, which together are every
+  input to the computation whose answer it is reporting. The two lit cases in
+  `test/Dialect/NPU/invalid.mlir` that assert on this message quote it in full,
+  so a future edit that drops a term fails a test rather than degrading quietly.

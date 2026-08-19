@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# The dialect subdirectories arrive with the dialects themselves: include/NPU
-# is empty of TableGen at P0 because P0 ships the skeleton and P1 ships the
-# npu dialect. This file exists so the TableGen wiring above it is exercised
-# by the P0 configure rather than first exercised at P1.
+# The dialect subdirectories arrive with the dialects themselves. At P1 that is
+# the npu dialect; the npuisa dialect, the encoding headers and the simulator
+# headers join it in their own phases.
+
+add_subdirectory(Dialect)

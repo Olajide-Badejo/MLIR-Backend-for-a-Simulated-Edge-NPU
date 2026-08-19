@@ -6,6 +6,47 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P1: the `npu` dialect
+
+- **The `npu` dialect exists.** `npu-opt` now parses, verifies and prints
+  fourteen operations on tensors: `constant`, `conv2d`, `matmul`, `add`, `mul`,
+  `relu`, `max_pool2d`, `avg_pool2d`, `reshape`, `transpose`, `concat`,
+  `batch_norm`, `fused_op` and `yield`. `quantize` and `dequantize` are
+  deliberately absent until the phase that brings their converters, kernels and
+  models with them.
+- **Two memory space attributes and one layout attribute.** `#npu.scratchpad`
+  and `#npu.dram` are usable as `memref` memory spaces and print exactly as
+  written. `#npu.layout<nchw>` and `#npu.layout<nhwc>` are the encoding of a
+  rank 4 tensor, and an absent encoding means NCHW.
+- **The compute operations are destination passing from the first commit.**
+  `conv2d`, `matmul`, `add`, `mul`, `relu`, both pools, `transpose`, `concat`
+  and `batch_norm` each take a destination tensor as their last operand and
+  implement `DestinationStyleOpInterface`. Two rules are verified on every one
+  of them: the destination type equals the result type exactly including any
+  layout encoding, and `ins` and `outs` partition the operands exactly once.
+- **Arithmetic shape verification**, resolved against the opset 19 pooling
+  specification including the `ceil_mode = 1` rule that drops a window starting
+  in the right padded region. One helper computes the output extent for all
+  four windowed operations and is shared between `inferReturnTypes` and the
+  verifiers, so the two paths cannot disagree.
+- **`InferTypeOpInterface`** on `constant`, `conv2d`, `matmul` and both pools.
+- **`TilingInterface` is implemented** on the ten compute operations, as
+  external models registered by `registerNPUTilingInterfaceExternalModels` and
+  promised by the dialect with `declarePromisedInterface`. No pass consumes it
+  yet, deliberately: an interface bug and a policy bug are told apart by not
+  writing them in the same session.
+- **`docs/DIALECT_REFERENCE.md` is generated and committed**, by the new
+  `npu-dialect-doc` build target. CI regenerates it and diffs, so the reference
+  cannot drift from the dialect it documents.
+- **`scripts/check-reachability.py`** enforces law 2 over the operation list,
+  reading each operation's classification out of its ODS description rather
+  than out of a table the script keeps. `--skip-models` runs the subset that
+  needs no built model, and both modes report which layers they actually
+  checked rather than reporting a bare pass.
+- **Two CI steps switch on** per the activation table: the
+  `check-reachability.py --skip-models` lint step and the
+  `DIALECT_REFERENCE.md` staleness step.
+
 ### Headline change: the published instruction counts were wrong and are corrected
 
 **The LeNet instruction counts in the README, the report, and the plots change

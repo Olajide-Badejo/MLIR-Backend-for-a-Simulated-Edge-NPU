@@ -82,3 +82,62 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
 add_subdirectory(test)
+
+# ---------------------------------------------------------------------------
+# GoogleTest, out of tree.
+#
+# LLVM's own `add_unittest` is not available to an out of tree project: it lives
+# inside the LLVM build and is not exported. What is available is the bundled
+# gtest that an LLVM *build tree* carries, as two static libraries and a pair of
+# header directories. An installed LLVM *prefix* carries neither, which is the
+# case in CI, so this whole section is guarded and says in the configure log
+# which of the two it found.
+#
+# A phase that runs its unit tests locally while CI cannot build them is not a
+# comfortable state, but it is the honest one at P1 and it is better stated here
+# than discovered as a missing target. The activation table already keeps every
+# GoogleTest binary guarded off in CI until its own phase.
+#
+# The `llvm_gtest` and `llvm_gtest_main` targets themselves come from
+# LLVMConfig.cmake, which an LLVM build tree exports and an install prefix does
+# not, so the target existing is the guard. The headers are not on the exported
+# target's interface, so they are added by path.
+# ---------------------------------------------------------------------------
+set(NPU_LLVM_THIRD_PARTY "${LLVM_BUILD_MAIN_SRC_DIR}/../third-party"
+    CACHE PATH "LLVM's third-party directory, which carries the bundled gtest")
+
+if(TARGET llvm_gtest
+   AND EXISTS "${NPU_LLVM_THIRD_PARTY}/unittest/googletest/include/gtest/gtest.h")
+  message(STATUS "LLVM gtest found: building the unit test binaries")
+  set(NPU_LLVM_GTEST_INCLUDE_DIRS
+      "${NPU_LLVM_THIRD_PARTY}/unittest/googletest/include"
+      "${NPU_LLVM_THIRD_PARTY}/unittest/googlemock/include")
+  add_subdirectory(unittests)
+else()
+  message(STATUS
+    "LLVM gtest not found: the unit test binaries are not built. This is "
+    "expected against an installed LLVM prefix, which exports neither the "
+    "llvm_gtest target nor the bundled gtest headers.")
+endif()
+
+# ---------------------------------------------------------------------------
+# npu-dialect-doc
+#
+# Regenerates docs/DIALECT_REFERENCE.md from the ODS source, so the reference
+# cannot drift from the dialect it documents. The generated file is committed
+# and CI regenerates it and diffs, which is what makes the drift a build
+# failure rather than a thing somebody notices months later.
+#
+# The generation itself is add_mlir_doc in include/NPU/Dialect/NPU/IR. This
+# target is the copy step plus the header that says the file is generated, and
+# it is separate so that the committed file carries that header while the raw
+# mlir-tblgen output does not have to.
+# ---------------------------------------------------------------------------
+add_custom_target(npu-dialect-doc
+  COMMAND ${CMAKE_COMMAND}
+          -DGENERATED=${CMAKE_BINARY_DIR}/docs/NPU/NPUDialectReference.md
+          -DOUTPUT=${NPU_SOURCE_DIR}/docs/DIALECT_REFERENCE.md
+          -P ${NPU_SOURCE_DIR}/cmake/WriteDialectReference.cmake
+  DEPENDS NPUDialectReferenceDocGen
+  COMMENT "Regenerating docs/DIALECT_REFERENCE.md from the ODS source"
+  VERBATIM)

@@ -18,111 +18,243 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P0, foundations.** Branch `phase/p0-foundations`, cut from `main`. Not merged.
+**P1, the `npu` dialect.** Branch `phase/p1-npu-dialect`, cut from `main` at
+`9bf5d5e`. Three commits, not merged, not pushed.
+
+| Commit | Subject |
+|---|---|
+| `50b27f1` | `feat(dialect): add the npu dialect with types, attributes, operations and verifiers` |
+| `a7fdbba` | `feat(dialect): implement TilingInterface on the npu operations as external models` |
+| `cc8a889` | `test(dialect): add the npu round trip and verifier suites, the generated reference, and the reachability check` |
 
 ## Gate status
 
-The P0 gate is in the build specification's Section 23. Item by item.
+The P1 gate is in the build specification's Section 23. Item by item, with the
+output each item was proved by.
 
-### Done
+### Met
 
-- **The working clone exists** at `~/npu-mlir-v2`, made on 2026-08-19 by the
-  Section 0.5 recipe including its ordering constraint. `git remote get-url
-  origin` is
-  `https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU.git`,
-  which is the GitHub remote and not a local path.
-- **`main` is reconciled and pushed**, at `52ed1da`, matching the remote. All
-  six upgrade branches are published.
-- **The v1 source tree is removed** in one commit, `2c756bd`, with the reason in
-  the body.
-- **The scaffold builds.** `npu-opt --help` runs, `ninja -C build check-npu`
-  reports 1 of 1, `python -m pytest -q` reports 2 passed with `PYTHONPATH` unset
-  in the environment.
-- **Dash lint is clean** over the tree, and its self test meets 8 of 8
-  expectations, proving the verbatim exemption in both directions.
-- **`reuse lint` is clean**, 34 of 34 files carrying copyright and licence
-  information.
-- **pre-commit is wired**, 12 hooks, and passes over the whole tree.
-- **The lock file is committed** and a clean venv install from it reproduces the
-  environment, verified by installing into a fresh venv and importing torch,
-  onnx, onnxruntime and numpy there.
-- **The three architecture decision records are written and dated**, with the
-  generated index over them:
-  [0001](adr/0001-llvm-tag-and-build-reuse.md) the LLVM tag and build reuse,
-  [0002](adr/0002-onnx-opset-pin.md) the opset pin at 23 from the probe run on
-  this machine, [0003](adr/0003-resolved-tool-matrix.md) the resolved tool
-  matrix.
-- **The frozen fallback is recorded in writing**, in this file below and in
-  record 0001, per the gate's explicit requirement that it appear in both.
-- **The docs skeleton exists**: this file, `BREAKING_CHANGES.md`,
-  `EXEMPTIONS.md`, `BUILD.md`, `DEFECT_LOG.md`, and the v3 era of
-  `ENGINEERING_LOG.md` opened with its dated marker.
-- **GHCR and Actions prerequisites are verified.** The repository is public,
-  Actions are enabled, and `gh` is authenticated as `Olajide-Badejo`. The image
-  publish runs through the CI `GITHUB_TOKEN`; the local token deliberately lacks
-  `write:packages`.
-- **The four CI workflows exist**, including `nightly.yml`, with every job
-  guarded off per the activation table of Section 19.0, and each guarded off
-  step prints in the run log that it is off and until which phase.
-- **The GHCR LLVM image is published**:
-  `ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8`, built by
-  `llvm-image.yml` run 32205653261 on 2026-08-19, manifest digest
-  `sha256:008fcc743cd9b7be1685b6cd24922081e87a0aaef3f9f3e5423368d949b545d6`.
-  Both Dockerfile bases are pinned by `sha256` digest.
-- **CI is green on the skeleton**, with the image pulling successfully inside
-  `build-and-test` and `check-npu` passing 1 of 1 in the container. **The first
-  green run:**
-  <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32213397267>.
-  Getting there surfaced two real defects the skeleton caught, D-0004 (job
-  container run steps fall back to sh) and D-0005 (an installed LLVM has no
-  `llvm-lit`), both in `DEFECT_LOG.md` with the red run URLs in the engineering
-  log.
-- **The v1 line is separately preserved on GitHub** at the owner's request: the
-  `v1` branch at `52ed1da`, a Release pinned to the `v1.0.0` tag, and an active
-  ruleset blocking deletion and force pushes on `main` and `v1`.
+- **A round trip lit test per operation.** `test/Dialect/NPU/ops.mlir`, which
+  pipes `npu-opt` output back through `npu-opt` before checking, so an
+  operation that prints something it cannot read back fails rather than passing
+  a parse. All fourteen operations are covered, plus the NHWC form, the
+  explicit `#npu.layout<nchw>` form, a depthwise convolution, a dilated
+  convolution, a dilated average pool, a three input concat on the batch axis,
+  and both memory space attributes.
+- **At least one verifier failure case per rule**, in
+  `test/Dialect/NPU/invalid.mlir`, each with `expected-error` on the substring
+  the verifier actually emits. Forty eight cases, one `expected-error` each.
+  The suite is run under
+  `-split-input-file -verify-diagnostics`, so an unexpected diagnostic fails as
+  loudly as a missing one.
+- **An arithmetically impossible convolution is rejected with the implied
+  extent quoted.** `@impossible_convolution`, a 3 by 3 kernel over a 2 by 2
+  input with no padding, expects
 
-### Remaining
+  > on the height axis, input extent 2 with pads 0 and 0, kernel 3, dilation 1
+  > and stride 1 implies an output extent of 0, which is not a representable
+  > extent
 
-- **The merge of `phase/p0-foundations` into `main`** through pull request 1
-  with a merge commit, which is the non fast forward merge the gate asks for.
-  It is the act that closes this gate and it is performed immediately after
-  the commit that writes this line.
+- **A `ceil_mode = 1` pooling case whose last window starts in the right
+  padding is shaped correctly, with the arithmetic written into the test.**
+  `@max_pool2d_ceil_mode_drops_right_padded_window` in `ops.mlir` and
+  `@ceil_mode_without_the_drop_rule` in `invalid.mlir` are the same parameters
+  from the accepting and the refusing side: input 6, kernel 2, stride 3, pads 0
+  and 1. The ceiling gives 3, the drop takes it to 2, the accepting test
+  declares 2 and the refusing test declares 3 and is refused. A companion case,
+  input 7 with no padding, is where the ceiling adds a window that is kept, so
+  the pair distinguishes an implementation without the drop from one that always
+  drops. Both carry their arithmetic as a comment.
+- **`ins` and `outs` partition the operands exactly once on every compute
+  operation.** `NPUTilingTest.InsAndOutsPartitionEveryComputeOperation` walks a
+  module holding all ten destination passing operations, plus `conv2d` and
+  `matmul` a second time in their optional bias forms, and asserts the
+  partition through the interface's own accessors rather than by recomputing the
+  split. The operation count is asserted at twelve, so a walk that silently
+  visited nine would fail rather than passing every assertion it made.
+- **`TilingInterface` unit tests covering grouped and batched iteration
+  domains, with no pass consuming it yet.** `NPUTilingTests`, twelve tests, all
+  passing:
+
+  ```
+  [==========] 12 tests from 1 test suite ran. (4 ms total)
+  [  PASSED  ] 12 tests.
+  ```
+
+  The grouped cases are a depthwise convolution (`group` 8 over 8 channels, so
+  G is 8 and Cout/G is 1) and a four group convolution (G is 4, Cout/G is 3,
+  Cin/G is 2), which between them rule out a domain that collapsed the two
+  dimensions. The batched cases carry batch 4, 2, 3 and 5 rather than 1.
+- **`DIALECT_REFERENCE.md` generated and committed with its staleness gate
+  active in CI.** `docs/DIALECT_REFERENCE.md`, 883 lines, generated by
+  `ninja -C build npu-dialect-doc` and committed. Regenerating it after the
+  commit produces no diff. The CI step is switched on and prints the diff and
+  the fix command when it fails.
+- **Everything in Section 7.1 and 7.2 that P1 owns.** The two tensor type
+  constraints, the two memory space attributes, the layout attribute with the
+  absent encoding meaning NCHW, thirteen operations plus `yield`,
+  `InferTypeOpInterface` on `constant`, `conv2d`, `matmul` and both pools, one
+  shared arithmetic helper between inference and verification, `Pure` where
+  correct, and batch as a first class dimension with its own verifier rule.
+- **`scripts/check-reachability.py` with `--skip-models`**, switched on in the
+  CI lint job. Green, and honest about what it checked:
+
+  ```
+  note: 14 operations: 12 imported computation, 2 structural.
+  note: structural: npu.fused_op, npu.yield
+  note: layers not yet decidable: import, lowering, encoding, simulation.
+  check-reachability: pass
+  ```
+
+### Verification output
+
+Every command below was run on this branch at `cc8a889`, from
+`/home/elijah/npu-mlir-v2`.
+
+| Command | Result |
+|---|---|
+| `ninja -C build -j6` | clean, no warnings |
+| `ninja -C build check-npu` | 3 discovered, 3 passed, 0 failed |
+| `./build/bin/NPUTilingTests` | 12 tests, 12 passed |
+| `bash scripts/dash-lint.sh` | `dash-lint: clean` |
+| `reuse lint` | compliant, 79 of 79 files |
+| `pre-commit run --all-files` | 12 hooks, all passed |
+| `python scripts/check-reachability.py --skip-models` | pass, exit 0 |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `ninja -C build npu-dialect-doc` then `git diff` | no diff |
+| `git status --short` | empty |
+
+### Not met, and not attempted at P1
+
+- **CI has not run this branch.** Nothing is pushed. Three of the four
+  verification commands above have no CI equivalent yet, and one of them,
+  `NPUTilingTests`, cannot run in CI at all at this phase (see the open
+  questions).
+- **The red then green proof of the two newly activated CI steps** has not been
+  run through CI, because that needs pushes. What to perturb is written below.
+
+## What the orchestrator does next
+
+Three things, in this order.
+
+1. **Push the branch** and let CI run it green. The two newly activated steps
+   are in `lint` (`check-reachability --skip-models`) and in `build-and-test`
+   (`DIALECT_REFERENCE.md staleness`).
+
+2. **Prove the `DIALECT_REFERENCE.md` staleness gate red, then green.** Section
+   19.0 requires this of every step on the day it activates, and Section 19.1
+   requires it of this step by name. The perturbation is one line, and it is
+   named here rather than left to be invented, so that the red run is a
+   perturbation of the committed file and not of the generator:
+
+   ```bash
+   # In docs/DIALECT_REFERENCE.md, change the dialect summary line
+   #   _Tensor level operations for a simulated edge NPU._
+   # to
+   #   _Tensor level operations for a simulated edge TPU._
+   sed -i 's/simulated edge NPU\._/simulated edge TPU._/' docs/DIALECT_REFERENCE.md
+   ```
+
+   Commit that alone on a scratch branch, open a pull request so the
+   `pull_request` trigger fires, and show `build-and-test` failing at the step
+   named `DIALECT_REFERENCE.md staleness (activation table: P1, on)` with the
+   diff and the fix command printed. Then revert, show green, record both run
+   URLs in `docs/ENGINEERING_LOG.md`, and delete the scratch branch. The
+   perturbation is one word in one line rather than a deleted section, because
+   the point is to prove the gate notices a small drift and not that it notices
+   a large one.
+
+3. **Prove the reachability step red, then green.** The three rules it holds
+   were each proved red locally, and the outputs are in this session's transcript
+   rather than in a file, so the CI proof is the one that goes in the log. The
+   cheapest perturbation is the one that matches how the check will actually be
+   broken in practice:
+
+   ```bash
+   # Delete the line "Reachability: imported computation." from npu.relu's
+   # description in include/NPU/Dialect/NPU/IR/NPUOps.td.
+   ```
+
+   The `lint` job then fails at `check-reachability --skip-models (activation
+   table: P1, on)` with
+
+   > error: npu.relu (NPU_ReluOp) carries no classification.
+
+   Note that this perturbation also turns the staleness gate red, because
+   deleting a description line changes the generated reference. That is not a
+   problem, it is the two gates agreeing, but the run log will show two red
+   steps and the engineering log entry should say why rather than leaving the
+   second one looking like a surprise.
+
+4. **Merge `phase/p1-npu-dialect` into `main`** through a pull request with a
+   merge commit, once CI is green and both proofs are recorded.
 
 ## Open questions
 
-None. Nothing in P0 is blocked on a decision I have not made, and the three
-resolutions the phase owed are written as records rather than left in prose.
+Three, and none of them blocks the gate.
 
-The one thing worth flagging forward rather than as a question: record 0001
-pins LLVM at `llvmorg-22.1.8` and `llvmorg-23.1.0` was scheduled for 25 August
-2026. When it lands, it is not an upgrade to take casually. The record lists
-four known source breaks, three of which fall on code P1 and P13 are about to
-write, and there are no MLIR release notes for either 22 or 23.
+**`NPUTilingTests` does not build in CI, and will not until the image changes.**
+LLVM's `add_unittest` is not exported to an out of tree project, so the binary is
+built against the `llvm_gtest` target and the bundled gtest headers that an LLVM
+*build tree* carries. The CI image is an installed *prefix*, which carries
+neither. The configure step says which of the two it found, and at P1 the unit
+tests run locally and not in CI. The activation table already keeps every
+GoogleTest binary guarded off until its own phase, so nothing is being skipped
+that the table expected to run; but P2 activates `NPUInterfaceTests`, and on
+that day this has to be solved rather than noticed. The two candidate fixes are
+to republish the LLVM image with the gtest artifacts included, which is also
+what P3 needs for the Python bindings, or to vendor a gtest into the project.
+Republishing the image once for both reasons is the cheaper of the two and it is
+a P2 deliverable either way.
+
+**`getTiledImplementation` is deliberately incomplete for the windowed
+operations.** The elementwise operations generate real tiles; `conv2d` and the
+pools return failure, because the halo arithmetic belongs with the pass that
+will exercise it and a wrong tile returned here would be consumed by that pass
+and produce a program with a quietly wrong answer. This is written into the
+source and into the unit test that asserts the failure. It is a scoped gap
+rather than an unknown, and P13 is where it closes.
+
+**One design point I resolved rather than asking about, and it is worth
+flagging.** `npu.reshape` takes no destination operand and implements no
+destination passing interface, which departs from the reflex of giving every
+operation one. The reason is that there is no tile of a reshape that a tiling
+pass could compute independently: a reshape crossing a tile boundary is not
+expressible as a per tile reshape, so a destination would be claiming an ability
+the operation does not have. The specification's Section 7.2 lists the
+destination passing operations explicitly and `reshape` is not among them, so
+this is agreement rather than a departure; it is here because it is the kind of
+thing that looks like an omission to a reader who does not know it was decided.
 
 ## Next command
 
-With the gate met and the merge landing, the next session opens P1 on a fresh
-branch cut from the merged `main`:
-
 ```bash
-cd ~/npu-mlir-v2 && git checkout main && git pull && \
-  git checkout -b phase/p1-npu-dialect
+cd ~/npu-mlir-v2 && git push -u origin phase/p1-npu-dialect
 ```
+
+Then watch the run, then perform the two red and green proofs above in the order
+given, then open the merge pull request.
 
 ## Next phase
 
-**P1, the `npu` dialect.** Types, the memory space and layout attributes, every
-operation in Section 5.3 except the quantization pair, verifiers per Section 7.2
-including the opset 23 pooling arithmetic with its `ceil_mode` right padded
-window rule, `InferTypeOpInterface` with the arithmetic shared between inference
-and verification, `Pure` traits, and the `npu-dialect-doc` build target. The
-destination operand and `TilingInterface` land at P1 and are consumed at P13, so
-that an interface bug and a policy bug cannot be mistaken for each other.
+**P2, the `npuisa` dialect and the memory model.** Every instruction operation
+in destination passing style on memrefs in the two spaces, the token type and
+the three asynchronous operations with their verifiers, and
+`DestinationStyleOpInterface` and `MemoryEffectOpInterface` implemented with
+unit tests in `NPUInterfaceTests`. `TilingInterface` is **not** there: it lives
+on the `npu` operations and landed at P1. No pipeline uses tiling or
+asynchronous DMA yet.
+
+The two memory space attributes P2 needs already exist and already round trip;
+`test/Dialect/NPU/ops.mlir` has a function whose only purpose is to prove that
+`memref<4x4xf32, #npu.scratchpad>` and `memref<4x4xf32, #npu.dram>` parse and
+print exactly as written.
 
 ## The frozen v1 fallback
 
 Recorded here because the P0 gate requires it in this file and in the P0 decision
-record both.
+record both, and repeated at every phase because a fact that stops being
+repeated is a fact somebody eventually does not know.
 
 - **Path:** `/home/elijah/npu-mlir`
 - **HEAD:** `99408bc14b4f6331ce03ebf1dc0aecce1529afa8`

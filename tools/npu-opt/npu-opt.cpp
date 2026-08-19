@@ -11,13 +11,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The optimizer driver for this project. At P0 it registers upstream MLIR
-// dialects and passes and nothing else, because the npu dialect does not
-// exist until P1. That is deliberate: it proves the out of tree build, the
-// link line and the lit substitution are all correct before there is any
-// dialect code that could be blamed for a failure in them.
+// The optimizer driver for this project. It registers the upstream MLIR
+// dialects and passes, this project's own dialects, and the external interface
+// models those dialects promise.
+//
+// The tiling interface registration is a separate call rather than something
+// the dialect does for itself, and that is the whole point of the promised
+// interface mechanism: the dialect library carries no dependency on the tiling
+// stack, and a tool that forgets this line gets a named error at the first use
+// saying the interface was promised and never provided.
 //
 //===----------------------------------------------------------------------===//
+
+#include "NPU/Dialect/NPU/IR/NPUDialect.h"
+#include "NPU/Dialect/NPU/Interfaces/NPUTilingInterfaceImpl.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
@@ -31,6 +38,9 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   mlir::registerAllExtensions(registry);
+
+  registry.insert<mlir::npu::NPUDialect>();
+  mlir::npu::registerNPUTilingInterfaceExternalModels(registry);
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "NPU optimizer driver\n", registry));
