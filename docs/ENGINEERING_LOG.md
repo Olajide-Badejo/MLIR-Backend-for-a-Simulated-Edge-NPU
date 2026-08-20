@@ -2532,3 +2532,50 @@ something else: libprotobuf-mutator is not in the CI image or in this machine's
 toolchain, so it would have meant vendoring a dependency and a protobuf mirror
 of `Program` that has to be kept equal to `Program` by hand, which is a second
 hand maintained copy of the thing this phase spent its first commit eliminating.
+
+## 2026-08-20 Phase 6: four activations proven, and the net kept being deeper than predicted
+
+Four gates switched on at P6 and each was broken once, shown red, and restored,
+on a scratch branch since deleted. The rehearsed recipes from the handoff ran
+as written; what the runs added was a measurement of how deep the net in front
+of each gate actually is.
+
+The frozen constant expectation flip was aimed at NPUEncodingTests and lit
+three jobs at once: build-and-test at the encoding step, the sanitizers job
+running the same suite under ASan, and coverage. Red at
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32361933634>.
+
+The hand edited opcode number in the committed manual was caught by exactly one
+step, the ISA staleness gate, everything else green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32362196768>.
+In CI the perturbation is committed by construction, so the finding from the
+local rehearsal, that the gate diffs the committed artifact and an uncommitted
+edit is overwritten before the diff, does not arise there.
+
+Putting D-0021's overflowing addition back inside the ResultInRange diagnostic
+produced the cleanest isolation of the phase: the sanitizers job red on the
+UBSan corpus walk, and the gcc build, lit, and coverage all green, because no
+test asserts the arithmetic inside a diagnostic string:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32362551365>.
+
+Disabling the decoder's trailing bytes refusal was aimed at the nightly fuzz
+job and hit four nets. Nightly went red at the long coverage guided run, with
+the three still guarded jobs printing their off lines:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32362989210>.
+The branch CI went red at NPUEncodingTests, sanitizers, and coverage besides:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32362989932>.
+The prediction was that only the fuzzers assert the round trip property on
+arbitrary inputs, and it was wrong in the good direction: the malformed corpus
+carries trailing bytes cases that assert the same refusal on fixed inputs, so
+the unit suite sees the fault before any fuzzer mutates its way to it. The
+depth of a net is not knowable from the recipe that aims at one strand of it.
+
+Restores green: CI
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32363276829>
+and nightly
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32363275922>.
+
+The phase also cost one image republish: the sanitizers job's first run died at
+CMake's compiler check because the image carried clang without Ubuntu's
+separately packaged sanitizer runtimes, D-0025, fixed in the image per the
+pinning rule rather than with a job time install.
