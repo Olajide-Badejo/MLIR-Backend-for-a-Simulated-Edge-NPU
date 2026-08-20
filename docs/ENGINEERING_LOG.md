@@ -2331,3 +2331,29 @@ restoring the layout, which costs nothing at run time and is visible in the IR.
 It is worth knowing before writing the pass rather than after, and it is the
 kind of constraint that is documented in the operation's description and nowhere
 a reader would look first.
+
+## 2026-08-20 Phase 5: the activation proof that was caught by the wrong net first
+
+The NPUAllocatorTests step switched on at P5, and the proof discipline asks for
+it to be broken once and shown red. The first fault inverted the sweep line's
+deaths before definitions tie break inside the pass itself, and it never
+reached the step it was aimed at: check-npu caught it first, in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32326641102>,
+because the P5 lit suites assert byte offsets by value and a miscounted peak
+moves them. The CI section says a fault caught by a different net than expected
+is a finding to record rather than a reason to adjust the fault, and the
+finding here is a good one: the lit tests and the unit tests cover the same
+arithmetic from two sides, and the lit side sits earlier in the job.
+
+That run still left the new step without a red of its own, so a second fault
+was built that only the step could see: one wrong expected peak in
+AllocatorTest.cpp, invisible to lit because lit never compiles the unit tests.
+It went red exactly at NPUAllocatorTests, with coverage agreeing, in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32326939623>.
+The restore went green in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32327122856>.
+
+The general shape, for the next activation: a product side fault proves the
+whole net and usually lights the earliest gate; a test side fault is what
+isolates the one step whose activation is being proved. Doing both, in that
+order, proves the step and measures the depth of the net in front of it.
