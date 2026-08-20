@@ -18,203 +18,225 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P4, lowering to `npuisa`.** Branch `phase/p4-lowering`, cut from `main` at
-`2d12588`, which is the P3 merge. Four commits, not pushed. The fourth is the
+**P5, scratchpad allocation.** Branch `phase/p5-allocation`, cut from `main` at
+`44d865c`, which is the P4 merge. Seven commits, not pushed. The seventh is the
 one that carries this table, so it is the branch tip and is named by subject
 rather than by a sha it cannot know.
 
 | Commit | Subject |
 |---|---|
-| `f86bc64` | `fix(dialect): refuse a dynamic extent at the type level, as NPUTypes.td claimed` |
-| `e08fc78` | `docs(adr): record the lowering mechanism and the bufferization attempt` |
-| `5f08222` | `feat(npuisa): lower the npu dialect to npuisa instructions on memrefs` |
-| tip | `docs: record the P4 defects and hand off the phase` |
+| `24e93ee` | `feat(npuisa): assign scratchpad offsets with a sweep line and spill when they do not fit` |
+| `078701d` | `fix(npuisa): measure a memref's byte range from its strides, not from its extents` |
+| `7ed3263` | `test(npuisa): property test the sweep line against a brute force recomputation` |
+| `4069bc2` | `docs: predict the allocator's compile time curve and its fragmentation ratios` |
+| `253c842` | `fix(npuisa): stop reordering the pads before the windowed extent arithmetic` |
+| `3dc7c66` | `perf(experiments): measure the allocator's compile time curve and its fragmentation ratios` |
+| tip | `docs: record the P5 defects and hand off the phase` |
 
-On the branch point, since two phases running have had something to say about
-it. Local `main` was stale when this session began, and P3's handoff had already
-recorded that as a recurring hazard. The first command of the session was
+The branch point again, since P3 and P4 both had something to say about it.
+Local `main` was stale when this session began, exactly as the last two handoffs
+predicted it would be. The first command of the session was
 `git fetch origin && git branch -f main origin/main`, which moved local `main`
-to `2d12588`, and the branch was cut from that. The conclusion was drawn against
-`origin/main` after a fetch, not against a local ref.
+to `44d865c`, and the branch was cut from that.
+
+**The commit order carries a ground rule.** `4069bc2` is the prediction and
+`3dc7c66` is the first number, in that order and in separate commits, which is
+what ground rule 15 asks for. One of the two predictions in `4069bc2` was wrong
+and it stays in that file unedited, with the answer in the engineering log.
 
 ## Gate status
 
-The P4 gate is the roadmap entry's, plus the deliverables Sections 8 and 12
-attach to this pass. Every item is **met locally**. Item by item, with the
-proof.
+The P5 gate is the roadmap entry's, plus what Sections 8 and 13.1 attach to this
+pass. Every item is **met locally**. Item by item, with the proof.
 
 | Gate item | Proof |
 |---|---|
-| A lit lowering test per pattern, with `CHECK` and `CHECK-NOT` | `test/Dialect/NPUISA/lowering.mlir`, one case per row of the operator map in `docs/PASSES.md`: the function boundary, `constant` with `tensor.empty`, `conv2d` with and without a bias, `matmul`, `add` and `mul` in both the same shaped and the rank 1 forms, `relu`, both pools, `reshape`, `transpose`, `concat`, `batch_norm`, `fused_op`, and both layouts. Every case carries at least one `CHECK-NOT` |
-| The negative case Section 12 requires | Three of them, and the strongest is `an_already_lowered_function_is_untouched`: a function already on memrefs comes out identical, asserted with `CHECK-NEXT` throughout, which also makes the pass idempotent. Plus `same_shaped_operands_are_not_broadcast`, which asserts no `memref.reinterpret_cast` appears, and `an_unread_argument_is_not_loaded` |
-| `dma-boundaries.mlir` asserts the scoped invariant immediately after lowering | `test/Dialect/NPUISA/dma-boundaries.mlir`, six functions, all of them `npu` dialect input so that what is checked is what the lowering produced rather than what I could write by hand. The run line is `npu-opt %s --npu-lower-to-npuisa` and nothing after it, which is what scopes the claim to the one point at which it is true |
-| DMA appears only at memory boundaries | Each case brackets its computation with `CHECK-NOT: npuisa.dma`, so the assertion is that there is nothing in between rather than that the transfers I listed are present. `a_chain_keeps_its_intermediates_on_chip` runs four instructions on one load and one store |
-| None between a convolution and its fused activation | `nothing_between_a_convolution_and_its_activation`, on an `npu.fused_op` region: two loads, then `conv2d`, then `relu`, then one store, with `CHECK-NOT: npuisa.dma` between each pair |
-| An NHWC tensor lowers to a memref carrying the strides that layout implies | `nhwc_becomes_a_strided_buffer` in `lowering.mlir`: `tensor<1x8x8x3xf32, #npu.layout<nhwc>>` becomes `memref<1x3x8x8xf32, strided<[192, 1, 24, 3]>, #npu.scratchpad>`, with `CHECK-NOT: memref<1x8x8x3xf32` so the extents are asserted to have moved. `nchw_carries_no_layout_map` is the other half: an NCHW tensor gets no strided map, without which the NHWC case would prove nothing |
-| A value that cannot be assigned a memory space is refused with a naming diagnostic | `lowering-diagnostics.mlir`: `a_dynamic_extent`, `an_unsupported_element_type` and `a_dynamic_destination`. Each names the function or the operation, the argument or result number, quotes the type, and gives the reason as a clause. The decision and the explanation come out of the same branches of `convertTensorType`, so a diagnostic cannot contradict the refusal it explains |
-| Batch norm decomposes into a multiply and an add, with the constants computed at rewrite time | `batch_norm_decomposes_into_a_multiply_and_an_add` checks the computed constants **by value**, not by shape: gamma 2 and 4, beta 1 and 0, mean 0 and 1, variance 3 and 3, epsilon 1 give a multiplier of 1 and 2 and an addend of 1 and -2. The arithmetic is the thing that could be wrong while the shapes stayed right |
-| Non constant batch norm parameters produce a diagnostic naming the operation and the operand, never a generic legalization failure | `a_computed_batch_norm_parameter` matches `the gamma operand of this batch norm is not an npu.constant`, and `a_zero_denominator` covers a variance plus epsilon that is not positive |
-| The ADR 0005 rank 1 broadcast lowering | `add_broadcasts_a_rank_one_addend` and `mul_broadcasts_a_rank_one_scale` check the whole `memref.reinterpret_cast` including `strides: [0, 1, 0, 0]` and the resulting `strided<[0, 1, 0, 0]>` operand type. `a_broadcast_view_adds_no_transfer` in `dma-boundaries.mlir` checks that it costs no DMA |
-| `npu.fused_op` handling, decided and documented | Flattened, not diagnosed, and `docs/PASSES.md` says why: the gate asks for no DMA between a convolution and its fused activation, and a named diagnostic would have met the letter of "do something rather than nothing" while leaving the gate unmeetable. `fused_op_is_flattened` is the lit case |
-| An `scf` operation or a multi block function is a named diagnostic | `an_scf_loop` and `two_blocks` in `lowering-diagnostics.mlir`. The validation walk is pre order so the `scf.for` is named rather than the `scf.yield` inside it |
-| The `one-shot-bufferize` attempt made and its outcome recorded either way | `docs/adr/0006-lowering-mechanism-and-the-bufferization-attempt.md`: five runs with their commands and their output, and a section saying plainly which parts of the infrastructure were adopted and which were not |
-| `-npu-lower-to-npuisa` registered and runnable from `npu-opt` | `mlir::npuisa::registerNPUISAPasses()` in `tools/npu-opt/npu-opt.cpp`. Every lit file above runs it through `npu-opt` |
-| `docs/PASSES.md` created, per ground rule 12 | Created in the same commit as the pass, with before and after IR, the operator map, the refusal table, and the negative cases. The ablation delta field says it is not measured and why, rather than being left blank |
+| The five allocator lit cases of Section 17.1: fits, spill, fragmentation, no reuse while live, budget too small | `scratchpad-alloc.mlir` carries fits, fragmentation and no reuse while live; `spill-heuristic.mlir` carries spill; `alloc-budget-too-small.mlir` carries the negative. Every offset is checked **by value** with the arithmetic written out beside it, because a test that checked only that an offset appeared would pass against an allocator that gave every buffer offset zero |
+| Fragmentation with out of order deaths, and reuse pinned by offset | The `@fragmentation` function: `%a` [0, 3] at 256 bytes, `%b` [1, 5] at 256, `%c` [4, 6] at 512, so `%a` and `%c` never share an index. `pack` places `%c` at 0 and reuses; `interval` leaves a 256 byte hole and lands at 1024 for a peak of 768 |
+| No reuse while live, which Section 13.1 calls the silently wrong case | `@no_reuse_while_live` checks both halves: two buffers that overlap at one index get different offsets, and a third that is disjoint from the first takes its offset back. An allocator that never reused would pass the first half alone. `PlacementProperty.NoTwoBuffersLiveAtOnceShareAByte` asserts it over 1000 randomized sets under both strategies as well |
+| The sweep line property test against brute force in `NPUAllocatorTests` | `SweepLineProperty.TheSweepLineAgreesWithBruteForce`: 1000 randomized interval sets at seed 24301, 904 of them with more than one interval and a non zero peak. **The peak index is asserted as well as the value**, because the index is what the spill heuristic reads |
+| The compile time benchmark committed at four sizes | `experiments/compile_time_benchmark.py` at 500, 1000, 2000 and 5000 operations. Measured: 2.3, 4.6, 9.6 and 26.1 milliseconds, a mean exponent of 1.05 |
+| The three diagnostics each with a `-verify-diagnostics` test | multi block in `alloc-multiblock.mlir`, budget too small in `alloc-budget-too-small.mlir` in two shapes, unknown heuristic in `alloc-unknown-option.mlir` alongside unknown strategy and a bad alignment, all three at once because the pass reports every bad option rather than the first |
+| Both allocation strategies present and selectable | `strategy=pack` and `strategy=interval`, exercised on the same file by two run lines with two check prefixes in `scratchpad-alloc.mlir`, and against each other on seven models in `experiments/allocator_fragmentation.py` |
+| `fragmentation_ratio` computed and reported per model | The pass writes `npuisa.fragmentation_ratio` plus the two integers it is computed from. Per model, under both strategies, all seven models: `pack` between 1.0000 and 1.0178, `interval` between 1.0002 and 1.5030, `pack` never worse. The table is in `docs/ENGINEERING_LOG.md` |
+| Both spill heuristics, with the tie breaks Section 13.1 specifies | `@two_victims` in `spill-heuristic.mlir` is one program on which `longest-range` and `cost` choose different buffers, identified by the type of the spill slot rather than by an offset. Every tie break key has its own unit test in `AllocatorTest.cpp`, one key at a time |
+| The sweep line from the start, with its ordering rule | `ADeathAtTheSameIndexAsADefinitionComesFirst` and `ALastUseAtTheSameIndexIsStillLive` differ by one in one field and by a factor of two in the answer. `TheFirstIndexWithTheGreatestSumWins` pins the other half |
+| The spill trigger is offset assignment failing, never the peak exceeding the budget | `@the_trigger_is_placement_failure_not_the_peak`: the peak is 1536, the budget is 1536, so "peak exceeded budget" is false, and the interval placement still fails and spills. The same function under `pack` needs no spill at all |
+| Spill semantics per Section 13.1 | A `dma_store` after the definition and a `dma_load` before each later use, with the reload replacing that use, checked with `CHECK-NEXT` so the store really is adjacent to the definition |
+| The allocator counts the DMA it inserts, per Section 8 | `npuisa.spill_dma_count` on the function, plus an `inserted-dma` pass statistic |
+| `npuisa.scratchpad_bytes` and `npuisa.scratchpad_budget` set, per Section 8 | Both, plus the peak, the ratio and the two spill counts. Checked by value in every lit case |
+| Offsets as `memref.view` over one flat buffer, per Section 8 | A dedicated run line asserts that **no scratchpad buffer allocation survives anywhere in the module**, which a `CHECK-NOT` inside a labelled block could not do because it only covers the gap between two positive matches |
+| Multiple blocks diagnosed, not ignored | `@two_blocks` in `alloc-multiblock.mlir` |
+| The `computeBufferRange` question P4 left open | Answered, with the reasoning in `docs/ARCHITECTURE.md` as a marked P5 extension and five tests in `InterfaceTest.cpp`. A stride 0 view has a byte range and it is the range of the bytes it addresses |
+| `NPUAllocatorTests` built and its CI step switched on | `.github/workflows/ci.yml`, guard kept and the else branch turned into a failure, which is the shape `NPUInterfaceTests` took at P2 |
+| `docs/PASSES.md` updated in the same commit as the pass, per ground rule 12 | `24e93ee` carries both |
 
 ### Verification output
 
-Every command below was run on this branch at `5f08222`, from
+Every command below was run on this branch at `3dc7c66`, from
 `/home/elijah/npu-mlir-v2`, in `~/npu-venv`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 10 discovered, 10 passed, 0 failed. Seven at P3, plus this phase's three |
-| `build/bin/NPUInterfaceTests` | 18 tests, 18 passed |
-| `build/bin/NPUTilingTests` | 12 tests, 12 passed |
-| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0, unchanged from P3 |
+| `ninja -C build check-npu` | 15 discovered, 15 passed, 0 failed. Ten at P4, plus this phase's five |
+| `build/bin/NPUAllocatorTests` | 29 tests from 6 suites, 29 passed. Two of them are property tests at 1000 cases each |
+| `build/bin/NPUInterfaceTests` | 23 tests, 23 passed. Eighteen at P4, plus this phase's five |
+| `build/bin/NPUTilingTests` | 12 tests, 12 passed, untouched by this phase |
+| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0, unchanged from P4 |
 | `mypy` | no issues found in 11 source files |
-| `black --check .` | 19 files unchanged |
+| `black --check .` | 21 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 126 of 126 files |
+| `reuse lint` | compliant, 138 of 138 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
-| `python scripts/check-reachability.py --skip-models` | pass, and the **lowering layer is decidable for the first time**: 12 imported computation operations, every one found in `LowerNPUToNPUISA.cpp` |
+| `python scripts/check-reachability.py --skip-models` | pass, import and lowering layers checked |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `git status --short` | empty |
 
-**Two gtest binaries exist, not three.** `NPUInterfaceTests` and
-`NPUTilingTests` are what P1 and P2 built; `NPUAllocatorTests` is P5's and
-`NPUEncodingTests` is P6's, per the activation table. Both existing binaries are
-green and neither was touched by this phase, which is the claim that matters
-here: the dialect change in `f86bc64` narrows a type constraint, and a gtest
-building tensors with dynamic extents would have failed on it.
+**Three gtest binaries exist now, not two.** `NPUAllocatorTests` is this phase's
+and is the third. `NPUEncodingTests` is P6's and `NPUSimulatorTests` is P7's, per
+the activation table.
 
-## Activation proofs, and why there are none
+## Activation proofs
 
-**No CI job or step activates at P4.** Section 19.0's table has no P4 row. Every
-step this phase's work runs under, `check-npu`, `dash-lint.sh`, `reuse lint`,
-`check-reachability.py --skip-models` and the `DIALECT_REFERENCE.md` staleness
-gate, activated at P0 or P1 and has been on ever since. The next activations are
-`NPUAllocatorTests` at P5, `NPUEncodingTests`, the ISA staleness gate and the
-sanitizers job at P6, `NPUSimulatorTests` at P7, and the full reachability check
-at P8.
+**One step activates at P5: `NPUAllocatorTests`.** Section 19.0 requires it be
+broken once deliberately, shown red, and restored, and this is that proof,
+performed on this branch and reproducible from the recipe below.
 
-This paragraph exists so that the absence is a decision rather than an omission.
-A phase report with no activation proof section reads the same whether the
-author checked and found nothing or did not check at all, and P3's handoff spent
-real effort on two proofs, so a reader is entitled to wonder where this phase's
-went.
+**The recipe, one line:**
 
-One step did change behaviour without changing its guard, and it is worth
-naming. `check-reachability.py --skip-models` has been on since P1 and reported
-the lowering layer as "not yet decidable" ever since, because
-`LAYER_HOMES["lowering"]` points at
-`lib/Dialect/NPUISA/Transforms/LowerNPUToNPUISA.cpp` and that file did not
-exist. It exists now, so the check started asking a question it had never asked,
-and it failed the first time it asked it: six operations whose mnemonics did not
-appear literally in the pass source, because C++ class names are `Conv2DOp` and
-the check looks for `conv2d`. The fix is the operator map comment at the head of
-that file, which is documentation the pass should have carried anyway. That is
-the table becoming decidable exactly as designed, on the day its source
-appeared, with no edit to the script.
+```bash
+sed -i 's/return left.isDefinition < right.isDefinition;/return left.isDefinition > right.isDefinition;/' \
+    lib/Dialect/NPUISA/Transforms/ScratchpadAllocation.cpp
+```
+
+That inverts the sweep line's ordering at equal indices, so a death is no longer
+processed before a definition, which is the off by one Section 13.1 names as
+changing which buffer gets spilled.
+
+**Rehearsed under the exact invocation the CI step uses**, which is
+`./build/bin/NPUAllocatorTests` with no arguments inside `set -euo pipefail`, and
+not under a `--gtest_filter` naming the test that was broken. That distinction is
+the whole point of the rehearsal and the engineering log records why: filtering
+proves that the broken test fails, which was never in doubt, where what needs
+proving is that a failure inside the binary reaches the step's exit code and
+turns the job red. Those are different claims. P3's handoff already recorded an
+activation proof that proved nothing the first time it was performed, and this is
+the same hazard wearing different clothes.
+
+Result, rebuilt and run:
+
+- `SweepLine.ADeathAtTheSameIndexAsADefinitionComesFirst` failed, which is the
+  hand written case aimed straight at the rule.
+- `SweepLineProperty.TheSweepLineAgreesWithBruteForce` failed at **case 0 of
+  1000**, with the message naming the case number and the seed, so the property
+  test caught it on its first randomized input rather than needing a rare shape.
+- `PlacementProperty.NoTwoBuffersLiveAtOnceShareAByte` failed too, because the
+  placement reads the peak.
+- **The step exited 1.**
+
+Restored with `git checkout --`, rebuilt, and the binary exits 0 with 29 of 29
+passing. `git status --short` is empty.
 
 ## Open questions
 
-Six. None blocks the gate.
+Five. None blocks the gate.
 
-**`f86bc64` is a P1 dialect change made at P4, and a reviewer should look at it
-as one.** `NPU_FloatTensor`, `NPU_QuantTensor` and `NPU_AnyTensor` are
-`StaticShapeTensorOf` rather than `RankedTensorOf`, which narrows what the
-dialect accepts. The reasoning is D-0015: the comment above those definitions has
-claimed since P1 that a dynamic extent is refused at the type level, it was not,
-and `npu.reshape` then aborted the tool with an assertion and no diagnostic at
-all on IR that had parsed. I considered recording it and leaving it, since it is
-not this phase's code and the phase was already large. I fixed it because the
-alternative is a known crash sitting behind a sentence saying it cannot happen.
+**The default spill heuristic is provisional and is marked so in three places.**
+Section 13.1 says the default is chosen with data, not intuition, and the
+ablation that produces that data needs the harness at P10 and the experiment at
+P13. `longest-range` is the default today because it is the simpler rule and the
+baseline, so a change at P13 will be a move towards the smarter rule with
+evidence behind it rather than away from one. **Whoever runs that ablation should
+change the default in the same commit as the data**, and not before.
 
-**The out parameter convention is this phase's decision and P6 inherits it.** A
-lowered function returns nothing and its results are trailing `#npu.dram`
-arguments. `test/Dialect/NPUISA/ops-memref.mlir` has described a lowered function
-that way since P2, so the shape is not new, but nothing before now committed the
-compiler to producing it. The encoder reads its input and output regions out of
-that argument list, and there is no marker distinguishing an input argument from
-an output one beyond position: the first N are inputs and the last M are outputs,
-where M is the original result count. **If P6 wants that explicit, an argument
-attribute is the place, and it should be added there rather than inferred.**
+**The placement is quadratic in the buffer count and that is a measured
+decision, not an oversight.** Offset assignment scans every already placed buffer
+for each new one. The compile time benchmark says the linear term still dominates
+at 5000 operations, which is an order of magnitude longer than any model in the
+suite, so the interval tree that would fix it is not going in. The benchmark is
+committed; if P13's tiling makes functions much longer, rerun it before assuming
+this still holds.
 
-**The two layout diagnostics are placeholders for work `-npu-assign-layout`
-owns.** A constant carrying a layout encoding, and a transpose that changes the
-layout as well as the extents, are both refused by name. Neither is reachable
-today, because the frontend emits no layout encodings at all. Both become
-reachable at P13 and both are that pass's work: it materialises its own permuted
-constants and folds its own inverse transposes, which Section 12 already says it
-does. If P13 finds it needs a relayouting copy after all, the shape of one is
-available without a new opcode, since `npuisa.transpose` with an identity
-permutation between two buffers of differing strides is exactly a relayout under
-this representation. That is **not implemented**, no gate depends on it, and
-nothing may cite it as available.
+**The fragmentation ratio includes alignment padding.** The peak sums raw buffer
+sizes and the high water mark sums offsets rounded up to 64 bytes, so every
+published ratio has a floor slightly above 1.0 that has nothing to do with the
+packing algorithm. Measured on `lenet`, the effect is 32 bytes, or 0.02 percent.
+Separating the two would need a second peak definition and a second number to
+keep straight, and Section 13.1 defines the ratio the way the three papers it
+cites do. **P10 should carry this sentence into the result schema's field
+documentation** rather than leaving a reader to wonder why a chain reads 1.0002.
 
-**The scratchpad attributes are not set by this pass.** Section 8 says the
-function carries `npuisa.scratchpad_bytes` and `npuisa.scratchpad_budget`, which
-the encoder and the simulator read. `scratchpad_bytes` is an output of the
-allocator and cannot be known here; `scratchpad_budget` is an input to it. The
-lowering copies the function's discardable attributes across, so a budget set on
-the input function survives, and P5 owns both. Named because a reader comparing
-the lowered output against Section 8 will notice they are absent.
+**The encoder inherits the spill slots.** A spilled value lives in a
+`memref.alloc` in `#npu.dram` marked `npuisa.spill_slot`, which is the one place
+in this compiler that allocates DRAM and which amends a sentence P4 wrote.
+`docs/ARCHITECTURE.md` states the obligation in one line: **the encoder gives
+each such allocation an address in the DRAM map, the way it already does for
+constants and for the input and output regions.** They are marked in the IR
+rather than inferred, so finding them is a predicate and not an analysis.
 
-**No `memref.dealloc` is emitted, deliberately.** The allocator derives live
-intervals from the instruction stream, so a deallocation here would be a weaker
-second statement of a lifetime it computes exactly. If P5's sweep line turns out
-to want explicit lifetime markers, that is P5's decision and it should change
-this pass rather than working around it.
-
-**The overlap analysis has not been shown a `memref.reinterpret_cast`.**
-`computeBufferRange` in `NPUISAMemoryOverlap.cpp` walks `memref.view` and
-contiguous static `memref.subview` back to an allocation. The broadcast view this
-phase introduces is a `reinterpret_cast`, which is a new shape for it to meet. It
-does not matter yet, because that analysis runs only for the asynchronous DMA
-rules and this pass emits no asynchronous transfer, which
-`the_lowering_emits_no_asynchronous_transfer` asserts. It matters at P5, when the
-allocator rewrites allocations as views underneath these casts, and at the double
-buffering pass, whichever reaches it first. The conservative answer, `Unknown`,
-is the safe one and is what an unrecognised producer already yields, so the
-failure mode is a refusal rather than a race. **Whoever touches that analysis
-next should add a `reinterpret_cast` case deliberately, and decide whether a
-stride 0 view has a byte range at all**, which is a real question: it addresses C
-floats and spans none.
+**A spilled buffer that was loaded from DRAM is stored back to DRAM
+unnecessarily.** Section 13.1's spill semantics are a `dma_store` after the
+definition and a `dma_load` before each later use, and this pass implements
+exactly that. When the buffer's definition is itself a `dma_load` from a DRAM
+value that is still live, the value is already in DRAM and the store is
+redundant: the reload could read the original source. That would remove one
+transfer per spilled input. It is **not implemented**, deliberately, because it
+changes the DMA count and Section 13.1 specifies the semantics without it, and
+because the ablation of Section 16.2 compares against those semantics. If it is
+ever done it belongs with the tiling work at P13, in its own commit, with the
+DRAM byte counts before and after.
 
 ## Next command
 
 ```bash
-git push -u origin phase/p4-lowering
+git push -u origin phase/p5-allocation
 ```
 
-Then watch CI. Expect no job or step to run for the first time, per the
-activation section above. Two things are worth looking at. The
-`DIALECT_REFERENCE.md` staleness gate sees a regenerated reference for the first
-time since P1, and it is the gate most likely to catch a mistake in `f86bc64`.
-And `check-reachability.py --skip-models` reports the lowering layer as checked
-rather than as undecidable for the first time. Then open the merge pull request.
+Then watch CI. **One step runs for the first time**: `NPUAllocatorTests`, which
+was guarded off since P0 and prints its own error now rather than an off line if
+the binary is missing. Its activation proof is above and was rehearsed locally
+under the same invocation, so a red run there means the image cannot build the
+binary, not that the tests are wrong; the configure log's `GoogleTest:` line is
+where to look, because CI resolves gtest from the system package where this
+machine resolves it from the LLVM build tree.
 
-There are **no activation proofs to perform this phase**, which is a change from
-P3's handoff and is explained above rather than left as a gap.
+Two other things are worth watching. `check-npu` reports 15 rather than 10.
+`reuse lint` sees `experiments/` for the first time, which is a new top level
+directory and therefore a new place for a missing SPDX header to hide.
+
+Then open the merge pull request.
 
 ## Next phase
 
-**P5, scratchpad allocation.** Section 13.1 in full: both offset assignment
-strategies, `strategy=pack` and the interval scheme as the named baseline, both
-spill heuristics, the sweep line from the start, the five allocator lit cases,
-the sweep line property test against brute force in `NPUAllocatorTests`, the
-three diagnostics each with a `-verify-diagnostics` test, and
-`fragmentation_ratio` computed and reported per model.
+**P6, the binary format and the generated ISA.** Section 9 in full, plus the
+generated ISA description of Section 9.4 and the fuzzing of Section 17.3. It is
+the five to seven session phase, and the roadmap says why: generating the opcode
+enum after hand writing the encoder means writing the encoder twice.
 
-Four things P4 leaves on P5's desk beyond the roadmap entry, all expanded in the
-open questions above: the two scratchpad attributes are P5's to set, this pass
-emits no deallocations so P5 owns lifetime entirely, the allocator's views will
-sit underneath this pass's `memref.reinterpret_cast` broadcast views, and the
-overlap analysis has not been shown one.
+Four things P5 leaves on P6's desk, all expanded in the open questions above:
+
+1. **The spill slots need DRAM addresses.** Every `memref.alloc` in `#npu.dram`
+   marked `npuisa.spill_slot` is a buffer the encoder must place, alongside the
+   constants and the input and output regions.
+2. **The six function attributes are the encoder's input.**
+   `npuisa.scratchpad_bytes` is what Section 9 calls `scratchpadBytes`, and
+   `npuisa.scratchpad_budget` is what the simulator sizes against.
+   `npuisa.fragmentation_ratio`, `npuisa.scratchpad_peak_bytes`,
+   `npuisa.spill_count` and `npuisa.spill_dma_count` are for the result cell at
+   P10 and are not part of the binary format unless P6 decides otherwise and
+   says so.
+3. **Allocated IR is what the encoder will see**, which means `memref.view` over
+   one flat arena and `memref.reinterpret_cast` above it, not typed
+   `memref.alloc` operations. An address is `computeBufferRange(value)->offset`,
+   which is the function the overlap rule already uses, so there is no second
+   place for the arithmetic to live.
+4. **P4's out parameter convention is still only positional**, and P4's handoff
+   already flagged that if P6 wants it explicit, an argument attribute is the
+   place. That question is now sharper, because the spill slots give the DRAM map
+   a third category of buffer.
 
 ## The frozen v1 fallback
 

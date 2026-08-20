@@ -544,3 +544,142 @@ None.
   loads and then `CHECK-NOT: npuisa.dma_load`, so it fails at seven and passes at
   three, and it is named after the claim rather than after the mechanism so that
   a later reader knows what it is defending.
+
+### D-0017 an int64_t pass option printed into a diagnostic as a character
+
+- **Found:** 2026-08-20, phase P5.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** on the parent of the fix, run
+
+  ```
+  npu-opt test/Dialect/NPUISA/scratchpad-alloc.mlir \
+      --npu-allocate-scratchpad=alignment=48
+  ```
+
+  The diagnostic reads `the alignment must be a positive power of two, but it
+  is 0`. The alignment given was 48. At 63 it reads `?`, at 96 a backtick, at
+  100 the letter `d`. Every one of them is the ASCII character whose code is the
+  number.
+- **What was wrong:** an ODS pass option of C++ type `int64_t` is generated as
+  an `llvm::cl::opt<int64_t>`, which converts to its data type through a user
+  defined conversion operator. Streaming one straight into an
+  `mlir::InFlightDiagnostic` picks the `char` overload of `Diagnostic::operator
+  <<` rather than the integer one, and the value is printed as a character.
+
+  Nothing about the allocation was wrong: the check itself read the right
+  number and refused the right values. What was wrong was the message, which is
+  the whole of what that code path exists to produce. A diagnostic that
+  misreports the number it was given is worse than no diagnostic, because
+  somebody acts on it: told the alignment is 0 when they passed 48, the obvious
+  conclusion is that the option was not read at all, and the next thing they do
+  is go looking in the pass manager rather than at their own value.
+
+  It is worth naming the shape of this rather than only the instance. Every
+  numeric pass option in this project is one `<<` away from the same bug, and
+  nothing about the code looks wrong at the point of use.
+- **Resolution:** the option is copied into a plain `const int64_t` before it is
+  used or printed, in both `readOptions` and `readBudget`, with a comment saying
+  why so that a later reader does not simplify it back. The regression test is
+  `test/Dialect/NPUISA/alloc-unknown-option.mlir`, which asserts the exact text
+  `but it is 48` under `-verify-diagnostics`. It fails against the character
+  form and passes against the fix.
+### D-0018 a subview's byte range was measured by the elements it holds, not the bytes it reaches
+
+- **Found:** 2026-08-20, phase P5, while adding the `memref.reinterpret_cast`
+  case that P4's handoff left open.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** take two `2 by 2` subviews of one `4 by 4` `f32` buffer, the
+  first at `[0, 0]` and the second at `[1, 0]`. They share the whole of row 1,
+  elements 4 and 5. On the parent of the fix, `mlir::npuisa::overlaps` on the
+  two returns `Disjoint`. `unittests/Dialect/NPUISA/InterfaceTest.cpp`, test
+  `OverlappingSubviewsAreNotReportedDisjoint`, is that case and it fails there.
+- **What was wrong:** `byteSize` computed a memref's size as the product of its
+  extents times its element width. For a contiguous buffer that is right. For a
+  **subview** it is the number of elements the view holds, which is not the
+  number of bytes it reaches across: a sub block of a larger buffer skips the
+  remainder of every row, so its first and last elements are further apart than
+  its element count suggests. The first subview above holds 4 elements and spans
+  6; the analysis said 16 bytes where the truth is 24.
+
+  The direction of the error is what makes it a defect rather than an
+  imprecision. A range that is too **small** can be reported disjoint from a
+  range it genuinely intersects, and the only consumer of this analysis is the
+  rule that decides whether an operation between an asynchronous transfer and
+  its `await` races with the destination. An under reported range there permits
+  a real race, silently. `Unknown` would have been safe; a confident wrong
+  answer is not.
+
+  It had never fired because no pass in this project emits a `memref.subview`
+  yet. The tiling pass of Section 13.2 is the one that will, at P13, and it
+  would have inherited a memory model that quietly permitted the race it is most
+  likely to create.
+- **Resolution:** the size is computed from the strides rather than the extents,
+  by `byteSpan`: `1 + sum((extent - 1) * stride)` elements when the type carries
+  a layout map, and the product of the extents when it does not, which are the
+  same number for a contiguous buffer. The same change is what makes a stride 0
+  broadcast view span the C floats it addresses rather than the tensor it is
+  shaped like, and `docs/ARCHITECTURE.md` records both halves as a marked P5
+  extension.
+
+  Three tests in `InterfaceTest.cpp` fail before the change and pass after:
+  `AStrideZeroBroadcastSpansTheBufferItIsOver`, `TwoAdjacentBroadcastsAreDisjoint`
+  and `OverlappingSubviewsAreNotReportedDisjoint`. Shown red by reverting
+  `byteSpan` to the extent product and rerunning, then shown green again.
+
+### D-0019 the npuisa windowed verifier reordered its pads and rejected every asymmetric one
+
+- **Found:** 2026-08-20, phase P5, by running the model suite through the
+  allocator to measure the fragmentation ratio Section 13.1 asks for.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** compile `dilated_stack`, which is the one model in the suite
+  with asymmetric padding:
+
+  ```
+  python experiments/allocator_fragmentation.py --models dilated_stack
+  ```
+
+  On the parent of the fix the lowering's output does not verify:
+
+  ```
+  'npuisa.conv2d' op the destination width extent must be 5, the extent this
+  window implies, but the destination is 'memref<1x5x3x6xf32, #npu.scratchpad>'
+  ```
+
+  The window is input 11 by 13, kernel 3 by 3, strides 2 by 2, dilations 3 by 2,
+  pads `[0, 1, 0, 1]`. The width is `(13 + 1 + 1 - 5) / 2 + 1`, which is 6, and
+  the lowering produced 6. The `npuisa` verifier computed 5.
+- **What was wrong:** `computeWindowedShape` takes its pads in ONNX order, all
+  begins then all ends, and reads `pads[axis]` and `pads[rank + axis]` itself.
+  The `npu` verifier one level up passes them straight through, which is right.
+  The `npuisa` verifier **reordered them into per axis pairs** before the call,
+  `{pads[0], pads[2], pads[1], pads[3]}`, so the helper then read the first
+  entry of each pair as a begin and the pair after it as the ends. Height was
+  given `(padTop, padBottom)` interpreted as entries 0 and 2 of an ONNX array,
+  which they are not.
+
+  The code sat under a comment reading "Getting this reordering wrong is the
+  single easiest mistake in the whole file and it is why it is written once here
+  instead of at each call site". The comment was correct about the risk and the
+  line under it was the mistake, which is worth recording exactly that way: a
+  comment asserting that a thing is careful is not evidence that it is.
+
+  It survived from P2 to P5 because **every pad in every test was symmetric**.
+  Under a symmetric pad both orders produce the same numbers, so a test suite
+  built from `pads = [1, 1, 1, 1]` and `pads = [0, 0, 0, 0]` cannot distinguish
+  them. The suite model that carries asymmetric padding is `dilated_stack`, and
+  Section 15 put it there precisely because it forces a case nothing else
+  reaches; it did that, three phases after it was written, and the case it
+  forced was in a verifier rather than in the importer.
+
+  The consequence was a whole model that could not be lowered. It is not a
+  numerics defect: the verifier refused, loudly, rather than accepting a wrong
+  shape. That is the failure mode the shared helper was designed for, working
+  in the direction of safety while still being wrong.
+- **Resolution:** the pads are passed straight through, exactly as `NPUOps.cpp`
+  does. `conv2d_asymmetric_pads` and `pool_max_asymmetric_pads` in
+  `test/Dialect/NPUISA/ops.mlir` are the regression tests: a 4 by 8 input with
+  `pads = [0, 1, 2, 0]`, whose correct destination is 4 by 7 and which the
+  reordered form demands be 3 by 8. Both fail against the reordering and pass
+  against the fix, shown both ways. The pooling case is there because the two
+  operations share the verifier body and a fix that missed one would be
+  invisible otherwise.

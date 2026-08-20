@@ -165,6 +165,46 @@ func.func @conv2d_grouped(%x: memref<1x8x8x8xf32, #npu.scratchpad>,
   return
 }
 
+// Asymmetric padding, which is the case that tells the ONNX pad order apart
+// from a per axis one. `pads` is padTop 0, padLeft 1, padBottom 2, padRight 0,
+// so height takes entries 0 and 2 and width takes entries 1 and 3:
+//
+//   height = 4 + 0 + 2 - 3 + 1 = 4
+//   width  = 8 + 1 + 0 - 3 + 1 = 7
+//
+// Read as per axis pairs instead, height would take 0 and 1 and width would
+// take 2 and 0, giving 3 by 8 and rejecting this operation. That is defect
+// D-0019, and every pad in every other case in this file is symmetric, which is
+// exactly why it survived: under a symmetric pad the two orders agree.
+// CHECK-LABEL: func.func @conv2d_asymmetric_pads
+func.func @conv2d_asymmetric_pads(%x: memref<1x1x4x8xf32, #npu.scratchpad>,
+                                  %w: memref<1x1x3x3xf32, #npu.scratchpad>,
+                                  %d: memref<1x1x4x7xf32, #npu.scratchpad>) {
+  // CHECK: npuisa.conv2d
+  // CHECK-SAME: outs(%{{.*}} : memref<1x1x4x7xf32, #npu.scratchpad>)
+  npuisa.conv2d ins(%x, %w : memref<1x1x4x8xf32, #npu.scratchpad>,
+                             memref<1x1x3x3xf32, #npu.scratchpad>)
+                outs(%d : memref<1x1x4x7xf32, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 0, 1, 2, 0>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64}
+  return
+}
+
+// The same asymmetry on a pooling operation, because the two share the verifier
+// body and a fix to one that missed the other would be invisible otherwise.
+// CHECK-LABEL: func.func @pool_max_asymmetric_pads
+func.func @pool_max_asymmetric_pads(%x: memref<1x1x4x8xf32, #npu.scratchpad>,
+                                    %d: memref<1x1x4x7xf32, #npu.scratchpad>) {
+  // CHECK: npuisa.pool_max
+  // CHECK-SAME: outs(%{{.*}} : memref<1x1x4x7xf32, #npu.scratchpad>)
+  npuisa.pool_max ins(%x : memref<1x1x4x8xf32, #npu.scratchpad>)
+                  outs(%d : memref<1x1x4x7xf32, #npu.scratchpad>)
+                  {kernel = array<i64: 3, 3>, strides = array<i64: 1, 1>,
+                   pads = array<i64: 0, 1, 2, 0>,
+                   dilations = array<i64: 1, 1>, ceil_mode = 0 : i64}
+  return
+}
+
 // -----------------------------------------------------------------------------
 // The elementwise instructions.
 // -----------------------------------------------------------------------------

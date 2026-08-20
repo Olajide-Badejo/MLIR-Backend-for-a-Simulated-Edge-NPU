@@ -2141,3 +2141,219 @@ whose first transfer is the argument load and therefore appears **before** the
 constant. FileCheck matches in order, so only one load remained to be counted.
 Checks encode an order as well as a presence, and on straight line output that
 order is the program's.
+
+## 2026-08-20, phase P5: the allocator, and what its two experiments measured
+
+Two experiments land with the allocator and both were predicted before they were
+run, in `experiments/predictions/p5-allocator-compile-time.md`, committed at
+`4069bc2`, strictly before the commit carrying these numbers. Ground rule 15
+makes the commit order the evidence. **One prediction was met and one was
+wrong**, and the wrong one is more interesting, so it goes first.
+
+**All numbers below are wall clock measurements on one machine**: WSL2 on
+Windows 11, kernel 6.18.33.2, 28 logical processors visible, 14 GiB of guest
+memory, an assertions enabled Debug build of LLVM 22.1.8. They are not a claim
+about complexity and they are not comparable with a number from another machine.
+
+### The compile time curve, and a prediction that was wrong
+
+Section 13.1 asks for a synthetic function at 500, 1000, 2000 and 5000
+operations so the growth curve is visible rather than a single point.
+`experiments/compile_time_benchmark.py` is that benchmark. It reads the pass's
+own wall time out of `--mlir-timing`, so parsing and printing are excluded;
+both are linear with a large constant and at these sizes they dominate the
+total, which would hide exactly what the benchmark exists to show.
+
+| size | operations | buffers | pass s | total s | exponent |
+|---|---|---|---|---|---|
+| 500 | 500 | 249 | 0.0023 | 0.0136 | |
+| 1000 | 1000 | 499 | 0.0046 | 0.0209 | 1.00 |
+| 2000 | 2000 | 999 | 0.0096 | 0.0382 | 1.06 |
+| 5000 | 5000 | 2499 | 0.0261 | 0.0870 | 1.09 |
+
+Best of five runs per size. The exponent is `log(t2 / t1) / log(n2 / n1)`
+between consecutive rows, and the mean over the curve is 1.05.
+
+**I predicted 1.5 to 2.0, rising across the curve, and said that below 1.3 would
+mean I had mismodelled the constant factors. It came out at 1.05.** So I had
+mismodelled the constant factors, and the prediction stands unedited in the
+prediction file with this entry as its answer.
+
+The reasoning behind the prediction was not wrong about the code. Offset
+assignment really does scan every already placed buffer for each new one, so
+there really is a quadratic term, and it really does grow a hundredfold between
+500 and 5000 where the linear term grows tenfold. What I got wrong was the
+constants on either side of that. The quadratic term's inner loop is a struct
+copy and two integer comparisons on a `SmallVector` that is already in cache.
+The linear term's inner loop walks MLIR users, does `DenseMap` lookups keyed on
+`Operation *`, and builds a `SmallVector` per buffer, in a build with
+`_GLIBCXX_ASSERTIONS` on. Three million of the former is cheaper than five
+thousand of the latter, and at 5000 operations the linear term is still winning.
+
+That is worth writing down as a general lesson rather than as an excuse: **an
+asymptotic argument about which term dominates is a statement about the limit,
+and a benchmark at four sizes is a statement about four sizes.** The crossover
+exists and is somewhere well beyond 5000 operations. Whether it matters is a
+different question and the answer today is no: 5000 operations is an order of
+magnitude larger than any model in the suite, and it allocates in 26
+milliseconds.
+
+The other three predictions in that section were met. Under 100 milliseconds at
+5000: 26 ms. Total time dominated by parsing at every size: the ratio of total
+to pass time falls from 5.9 to 3.3 across the curve, so parsing dominates
+throughout while its share shrinks, which is what a linear parser against a
+slightly superlinear pass should do. No spilling at any size: `spill_count` is
+zero everywhere, since the chain's peak is two buffers of 256 bytes against a
+mebibyte of budget.
+
+**What I am not doing about it.** The obvious optimization is an interval tree
+in place of the linear scan over placed buffers. It is not going in. Section
+13.1 asks for the sweep line and says nothing about the placement's data
+structure, the measurement says the term it would fix is not the one that costs
+anything at any size this project compiles, and an unmeasured optimization is
+how a phase turns into two. If P13's tiling pass makes functions an order of
+magnitude longer, this benchmark is already committed and will say so.
+
+### The fragmentation ratio per model, and a prediction that was mostly met
+
+`experiments/allocator_fragmentation.py` compiles each of the seven suite models
+through `-npu-lower-to-npuisa` and `-npu-allocate-scratchpad` under both
+strategies at the default budget of 1048576 bytes, and reads the ratio off the
+function. Ratio is `npuisa.scratchpad_bytes` over
+`npuisa.scratchpad_peak_bytes`: the assigned high water mark over the sweep line
+peak, which is the lower bound any placement could reach.
+
+| model | pack bytes | pack ratio | interval bytes | interval ratio | peak |
+|---|---|---|---|---|---|
+| `conv_bn_relu_stack` | 6432 | 1.0000 | 7872 | 1.2239 | 6432 |
+| `depthwise_separable` | 8192 | 1.0000 | 10816 | 1.3203 | 8192 |
+| `dilated_stack` | 8036 | 1.0035 | 11812 | 1.4750 | 8008 |
+| `inception_block` | 6848 | 1.0178 | 10112 | 1.5030 | 6728 |
+| `lenet` | 194592 | 1.0002 | 194592 | 1.0002 | 194560 |
+| `lenet_batched` | 200800 | 1.0000 | 200832 | 1.0002 | 200800 |
+| `resnet_block` | 8480 | 1.0000 | 8512 | 1.0038 | 8480 |
+
+Nothing spills at the default budget, so every number here is a placement result
+rather than a spilling result, which is what makes them comparable.
+
+Met: `pack` is never worse than `interval` on any model, which was the claim I
+flagged as the interesting one because greedy by size is not optimal in general
+and a program where the interval scheme wins is constructible. `pack` stays at
+or below 1.05 everywhere, peaking at 1.0178 on `inception_block`. At least one
+branching model shows `interval` at 1.10 or worse: three of them do, and
+`inception_block` reaches 1.5030, which is a placement using half again as many
+bytes as the program needs. Every model fits the default budget, and `lenet` is
+190 KiB, which is the low hundreds of kilobytes I said.
+
+Missed, in a small and instructive way: I predicted `lenet` and `lenet_batched`
+at exactly 1.00 under both strategies because they are chains, and `lenet` comes
+out at 1.0002 under both. The 32 byte difference is **alignment**, not
+fragmentation. The peak is a sum of raw buffer sizes and the high water mark is
+a sum of offsets rounded up to 64 bytes, so a buffer whose size is not a
+multiple of 64 can push everything above it up by a few bytes the peak does not
+count. `lenet` has six distinct buffer sizes that are not multiples of 64, at
+24, 40, 336, 480, 600 and 4704 bytes, and only 32 bytes of rounding survives
+into the high water mark, because the rest of it lands under buffers that were
+going to be there anyway.
+
+That is a real property of the metric and not a defect, but it is worth stating
+plainly because the metric is the headline one: **the fragmentation ratio as
+defined by Section 13.1 includes alignment padding.** Every published ratio has
+a floor slightly above 1.0 that has nothing to do with the packing algorithm.
+Separating the two would mean defining a second peak that rounds each buffer up
+before summing, and I have not done that, because the ratio the three papers
+report is the one Section 13.1 names and a second definition would be a second
+number to keep straight. The size of the effect is on the record here: 0.02
+percent on `lenet`.
+
+### The pad order defect, and why the suite caught it three phases late
+
+Running the suite through the allocator is what found D-0019: the `npuisa`
+windowed verifier reordered its pads before computing the output extent, so
+every asymmetric pad got a wrong implied extent and was refused. `dilated_stack`
+would not lower at all.
+
+The mechanism is in the defect log. What belongs here is the shape of the miss.
+The formula lives in one shared helper for exactly the reason the helper's own
+header gives: two copies would eventually disagree. There is one copy and both
+levels call it, and the `npuisa` level still got a different answer, because the
+disagreement moved from the formula into the **argument order at one call
+site**. Sharing an implementation removes one class of divergence and leaves its
+interface as the new place for the same failure to live.
+
+The reason it survived from P2 is simpler and worse: every pad in every test was
+symmetric, and under a symmetric pad the two orders produce the same numbers. A
+test suite built from `[1, 1, 1, 1]` and `[0, 0, 0, 0]` cannot see this bug at
+all. The model that carries asymmetric padding is `dilated_stack`, which Section
+15 put in the suite precisely because it forces cases nothing else reaches, and
+it did exactly that, three phases after it was written, in a verifier rather
+than in the importer it was aimed at.
+
+**The rule I am taking out of it: a parameter with an order needs a test whose
+entries differ.** Symmetric fixtures are the default because they are easy to
+read, and they are the reason an order bug can pass every test in a file.
+
+### Why the activation proof gets rehearsed under the exact CI invocation
+
+`NPUAllocatorTests` switches on at this phase, so Section 19.0 requires it be
+broken once deliberately and shown red. The recipe is in
+`docs/PHASE_STATE.md` and it is one line, which is the whole point.
+
+The rule the recipe follows, and the reason for it: **the rehearsal has to run
+the binary the way the CI step runs it, not the way a developer runs it.** The
+step is `./build/bin/NPUAllocatorTests` with no arguments and `set -euo
+pipefail` around it. A developer rehearsing with `--gtest_filter` on the one
+test they broke proves that the test fails, which was never in doubt; what needs
+proving is that a failure inside the binary reaches the step's exit code and
+turns the job red. Those are different claims, and the second is the one the
+activation table asks about. P3's handoff already recorded an activation proof
+that proved nothing the first time it was performed, and this is the same hazard
+wearing different clothes: a proof performed under conditions the real thing
+does not share.
+
+### The two things about MLIR that cost time this phase
+
+**A pass option is not an integer.** An ODS option declared `int64_t` is an
+`llvm::cl::opt<int64_t>`, and streaming one into a diagnostic picks the `char`
+overload: an alignment of 48 printed as the character `0`. That is D-0017, and
+the reason it is worth an entry rather than a shrug is that it is invisible at
+the point of use, applies to every numeric option in the project, and produces a
+message that actively misleads. Told the alignment is 0 when you passed 48, the
+obvious conclusion is that the option was not read, and you go looking in the
+pass manager.
+
+**`memref.view` requires an identity layout on its result.** Section 8 says the
+allocator materialises every offset as a `memref.view` over one flat
+`memref<Nxi8>`, and that is exactly right until a buffer carries a strided
+layout map, which is what an NHWC tensor lowers to. The verifier rejects it. The
+answer is a view at the buffer's extents with a `memref.reinterpret_cast` on top
+restoring the layout, which costs nothing at run time and is visible in the IR.
+It is worth knowing before writing the pass rather than after, and it is the
+kind of constraint that is documented in the operation's description and nowhere
+a reader would look first.
+
+## 2026-08-20 Phase 5: the activation proof that was caught by the wrong net first
+
+The NPUAllocatorTests step switched on at P5, and the proof discipline asks for
+it to be broken once and shown red. The first fault inverted the sweep line's
+deaths before definitions tie break inside the pass itself, and it never
+reached the step it was aimed at: check-npu caught it first, in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32326641102>,
+because the P5 lit suites assert byte offsets by value and a miscounted peak
+moves them. The CI section says a fault caught by a different net than expected
+is a finding to record rather than a reason to adjust the fault, and the
+finding here is a good one: the lit tests and the unit tests cover the same
+arithmetic from two sides, and the lit side sits earlier in the job.
+
+That run still left the new step without a red of its own, so a second fault
+was built that only the step could see: one wrong expected peak in
+AllocatorTest.cpp, invisible to lit because lit never compiles the unit tests.
+It went red exactly at NPUAllocatorTests, with coverage agreeing, in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32326939623>.
+The restore went green in run
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/32327122856>.
+
+The general shape, for the next activation: a product side fault proves the
+whole net and usually lights the earliest gate; a test side fault is what
+isolates the one step whose activation is being proved. Doing both, in that
+order, proves the step and measures the depth of the net in front of it.

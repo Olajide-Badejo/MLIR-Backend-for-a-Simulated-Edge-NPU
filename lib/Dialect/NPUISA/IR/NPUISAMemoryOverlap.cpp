@@ -51,8 +51,40 @@ std::optional<int64_t> byteWidth(Type elementType) {
   return static_cast<int64_t>(bits / 8);
 }
 
-/// The total byte size of a statically shaped memref.
-std::optional<int64_t> byteSize(MemRefType type) {
+/// The byte span a memref denotes, measured from its own first byte.
+///
+/// **This is computed from the strides, not from the product of the extents,
+/// and the difference is the whole of the stride 0 question.** A memref with an
+/// identity layout spans the product of its extents, and that is the common
+/// case and the fast path below. A memref with a strided layout spans one past
+/// the largest linear index any of its indices can reach, which is
+/// `1 + sum((extent - 1) * stride)` elements.
+///
+/// The two agree for a permutation layout, which is what an NHWC buffer gets:
+/// the same contiguous block, read in a different order. They disagree for the
+/// rank 1 channel broadcast of ADR 0005, `sizes [1, 8, 4, 4]` over
+/// `strides [0, 1, 0, 0]`, where the extents multiply to 128 elements and the
+/// strides reach 8. Eight is the true answer: that view addresses C floats and
+/// spans exactly those, which is what the 512 byte tensor it is *shaped* like
+/// never touches.
+///
+/// Getting this from the extents would not be unsafe in the overlap rule's
+/// direction, since a range that is too large only ever reports more overlaps
+/// than there are. It would be unsafe in the *usable* direction: every
+/// broadcast operand would appear to collide with whatever the allocator packed
+/// next to it, and a legal asynchronous program would be refused for a race it
+/// does not have.
+///
+/// The span is a closed hull rather than an exact set. A view with a stride
+/// larger than its inner extents addresses some of the bytes in that range and
+/// not others, and this reports the whole interval. That direction is the safe
+/// one, and it is the only approximation in this file.
+///
+/// The layout's own offset is deliberately not read here. Offsets are
+/// accumulated by the walk in `computeBufferRange`, from the operations that
+/// introduce them, and reading the type's offset as well would count a subview
+/// or a cast twice.
+std::optional<int64_t> byteSpan(MemRefType type) {
   if (!type.hasStaticShape())
     return std::nullopt;
   std::optional<int64_t> width = byteWidth(type.getElementType());
@@ -65,7 +97,25 @@ std::optional<int64_t> byteSize(MemRefType type) {
       return std::nullopt;
     elements *= extent;
   }
-  return elements * *width;
+  if (elements == 0)
+    return 0;
+  if (type.getLayout().isIdentity())
+    return elements * *width;
+
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (failed(type.getStridesAndOffset(strides, offset)))
+    return std::nullopt;
+  if (strides.size() != type.getShape().size())
+    return std::nullopt;
+
+  int64_t last = 0;
+  for (auto [extent, stride] : llvm::zip_equal(type.getShape(), strides)) {
+    if (ShapedType::isDynamic(stride) || stride < 0)
+      return std::nullopt;
+    last += (extent - 1) * stride;
+  }
+  return (last + 1) * *width;
 }
 
 /// The constant value an index-like SSA value holds, or nothing.
@@ -92,6 +142,9 @@ StringRef notAnalysableReason(Value value) {
   if (isa<memref::SubViewOp>(def))
     return "its subview offsets, sizes or strides are not all static, or its "
            "strides are not contiguous";
+  if (isa<memref::ReinterpretCastOp>(def))
+    return "its reinterpret_cast offset is not a constant, or it changes the "
+           "element type";
   if (isa<memref::AllocOp, memref::AllocaOp>(def))
     return "its allocation has a dynamic extent or an element type of no fixed "
            "byte width";
@@ -112,7 +165,7 @@ std::optional<BufferRange> mlir::npuisa::computeBufferRange(Value value) {
   auto type = dyn_cast<MemRefType>(current.getType());
   if (!type)
     return std::nullopt;
-  std::optional<int64_t> size = byteSize(type);
+  std::optional<int64_t> size = byteSpan(type);
   if (!size)
     return std::nullopt;
   range.size = *size;
@@ -146,6 +199,43 @@ std::optional<BufferRange> mlir::npuisa::computeBufferRange(Value value) {
         return std::nullopt;
       range.offset += *offset;
       current = view.getSource();
+      continue;
+    }
+
+    if (auto cast = dyn_cast<memref::ReinterpretCastOp>(def)) {
+      // A `memref.reinterpret_cast` resets the offset, the extents and the
+      // strides against the *base pointer* of its source, which is why only its
+      // own offset is added here and the source's own layout offset is not
+      // consulted. Both of this project's producers of one write `offset: [0]`,
+      // so the common answer is that this contributes nothing but the walk
+      // continues; a non zero offset is handled anyway rather than asserted
+      // away, because the operation permits it and a later pass may use it.
+      //
+      // The size was already fixed from the cast's own type at the top of this
+      // function, by `byteSpan`, which is where the stride 0 decision is made
+      // and explained. That decision is what makes this case worth adding
+      // rather than leaving `Unknown`: a broadcast view spans C floats, not the
+      // N by C by H by W its shape suggests, and the two answers differ by a
+      // factor of the spatial extent.
+      auto sourceType = dyn_cast<MemRefType>(cast.getSource().getType());
+      auto resultType = dyn_cast<MemRefType>(cast.getType());
+      if (!sourceType || !resultType ||
+          sourceType.getElementType() != resultType.getElementType())
+        return std::nullopt;
+      std::optional<int64_t> width = byteWidth(resultType.getElementType());
+      if (!width)
+        return std::nullopt;
+
+      SmallVector<OpFoldResult> mixedOffsets = cast.getMixedOffsets();
+      if (mixedOffsets.size() != 1)
+        return std::nullopt;
+      std::optional<int64_t> elementOffset =
+          getConstantIntValue(mixedOffsets.front());
+      if (!elementOffset || *elementOffset < 0)
+        return std::nullopt;
+
+      range.offset += *elementOffset * *width;
+      current = cast.getSource();
       continue;
     }
 
