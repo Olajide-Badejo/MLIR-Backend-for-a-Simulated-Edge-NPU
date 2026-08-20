@@ -68,9 +68,27 @@ done
 
 ninja -C "${build_dir}" npu-isa-doc
 
+# `git diff HEAD` rather than `git diff`, and the difference is not cosmetic.
+#
+# Plain `git diff` compares the working tree against the **index**, so a
+# perturbation that has been staged is invisible to it: regeneration rewrites
+# the working tree back to what the description produces, the index still holds
+# the edit, and the two happen to differ in the direction nobody is looking.
+# Worse in the other direction, an edit that was committed and then regenerated
+# away compares clean against an index that matches it.
+#
+# What this gate claims is that the **committed** artifacts are what the
+# description generates. `HEAD` is the committed state, so `HEAD` is what it
+# compares against, and in CI, where the index equals HEAD after a checkout,
+# the two forms agree. Locally they do not, and the stricter one is the one
+# that means what the message says.
+#
+# Found while rehearsing the activation proof: a hand edit to the committed
+# manual passed the gate, because regeneration overwrote it before the diff ran
+# and the diff was against an index that no longer disagreed.
 stale=0
 for artifact in "${artifacts[@]}"; do
-  if ! git diff --quiet -- "${artifact}"; then
+  if ! git diff --quiet HEAD -- "${artifact}"; then
     stale=1
   fi
 done
@@ -81,7 +99,7 @@ if [ "${stale}" -ne 0 ]; then
   echo "include/NPU/Encoding/NPUISADescription.td changed and the generated"
   echo "files committed beside it did not. What moved:"
   echo ""
-  git --no-pager diff -- "${artifacts[@]}"
+  git --no-pager diff HEAD -- "${artifacts[@]}"
   echo ""
   echo "Fix it with:"
   echo ""

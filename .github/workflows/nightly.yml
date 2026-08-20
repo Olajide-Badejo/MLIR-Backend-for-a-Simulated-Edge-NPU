@@ -33,18 +33,108 @@ env:
   LLVM_IMAGE: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
 
 jobs:
+  # ON at P6. The per push budget in ci.yml is one minute, which is what a pull
+  # request can afford; this is the long run, and the difference between the
+  # two is the whole reason a nightly exists.
+  #
+  # It is seeded from the committed corpus and from the whole of
+  # MalformedInputTest's seven hundred and thirty three cases, exported through
+  # NPU_CORPUS_OUT. The hand written cases are a bad fuzzer and a good set of
+  # starting points: they reach deep validation branches that pure byte
+  # mutation takes a long time to find, and handing them to the mutator costs
+  # one gtest invocation.
   fuzz:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     permissions:
       contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - name: "nightly fuzz job is off (activation table: P6)"
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: "Configure with the sanitizers (activation table: P6, on)"
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja -S . -B build-san \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DNPU_ENABLE_FUZZERS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core \
+            2>&1 | tee build-san-configure.log
+          grep -q '^-- Fuzzers: ON' build-san-configure.log
+
+      - name: Build the fuzz target and the tests that seed it
+        run: |
+          set -euxo pipefail
+          ninja -C build-san -j4 nbin_decode_fuzzer NPUEncodingTests
+
+      # The seed and regression corpus, written out as extra starting points.
+      # It is a negative test table rather than a generator, which is exactly
+      # what makes it good seed material and exactly why it is not the thing
+      # doing the fuzzing.
+      - name: Export the seed corpus
         run: |
           set -euo pipefail
-          echo "nightly fuzz: OFF until P6 (activation table 19.0)."
-          echo "nightly fuzz: at P6 this runs the long coverage guided run of build/bin/nbin_decode_fuzzer over fuzz/corpus/ for its budgeted time."
-          echo "nightly fuzz: it is off now because neither the fuzz target nor the corpus exists."
+          mkdir -p build-san/exported-seeds
+          NPU_CORPUS_OUT=build-san/exported-seeds \
+            ./build-san/bin/NPUEncodingTests \
+            --gtest_filter='MalformedInput.TheCorpusCanBeWrittenOutForTheFuzzer'
+          echo "exported $(ls build-san/exported-seeds | wc -l) seeds"
+
+      - name: "The long coverage guided run (activation table: P6, on)"
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          mkdir -p build-san/fuzz-artifacts
+          ./build-san/bin/nbin_decode_fuzzer \
+            -max_total_time=1800 \
+            -print_final_stats=1 \
+            -artifact_prefix=build-san/fuzz-artifacts/ \
+            build-san/fuzz-corpus build-san/exported-seeds
+
+      # Section 17.3: minimize every crash and commit it as a regression case.
+      # The artifact is what makes that possible from a nightly nobody watched.
+      - name: Upload any crash the run found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-fuzz-crashes
+          path: build-san/fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 90
+
+      # Section 17.3 also asks for a cached merged corpus. Uploading what the
+      # run grew is the cheap half of that; wiring it back in through a cache
+      # key belongs with the rest of the nightly tuning at P10, and saying so
+      # here is cheaper than leaving a reader to wonder whether it was missed.
+      - name: Upload the corpus the run grew
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-fuzz-corpus
+          path: build-san/fuzz-corpus/
+          if-no-files-found: warn
+          retention-days: 14
 
   full-matrix:
     runs-on: ubuntu-24.04

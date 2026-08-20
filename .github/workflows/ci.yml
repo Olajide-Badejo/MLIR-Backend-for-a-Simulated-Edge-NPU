@@ -17,6 +17,7 @@
 # Added at P1: check-reachability --skip-models, DIALECT_REFERENCE.md staleness.
 # Added at P2: NPUInterfaceTests, and the coverage job at a threshold of 0.
 # Added at P5: NPUAllocatorTests.
+# Added at P6: NPUEncodingTests, the ISA staleness gate, and the sanitizers job.
 # Everything else prints its off line.
 
 name: ci
@@ -319,14 +320,38 @@ jobs:
             exit 1
           fi
 
-      - name: "NPUEncodingTests (activation table: P6)"
+      # NPUEncodingTests: ON at P6. The guard stays in place rather than being
+      # deleted, for the same reason it did for NPUInterfaceTests at P2 and
+      # NPUAllocatorTests at P5: it is what the activation table asks for. Now
+      # that the phase has arrived, an unsatisfied guard means the binary did
+      # not build, and reporting that as "waiting for a phase" would be the
+      # activation table's own failure mode, so the else branch fails.
+      #
+      # It carries four things: the round trips and the frozen opcode
+      # numbering, every one of Section 9.2's thirty three checks triggered at
+      # least once, Section 17.2's property test at 1000 iterations and a fixed
+      # seed, and Section 17.3's seed and regression corpus at 733 cases. The
+      # seed is a constant in the source, so a red run here reproduces locally
+      # from the case number in the message.
+      #
+      # This build is also the one that measures the corpus's allocation bound.
+      # The sanitizers job runs the same corpus for memory safety and skips
+      # that one test, because AddressSanitizer replaces operator new itself
+      # and the two cannot share a binary. Both claims are made; neither is
+      # made twice.
+      - name: "NPUEncodingTests (activation table: P6, on)"
         run: |
           set -euo pipefail
           if [ -x build/bin/NPUEncodingTests ]; then
             ./build/bin/NPUEncodingTests
           else
-            echo "NPUEncodingTests: OFF until P6 (activation table 19.0)."
-            echo "NPUEncodingTests: guard is build/bin/NPUEncodingTests existing."
+            echo "::error::NPUEncodingTests did not build."
+            echo "NPUEncodingTests: this step is ON from P6, so a missing binary"
+            echo "NPUEncodingTests: is a build failure rather than a phase that has"
+            echo "NPUEncodingTests: not arrived. Check the configure log for the"
+            echo "NPUEncodingTests: 'GoogleTest:' line: the image must carry"
+            echo "NPUEncodingTests: libgtest-dev for the system package fallback."
+            exit 1
           fi
 
       - name: "NPUSimulatorTests (activation table: P7)"
@@ -449,14 +474,33 @@ jobs:
           fi
           echo "docs/DIALECT_REFERENCE.md is up to date with the ODS source."
 
-      - name: "ISA staleness gate (activation table: P6)"
+      # ISA staleness gate: ON at P6. Section 9.4 asks for this to be identical
+      # in shape to the DIALECT_REFERENCE.md gate above, so that there is one
+      # staleness mechanism in this project rather than two, and it is: the
+      # script regenerates from include/NPU/Encoding/NPUISADescription.td and
+      # diffs the two committed artifacts, docs/ISA_MANUAL.md and
+      # docs/ISA_OPCODES.json.
+      #
+      # The guard stays in place and its else branch fails, for the same reason
+      # every other activated guard's does.
+      #
+      # git config safe.directory is set by the DIALECT_REFERENCE step above
+      # and is needed here for the same reason: the checkout is owned by the
+      # runner user and the container runs as root, so git refuses to read the
+      # repository without being told it is trusted. The script's own tracked
+      # file check would otherwise report every artifact as untracked.
+      - name: "ISA staleness gate (activation table: P6, on)"
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if [ -f scripts/check-isa-staleness.sh ]; then
-            bash scripts/check-isa-staleness.sh
+            bash scripts/check-isa-staleness.sh build
           else
-            echo "ISA staleness gate: OFF until P6 (activation table 19.0)."
-            echo "ISA staleness gate: guard is scripts/check-isa-staleness.sh existing."
+            echo "::error::scripts/check-isa-staleness.sh is missing."
+            echo "ISA staleness gate: this step is ON from P6, so a missing script"
+            echo "ISA staleness gate: means a file moved rather than a phase that"
+            echo "ISA staleness gate: has not arrived."
+            exit 1
           fi
 
       # ---- Reachability, full. Off until P8, and the table explains why the
@@ -472,27 +516,132 @@ jobs:
           echo "check-reachability full: needs lowering (P4), encoding (P6), and simulation (P7) per operation; P8 is the first phase it can pass."
 
   # -------------------------------------------------------------------------
-  # sanitizers. Off until P6. The job exists from P0 and says so in its log,
-  # rather than being commented out: a job that is absent is a job nobody can
-  # see is missing, and the point of the activation table is that the state of
-  # every gate is visible in a run.
+  # sanitizers. ON at P6, and this is the phase where it stops being a job that
+  # prints an off line and becomes a job that runs.
+  #
+  # Section 19 describes it as the same build with -fsanitize=address,undefined,
+  # running the GoogleTests including the whole of MalformedInputTest, plus the
+  # coverage guided target over the corpus in fuzz/corpus/ for its budgeted
+  # time. That is what this is.
+  #
+  # It builds into its own directory with clang rather than reusing the gcc
+  # build above, and it builds three targets rather than everything. The
+  # encoding library carries no MLIR dependency, so NPUEncodingTests and
+  # nbin_decode_fuzzer need the generator, the format library and gtest, which
+  # is a couple of minutes rather than the whole compiler. A sanitizer job that
+  # took as long as the main build is a job somebody starts skipping.
+  #
+  # -fsanitize=fuzzer is added by fuzz/CMakeLists.txt on the target; the address
+  # and undefined sanitizers go on the whole build here, because a fuzz target
+  # instrumented against a library that is not tells you only about the target.
   # -------------------------------------------------------------------------
   sanitizers:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     permissions:
       contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: "sanitizers job is off (activation table: P6)"
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Report the toolchain this job is running with
+        run: |
+          set -euxo pipefail
+          clang --version
+          clang++ --version
+
+      # NPU_ENABLE_FUZZERS is what turns fuzz/ on. It is off in every other
+      # build, and the configure log says so, because a step that is off says
+      # so. The "Fuzzers: ON" line below is the proof that this one is not.
+      - name: "Configure with the sanitizers (activation table: P6, on)"
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja -S . -B build-san \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DNPU_ENABLE_FUZZERS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core \
+            2>&1 | tee build-san-configure.log
+          # The configure log says which way the option went, and this asserts
+          # it rather than trusting the flag. An option that silently failed to
+          # take would leave this job building the same thing the main build
+          # already built, and passing.
+          grep -q '^-- Fuzzers: ON' build-san-configure.log
+
+      - name: Build the sanitized targets
+        run: |
+          set -euxo pipefail
+          ninja -C build-san -j4 NPUEncodingTests nbin_decode_fuzzer
+
+      # The whole of MalformedInputTest, plus everything else in the binary.
+      # halt_on_error makes UBSan fail the step rather than print and continue;
+      # without it a runtime error is a line in a log that nothing reads. That
+      # matters here more than anywhere: the first real run of this job found a
+      # signed overflow in the validator's own range messages, D-0021.
+      - name: "GoogleTests under ASan and UBSan (activation table: P6, on)"
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=1
         run: |
           set -euo pipefail
-          echo "sanitizers: OFF until P6 (activation table 19.0)."
-          echo "sanitizers: at P6 this becomes the same build with -fsanitize=address,undefined,"
-          echo "sanitizers: running the GoogleTests including the whole of MalformedInputTest,"
-          echo "sanitizers: plus the coverage guided target over the merged corpus in fuzz/corpus/."
-          echo "sanitizers: it is off now because there is no corpus to run."
+          if [ ! -x build-san/bin/NPUEncodingTests ]; then
+            echo "::error::NPUEncodingTests did not build under the sanitizers."
+            exit 1
+          fi
+          ./build-san/bin/NPUEncodingTests
+
+      # Section 3.3's budgeted minute. The corpus is read from the copy the
+      # nbin-fuzz-corpus target makes rather than from fuzz/corpus directly,
+      # because libFuzzer writes newly interesting inputs into the first corpus
+      # directory it is given and a corpus that grows during a run is a corpus
+      # somebody commits by accident. The eight files are the same eight files.
+      - name: "Coverage guided target, one minute (activation table: P6, on)"
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          if [ ! -x build-san/bin/nbin_decode_fuzzer ]; then
+            echo "::error::nbin_decode_fuzzer did not build."
+            echo "sanitizers: the target is behind -DNPU_ENABLE_FUZZERS=ON and needs"
+            echo "sanitizers: a clang that supports -fsanitize=fuzzer."
+            exit 1
+          fi
+          mkdir -p build-san/fuzz-artifacts
+          ./build-san/bin/nbin_decode_fuzzer \
+            -max_total_time=60 \
+            -artifact_prefix=build-san/fuzz-artifacts/ \
+            build-san/fuzz-corpus
+
+      # A crash is minimized and committed as a regression case, per Section
+      # 17.3, so the artifact has to leave the runner for that to be possible.
+      - name: Upload any crash the run found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: build-san/fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # -------------------------------------------------------------------------
   # coverage. Off until P2. The table is precise about the two dates: the job

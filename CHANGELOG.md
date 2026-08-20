@@ -84,6 +84,25 @@ Semantic Versioning once a release is tagged.
   overflow when the address is near the limit; the operand extent comparison had
   the same defect and was not only a message. Found by
   UndefinedBehaviorSanitizer over the corpus, recorded as D-0021.
+- **`npu-objdump` prints an instruction whose mandatory operand is missing**,
+  as `<missing operand N>`, where it used to print a blank line and drop the
+  opcode with it. That is the tool failing at its only job on exactly the file
+  it exists for. Recorded as D-0023.
+- **The disassembler no longer overflows on an unvalidated shape.** Deciding
+  whether to print an operand's strides walked the contiguous layout its shape
+  implies, multiplying extents without a guard, on the one path in the project
+  that runs before validation. Found by `nbin_decode_fuzzer`, minimized, and
+  committed as a corpus seed. Recorded as D-0022.
+- **Four CI activations**, per the table in Section 19.0: the
+  `NPUEncodingTests` step, the ISA staleness step, the `sanitizers` job, which
+  becomes a real clang build with `-fsanitize=address,undefined` plus a
+  budgeted minute of the coverage guided target, and `nightly.yml`'s fuzz job,
+  which runs for thirty minutes from the committed corpus and the exported
+  seeds.
+- **`scripts/check-isa-staleness.sh` compares against `HEAD` rather than the
+  index.** A hand edit to the committed manual passed the gate, because
+  regeneration overwrote it before the diff ran. Found while rehearsing the
+  activation proof.
 
 ### Phase P5: scratchpad allocation
 

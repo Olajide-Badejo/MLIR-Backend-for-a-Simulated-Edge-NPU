@@ -371,6 +371,15 @@ void Corpus::build() {
   addFromProgram("negative operand stride", [](Program &program) {
     program.instructions[1].operands.front().strides = {-4, 1};
   });
+  // D-0022, found by fuzz/nbin_decode_fuzzer. A stride vector that claims the
+  // contiguous layout of a shape whose product overflows, which the
+  // disassembler walked without a guard.
+  addFromProgram("contiguous strides over an overflowing shape",
+                 [](Program &program) {
+                   Operand &value = program.instructions[1].operands.front();
+                   value.shape = {8935141660703064067, 3};
+                   value.strides = {3, 1};
+                 });
   addFromProgram("operand stride overflows its extent", [](Program &program) {
     program.instructions[1].operands.front().strides = {int64_t{1} << 40, 1};
   });

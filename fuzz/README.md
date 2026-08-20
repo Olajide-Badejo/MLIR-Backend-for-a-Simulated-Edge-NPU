@@ -99,7 +99,27 @@ definition of the corpus:
 | `zero_extent.nbin` | `chain.nbin` with eight zero bytes at offset 44 |
 | `bad_magic.nbin` | `chain.nbin` with the magic word zeroed |
 | `empty.nbin` | a zero byte file |
+| `regression_d0022_stride_overflow.nbin` | minimized from a crash this target found |
 
-Three of them frame and validate, three frame and fail a semantic check, and two
-are refused at the framing. Starting a run from all eight means the mutator does
-not spend its first minutes rediscovering the magic word.
+Three of the first eight frame and validate, three frame and fail a semantic
+check, and two are refused at the framing. Starting a run from all of them means
+the mutator does not spend its first minutes rediscovering the magic word.
+
+The ninth is different in kind and is the reason the rest exist. This target
+found it: a stride vector claiming the contiguous layout of a shape whose
+product overflows a signed 64 bit integer, which the disassembler walked without
+a guard on the unvalidated path. It was minimized from 5932 bytes to 2580 with
+`-minimize_crash=1` and committed, per Section 17.3, and the same shape is a
+named case in `MalformedInputTest.cpp` so the fast suite checks it on every
+push. The defect is D-0022, and reading its listing turned up a second one,
+D-0023.
+
+**Minimizing needs the unfixed binary.** `-minimize_crash=1` re-runs the input
+and reports `did not crash` against a build where the bug is already gone, which
+is obvious in hindsight and cost a cycle to notice. Minimize first, or revert
+the fix, minimize, and restore.
+
+**`UBSAN_OPTIONS=halt_on_error=1` is not optional.** Without it
+UndefinedBehaviorSanitizer prints the runtime error and carries on, libFuzzer
+never sees a crash, and the run ends green with the diagnosis sitting in the
+log. Both CI jobs set it.

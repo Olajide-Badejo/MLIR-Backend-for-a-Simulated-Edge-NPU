@@ -435,4 +435,63 @@ TEST(Disassembly, AnAbsentBiasLeavesNoHole) {
             std::string::npos);
 }
 
+// D-0023. An instruction whose mandatory operand is missing still prints.
+//
+// This is the whole point of npu-objdump: the file somebody is looking at is
+// the file that does not validate, and an instruction that renders as a blank
+// line is the one instruction they wanted to see. Before the fix, a missing
+// top level operand reference made the renderer discard everything it had
+// built for that instruction, opcode included, and the listing carried an
+// empty line where a DMA_LOAD should have been.
+//
+// Found by reading the listing of a crash input the coverage guided target
+// minimized, which is a use for a disassembler that a test would not have
+// thought of.
+TEST(Disassembly, AMissingMandatoryOperandStillPrintsTheInstruction) {
+  Program program;
+  program.scratchpadBytes = 128;
+  program.dramBytes = 128;
+  Instruction load = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, {4, 4});
+  // No operands at all, which is what a corrupt file can carry and what the
+  // arity check refuses.
+  program.instructions.push_back(load);
+
+  std::string text = disassemble(program, program.validate());
+  EXPECT_NE(text.find("DMA_LOAD"), std::string::npos) << text;
+  EXPECT_NE(text.find("<missing operand 0>"), std::string::npos) << text;
+  // The line is not blank, which is the regression.
+  EXPECT_EQ(text.find("0000  \n"), std::string::npos) << text;
+}
+
+// D-0022. A stride vector that claims the contiguous layout of a shape whose
+// product overflows.
+//
+// The disassembler runs on the unvalidated path, so the extents are whatever
+// the file said. The running product used to be multiplied without a guard,
+// which is signed overflow rather than a large number, and a compiler is
+// entitled to assume it cannot happen.
+TEST(Disassembly, AStrideProductThatOverflowsDoesNotUndefineTheListing) {
+  Program program;
+  program.scratchpadBytes = 128;
+  Instruction relu = instruction(Opcode::RELU, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, {4, 4});
+  Operand overflowing;
+  overflowing.space = MemSpace::Scratchpad;
+  overflowing.elementType = ElemType::F32;
+  overflowing.address = 0;
+  // The strides are exactly the contiguous ones for this shape, so the walk
+  // gets all the way to the last extent before the product would overflow.
+  overflowing.shape = {8935141660703064067, 3};
+  overflowing.strides = {3, 1};
+  relu.operands.push_back(overflowing);
+  program.instructions.push_back(relu);
+
+  std::string text = disassemble(program, program.validate());
+  EXPECT_NE(text.find("RELU"), std::string::npos) << text;
+  // Not the contiguous layout as far as the listing is concerned, so the
+  // strides are printed rather than elided.
+  EXPECT_NE(text.find("s[3,1]"), std::string::npos) << text;
+}
+
 } // namespace

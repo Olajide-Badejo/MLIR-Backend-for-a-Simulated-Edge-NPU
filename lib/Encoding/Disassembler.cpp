@@ -87,6 +87,14 @@ std::string operandText(const Operand &operand) {
   // stride vector on every operand would triple the width of a listing to
   // repeat what the shape already implies, and the cases that matter, the NHWC
   // permutation and the stride 0 broadcast, are exactly the ones that differ.
+  //
+  // **The running product is guarded the way the validator's is, and it has to
+  // be.** Everything else in this file runs after `validate()` has approved a
+  // program; this function does not. `npu-objdump` decodes without validating
+  // so that a suspect file can be shown at all, so every extent here is
+  // whatever the file claimed, and `expected *= extent` on a claimed extent of
+  // nine quintillion is signed overflow rather than a large number. The
+  // coverage guided target found this one, which is D-0022.
   bool contiguous = operand.shape.size() == operand.strides.size();
   if (contiguous) {
     int64_t expected = 1;
@@ -95,7 +103,14 @@ std::string operandText(const Operand &operand) {
         contiguous = false;
         break;
       }
-      expected *= operand.shape[index];
+      int64_t extent = operand.shape[index];
+      if (extent <= 0 || expected > Program::kShapeLimit / extent) {
+        // Not a shape this machine has an address for, so it is not the
+        // contiguous layout either, and the strides get printed.
+        contiguous = false;
+        break;
+      }
+      expected *= extent;
     }
   }
   if (!contiguous)
@@ -131,8 +146,14 @@ std::optional<std::string> fieldText(const Instruction &instruction,
   return std::nullopt;
 }
 
-/// Renders one token of a format string. Returns false when the token names an
-/// operand the instruction does not have, which drops the group it is in.
+/// Renders one token of a format string.
+///
+/// Returns false when the token names an operand the instruction does not
+/// have. What the caller does with that answer differs by context and the
+/// difference is the whole of D-0023: inside a group it drops the group, which
+/// is how an absent optional bias disappears; at the top level it must not,
+/// because an instruction whose mandatory operand is missing is exactly the
+/// instruction somebody is running `npu-objdump` to look at.
 bool renderToken(const Instruction &instruction, llvm::StringRef token,
                  std::string &out) {
   if (token.starts_with("%")) {
@@ -166,11 +187,22 @@ bool renderToken(const Instruction &instruction, llvm::StringRef token,
   return true;
 }
 
-/// Renders a whitespace separated token list, appending to `out`. Returns
-/// false when any token names a missing operand.
+/// What a missing mandatory operand prints as.
+std::string missingOperandText(llvm::StringRef token) {
+  return "<missing operand " + token.drop_front().str() + ">";
+}
+
+/// Renders a whitespace separated token list, appending to `out`.
+///
+/// Returns false when any token named a missing operand. `dropOnMissing`
+/// decides what that costs: with it set, nothing is appended and the caller
+/// drops the whole group, which is how an absent optional bias disappears
+/// without leaving an empty slot; without it, the missing operand is rendered
+/// as a placeholder and everything else is still printed.
 bool renderTokens(const Instruction &instruction, llvm::StringRef text,
-                  std::string &out) {
+                  std::string &out, bool dropOnMissing) {
   std::string rendered;
+  bool complete = true;
   bool first = true;
   while (!text.empty()) {
     auto [token, rest] = text.split(' ');
@@ -185,8 +217,12 @@ bool renderTokens(const Instruction &instruction, llvm::StringRef text,
       token = token.drop_back();
     }
     std::string piece;
-    if (!renderToken(instruction, token, piece))
-      return false;
+    if (!renderToken(instruction, token, piece)) {
+      if (dropOnMissing)
+        return false;
+      complete = false;
+      piece = missingOperandText(token);
+    }
     if (!first)
       rendered += " ";
     rendered += piece;
@@ -194,7 +230,7 @@ bool renderTokens(const Instruction &instruction, llvm::StringRef text,
     first = false;
   }
   out += rendered;
-  return true;
+  return complete;
 }
 
 std::string renderInstruction(const Instruction &instruction) {
@@ -207,10 +243,11 @@ std::string renderInstruction(const Instruction &instruction) {
   while (!format.empty()) {
     size_t open = format.find('{');
     if (open == llvm::StringRef::npos) {
-      renderTokens(instruction, format, out);
+      renderTokens(instruction, format, out, /*dropOnMissing=*/false);
       break;
     }
-    renderTokens(instruction, format.substr(0, open), out);
+    renderTokens(instruction, format.substr(0, open), out,
+                 /*dropOnMissing=*/false);
     format = format.drop_front(open + 1);
     size_t close = format.find('}');
     llvm::StringRef group =
@@ -218,7 +255,8 @@ std::string renderInstruction(const Instruction &instruction) {
     format = close == llvm::StringRef::npos ? llvm::StringRef()
                                             : format.drop_front(close + 1);
     std::string groupText;
-    if (renderTokens(instruction, group, groupText) && !groupText.empty()) {
+    if (renderTokens(instruction, group, groupText, /*dropOnMissing=*/true) &&
+        !groupText.empty()) {
       if (!out.empty() && out.back() != ' ')
         out += " ";
       out += groupText;
