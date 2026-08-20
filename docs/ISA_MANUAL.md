@@ -443,7 +443,7 @@ that: the C++ enum and this table come out of the same records.
 | `structure` | The file is framed correctly: the magic matches, every section is fully present, and nothing follows the last one. |
 | `arity` | The operand count is within the range the opcode declares. |
 | `count-cap` | Every u32 count field is at most kMaxCount. The cap is a number and it is checked before anything is allocated. |
-| `result-shape` | Every result extent is positive and the product stays within the shape limit, tested without ever performing the multiplication that would overflow. |
+| `result-shape` | Every result extent is positive and the product stays within the shape limit, tested without ever performing the multiplication that would overflow. It also carries the one shape relation an opcode gets to choose for itself: a RESHAPE's result holds exactly as many elements as its operand. |
 | `result-address` | The result address is non negative, is zero when the opcode writes no result, and names the memory space the opcode writes its result in. |
 | `result-in-range` | The result's bytes lie inside the scratchpad the file declares. |
 | `operand-in-range` | Each scratchpad operand's byte span lies inside the scratchpad the file declares, and every operand names the memory space the opcode declares for that slot. |

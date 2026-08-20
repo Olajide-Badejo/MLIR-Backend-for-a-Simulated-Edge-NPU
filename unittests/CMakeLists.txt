@@ -9,3 +9,4 @@
 # is where the CI activation table's guards look for it.
 
 add_subdirectory(Dialect)
+add_subdirectory(Encoding)

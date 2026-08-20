@@ -133,71 +133,6 @@ std::string shapeText(const std::vector<int64_t> &shape) {
 }
 
 //===----------------------------------------------------------------------===//
-// The count cap, over a Program that was built rather than decoded.
-//===----------------------------------------------------------------------===//
-
-bool checkCounts(Validator &validator) {
-  const Program &program = validator.program;
-
-  auto capped = [&](size_t count, const std::string &what,
-                    int64_t instructionIndex = -1) {
-    if (count <= Program::kMaxCount)
-      return true;
-    return validator.fail(Check::CountCap,
-                          "there are " + std::to_string(count) + " " + what +
-                              ", above the cap of " +
-                              std::to_string(Program::kMaxCount),
-                          instructionIndex);
-  };
-
-  if (!capped(program.inputs.size(), "input regions"))
-    return false;
-  if (!capped(program.outputs.size(), "output regions"))
-    return false;
-  if (!capped(program.constants.size(), "constants"))
-    return false;
-  if (!capped(program.spillSlots.size(), "spill slots"))
-    return false;
-  if (!capped(program.instructions.size(), "instructions"))
-    return false;
-  if (!capped(program.debug.size(), "debug entries"))
-    return false;
-
-  for (const auto &[index, constant] : llvm::enumerate(program.constants)) {
-    if (!capped(constant.region.shape.size(), "constant shape extents"))
-      return false;
-    if (!capped(constant.data.size(), "constant data bytes"))
-      return false;
-    (void)index;
-  }
-  for (const auto &[index, instruction] :
-       llvm::enumerate(program.instructions)) {
-    int64_t at = static_cast<int64_t>(index);
-    if (!capped(instruction.resultShape.size(), "result extents", at))
-      return false;
-    if (!capped(instruction.operands.size(), "operands", at))
-      return false;
-    if (!capped(instruction.pads.size(), "pads", at))
-      return false;
-    if (!capped(instruction.strides.size(), "strides", at))
-      return false;
-    if (!capped(instruction.dilations.size(), "dilations", at))
-      return false;
-    if (!capped(instruction.kernel.size(), "kernel extents", at))
-      return false;
-    if (!capped(instruction.axes.size(), "axes", at))
-      return false;
-    for (const Operand &operand : instruction.operands) {
-      if (!capped(operand.shape.size(), "operand extents", at))
-        return false;
-      if (!capped(operand.strides.size(), "operand strides", at))
-        return false;
-    }
-  }
-  return true;
-}
-
-//===----------------------------------------------------------------------===//
 // The memory regions.
 //===----------------------------------------------------------------------===//
 
@@ -553,6 +488,28 @@ bool checkQuantShape(Validator &validator, const Instruction &instruction,
   return true;
 }
 
+/// RESHAPE. Same element count in and out; the extents need not agree.
+///
+/// The manual states this rule and so it is enforced rather than described. It
+/// is reported as `result-shape` because that is what is wrong: the operand is
+/// whatever it is, and the result shape is the one field a reshape gets to
+/// choose.
+bool checkReshape(Validator &validator, const Instruction &instruction,
+                  int64_t at) {
+  const Operand &input = instruction.operands.front();
+  int64_t need = checkedElementCount(input.shape);
+  int64_t have = checkedElementCount(instruction.resultShape);
+  if (need != have)
+    return validator.fail(Check::ResultShape,
+                          "the operand holds " + std::to_string(need) +
+                              " elements and the result holds " +
+                              std::to_string(have) +
+                              ", and a reshape moves every element exactly "
+                              "once",
+                          at);
+  return true;
+}
+
 /// The semantic checks, dispatched per opcode.
 ///
 /// **This switch has no `default` label, on purpose.** Everything mechanical
@@ -574,6 +531,8 @@ bool checkShapeSemantics(Validator &validator, const Instruction &instruction,
   case Opcode::QUANT:
   case Opcode::DEQUANT:
     return checkQuantShape(validator, instruction, at);
+  case Opcode::RESHAPE:
+    return checkReshape(validator, instruction, at);
 
   // Nothing semantic beyond the generated arity, field presence, memory space
   // and element type rules, and the operand extent arithmetic every
@@ -590,7 +549,6 @@ bool checkShapeSemantics(Validator &validator, const Instruction &instruction,
   case Opcode::RELU:
   case Opcode::POOL_MAX:
   case Opcode::POOL_AVG:
-  case Opcode::RESHAPE:
     return true;
   }
   // Unreachable: `isKnownOpcode` has already rejected anything the switch does
@@ -937,12 +895,19 @@ std::optional<ProgramError> Program::validate() const {
   Validator validator(*this);
 
   // The order is dependency order, not the order Section 9.2 lists the names
-  // in. Counts first, because everything below indexes what they bound.
-  // Regions next, because the instructions read them. Instructions in program
-  // order, because `operand-defined` is a property of what ran before. Debug
-  // last, because a program counter is an index into the instructions.
-  if (!checkCounts(validator))
-    return validator.failure;
+  // in. Regions first, because the instructions read them. Instructions in
+  // program order, because `operand-defined` is a property of what ran before.
+  // Debug last, because a program counter is an index into the instructions.
+  //
+  // **`count-cap` is not checked here and that is deliberate.** Section 9.2's
+  // third rule is about bounding a length before allocating from it, and the
+  // only place a length arrives from untrusted input is the decoder, which
+  // checks the cap and then checks the payload against the bytes that remain
+  // before reserving anything. A copy of the cap here could only ever fire on
+  // a Program somebody built in memory with more than two hundred and sixty
+  // eight million of something, which is not a state this process could reach
+  // without having already allocated far more than the cap exists to prevent.
+  // Writing it anyway would be writing a branch no test can take.
 
   WrittenSpans defined;
   if (!checkRegions(validator, defined))

@@ -423,7 +423,9 @@ def CheckCountCap : ISACheck<3, "count-cap",
 def CheckResultShape : ISACheck<4, "result-shape",
     "Every result extent is positive and the product stays within the shape "
     "limit, tested without ever performing the multiplication that would "
-    "overflow.">;
+    "overflow. It also carries the one shape relation an opcode gets to choose "
+    "for itself: a RESHAPE's result holds exactly as many elements as its "
+    "operand.">;
 def CheckResultAddress : ISACheck<5, "result-address",
     "The result address is non negative, is zero when the opcode writes no "
     "result, and names the memory space the opcode writes its result in.">;

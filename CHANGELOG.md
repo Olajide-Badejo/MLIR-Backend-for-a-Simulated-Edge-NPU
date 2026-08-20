@@ -65,6 +65,13 @@ Semantic Versioning once a release is tagged.
   assembled with a pipe needs `npu-opt --mlir-print-debuginfo` for the ONNX node
   names to survive as far as the encoder. Without it the binary carries an empty
   debug section, which is legal.
+- **`NPUEncodingTests` exists**, the fourth GoogleTest binary. It carries the
+  round trips and the frozen constants, every named check of Section 9.2
+  triggered once, the property test of Section 17.2 at 1000 iterations and a
+  fixed seed, and the seed and regression corpus of Section 17.3 at 733 cases.
+- **A `RESHAPE` whose result holds a different number of elements from its
+  operand is now rejected**, by the `result-shape` check. The manual stated the
+  rule and nothing enforced it.
 
 ### Phase P5: scratchpad allocation
 
