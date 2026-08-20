@@ -174,9 +174,9 @@ bool checkRegion(Validator &validator, const MemRegion &region,
                     validator.program.dramBytes))
     return validator.fail(Check::RegionInRange,
                           "the region runs from " +
-                              std::to_string(region.offset) + " to " +
-                              std::to_string(region.offset + bytes) +
-                              ", past the declared DRAM size of " +
+                              std::to_string(region.offset) + " for " +
+                              std::to_string(bytes) +
+                              " bytes, past the declared DRAM size of " +
                               std::to_string(validator.program.dramBytes),
                           -1, index, what);
 
@@ -720,10 +720,8 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
         return validator.fail(Check::DramInRange,
                               "the result runs from " +
                                   std::to_string(instruction.resultAddress) +
-                                  " to " +
-                                  std::to_string(instruction.resultAddress +
-                                                 resultBytes) +
-                                  ", past the declared DRAM size of " +
+                                  " for " + std::to_string(resultBytes) +
+                                  " bytes, past the declared DRAM size of " +
                                   std::to_string(program.dramBytes),
                               at);
     } else if (!fitsInMemory(instruction.resultAddress, resultBytes,
@@ -731,8 +729,8 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
       return validator.fail(
           Check::ResultInRange,
           "the result runs from " + std::to_string(instruction.resultAddress) +
-              " to " + std::to_string(instruction.resultAddress + resultBytes) +
-              ", past the declared scratchpad size of " +
+              " for " + std::to_string(resultBytes) +
+              " bytes, past the declared scratchpad size of " +
               std::to_string(program.scratchpadBytes),
           at);
     }
@@ -789,10 +787,9 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
           operand.space == MemSpace::Dram ? Check::DramInRange
                                           : Check::OperandInRange,
           "operand " + std::to_string(index) + " runs from " +
-              std::to_string(operand.address) + " to " +
-              std::to_string(operand.address + span) + ", past the declared " +
-              memSpaceName(operand.space) + " size of " +
-              std::to_string(memorySize(program, operand.space)),
+              std::to_string(operand.address) + " for " + std::to_string(span) +
+              " bytes, past the declared " + memSpaceName(operand.space) +
+              " size of " + std::to_string(memorySize(program, operand.space)),
           at);
 
     std::optional<int64_t> end = defined.spanEndAt(operand.space,
@@ -805,7 +802,14 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                                 ", which nothing has written and no declared "
                                 "region covers",
                             at);
-    if (operand.address + span > *end)
+    // `*end - operand.address` rather than `operand.address + span`. The
+    // subtraction cannot overflow, because `spanEndAt` returns an end only for
+    // a span that contains the address, so the difference is at least one. The
+    // addition can: a file is free to declare a memory of nearly 2^64 bytes,
+    // and an address near the signed limit plus a span is undefined behaviour
+    // rather than a large number. UBSan found this one on the corpus, which is
+    // recorded as D-0021.
+    if (span > *end - operand.address)
       return validator.fail(
           Check::OperandExtent,
           "operand " + std::to_string(index) + " reads " +

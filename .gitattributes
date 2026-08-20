@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# The fuzz seed corpus is bytes, not text.
+#
+# Every one of those files is a `.nbin` whose exact contents are the test, and
+# three of them exist precisely because one byte in them is wrong. Any line
+# ending normalisation on the way in or out of the repository would rewrite a
+# 0x0d 0x0a pair somewhere inside a shape vector and turn a seed into a
+# different seed, silently. Marking them binary is what stops that, and it also
+# keeps `git diff` from trying to print them.
+
+*.nbin binary
+fuzz/corpus/** binary

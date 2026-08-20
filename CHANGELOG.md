@@ -72,6 +72,18 @@ Semantic Versioning once a release is tagged.
 - **A `RESHAPE` whose result holds a different number of elements from its
   operand is now rejected**, by the `result-shape` check. The manual stated the
   rule and nothing enforced it.
+- **`fuzz/nbin_decode_fuzzer` exists**, behind `-DNPU_ENABLE_FUZZERS=ON`, which
+  needs a clang toolchain. It decodes, validates, and asserts two properties
+  beyond crash freedom: a file it accepts re-encodes to exactly the bytes it
+  came from, and a file it frames survives the disassembler. `fuzz/corpus/`
+  carries eight seeds, every one produced by the tools rather than typed, and
+  `fuzz/README.md` carries the recipe that regenerates them.
+- **Four range diagnostics changed wording**, from "runs from A to B" to "runs
+  from A for N bytes". This is a user visible change to error messages. The old
+  form computed `A + N` for a range the check had just refused, which is signed
+  overflow when the address is near the limit; the operand extent comparison had
+  the same defect and was not only a message. Found by
+  UndefinedBehaviorSanitizer over the corpus, recorded as D-0021.
 
 ### Phase P5: scratchpad allocation
 

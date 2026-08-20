@@ -20,9 +20,9 @@
 // and is seeded from what this file writes out.
 //
 // The allocation bound is measured rather than asserted in prose. Global
-// `operator new` and `operator delete` are replaced below with counting
-// versions, enabled only around the decode call, so the number in the assertion
-// is a number somebody measured.
+// `operator new` is replaced below with a counting version, enabled only
+// around the decode call, so the number in the assertion is a number somebody
+// measured.
 //
 //===----------------------------------------------------------------------===//
 
@@ -53,68 +53,87 @@ using namespace npu_test;
 //===----------------------------------------------------------------------===//
 // The allocator hook.
 //
-// A header in front of every block carries its size, so that `operator delete`
-// knows how much to subtract without depending on the compiler emitting the
-// sized form. The aligned and array forms are deliberately not replaced: their
-// default implementations forward to these two, so every allocation is counted
-// and every free is matched.
+// **It is compiled out under AddressSanitizer, and that is a split of two
+// claims rather than a hole in one.** Section 17.3 asks for two things: that no
+// malformed input allocates more than a few megabytes, measured through an
+// allocator hook counting bytes, and that the whole corpus runs under
+// AddressSanitizer and UndefinedBehaviorSanitizer. Those are different claims
+// and they are made by different builds. The default gcc build measures the
+// bytes. The clang sanitizer build proves the memory safety. Both run the whole
+// corpus; neither is weakened by the other's absence.
+//
+// The reason they cannot be the same binary is worth writing down, because two
+// attempts at it failed in different ways and a third reader would try again.
+//
+// ASan replaces `operator new`, `operator delete`, `malloc` and `free`, and it
+// records which family a block came from so that it can report an
+// alloc-dealloc-mismatch. Any replacement of `operator new` in this file has to
+// get its memory from somewhere, and the only thing it can call is `malloc`,
+// which records the block as malloc-family. Deallocation then goes through
+// `operator delete`, which is ASan's, and ASan correctly reports the mismatch
+// it was built to report. The first attempt made it worse by putting a size
+// header in front of every block: ASan's `operator delete` received the offset
+// pointer and the binary died with a SEGV before the first test finished.
+//
+// Turning the check off with `alloc_dealloc_mismatch=0` would have made it
+// pass. Suppressing an AddressSanitizer check inside the one job whose entire
+// purpose is AddressSanitizer is not a fix, so the hook steps aside instead.
+//
+// What the hook counts is the **total bytes requested** during a decode, not
+// the peak live at any instant. Total is at least peak, so the bound is
+// stricter, and it is monotonic, so it cannot be corrupted by a deallocation
+// this file never saw. Only `operator new` is replaced; deallocation is left
+// entirely alone.
+//
+// A hook that stopped being called would report zero and pass, so the test
+// asserts that it was called at all. A measurement that cannot tell when it
+// stopped measuring is not a measurement.
 //===----------------------------------------------------------------------===//
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define NPU_SANITIZED_BUILD 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#define NPU_SANITIZED_BUILD 1
+#endif
+
+#ifndef NPU_SANITIZED_BUILD
 
 namespace {
 
-constexpr std::size_t kAllocationHeader = alignof(std::max_align_t);
-
-std::size_t gLiveBytes = 0;
-std::size_t gPeakBytes = 0;
+std::size_t gRequestedBytes = 0;
 std::size_t gAllocations = 0;
 bool gCounting = false;
 
 } // namespace
 
 void *operator new(std::size_t size) {
-  void *raw = std::malloc(size + kAllocationHeader);
+  if (gCounting) {
+    gRequestedBytes += size;
+    ++gAllocations;
+  }
+  void *raw = std::malloc(size);
   if (!raw) {
-    // This library is built with -fno-exceptions, so there is no bad_alloc to
-    // throw. Aborting is the honest failure: a test binary that carried on
-    // after a failed allocation would be measuring nothing.
+    // This binary is built with -fno-exceptions, so there is no bad_alloc to
+    // throw. Aborting is the honest failure: a test that carried on after a
+    // failed allocation would be measuring nothing.
     std::fputs("MalformedInputTest: out of memory\n", stderr);
     std::abort();
   }
-  std::memcpy(raw, &size, sizeof(size));
-  if (gCounting) {
-    gLiveBytes += size;
-    ++gAllocations;
-    if (gLiveBytes > gPeakBytes)
-      gPeakBytes = gLiveBytes;
-  }
-  return static_cast<char *>(raw) + kAllocationHeader;
+  return raw;
 }
-
-void operator delete(void *pointer) noexcept {
-  if (!pointer)
-    return;
-  char *raw = static_cast<char *>(pointer) - kAllocationHeader;
-  std::size_t size = 0;
-  std::memcpy(&size, raw, sizeof(size));
-  if (gCounting)
-    gLiveBytes = gLiveBytes >= size ? gLiveBytes - size : 0;
-  std::free(raw);
-}
-
-// The sized form. Its default implementation is required to forward to the
-// unsized one, so replacing only that one would already be correct; it is
-// written out because the compiler warns otherwise, and a warning suppressed by
-// a pragma is a warning somebody has to look up.
-void operator delete(void *pointer, std::size_t) noexcept {
-  ::operator delete(pointer);
-}
+#endif
 
 namespace {
 
+#ifndef NPU_SANITIZED_BUILD
 /// A few megabytes, which is what Section 17.3 permits. The base program below
 /// encodes to a few hundred bytes, so a malformed mutation of it that reached
 /// this figure would be a length prefix that got believed.
 constexpr std::size_t kAllocationBudget = 4u * 1024u * 1024u;
+#endif
 
 /// One case of the corpus.
 ///
@@ -716,31 +735,48 @@ TEST(MalformedInput, EveryRejectionNamesACheck) {
 // The measured half of Section 17.3. The budget is a few megabytes and the
 // number is counted, not asserted in prose.
 TEST(MalformedInput, NoCaseAllocatesMoreThanAFewMegabytes) {
-  std::size_t worstPeak = 0;
+#ifdef NPU_SANITIZED_BUILD
+  std::cout << "[          ] the allocator hook is compiled out under "
+               "AddressSanitizer, which replaces operator new itself. The "
+               "bytes are measured by the default build; this build is here "
+               "for the memory safety of the same corpus.\n";
+  GTEST_SKIP();
+#else
+  std::size_t worst = 0;
   std::string worstCase;
+  std::size_t totalAllocations = 0;
 
   for (const Case &item : corpus().cases()) {
     // Everything the measurement needs is constructed before counting starts,
     // so the number is the decode's own footprint rather than the harness's.
     Program program;
-    gLiveBytes = 0;
-    gPeakBytes = 0;
+    gRequestedBytes = 0;
     gAllocations = 0;
     gCounting = true;
     std::optional<ProgramError> error = Program::decode(item.bytes, program);
     gCounting = false;
     (void)error;
 
-    if (gPeakBytes > worstPeak) {
-      worstPeak = gPeakBytes;
+    totalAllocations += gAllocations;
+    if (gRequestedBytes > worst) {
+      worst = gRequestedBytes;
       worstCase = item.name;
     }
-    EXPECT_LT(gPeakBytes, kAllocationBudget)
-        << item.name << " allocated " << gPeakBytes << " bytes";
+    EXPECT_LT(gRequestedBytes, kAllocationBudget)
+        << item.name << " asked for " << gRequestedBytes << " bytes";
   }
 
-  std::cout << "[          ] worst case allocation: " << worstPeak
+  // The hook was actually called. A replacement that lost to another
+  // definition of `operator new`, which is exactly what happened the first time
+  // this file was written, would report zero bytes for every case and pass.
+  EXPECT_GT(totalAllocations, 0u)
+      << "the operator new replacement in this file was never called, so every "
+         "number above is zero and this test proved nothing";
+
+  std::cout << "[          ] " << totalAllocations
+            << " allocations across the corpus, worst single case " << worst
             << " bytes, from \"" << worstCase << "\"\n";
+#endif
 }
 
 // The unvalidated path is the one `npu-objdump` uses on a suspect file, so it

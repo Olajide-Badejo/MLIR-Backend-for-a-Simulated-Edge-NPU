@@ -96,6 +96,30 @@ add_subdirectory(tools)
 add_subdirectory(test)
 
 # ---------------------------------------------------------------------------
+# Fuzzing, off by default.
+#
+# Section 17.3's coverage guided target needs -fsanitize=fuzzer, which is a
+# clang feature. The default build here is gcc against a gcc built LLVM, so the
+# target sits behind an option rather than behind a compiler check: a compiler
+# check would silently drop the target in the one build where somebody wanted
+# it and report nothing, and this project's rule is that a step which is off
+# says so. The sanitizers job of Section 19 configures a separate build
+# directory with clang and turns this on.
+# ---------------------------------------------------------------------------
+option(NPU_ENABLE_FUZZERS
+       "Build the coverage guided fuzz targets. Needs a clang that supports -fsanitize=fuzzer."
+       OFF)
+
+if(NPU_ENABLE_FUZZERS)
+  message(STATUS "Fuzzers: ON. fuzz/ is built with -fsanitize=fuzzer.")
+  add_subdirectory(fuzz)
+else()
+  message(STATUS
+    "Fuzzers: OFF. Configure with -DNPU_ENABLE_FUZZERS=ON and a clang "
+    "toolchain to build fuzz/nbin_decode_fuzzer.")
+endif()
+
+# ---------------------------------------------------------------------------
 # GoogleTest, out of tree, from either of two sources.
 #
 # LLVM's own `add_unittest` is not available to an out of tree project: it lives
