@@ -501,3 +501,46 @@ None.
   `docs/DIALECT_REFERENCE.md` is regenerated in the same commit, because the
   constraint description is part of it: 46 rows change from "ranked tensor of"
   to "statically shaped tensor of".
+
+### D-0016 the batch norm decomposition left four constants behind, and each became a DRAM transfer
+
+- **Found:** 2026-08-20, phase P4, by reading the lowering's own output on a
+  batch norm rather than by a failing test. Nothing was failing: the program was
+  correct and every test passed.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** delete the loop in `expand()` in
+  `lib/Dialect/NPUISA/Transforms/LowerNPUToNPUISA.cpp` that erases an
+  `npu.constant` with no uses, rebuild, and run
+  `npu-opt test/Dialect/NPUISA/lowering.mlir --npu-lower-to-npuisa`. The
+  function `an_unfolded_batch_norm_loads_two_constants_not_four` comes out with
+  **seven** `npuisa.dma_load` operations instead of three: the argument, the four
+  batch norm parameters, and the two constants the decomposition computed. Its
+  `CHECK-COUNT-3` then fails.
+- **What was wrong:** the decomposition consumes gamma, beta, mean and variance
+  at rewrite time, computing the multiplier and the addend from their values, and
+  it left the four `npu.constant` operations in the block with no uses. The
+  conversion that follows does not care whether a constant is used: it is an
+  illegal operation, so the pattern fires, and out comes an `npuisa.const` in
+  DRAM and an `npuisa.dma_load` bringing it on chip.
+
+  Nothing downstream would have removed them either, and that is the part worth
+  recording. A transfer has memory effects, by design and for good reasons set
+  out in this project's own architecture notes, so it is not dead code that a
+  canonicalizer is entitled to delete. The four transfers would have survived to
+  the encoder and been executed by the simulator.
+
+  The consequence is not a wrong answer. It is four transfers per unfolded batch
+  norm of data no instruction reads, which is DRAM traffic, which moves the byte
+  counts and the energy numbers this project publishes. Section 8 is explicit
+  that unexplained DRAM traffic is a defect rather than a style question, and it
+  names exactly three permitted producers of DMA; this was a fourth, hiding
+  inside the first.
+- **Resolution:** `expand()` erases every `npu.constant` whose result has no uses
+  before the conversion sees it. One pass suffices, because a constant has no
+  operands and erasing one therefore cannot make another dead.
+
+  `an_unfolded_batch_norm_loads_two_constants_not_four` in
+  `test/Dialect/NPUISA/lowering.mlir` is the regression test. It asserts three
+  loads and then `CHECK-NOT: npuisa.dma_load`, so it fails at seven and passes at
+  three, and it is named after the claim rather than after the mechanism so that
+  a later reader knows what it is defending.

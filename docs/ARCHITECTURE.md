@@ -102,12 +102,13 @@ later passes legitimately add DMA.
 
 `test/Dialect/NPUISA/dma-boundaries.mlir` is the file that asserts it, at exactly
 the point in the pipeline where it holds, which is the only point where asserting
-it would be true. **That file does not exist yet and belongs to P4**, with the
-lowering pass, because there is no lowering before then for it to run after. A
-version of it written at P2 could only hand write IR already in the right shape,
-which asserts that its author can produce a correct example rather than that the
-pipeline does. The invariant is written down here so that P4 implements against a
-stated rule instead of inventing one.
+it would be true. **That file belongs to P4**, with the lowering pass, because
+there is no lowering before then for it to run after. A version of it written at
+P2 could only hand write IR already in the right shape, which asserts that its
+author can produce a correct example rather than that the pipeline does. The
+invariant is written down here so that P4 implements against a stated rule
+instead of inventing one. *P4 landed it, on `npu` dialect input throughout, so
+what it checks is what the lowering produced.*
 
 `test/Dialect/NPUISA/ops-memref.mlir` does carry the boundary *shape* today, as a
 round trip case: function arguments in DRAM, one load in, computation on
@@ -134,6 +135,62 @@ A fourth form, **relayout-and-move**, is a named future extension and is **not
 implemented**. Nothing in this project may cite it as an available mechanism
 today. If it ever lands it becomes the fourth permitted producer and this list is
 amended in the same commit.
+
+### Extension, P4: the function boundary, the broadcast view, and the layout map
+
+*This subsection extends the memory model with three things the lowering had to
+settle and this file did not previously say. It is marked as an extension
+because everything above it is P2's and binding, and a later reader should be
+able to tell which parts were designed before a lowering existed and which parts
+the lowering decided. Nothing above is contradicted.*
+
+**A lowered function takes its outputs as trailing arguments and returns
+nothing.** Arguments become `#npu.dram` memrefs in place, results become
+`#npu.dram` memrefs appended after them, the result list is empty and
+`func.return` carries no operands. The alternative, returning a DRAM buffer, is
+not available: the buffer would be one the function allocated, and **nothing
+below this level allocates DRAM.** `memref.alloc` in the scratchpad is what the
+allocator assigns offsets into and there is no second allocator for the other
+space. The out parameters are **appended** rather than prepended, so argument N
+of a lowered function is still argument N of the model. This is the shape
+`test/Dialect/NPUISA/ops-memref.mlir` has called a lowered function since P2,
+and it is where the encoder reads its input and output regions from.
+
+**The rank 1 channel broadcast is a stride 0 view, not an instruction.**
+`docs/adr/0005-channel-broadcast-on-add-and-mul.md` obliges the lowering to turn
+an `npu.add` or `npu.mul` with a rank 1 right hand operand into a form the ISA
+can execute, read with a channel stride of one and a spatial stride of zero. The
+lowering emits a `memref.reinterpret_cast` of the rank 1 scratchpad buffer at
+the destination's extents, with strides `[0, 1, 0, 0]`. The view has the
+destination's shape, which is what `npuisa.add` and `npuisa.mul` already require
+of their operands, so no dialect change was needed; and it adds no transfer, so
+the carve out costs C floats of DRAM traffic rather than N by C by H by W of it,
+which is the reason ADR 0005 gives for leaving the constant unexpanded at all.
+**No opcode was added and none may be.** A stride 0 read is an addressing mode,
+Section 9.1 already carries operand strides in the `Instruction` record, and the
+instruction set of Section 5.4 is closed. The obligation this places on P7 is
+exact: a compute kernel indexes its operands through their strides, and the
+broadcast then needs no special case in the kernel at all.
+
+**The layout encoding becomes the memref's strided layout map, over NCHW
+extents.** Section 5.5 requires the tensor level layout to survive into the
+format's stride fields. The buffer keeps NCHW extents, which is the order every
+`npuisa` verifier already reads and the order the simulator's kernels index, and
+the permutation moves into the strides:
+`tensor<1x8x8x3xf32, #npu.layout<nhwc>>` becomes
+`memref<1x3x8x8xf32, strided<[192, 1, 24, 3]>, #npu.scratchpad>`. Keeping the
+extents in the order the layout wrote them was the alternative and it is wrong
+for a stateable reason: the strides come out contiguous again, the layout leaves
+no trace below the tensor level, and `-npu-assign-layout` becomes a pass whose
+delta is structurally zero. An NCHW tensor gets no layout map at all, because
+the identity written out at length is still the identity.
+
+Two consequences fall on `-npu-assign-layout`, named here rather than discovered
+there. A constant carrying a layout encoding, and a transpose that changes the
+layout as well as the extents, are both **diagnosed** by the lowering: it does
+not permute constant data, and it represents a permutation of extents only. That
+pass materialises its own permuted constants and folds its own inverse
+transposes, which Section 12 already says it does.
 
 ### Offsets are SSA operands, not attributes
 
@@ -272,3 +329,13 @@ Later phases inherit these as decisions, not as suggestions:
   three of its answers, including `Unknown`. An identity comparison anywhere in
   that role is a defect.
 - `TilingInterface` on `npu`, never on `npuisa`.
+
+From the P4 extension above, on the same terms:
+
+- A lowered function takes its outputs as trailing DRAM arguments and returns
+  nothing. Nothing below the tensor level allocates DRAM.
+- The rank 1 channel broadcast is a stride 0 view over the loaded rank 1 buffer.
+  No opcode for it, now or later, unless Section 5.4's instruction set is
+  reopened and this file is amended in the same commit.
+- A layout encoding becomes a strided layout map over NCHW extents. Buffers are
+  NCHW below the tensor level, always, whatever the tensor said.
