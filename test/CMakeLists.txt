@@ -18,6 +18,8 @@ configure_lit_site_cfg(
 set(NPU_TEST_DEPENDS
         FileCheck count not
         npu-opt
+        npu-translate
+        npu-objdump
         )
 
 add_lit_testsuite(check-npu "Running the npu regression tests"

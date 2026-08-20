@@ -53,6 +53,18 @@ Semantic Versioning once a release is tagged.
 - **The encoder assigns the DRAM map**: inputs, then outputs, then constants,
   then the allocator's `npuisa.spill_slot` allocations, each aligned to 64
   bytes. That discharges the obligation P5 left on this phase.
+- **`npu-translate` exists.** Allocated `npuisa` IR in, a `.nbin` out, with
+  `--strip-debug` for an empty debug section. It fails and writes no output file
+  on an operation it cannot encode, and the output file is not created before
+  the encode result is known. A module holding more than one function is
+  diagnosed rather than truncated.
+- **`npu-objdump` exists.** It disassembles a `.nbin`, and it decodes without
+  validating so that a suspect file can still be dumped, with a warning block
+  naming the check that rejected it.
+- **The debug section is populated from MLIR locations**, so a pipeline
+  assembled with a pipe needs `npu-opt --mlir-print-debuginfo` for the ONNX node
+  names to survive as far as the encoder. Without it the binary carries an empty
+  debug section, which is legal.
 
 ### Phase P5: scratchpad allocation
 
