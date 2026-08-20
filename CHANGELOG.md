@@ -6,6 +6,28 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P6: the binary format and the generated ISA
+
+- **The instruction set is described once, in
+  `include/NPU/Encoding/NPUISADescription.td`.** The `Opcode` enum, `kMaxOpcode`,
+  the arity, field presence, memory space and element type rules the validator
+  reads, the validation check names, the disassembler's format strings, the
+  simulator's dispatch skeleton, the opcode table in `docs/ISA_MANUAL.md` and the
+  opcode list `scripts/check-reachability.py` reads are all generated from it by
+  `npu-isa-tblgen`. Before this they were four hand maintained places that
+  nothing but discipline kept consistent.
+- **`ninja -C build npu-isa-doc` regenerates `docs/ISA_MANUAL.md` and
+  `docs/ISA_OPCODES.json`**, and `scripts/check-isa-staleness.sh` is the CI gate
+  that fails when the committed artifacts drift from the description. It is the
+  same shape as the `DIALECT_REFERENCE.md` gate that has run since P1, so there
+  is one staleness mechanism in this project rather than two.
+- **`scripts/check-reachability.py` decides the encoding layer from
+  `docs/ISA_OPCODES.json`** rather than by searching a source file for the
+  operation's mnemonic. This is a user visible change to what the check reports:
+  the encoding layer becomes decidable from this phase, and the `--skip-models`
+  run now says `layers checked: import, lowering, encoding`.
+- **`docs/ISA_MANUAL.md` exists**, written like a small processor manual.
+
 ### Phase P5: scratchpad allocation
 
 - **`-npu-allocate-scratchpad` exists.** Every `memref.alloc` in

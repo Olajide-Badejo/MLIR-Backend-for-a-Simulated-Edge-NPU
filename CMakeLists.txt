@@ -78,6 +78,18 @@ include_directories(${NPU_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
+# ---------------------------------------------------------------------------
+# The ISA generator, added before include/ rather than with the other tools.
+#
+# Section 9.4's generation runs at build time from include/NPU/Encoding, and a
+# custom command there names $<TARGET_FILE:npu-isa-tblgen>. Generator
+# expressions resolve at generate time rather than at the point of the call, so
+# the ordering is not strictly required by CMake. It is here because a reader
+# who finds a target used before it is defined has to go and check that, and
+# the cost of sparing them that is one line in the right place.
+# ---------------------------------------------------------------------------
+add_subdirectory(tools/npu-isa-tblgen)
+
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
@@ -175,4 +187,31 @@ add_custom_target(npu-dialect-doc
           -P ${NPU_SOURCE_DIR}/cmake/WriteDialectReference.cmake
   DEPENDS NPUDialectReferenceDocGen
   COMMENT "Regenerating docs/DIALECT_REFERENCE.md from the ODS source"
+  VERBATIM)
+
+# ---------------------------------------------------------------------------
+# npu-isa-doc
+#
+# The same mechanism one level down, for the instruction set. Section 9.4 asks
+# for the ISA staleness gate to be identical in shape to the dialect
+# reference's so that there is one staleness mechanism in this project rather
+# than two, and this is that: generate, copy over the committed file, and let
+# CI regenerate and diff.
+#
+# Two files are copied rather than one. docs/ISA_MANUAL.md is the manual, and
+# only its marked sections are replaced, because the rest of it is hand written
+# prose that no generator could produce. docs/ISA_OPCODES.json is the machine
+# readable opcode list scripts/check-reachability.py reads, which is Section
+# 9.4's last generated layer: the reachability checker's opcode list, which
+# before this phase was parsed back out of source files.
+# ---------------------------------------------------------------------------
+add_custom_target(npu-isa-doc
+  COMMAND ${CMAKE_COMMAND}
+          -DGENERATED=${NPU_ISA_GENERATED_MANUAL}
+          -DOUTPUT=${NPU_SOURCE_DIR}/docs/ISA_MANUAL.md
+          -DJSON_GENERATED=${NPU_ISA_GENERATED_JSON}
+          -DJSON_OUTPUT=${NPU_SOURCE_DIR}/docs/ISA_OPCODES.json
+          -P ${NPU_SOURCE_DIR}/cmake/WriteISAManual.cmake
+  DEPENDS NPUEncodingIncGen
+  COMMENT "Regenerating the generated sections of docs/ISA_MANUAL.md"
   VERBATIM)
