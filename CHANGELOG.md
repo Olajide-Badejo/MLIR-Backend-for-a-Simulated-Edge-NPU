@@ -27,6 +27,32 @@ Semantic Versioning once a release is tagged.
   the encoding layer becomes decidable from this phase, and the `--skip-models`
   run now says `layers checked: import, lowering, encoding`.
 - **`docs/ISA_MANUAL.md` exists**, written like a small processor manual.
+- **The `.nbin` binary format exists**, at `Program::kVersion = 1`. A fixed
+  header, then input regions, output regions, constants with their data, the
+  allocator's spill slots, the instructions, and an optional debug section, each
+  length prefixed by a `u32` count and none of them tagged. The byte order is
+  **host order**, so a `.nbin` is not portable across byte orders, and the
+  manual says so plainly rather than claiming little endian.
+- **`ElemType` is `{ F32 = 0, I8 = 1, I32 = 2 }` and every instruction carries a
+  `scale`, a `zeroPoint`, a `requantMultiplier` and a `requantShift` from
+  version 1.** Those fields, and nothing broader, are what let P14 land without
+  a version bump.
+- **`Program::kMaxCount` is `1 << 28`**, one constant applied to every `u32`
+  count field, reported by the `count-cap` check. The decoder additionally
+  refuses any count whose payload cannot fit in the bytes that remain, before
+  anything is reserved.
+- **`Program::validate()` implements all thirty three checks of Section 9.2**
+  and returns a structured error naming the check and the instruction index.
+  `Program::decodeUnvalidated()` exists for `npu-objdump`.
+- **`-npu-lower-to-npuisa` writes `npuisa.arg` on every argument of the function
+  it produces**, holding `"in"` or `"out"`. This is a user visible change to the
+  IR the pass emits. The argument order is unchanged; what is new is that the
+  input and output split is stated rather than counted, and the encoder refuses
+  a function without it. `docs/ARCHITECTURE.md` records the decision and the
+  alternatives, and `docs/PASSES.md` records the behaviour.
+- **The encoder assigns the DRAM map**: inputs, then outputs, then constants,
+  then the allocator's `npuisa.spill_slot` allocations, each aligned to 64
+  bytes. That discharges the obligation P5 left on this phase.
 
 ### Phase P5: scratchpad allocation
 

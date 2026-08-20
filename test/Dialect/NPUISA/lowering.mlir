@@ -23,11 +23,17 @@
 // function returns nothing. The out parameters are appended rather than
 // prepended so that argument N of the lowered function is argument N of the
 // model for every N a caller already knew about.
+//
+// **Each argument says which it is.** `npuisa.arg` is checked by value on all
+// four rather than left to the position, because it is what the encoder reads
+// to split the DRAM map into input regions and output regions, and a
+// convention nothing asserts is a convention that breaks quietly. The
+// attribute arrived at P6 and the reasoning is in `docs/ARCHITECTURE.md`.
 // CHECK-LABEL: func.func @two_in_two_out(
-// CHECK-SAME:      %[[A:[^:]*]]: memref<4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[B:[^:]*]]: memref<4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT0:[^:]*]]: memref<4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT1:[^:]*]]: memref<4x4xf32, #npu.dram>) {
+// CHECK-SAME:      %[[A:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[B:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[OUT0:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "out"},
+// CHECK-SAME:      %[[OUT1:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "out"}) {
 // CHECK-NOT:     tensor<
 // CHECK:         npuisa.dma_store %{{[a-z_0-9]+}}, %[[OUT0]]
 // CHECK:         npuisa.dma_store %{{[a-z_0-9]+}}, %[[OUT1]]
@@ -431,16 +437,22 @@ func.func @nchw_carries_no_layout_map(
 // rewrite this one, and it also makes the pass idempotent, which is what lets a
 // pipeline run it without having to know whether something else already did.
 // CHECK-LABEL: func.func @an_already_lowered_function_is_untouched(
-// CHECK-SAME:      %[[X:[^:]*]]: memref<1x8x4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT:[^:]*]]: memref<1x8x4x4xf32, #npu.dram>)
+// CHECK-SAME:      %[[X:[^:]*]]: memref<1x8x4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[OUT:[^:]*]]: memref<1x8x4x4xf32, #npu.dram> {npuisa.arg = "out"})
 // CHECK-NEXT:    %[[IN:[a-z_0-9]+]] = memref.alloc()
 // CHECK-NEXT:    %[[TMP:[a-z_0-9]+]] = memref.alloc()
 // CHECK-NEXT:    npuisa.dma_load %[[X]], %[[IN]]
 // CHECK-NEXT:    npuisa.relu ins(%[[IN]]
 // CHECK-NEXT:    npuisa.dma_store %[[TMP]], %[[OUT]]
 // CHECK-NEXT:    return
+// The input carries `npuisa.arg` on both arguments because a genuinely lowered
+// function does, and the point of this case is that a lowered function comes
+// out the way it went in. It is also what makes the guard's shape visible: the
+// pass does not add the attribute to a function it decided was already legal,
+// so hand written `npuisa` IR that wants to be encodable carries its own.
 func.func @an_already_lowered_function_is_untouched(
-    %x: memref<1x8x4x4xf32, #npu.dram>, %out: memref<1x8x4x4xf32, #npu.dram>) {
+    %x: memref<1x8x4x4xf32, #npu.dram> {npuisa.arg = "in"},
+    %out: memref<1x8x4x4xf32, #npu.dram> {npuisa.arg = "out"}) {
   %in = memref.alloc() : memref<1x8x4x4xf32, #npu.scratchpad>
   %tmp = memref.alloc() : memref<1x8x4x4xf32, #npu.scratchpad>
   npuisa.dma_load %x, %in
@@ -458,9 +470,9 @@ func.func @an_already_lowered_function_is_untouched(
 // style question. The argument still exists, because the signature is the
 // model's and not the compiler's to change.
 // CHECK-LABEL: func.func @an_unread_argument_is_not_loaded(
-// CHECK-SAME:      %[[USED:[^:]*]]: memref<4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[UNUSED:[^:]*]]: memref<4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT:[^:]*]]: memref<4x4xf32, #npu.dram>)
+// CHECK-SAME:      %[[USED:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[UNUSED:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[OUT:[^:]*]]: memref<4x4xf32, #npu.dram> {npuisa.arg = "out"})
 // CHECK:         npuisa.dma_load %[[USED]]
 // CHECK-NOT:     npuisa.dma_load %[[UNUSED]]
 // CHECK:         return

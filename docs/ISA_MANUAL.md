@@ -187,6 +187,237 @@ would invalidate the binary stability test and every seed in the fuzz corpus in
 the same commit that introduced quantization, which is a migration worth
 spending six unused fields to avoid.
 
+## The binary layout
+
+A `.nbin` is a fixed header followed by fixed order sections, each length
+prefixed by a `u32` count.
+
+**There are no tags.** Nothing may be skipped, no unknown field may be
+tolerated, and no documentation anywhere may claim otherwise. A decoder that met
+a field it did not understand would have no way to know how long it was, which
+is why an unknown version is rejected rather than reinterpreted.
+
+### Byte order
+
+**Host order.** Every integer and every float is the object representation the
+machine already has, copied straight into the file.
+
+A `.nbin` is therefore **not portable across byte orders**. A file written on a
+big endian machine and read on a little endian one is not a file with the fields
+swapped, it is garbage that the validator will reject for some unrelated reason.
+This manual says that plainly rather than claiming little endian, because
+claiming little endian would be a promise the encoder does not keep: it never
+byte swaps anything, so the claim would be true only by accident of which
+machines the project has been run on.
+
+The magic word is the `u32` `0x4E49424E`, which spells `NBIN` when the bytes
+come out in memory order on a little endian machine. The constant is the number,
+not the letters.
+
+### The header
+
+| Field | Type | Meaning |
+|---|---|---|
+| `magic` | `u32` | `0x4E49424E` |
+| `version` | `u32` | `Program::kVersion`, currently 1 |
+| `scratchpadBytes` | `u64` | the scratchpad the program declares it needs |
+| `dramBytes` | `u64` | the DRAM the program declares it needs |
+
+`scratchpadBytes` is the number the simulator sizes its scratchpad from,
+**strictly**. It never grows the scratchpad to cover the writes it finds,
+because doing so would absorb out of range result addresses and neutralize the
+bounds checking, and because the sizing loop would then be arithmetic on
+unvalidated input at the exact entry point the validation exists to defend.
+
+### The sections, in order
+
+| Section | Contents |
+|---|---|
+| inputs | `u32 count`, then that many `MemRegion` |
+| outputs | `u32 count`, then that many `MemRegion` |
+| constants | `u32 count`, then that many `MemRegion` each followed by `u32 dataSize` and that many bytes |
+| spill slots | `u32 count`, then that many `MemRegion` |
+| instructions | `u32 count`, then that many `Instruction` |
+| debug | `u32 count`, then that many `(pc u32, len u32, len bytes)` |
+
+Nothing may follow the last section. Trailing bytes are a file whose author
+believed in a field this format does not have, and with no tags there is no
+honest way to skip them.
+
+**The four DRAM categories.** Inputs and outputs are the model's own arguments,
+the first N and the last M of the lowered function's signature. Constants are
+the weights and biases the model carried, with their data. Spill slots are the
+DRAM buffers the allocator spilled into, which `docs/ARCHITECTURE.md` obliges
+the encoder to place alongside the other three. The encoder lays them out in
+that order, each aligned to 64 bytes, which is the same alignment every
+scratchpad offset gets so that a DMA never starts on a different alignment at
+each end.
+
+### `MemRegion`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `offset` | `u64` | the byte offset in DRAM |
+| `elementType` | `u32` | one of the element types above |
+| `rank` | `u32` | how many extents follow |
+| `shape` | `i64[rank]` | the extents |
+
+`byteSize()` multiplies the element count by **the element type's size** rather
+than assuming four bytes per element. That is the whole reason the function
+exists: an `i8` region whose byte size no longer matches its shape is a
+detectable corruption only if somebody multiplied by one.
+
+### `Instruction`
+
+Every field is physically present on every instruction, because the format has
+no tags and therefore no optional fields. What varies is which fields an opcode
+gives meaning to; **a field an opcode does not name must hold its neutral
+value**, and that is what makes `attribute-size`, `attribute-value`,
+`activation`, `quant-scale` and `quant-requantize` checkable rather than
+advisory. A file that sets an activation on `RESHAPE` is rejected, not ignored.
+
+| Field | Type | Neutral value | Meaning |
+|---|---|---|---|
+| `opcode` | `u32` | | the opcode |
+| `activation` | `u32` | `none` | a fused activation on the result |
+| `resultSpace` | `u32` | | the memory the result is written to |
+| `resultElementType` | `u32` | | the result's element type |
+| `resultAddress` | `i64` | 0 | the byte address of the result |
+| `resultRank`, `resultShape` | `u32`, `i64[]` | empty | the result's extents |
+| `operandCount`, `operands` | `u32`, `Operand[]` | empty | see below |
+| `padCount`, `pads` | `u32`, `i64[]` | empty | four entries, ONNX order |
+| `strideCount`, `strides` | `u32`, `i64[]` | empty | two entries, the window stride |
+| `dilationCount`, `dilations` | `u32`, `i64[]` | empty | two entries |
+| `kernelCount`, `kernel` | `u32`, `i64[]` | empty | two entries, the window extent |
+| `group` | `i64` | 0 | the channel group count |
+| `axesCount`, `axes` | `u32`, `i64[]` | empty | the permutation, or the concatenation axis |
+| `scale` | `f32` | 0 | the quantization scale |
+| `zeroPoint` | `i32` | 0 | the quantization zero point |
+| `requantMultiplier` | `i32` | 1 | the fixed point rescaling multiplier |
+| `requantShift` | `i32` | 0 | the fixed point rescaling shift |
+
+`requantMultiplier` and `requantShift` are present from version 1 and are the
+narrow reason P14 needs no version bump. Their identity is a multiplier of 1 and
+a shift of 0, and every opcode that does not requantize carries exactly that.
+
+There is no `ceil_mode` field, and its absence is a decision rather than an
+omission. `ceil_mode` changes a pooling operation's *output extent*, and the
+output extent is already in the instruction as the result shape. The encoder has
+resolved it by the time anything is written, so carrying it would be carrying an
+input to an arithmetic whose answer is sitting beside it.
+
+### `Operand`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `space` | `u32` | scratchpad or dram |
+| `elementType` | `u32` | the operand's element type |
+| `address` | `i64` | the byte address of the first element |
+| `rank`, `shape` | `u32`, `i64[]` | the extents |
+| `strides` | `i64[rank]` | one stride per extent, in elements, with its own `u32` count |
+
+**The strides are where Section 5.5's layout decision lands below the tensor
+level.** An NHWC tensor becomes NCHW extents with permuted strides, and the rank
+1 channel broadcast of ADR 0005 becomes a stride 0 operand. A kernel indexes its
+operands through their strides and therefore needs no special case for either.
+
+**The shape is here as well as the strides, and it has to be.** A stride vector
+with no extents beside it addresses nothing in particular, and no check in the
+list below could be written without one: `operand-extent` asks whether the
+consumer's need fits the buffer it reads, and for `MATMUL` the K extent appears
+in no result shape at all.
+
+The bytes an operand addresses are `1 + sum((extent - 1) * stride)` elements
+from its address, not `product(extents)`. That is the rule
+`docs/ARCHITECTURE.md` fixed at P5: a view's byte range comes from its strides,
+so a stride 0 broadcast over eight channels spans eight elements and not one
+hundred and twenty eight. The span is a closed hull rather than an exact set,
+which is the only approximation anywhere in this format's arithmetic and is in
+the safe direction.
+
+### The debug section
+
+`num_debug u32`, then that many `(pc u32, len u32, len bytes)` entries mapping a
+program counter to the ONNX node name the instruction came from.
+
+**Empty encodes as a zero count and a stripped binary is legal.**
+`npu-translate --strip-debug` produces one. The names come from the `NameLoc`
+the importer attaches to every operation it creates, so a pipeline that drops
+locations produces a binary with an empty debug section rather than a wrong one.
+`npu-opt` prints locations only under `--mlir-print-debuginfo`, so a pipeline
+assembled with a pipe needs that flag for the names to survive as far as the
+encoder.
+
+Entries are strictly increasing in program counter. A duplicate is a corrupt
+file, not a second name for one instruction.
+
+## The limits
+
+Two numbers, both stated here because a limit without a number is a rule nobody
+can test.
+
+**`Program::kMaxCount = 1 << 28`**, which is 268435456. One constant, defined
+once in `include/NPU/Encoding/Program.h`, applied to **every** `u32` count field
+the format has: the six section counts, every rank, every attribute vector
+length, every operand count, the constant data length, and the debug name
+length. A count equal to it is permitted; a count above it is rejected by the
+`count-cap` check.
+
+The cap alone is not enough and the decoder does not pretend it is. `kMaxCount`
+elements of a sixteen byte record is four gigabytes, so the decoder **also**
+refuses any count whose payload cannot fit in the bytes that remain in the file,
+and it does both tests before anything is reserved. A length prefixed string in
+the debug section is exactly the shape of bug that turns a malformed file into a
+heap overflow.
+
+A debug name has a second, much lower limit: **4096 bytes**. An ONNX node name
+is a few dozen characters, and a cap that only stops a heap overflow is a cap
+that lets a file waste a quarter of a gigabyte legally.
+
+**`Program::kShapeLimit = 1 << 40`.** Every shape product is bounded by it, and
+the guard tests `extent > kShapeLimit / product` **before** multiplying, never
+after. A guard that multiplies first is itself the overflow: a shape like
+`{2^40, 2^24}` wraps to a small product and is accepted.
+
+## Validation
+
+`Program::validate()` is called by `Program::decode`, and again by `npu-sim`
+before it executes anything. The two calls guard different moments and a program
+that arrived through a path which skipped the first still meets the second.
+
+`Program::decodeUnvalidated()` exists so that `npu-objdump` can dump a suspect
+file, and its output is prefixed with a warning block naming the failure. It
+still refuses a file it cannot frame: a truncated section has no well defined
+contents, and reading past the end of a buffer to show somebody what is there is
+the bug this whole section exists to prevent.
+
+The checks run in dependency order rather than in the order they are listed
+below: counts first, because everything else indexes what they bound; regions
+next, because the instructions read them; instructions in program order, because
+`operand-defined` is a property of what ran before; and the debug section last,
+because a program counter is an index into the instructions. Validation stops at
+the first failure, because a validator that reported everything would report a
+hundred consequences of one truncated shape.
+
+**Two names carry a job the list does not obviously give them**, and saying so
+here is cheaper than leaving a reader to work it out from the source:
+
+- An opcode this build does not know is reported by `structure`. Section 9.2's
+  list has no `opcode` name and inventing one would be inventing a name the
+  specification does not have. The reasoning is that an unknown opcode declares
+  no arity, no fields and no memory spaces, so no other check has a rule it
+  could apply: the instruction is not an instruction.
+- An instruction whose result or operand lives in the wrong memory space for its
+  opcode is reported by `result-address` or `operand-in-range` respectively.
+  Those two names are about **where** a thing is addressed, and a `MATMUL`
+  reading DRAM is addressing the wrong memory rather than the wrong offset
+  inside the right one.
+
+**`HALT` at the end of a program is not a validation rule.** The encoder emits
+one and every program this compiler produces ends with one, but Section 9.2's
+list carries no name for its absence, so a file without one decodes and
+validates. The simulator stops when it runs out of instructions.
+
 ## The validation checks
 
 Every failure to validate a `.nbin` returns a structured error naming a stable
@@ -213,10 +444,10 @@ that: the C++ enum and this table come out of the same records.
 | `arity` | The operand count is within the range the opcode declares. |
 | `count-cap` | Every u32 count field is at most kMaxCount. The cap is a number and it is checked before anything is allocated. |
 | `result-shape` | Every result extent is positive and the product stays within the shape limit, tested without ever performing the multiplication that would overflow. |
-| `result-address` | The result address is non negative, and zero when the opcode writes no result. |
-| `result-in-range` | The result's bytes lie inside the memory it names. |
-| `operand-in-range` | Each operand's byte span lies inside the memory it names. |
-| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input, constant or spill region. |
+| `result-address` | The result address is non negative, is zero when the opcode writes no result, and names the memory space the opcode writes its result in. |
+| `result-in-range` | The result's bytes lie inside the scratchpad the file declares. |
+| `operand-in-range` | Each scratchpad operand's byte span lies inside the scratchpad the file declares, and every operand names the memory space the opcode declares for that slot. |
+| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input or constant region. An output region and a spill slot are places to write, so reading one before writing it is reading whatever the loader left there. |
 | `operand-extent` | The consumer's element need fits the element count actually written to the buffer it reads. Membership alone is not enough: a DMA_STORE reading 100 elements from a 4 element buffer would pass a membership test and then trap. |
 | `dram-address` | A DRAM address is non negative. |
 | `dram-in-range` | A DRAM access lies inside the declared DRAM size. |

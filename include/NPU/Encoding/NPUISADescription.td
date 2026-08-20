@@ -425,15 +425,19 @@ def CheckResultShape : ISACheck<4, "result-shape",
     "limit, tested without ever performing the multiplication that would "
     "overflow.">;
 def CheckResultAddress : ISACheck<5, "result-address",
-    "The result address is non negative, and zero when the opcode writes no "
-    "result.">;
+    "The result address is non negative, is zero when the opcode writes no "
+    "result, and names the memory space the opcode writes its result in.">;
 def CheckResultInRange : ISACheck<6, "result-in-range",
-    "The result's bytes lie inside the memory it names.">;
+    "The result's bytes lie inside the scratchpad the file declares.">;
 def CheckOperandInRange : ISACheck<7, "operand-in-range",
-    "Each operand's byte span lies inside the memory it names.">;
+    "Each scratchpad operand's byte span lies inside the scratchpad the file "
+    "declares, and every operand names the memory space the opcode declares "
+    "for that slot.">;
 def CheckOperandDefined : ISACheck<8, "operand-defined",
     "Each operand's bytes were written by an earlier instruction, or belong to "
-    "a declared input, constant or spill region.">;
+    "a declared input or constant region. An output region and a spill slot "
+    "are places to write, so reading one before writing it is reading whatever "
+    "the loader left there.">;
 def CheckOperandExtent : ISACheck<9, "operand-extent",
     "The consumer's element need fits the element count actually written to "
     "the buffer it reads. Membership alone is not enough: a DMA_STORE reading "
