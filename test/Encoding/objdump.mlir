@@ -47,6 +47,20 @@
 // RUN: head -c 40 %t.nbin > %t.short.nbin
 // RUN: not npu-objdump %t.short.nbin 2>&1 | FileCheck %s --check-prefix=SHORT
 
+// The DUMP-NOT comes **before** the first positive match, and the position is
+// the assertion. A `CHECK-NOT` only covers the span between the matches around
+// it, so one placed after the last DUMP-NEXT covers the tail of the listing and
+// nothing else, and the warning block this file is asserting the absence of
+// appears at the very top.
+//
+// Written the other way round first, and it cost a real hole: an encoder fault
+// that made every file it wrote fail validation left this suite green, because
+// npu-translate validates the program in memory rather than the bytes it
+// writes, npu-objdump then printed a warning block above a listing that still
+// matched every DUMP line, and the CHECK-NOT was scanning underneath it. That
+// is the whole net for the encoder's output being one badly placed directive
+// deep.
+// DUMP-NOT:  WARNING
 // DUMP:      ; .nbin version 1, host byte order
 // DUMP-NEXT: ; scratchpad 1536 bytes, dram 1536 bytes
 // DUMP-NEXT: ; 1 inputs, 1 outputs, 1 constants, 0 spill slots, 6 instructions, 3 debug entries
@@ -59,7 +73,6 @@
 // DUMP-NEXT: 0003  RELU sp@0x0 1x8x4x4xf32 <- sp@0x400 1x8x4x4xf32    ; clamp
 // DUMP-NEXT: 0004  DMA_STORE dram@0x200 1x8x4x4xf32 <- sp@0x0 1x8x4x4xf32
 // DUMP-NEXT: 0005  HALT
-// DUMP-NOT:  WARNING
 
 // STRIPPED: ; 1 inputs, 1 outputs, 1 constants, 0 spill slots, 6 instructions, 0 debug entries
 // STRIPPED-NOT: scale_by_two

@@ -2357,3 +2357,178 @@ The general shape, for the next activation: a product side fault proves the
 whole net and usually lights the earliest gate; a test side fault is what
 isolates the one step whose activation is being proved. Doing both, in that
 order, proves the step and measures the depth of the net in front of it.
+
+## 2026-08-20, phase P6: the binary format, and the four gates that switched on
+
+Section 9 in full, plus the generated ISA description of Section 9.4 and the
+fuzzing of Section 17.3. Seven commits on `phase/p6-binary-format`, cut from
+`f6baff2`.
+
+### Generating the ISA first, which the roadmap is right about
+
+The roadmap says to build the description before the encoder, because
+generating the opcode enum afterwards means writing the encoder twice. That is
+correct and it is worth saying why it is more than an ordering preference. The
+generated `OpcodeInfo` table carries the arity, the field presence mask, the
+memory space per operand slot and the element type masks, and `validate()` reads
+all four out of it. Written by hand first, those rules would have been written
+as `if (opcode == MATMUL && operands.size() < 2)` in a dozen places, and the
+second pass would not have been a port, it would have been a rewrite of the
+validator's whole shape.
+
+The generator refuses a half filled record rather than emitting a blank row: an
+opcode with no format string, no semantics line, no shape rule, no accepted
+element type, or fewer declared operand spaces than it takes operands is a
+generation failure. That is cheap to write and it is what makes the claim
+"adding an opcode touches one description file and then fails to build" true
+rather than aspirational.
+
+**The mechanism that makes it fail to build is `-Werror=switch` over the
+generated enum with no `default` label.** Two layers use it: the semantic
+dispatch in `Validation.cpp`, and the per opcode builder in `PropertyTest.cpp`.
+Everything else is table driven and needs no case. That is the honest scope: the
+generated tables cover the mechanical layers on their own, and the switches
+catch the two places where a human has to decide something. The simulator's
+dispatch skeleton is generated as an X macro for P7 to expand.
+
+### The namespace collision, caught in the first hour
+
+The binary format wanted to be `namespace npu`. The tensor level dialect already
+owns `mlir::npu`, and a second `::npu` is ambiguous in every translation unit
+that says `using namespace mlir;` and then names either one. Renaming to `nbin`
+cost four characters and a rename pass over six files. Leaving it would have cost
+a qualification argument at every phase that touches both levels, and P7 touches
+both levels on its first day.
+
+### What the corpus and the fuzzer each found
+
+The seed corpus of Section 17.3 is 734 hand written cases and it found one
+defect, D-0020: a `RESHAPE` whose result held a different number of elements
+from its operand was accepted, because the manual stated the rule and nothing
+enforced it. That is exactly the kind of thing a table of enumerated malformed
+inputs is good at, and exactly the limit of it: the case was one somebody
+thought of while reading the manual.
+
+The coverage guided target found two the corpus did not. D-0022 is a signed
+overflow in the disassembler's contiguity walk, on the one path in the project
+that runs before validation, and it needed a stride vector that was *right* for
+a shape that was absurd. A person writing a malformed operand writes a wrong
+stride vector. D-0023 turned up while reading the minimized input's listing: an
+instruction with a missing mandatory operand disassembled to a blank line,
+opcode and all, which is `npu-objdump` failing at its only job on exactly the
+file it exists for.
+
+D-0021 came from UndefinedBehaviorSanitizer on the corpus, on the sanitizers
+job's first real run: four range diagnostics computed the end of a range the
+check above had just refused, and the operand extent check did the same in a
+comparison rather than a message. The consequence on this machine is a wrapped
+number in a message nobody reads. What it is, though, is undefined behaviour at
+a site whose surrounding code is a bounds check, and the assumption a compiler
+would draw from it is that the address is small.
+
+**Three tools, three different classes of defect, and no overlap between them.**
+That is the argument for having all three rather than the cheapest one.
+
+### The allocator hook, twice wrong before it was right
+
+Section 17.3 wants the allocation bound measured through a hook rather than
+asserted in prose. The first version replaced `operator new` and
+`operator delete` with a size header in front of every block and measured peak
+live bytes. It works in the gcc build and segfaults under AddressSanitizer
+before the first test finishes: ASan defines both operators too, both as strong
+symbols, and which definition wins can be decided differently for the two of
+them. Allocations came from this file with the header offset applied and
+deallocations went to ASan's `operator delete`, which handed the offset pointer
+to its own `free`.
+
+The second version dropped the header and forwarded to `malloc`. ASan then
+correctly reported an alloc-dealloc-mismatch, because it records which family a
+block came from. `alloc_dealloc_mismatch=0` would have silenced it, and
+suppressing an AddressSanitizer check inside the one job whose entire purpose is
+AddressSanitizer is not a fix.
+
+The third version is the one that ships: the hook is compiled out under the
+sanitizers entirely, and the two claims are split across the two builds. The gcc
+build measures the bytes; the clang build proves the memory safety; both run the
+whole corpus. The metric changed with it, from peak live to total requested,
+which is a stricter bound and immune to a deallocation the hook never saw. The
+test asserts the hook was called at all, because a replacement that lost the
+link would report zero for every case and pass.
+
+### The four activation proofs, and the one that measured the net
+
+Section 19.0 switches on `NPUEncodingTests`, the ISA staleness gate, the
+`sanitizers` job and `nightly.yml`'s fuzz job at this phase, and 19.1 says to
+break each once and show it red.
+
+The P5 handoff left a shape for this: a product side fault proves the whole net
+and usually lights the earliest gate; a test side fault isolates the one step
+being proved. Both were done for `NPUEncodingTests`, and the product side one
+produced a finding rather than a confirmation.
+
+**The product side fault lit nothing but the step it was aimed at.** Swapping
+two adjacent `i32` writes in `Program::encode` produces files that fail their own
+validator, and `check-npu` reported 18 of 18. The chain is D-0024:
+`npu-translate` validates the program in memory rather than the bytes it writes,
+which is right and catches a different class of defect; `npu-objdump` printed
+its warning block above a listing whose every line still matched, because
+swapping two fields that both round trip moves no address and no shape; and
+`objdump.mlir`'s `DUMP-NOT: WARNING` sat below the listing, where a `CHECK-NOT`
+covers only the tail. The net in front of the encoder's output was one badly
+placed directive deep. Moved above the first positive match, the same fault
+takes `check-npu` to 17 of 18 at `Encoding/objdump.mlir`.
+
+The sanitizers job needed its own isolating fault for the same reason, and
+finding one took two attempts. Reverting half of D-0021, the operand extent
+comparison, left the job green: the corpus reaches the result range *message*
+and not that comparison. The revert that isolates it is the message, which
+changes only a number inside a diagnostic string no test asserts, so the gcc
+build stays green and only UBSan sees it. Recording that the first attempt
+proved nothing is the point of the exercise; a rehearsal that is adjusted until
+it passes has measured nothing.
+
+Measured, all four, under the exact CI invocations:
+
+| Gate | Fault | Red | Restored |
+|---|---|---|---|
+| `NPUEncodingTests` | `Program::encode` swaps two `i32` fields | 7 tests, exit 1 | 76 passing |
+| `NPUEncodingTests`, isolating | one wrong constant in `EncodingTest.cpp` | `FrozenConstants.TheFormatsNumbers`, exit 1, `check-npu` still 18 of 18 | 76 passing |
+| ISA staleness | the committed manual perturbed, in a commit | exit 1 with the diff | exit 0 |
+| ISA staleness | the description moved, not regenerated | exit 1 with the diff | exit 0 |
+| `sanitizers` | D-0022 reverted | UBSan runtime error, exit 1 | 75 passing |
+| `sanitizers`, isolating | D-0021's message reverted | UBSan runtime error, exit 1, gcc build still green | 75 passing |
+| nightly fuzz | the decoder stops refusing trailing bytes | property violated in seconds, exit 77, crash written | 1964713 runs in 61 seconds, no artifacts |
+
+### The staleness gate had a hole, and the rehearsal is what found it
+
+Perturbing the committed manual left the gate green on the first attempt. The
+script regenerates and then diffs, and `git diff` compares the working tree
+against the **index**: regeneration had already overwritten the edit, so the
+diff was against something that no longer disagreed. It compares against `HEAD`
+now, which is what "the committed artifacts are stale" means, and in CI the two
+forms agree because a checkout leaves the index equal to `HEAD`.
+
+The same rehearsal is why the script refuses to run against an untracked
+artifact. `git diff` says nothing at all about a file git is not tracking, so an
+untracked manual would have passed this gate forever while being regenerated on
+every run.
+
+### `.gitignore` swallowed the seed corpus
+
+`*.nbin` is right for the compiler's output and exactly wrong for eight input
+files whose exact bytes are the test. `git add fuzz` reported nothing, committed
+nothing, and a commit went in describing a corpus it did not contain. It was
+caught by running `git ls-files fuzz/` afterwards rather than by trusting that
+`git add` on a directory adds the directory, which is now a habit worth keeping.
+
+### What was cut, and why
+
+`fuzz/nbin_structured_fuzzer.cc`, the libprotobuf-mutator target of Section
+17.3, is not here. It is the third item on Section 2's cut list, paired with
+mutation testing, and Section 2 says cutting it keeps the libFuzzer target and
+the seed corpus, which are the parts that find bugs nobody imagined. Both of
+those are here and both found defects this phase. The reason it went rather than
+something else: libprotobuf-mutator is not in the CI image or in this machine's
+toolchain, so it would have meant vendoring a dependency and a protobuf mirror
+of `Program` that has to be kept equal to `Program` by hand, which is a second
+hand maintained copy of the thing this phase spent its first commit eliminating.

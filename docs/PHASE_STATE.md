@@ -18,225 +18,299 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P5, scratchpad allocation.** Branch `phase/p5-allocation`, cut from `main` at
-`44d865c`, which is the P4 merge. Seven commits, not pushed. The seventh is the
-one that carries this table, so it is the branch tip and is named by subject
-rather than by a sha it cannot know.
+**P6, the binary format and the generated ISA.** Branch
+`phase/p6-binary-format`, cut from `main` at `f6baff2`, which is the P5 merge.
+Eight commits, not pushed. The eighth is the one that carries this table, so it
+is the branch tip and is named by subject rather than by a sha it cannot know.
 
 | Commit | Subject |
 |---|---|
-| `24e93ee` | `feat(npuisa): assign scratchpad offsets with a sweep line and spill when they do not fit` |
-| `078701d` | `fix(npuisa): measure a memref's byte range from its strides, not from its extents` |
-| `7ed3263` | `test(npuisa): property test the sweep line against a brute force recomputation` |
-| `4069bc2` | `docs: predict the allocator's compile time curve and its fragmentation ratios` |
-| `253c842` | `fix(npuisa): stop reordering the pads before the windowed extent arithmetic` |
-| `3dc7c66` | `perf(experiments): measure the allocator's compile time curve and its fragmentation ratios` |
-| tip | `docs: record the P5 defects and hand off the phase` |
+| `3d03377` | `feat(encoding): describe the instruction set once and generate the layers that drift` |
+| `42562b7` | `feat(encoding): the .nbin binary format, its encoder, and its validator` |
+| `8155b87` | `feat(tools): npu-translate writes a .nbin and npu-objdump reads one back` |
+| `a70d757` | `test(encoding): NPUEncodingTests, with the property test and the seed corpus` |
+| `2302e3b` | `test(encoding): the coverage guided decode fuzzer, and the overflow it found` |
+| `210a263` | `fix(fuzz): commit the seed corpus, which .gitignore was swallowing` |
+| `1e2f767` | `ci: switch on the four P6 gates, and fix what rehearsing them found` |
+| tip | `docs: record the P6 defects and hand off the phase` |
 
-The branch point again, since P3 and P4 both had something to say about it.
-Local `main` was stale when this session began, exactly as the last two handoffs
-predicted it would be. The first command of the session was
+The branch point again, since every handoff since P3 has had something to say
+about it. Local `main` was stale when this session began, exactly as the last
+three handoffs predicted. The first command of the session was
 `git fetch origin && git branch -f main origin/main`, which moved local `main`
-to `44d865c`, and the branch was cut from that.
+to `f6baff2`, and the branch was cut from that.
 
-**The commit order carries a ground rule.** `4069bc2` is the prediction and
-`3dc7c66` is the first number, in that order and in separate commits, which is
-what ground rule 15 asks for. One of the two predictions in `4069bc2` was wrong
-and it stays in that file unedited, with the answer in the engineering log.
+**The commit order carries the roadmap's own instruction.** `3d03377` is the ISA
+description and its generator; `42562b7` is the encoder, written against the
+generated header. The roadmap says generating the opcode enum after hand writing
+the encoder means writing the encoder twice, and doing it in that order is what
+that sentence buys.
 
 ## Gate status
 
-The P5 gate is the roadmap entry's, plus what Sections 8 and 13.1 attach to this
-pass. Every item is **met locally**. Item by item, with the proof.
+The P6 gate is the roadmap entry's, plus Section 9.4's generation claim and
+Section 19.0's four activations. Every item is **met locally**. Item by item,
+with the proof.
 
 | Gate item | Proof |
 |---|---|
-| The five allocator lit cases of Section 17.1: fits, spill, fragmentation, no reuse while live, budget too small | `scratchpad-alloc.mlir` carries fits, fragmentation and no reuse while live; `spill-heuristic.mlir` carries spill; `alloc-budget-too-small.mlir` carries the negative. Every offset is checked **by value** with the arithmetic written out beside it, because a test that checked only that an offset appeared would pass against an allocator that gave every buffer offset zero |
-| Fragmentation with out of order deaths, and reuse pinned by offset | The `@fragmentation` function: `%a` [0, 3] at 256 bytes, `%b` [1, 5] at 256, `%c` [4, 6] at 512, so `%a` and `%c` never share an index. `pack` places `%c` at 0 and reuses; `interval` leaves a 256 byte hole and lands at 1024 for a peak of 768 |
-| No reuse while live, which Section 13.1 calls the silently wrong case | `@no_reuse_while_live` checks both halves: two buffers that overlap at one index get different offsets, and a third that is disjoint from the first takes its offset back. An allocator that never reused would pass the first half alone. `PlacementProperty.NoTwoBuffersLiveAtOnceShareAByte` asserts it over 1000 randomized sets under both strategies as well |
-| The sweep line property test against brute force in `NPUAllocatorTests` | `SweepLineProperty.TheSweepLineAgreesWithBruteForce`: 1000 randomized interval sets at seed 24301, 904 of them with more than one interval and a non zero peak. **The peak index is asserted as well as the value**, because the index is what the spill heuristic reads |
-| The compile time benchmark committed at four sizes | `experiments/compile_time_benchmark.py` at 500, 1000, 2000 and 5000 operations. Measured: 2.3, 4.6, 9.6 and 26.1 milliseconds, a mean exponent of 1.05 |
-| The three diagnostics each with a `-verify-diagnostics` test | multi block in `alloc-multiblock.mlir`, budget too small in `alloc-budget-too-small.mlir` in two shapes, unknown heuristic in `alloc-unknown-option.mlir` alongside unknown strategy and a bad alignment, all three at once because the pass reports every bad option rather than the first |
-| Both allocation strategies present and selectable | `strategy=pack` and `strategy=interval`, exercised on the same file by two run lines with two check prefixes in `scratchpad-alloc.mlir`, and against each other on seven models in `experiments/allocator_fragmentation.py` |
-| `fragmentation_ratio` computed and reported per model | The pass writes `npuisa.fragmentation_ratio` plus the two integers it is computed from. Per model, under both strategies, all seven models: `pack` between 1.0000 and 1.0178, `interval` between 1.0002 and 1.5030, `pack` never worse. The table is in `docs/ENGINEERING_LOG.md` |
-| Both spill heuristics, with the tie breaks Section 13.1 specifies | `@two_victims` in `spill-heuristic.mlir` is one program on which `longest-range` and `cost` choose different buffers, identified by the type of the spill slot rather than by an offset. Every tie break key has its own unit test in `AllocatorTest.cpp`, one key at a time |
-| The sweep line from the start, with its ordering rule | `ADeathAtTheSameIndexAsADefinitionComesFirst` and `ALastUseAtTheSameIndexIsStillLive` differ by one in one field and by a factor of two in the answer. `TheFirstIndexWithTheGreatestSumWins` pins the other half |
-| The spill trigger is offset assignment failing, never the peak exceeding the budget | `@the_trigger_is_placement_failure_not_the_peak`: the peak is 1536, the budget is 1536, so "peak exceeded budget" is false, and the interval placement still fails and spills. The same function under `pack` needs no spill at all |
-| Spill semantics per Section 13.1 | A `dma_store` after the definition and a `dma_load` before each later use, with the reload replacing that use, checked with `CHECK-NEXT` so the store really is adjacent to the definition |
-| The allocator counts the DMA it inserts, per Section 8 | `npuisa.spill_dma_count` on the function, plus an `inserted-dma` pass statistic |
-| `npuisa.scratchpad_bytes` and `npuisa.scratchpad_budget` set, per Section 8 | Both, plus the peak, the ratio and the two spill counts. Checked by value in every lit case |
-| Offsets as `memref.view` over one flat buffer, per Section 8 | A dedicated run line asserts that **no scratchpad buffer allocation survives anywhere in the module**, which a `CHECK-NOT` inside a labelled block could not do because it only covers the gap between two positive matches |
-| Multiple blocks diagnosed, not ignored | `@two_blocks` in `alloc-multiblock.mlir` |
-| The `computeBufferRange` question P4 left open | Answered, with the reasoning in `docs/ARCHITECTURE.md` as a marked P5 extension and five tests in `InterfaceTest.cpp`. A stride 0 view has a byte range and it is the range of the bytes it addresses |
-| `NPUAllocatorTests` built and its CI step switched on | `.github/workflows/ci.yml`, guard kept and the else branch turned into a failure, which is the shape `NPUInterfaceTests` took at P2 |
-| `docs/PASSES.md` updated in the same commit as the pass, per ground rule 12 | `24e93ee` carries both |
+| 300 or more malformed inputs | 734, printed by the test itself. Truncation at every count field boundary and on a sweep; the three cap boundary values for every count field the format has; out of range opcodes, element types, activations and memory spaces; shapes overflowing the product cap from both sides; malformed permutations and concatenation axes; the whole quantization field set; every debug section rule; bit flips across the header; and a hundred single byte changes at random offsets from a fixed seed |
+| None crash | `MalformedInput.TheUnvalidatedPathAndTheDisassemblerSurviveTheCorpus` walks all 734 through `decodeUnvalidated` and then the disassembler, which is the path with no validation in front of it, and the sanitizer build runs the same binary |
+| All rejected with a specific named check | `MalformedInput.EveryRejectionNamesACheck` asserts the message begins with the stable name. The corpus reaches **33 of 33** check names, printed |
+| None allocating more than a few megabytes, measured through an allocator hook | 25237 allocations across the corpus, worst single case **78064 bytes** against a budget of four megabytes, measured through a replaced global `operator new` counting total bytes requested. The test asserts the hook was called at all, because a replacement that lost the link would report zero for every case and pass |
+| ASan and UBSan clean over the corpus | `build-fuzz`, clang 21.1.8, `-fsanitize=address,undefined`, `UBSAN_OPTIONS=halt_on_error=1`: 75 passing, exit 0. It was **not** clean on the first run, which is D-0021 |
+| The libFuzzer target builds and runs clean for its budgeted time from the seed corpus | 1964713 runs in 61 seconds, no crashes, no artifacts. An earlier run from a grown corpus found D-0022 |
+| The property test passes 1000 iterations and re-encoding is byte identical, with `requantMultiplier` and `requantShift` round tripping | 1000 programs at seed `0x6e62696e5031365f`, 8741 instructions, largest file 5606 bytes. Structural equality **and** byte identical re-encoding are both asserted, and the generated programs are valid rather than merely well formed, so the round trip goes through `Program::decode`, which validates |
+| Every opcode including the quantization ones, every element type, sometimes a debug section | 16 of 16 opcodes, 3 of 3 element types, 403 of 1000 programs with a debug section, all printed. The test asserts the debug section is neither always nor never |
+| Adding a deliberate opcode to the description and nothing else fails the build in every layer that has no case for it | `-Werror=switch` over the generated `Opcode` enum with no `default`, in `Validation.cpp`'s semantic dispatch and `PropertyTest.cpp`'s builder. Recipe below |
+| The ISA staleness gate perturbed, shown red, restored | Twice, two different faults, both exit 1, both restored to exit 0. The first attempt was **green**, which is recorded below rather than tidied away |
+| `docs/ISA_MANUAL.md` documents the layout field for field, the byte order policy, `kMaxCount`, every validation rule by check name taken from the source, and the version policy | All five. The opcode table and the check table are generated from `NPUISADescription.td` and spliced between markers; everything else is hand written prose |
+| `npu-translate` fails and writes no output file on an operation it cannot encode, and the output file is not created before the encode result is known | `test/Encoding/diagnostics.mlir`, seven refusals, each asserting **twice**: that the message names the refusal, and that `not test -e %t.nbin` afterwards |
+| Multiple functions in a module diagnosed, not truncated | `Inputs/two-functions.mlir`, with a note attached per function |
+| `--strip-debug` | `objdump.mlir`'s STRIPPED prefix: zero debug entries, and the node names absent |
+| `decodeUnvalidated()` with a warning prefix | `objdump.mlir`'s WARN prefix, over a file corrupted by `dd` at a named byte offset |
+| The generated ISA description produces the opcode enum, `kMaxOpcode`, the arity and field presence rules, the disassembler format strings, the simulator dispatch skeleton, and the reachability checker's opcode list | Six artifacts from one `.td`. `check-reachability.py` now reports `layers checked: import, lowering, encoding` |
+| `NPUEncodingTests` CI step on | Guard kept, else branch turned into a failure, which is the shape `NPUInterfaceTests` took at P2 |
+| ISA staleness CI step on | Same shape, and it refuses to run against an untracked artifact |
+| The `sanitizers` job real | A clang build with `-fsanitize=address,undefined` in its own directory, the whole of `MalformedInputTest`, plus Section 3.3's budgeted minute of the coverage guided target |
+| `nightly.yml` fuzz job on | Thirty minutes, seeded from the committed corpus and all 734 exported cases |
+| Every later phase guard still prints its off line | `NPUSimulatorTests` P7, pytest slow cells P10, check-reachability full P8, nightly full matrix P10, mutation P15, flake P15 |
+| The spill slots have DRAM addresses, per P5's handoff | `Program::spillSlots`, placed after the constants in the DRAM map, found by the `npuisa.spill_slot` predicate rather than by an analysis |
+| The in and out argument convention decided and documented | `npuisa.arg` on every argument, written by the lowering, required by the encoder. The `docs/ARCHITECTURE.md` P6 extension carries the decision and the three alternatives |
+| `docs/PASSES.md` updated in the same commit as the pass change | `42562b7` carries both |
 
 ### Verification output
 
-Every command below was run on this branch at `3dc7c66`, from
+Every command below was run on this branch at `1e2f767`, from
 `/home/elijah/npu-mlir-v2`, in `~/npu-venv`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 15 discovered, 15 passed, 0 failed. Ten at P4, plus this phase's five |
-| `build/bin/NPUAllocatorTests` | 29 tests from 6 suites, 29 passed. Two of them are property tests at 1000 cases each |
-| `build/bin/NPUInterfaceTests` | 23 tests, 23 passed. Eighteen at P4, plus this phase's five |
-| `build/bin/NPUTilingTests` | 12 tests, 12 passed, untouched by this phase |
-| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0, unchanged from P4 |
+| `ninja -C build check-npu` | 18 discovered, 18 passed, 0 failed. Fifteen at P5, plus this phase's three |
+| `build/bin/NPUEncodingTests` | 77 tests from 12 suites, 76 passed, 1 skipped. The skip is the corpus export, which needs `NPU_CORPUS_OUT` |
+| `build/bin/NPUInterfaceTests` | 23 tests, 23 passed, untouched by this phase |
+| `build/bin/NPUAllocatorTests` | 29 tests, 29 passed, untouched |
+| `build/bin/NPUTilingTests` | 12 tests, 12 passed, untouched |
+| `build-fuzz/bin/NPUEncodingTests` under ASan and UBSan | 75 passed, 2 skipped, exit 0 |
+| `build-fuzz/bin/nbin_decode_fuzzer -max_total_time=60` | 1964713 runs in 61 seconds, no crashes |
+| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0, unchanged from P5 |
 | `mypy` | no issues found in 11 source files |
 | `black --check .` | 21 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 138 of 138 files |
+| `reuse lint` | compliant, 186 of 186 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
-| `python scripts/check-reachability.py --skip-models` | pass, import and lowering layers checked |
+| `python scripts/check-reachability.py --skip-models` | pass, `layers checked: import, lowering, encoding` |
+| `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `git status --short` | empty |
 
-**Three gtest binaries exist now, not two.** `NPUAllocatorTests` is this phase's
-and is the third. `NPUEncodingTests` is P6's and `NPUSimulatorTests` is P7's, per
-the activation table.
+**Four gtest binaries exist now, not three.** `NPUEncodingTests` is this
+phase's. `NPUSimulatorTests` is P7's, per the activation table.
 
 ## Activation proofs
 
-**One step activates at P5: `NPUAllocatorTests`.** Section 19.0 requires it be
-broken once deliberately, shown red, and restored, and this is that proof,
-performed on this branch and reproducible from the recipe below.
+**Four steps activate at P6**, and each was broken once deliberately, shown red,
+and restored. The recipes are below so the next person can repeat them rather
+than take this table's word for it.
 
-**The recipe, one line:**
+Every rehearsal was run under **the exact CI invocation**, inside
+`set -euo pipefail`, with no `--gtest_filter` naming the broken test. P3 and P5
+each recorded a proof that proved nothing the first time, and P6 recorded two
+more, so the distinction is not theoretical: filtering proves that a broken test
+fails, which was never in doubt, where what needs proving is that a failure
+inside the binary reaches the step's exit code.
+
+### 1. `NPUEncodingTests`
+
+**Product side fault, which measures the net.** Swap the two adjacent `i32`
+writes in `Program::encode`, so that `requantShift` is written before
+`requantMultiplier`. Files then decode with the pair exchanged, and every
+program carrying the identity pair comes back with a multiplier of zero.
+
+Result: 7 tests red across `RoundTrip`, `EncodingProperty` and `MalformedInput`,
+step exit 1. `check-npu` goes to 17 of 18 at `Encoding/objdump.mlir`, **but only
+since D-0024 was fixed**; before that it reported 18 of 18 against an encoder
+producing files that failed their own validator.
+
+**Test side fault, which isolates the step:**
 
 ```bash
-sed -i 's/return left.isDefinition < right.isDefinition;/return left.isDefinition > right.isDefinition;/' \
-    lib/Dialect/NPUISA/Transforms/ScratchpadAllocation.cpp
+sed -i 's/EXPECT_EQ(Program::kMaxCount, 1u << 28);/EXPECT_EQ(Program::kMaxCount, 1u << 27);/' \
+    unittests/Encoding/EncodingTest.cpp
 ```
 
-That inverts the sweep line's ordering at equal indices, so a death is no longer
-processed before a definition, which is the off by one Section 13.1 names as
-changing which buffer gets spilled.
+Result: `FrozenConstants.TheFormatsNumbers` red, step exit 1, `check-npu` still
+18 of 18. lit never compiles the unit tests, so nothing else can see it.
 
-**Rehearsed under the exact invocation the CI step uses**, which is
-`./build/bin/NPUAllocatorTests` with no arguments inside `set -euo pipefail`, and
-not under a `--gtest_filter` naming the test that was broken. That distinction is
-the whole point of the rehearsal and the engineering log records why: filtering
-proves that the broken test fails, which was never in doubt, where what needs
-proving is that a failure inside the binary reaches the step's exit code and
-turns the job red. Those are different claims. P3's handoff already recorded an
-activation proof that proved nothing the first time it was performed, and this is
-the same hazard wearing different clothes.
+### 2. The ISA staleness gate
 
-Result, rebuilt and run:
+**Fault A, the committed artifact:**
 
-- `SweepLine.ADeathAtTheSameIndexAsADefinitionComesFirst` failed, which is the
-  hand written case aimed straight at the rule.
-- `SweepLineProperty.TheSweepLineAgreesWithBruteForce` failed at **case 0 of
-  1000**, with the message naming the case number and the seed, so the property
-  test caught it on its first randomized input rather than needing a rare shape.
-- `PlacementProperty.NoTwoBuffersLiveAtOnceShareAByte` failed too, because the
-  placement reads the peak.
-- **The step exited 1.**
+```bash
+sed -i 's/| `MATMUL` | 4 |/| `MATMUL` | 44 |/' docs/ISA_MANUAL.md
+git commit -m "temp: perturb" -- docs/ISA_MANUAL.md
+bash scripts/check-isa-staleness.sh build
+git reset --soft HEAD~1 && git restore --staged --worktree docs/ISA_MANUAL.md
+```
 
-Restored with `git checkout --`, rebuilt, and the binary exits 0 with 29 of 29
-passing. `git status --short` is empty.
+The commit is not optional and that is the finding. The gate's subject is the
+**committed** artifact, and an uncommitted hand edit is overwritten by the
+regeneration the gate runs before it diffs.
+
+**Fault B, the description:**
+
+```bash
+sed -i 's/"Elementwise addition."/"Elementwise addition, saturating."/' \
+    include/NPU/Encoding/NPUISADescription.td
+bash scripts/check-isa-staleness.sh build
+```
+
+Both exit 1 with the diff printed. Restoring returns exit 0.
+
+### 3. The `sanitizers` job
+
+**The isolating fault**, which the gcc build cannot see: put D-0021's message
+back in `lib/Encoding/Validation.cpp`, so that the scratchpad range diagnostic
+reads `"... from " + to_string(addr) + " to " + to_string(addr + bytes)`.
+
+Result: `Validation.cpp:732:65: runtime error: signed integer overflow:
+9223372036854775807 + 64`, step exit 1, and the default gcc build still green,
+because the fault changes only a number inside a diagnostic string no test
+asserts.
+
+A product side fault for the same job is reverting D-0022's guard in
+`Disassembler.cpp`, which also lights the gcc build's `Disassembly` tests. Both
+were run.
+
+**The first attempt proved nothing.** Reverting the *other* half of D-0021, the
+operand extent comparison, left the job green: the corpus reaches the result
+range message and not that comparison. Recorded rather than adjusted, per
+Section 19.1.
+
+### 4. The `nightly.yml` fuzz job
+
+```bash
+sed -i 's/  if (!state.reader.atEnd())/  if (false \&\& !state.reader.atEnd())/' \
+    lib/Encoding/Program.cpp
+```
+
+Such a file decodes, validates, and re-encodes shorter than it came in, which is
+the round trip property the target asserts and which no unit test covers for an
+arbitrary mutated input.
+
+Result: `a file that decoded and validated did not re-encode to itself` within
+seconds, exit 77, crash artifact written. Restoring returns 1964713 runs in 61
+seconds with no artifacts.
+
+### Adding an opcode, which the gate asks for separately
+
+Append a sixteenth opcode to `include/NPU/Encoding/NPUISADescription.td` and
+build. The build fails in `Validation.cpp` and `PropertyTest.cpp`, at the two
+switches over `Opcode` that carry no `default`, until each has a case. If the
+record is incomplete the generator fails first, before any C++ is compiled. If
+the committed manual is not regenerated, the staleness gate fails after that.
 
 ## Open questions
 
-Five. None blocks the gate.
+Four. None blocks the gate.
 
-**The default spill heuristic is provisional and is marked so in three places.**
-Section 13.1 says the default is chosen with data, not intuition, and the
-ablation that produces that data needs the harness at P10 and the experiment at
-P13. `longest-range` is the default today because it is the simpler rule and the
-baseline, so a change at P13 will be a move towards the smarter rule with
-evidence behind it rather than away from one. **Whoever runs that ablation should
-change the default in the same commit as the data**, and not before.
+**The structure aware fuzzer was cut, deliberately, citing Section 2.**
+`fuzz/nbin_structured_fuzzer.cc` is the third item on Section 2's cut list,
+paired with mutation testing, and Section 2 says cutting it keeps the libFuzzer
+target and the seed corpus, which are the parts that find bugs nobody imagined.
+Both are here and both found defects this phase. The specific reason it went:
+libprotobuf-mutator is in neither the CI image nor this machine's toolchain, so
+it would have meant vendoring a dependency **and** maintaining a protobuf mirror
+of `Program` by hand, which is a second hand maintained copy of exactly the
+thing this phase's first commit exists to eliminate. **If it is ever
+reinstated**, Section 2's reduced definition of done says the README records
+what was struck; nothing else is owed.
 
-**The placement is quadratic in the buffer count and that is a measured
-decision, not an oversight.** Offset assignment scans every already placed buffer
-for each new one. The compile time benchmark says the linear term still dominates
-at 5000 operations, which is an order of magnitude longer than any model in the
-suite, so the interval tree that would fix it is not going in. The benchmark is
-committed; if P13's tiling makes functions much longer, rerun it before assuming
-this still holds.
+**`Instruction` carries an operand shape, which Section 9.1's field list does
+not name.** The list names operand addresses and operand strides. A stride
+vector with no extents beside it addresses nothing in particular, and no check
+in Section 9.2 could be written without one: `operand-extent` asks whether the
+consumer's need fits the buffer it reads, and for `MATMUL` the K extent appears
+in no result shape at all. It is documented field for field in
+`docs/ISA_MANUAL.md`. Flagged here rather than buried, because it is the one
+place the format is wider than the specification's prose.
 
-**The fragmentation ratio includes alignment padding.** The peak sums raw buffer
-sizes and the high water mark sums offsets rounded up to 64 bytes, so every
-published ratio has a floor slightly above 1.0 that has nothing to do with the
-packing algorithm. Measured on `lenet`, the effect is 32 bytes, or 0.02 percent.
-Separating the two would need a second peak definition and a second number to
-keep straight, and Section 13.1 defines the ratio the way the three papers it
-cites do. **P10 should carry this sentence into the result schema's field
-documentation** rather than leaving a reader to wonder why a chain reads 1.0002.
+**`HALT` at the end of a program is not a validation rule.** The encoder emits
+one and every program this compiler produces ends with one, but Section 9.2's
+check list carries no name for its absence, and inventing one would be inventing
+a rule the specification does not have. A file without a trailing `HALT` decodes
+and validates. **P7 decides what the simulator does when it runs out of
+instructions**; the manual says it stops.
 
-**The encoder inherits the spill slots.** A spilled value lives in a
-`memref.alloc` in `#npu.dram` marked `npuisa.spill_slot`, which is the one place
-in this compiler that allocates DRAM and which amends a sentence P4 wrote.
-`docs/ARCHITECTURE.md` states the obligation in one line: **the encoder gives
-each such allocation an address in the DRAM map, the way it already does for
-constants and for the input and output regions.** They are marked in the IR
-rather than inferred, so finding them is a predicate and not an analysis.
-
-**A spilled buffer that was loaded from DRAM is stored back to DRAM
-unnecessarily.** Section 13.1's spill semantics are a `dma_store` after the
-definition and a `dma_load` before each later use, and this pass implements
-exactly that. When the buffer's definition is itself a `dma_load` from a DRAM
-value that is still live, the value is already in DRAM and the store is
-redundant: the reload could read the original source. That would remove one
-transfer per spilled input. It is **not implemented**, deliberately, because it
-changes the DMA count and Section 13.1 specifies the semantics without it, and
-because the ablation of Section 16.2 compares against those semantics. If it is
-ever done it belongs with the tiling work at P13, in its own commit, with the
-DRAM byte counts before and after.
+**The `count-cap` check lives in the decoder and not in `validate()`.** Section
+9.2's third rule is about bounding a length before allocating from it, and the
+only place a length arrives from untrusted input is the decoder, which checks the
+cap and then checks the payload against the bytes that remain before reserving
+anything. A copy in `validate()` could only fire on a `Program` built in memory
+holding more than 2^28 of something, which is a branch no test can take, and
+ground rule 6 forbids code kept just in case.
 
 ## Next command
 
 ```bash
-git push -u origin phase/p5-allocation
+git push -u origin phase/p6-binary-format
 ```
 
-Then watch CI. **One step runs for the first time**: `NPUAllocatorTests`, which
-was guarded off since P0 and prints its own error now rather than an off line if
-the binary is missing. Its activation proof is above and was rehearsed locally
-under the same invocation, so a red run there means the image cannot build the
-binary, not that the tests are wrong; the configure log's `GoogleTest:` line is
-where to look, because CI resolves gtest from the system package where this
-machine resolves it from the LLVM build tree.
+Then watch CI. **Four steps run for the first time**: `NPUEncodingTests`, the
+ISA staleness gate, the whole `sanitizers` job, and, on its next schedule,
+`nightly.yml`'s fuzz job. Their activation proofs are above and every one was
+rehearsed locally under the same invocation, so a red run means the image
+differs from this machine rather than that the tests are wrong.
 
-Two other things are worth watching. `check-npu` reports 15 rather than 10.
-`reuse lint` sees `experiments/` for the first time, which is a new top level
-directory and therefore a new place for a missing SPDX header to hide.
+Three things are worth watching specifically.
+
+**The `sanitizers` job has never run in the image.** It needs `clang`, `lld` and
+the system GoogleTest, and it configures a second build directory. The step that
+greps for `Fuzzers: ON` is there so that an option which silently failed to take
+is a red step rather than a job quietly rebuilding what the main build already
+built.
+
+**`reuse lint` sees `fuzz/` for the first time**, which is a new top level
+directory and therefore a new place for a missing SPDX tag to hide. The corpus is
+covered by a `REUSE.toml` entry, because a `.nbin` cannot carry a header.
+
+**`check-npu` reports 18 rather than 15**, and `check-reachability --skip-models`
+now checks three layers rather than two.
 
 Then open the merge pull request.
 
 ## Next phase
 
-**P6, the binary format and the generated ISA.** Section 9 in full, plus the
-generated ISA description of Section 9.4 and the fuzzing of Section 17.3. It is
-the five to seven session phase, and the roadmap says why: generating the opcode
-enum after hand writing the encoder means writing the encoder twice.
+**P7, the simulator and the reference interpreter.** Every fp32 kernel of
+Section 10.1, the two port cost model with the single port reproducibility flag,
+`Stats`, the bounds checked accessors, the strict scratchpad sizing, and
+`python/npu_frontend/refexec.py`.
 
-Four things P5 leaves on P6's desk, all expanded in the open questions above:
+Five things P6 leaves on P7's desk.
 
-1. **The spill slots need DRAM addresses.** Every `memref.alloc` in `#npu.dram`
-   marked `npuisa.spill_slot` is a buffer the encoder must place, alongside the
-   constants and the input and output regions.
-2. **The six function attributes are the encoder's input.**
-   `npuisa.scratchpad_bytes` is what Section 9 calls `scratchpadBytes`, and
-   `npuisa.scratchpad_budget` is what the simulator sizes against.
-   `npuisa.fragmentation_ratio`, `npuisa.scratchpad_peak_bytes`,
-   `npuisa.spill_count` and `npuisa.spill_dma_count` are for the result cell at
-   P10 and are not part of the binary format unless P6 decides otherwise and
-   says so.
-3. **Allocated IR is what the encoder will see**, which means `memref.view` over
-   one flat arena and `memref.reinterpret_cast` above it, not typed
-   `memref.alloc` operations. An address is `computeBufferRange(value)->offset`,
-   which is the function the overlap rule already uses, so there is no second
-   place for the arithmetic to live.
-4. **P4's out parameter convention is still only positional**, and P4's handoff
-   already flagged that if P6 wants it explicit, an argument attribute is the
-   place. That question is now sharper, because the spill slots give the DRAM map
-   a third category of buffer.
+1. **The dispatch skeleton is generated and waiting.**
+   `build/include/NPU/Encoding/NPUISADispatch.def` is an X macro over every
+   opcode with a `NEEDS_KERNEL` flag. Expanding it is what makes a new opcode
+   with no kernel a build error rather than a runtime surprise, which is the
+   half of Section 9.4's claim this phase could not demonstrate because there is
+   no simulator yet.
+2. **`validate()` is called again before execution, by contract.** Section 9.3
+   says so, and the reason is that the two calls guard different moments. It is
+   cheap: the whole 734 case corpus validates in single digit milliseconds.
+3. **The scratchpad is sized strictly from `scratchpadBytes`.** Never grown to
+   cover the writes it finds. Every hand built test program in this phase sets
+   an explicit tight value with the arithmetic in a comment, and P7's should
+   too.
+4. **A kernel indexes its operands through their strides.** The rank 1 channel
+   broadcast of ADR 0005 arrives as a stride 0 operand and needs no special case
+   at all; an NHWC buffer arrives as NCHW extents with permuted strides. That is
+   the obligation `docs/ARCHITECTURE.md` placed on P7 at P4, and the format now
+   carries what it needs.
+5. **The namespace is `nbin`, not `npu`.** The dialect owns `mlir::npu`, and P7
+   is the first phase to include both headers in one translation unit.
 
 ## The frozen v1 fallback
 
