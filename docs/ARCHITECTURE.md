@@ -192,6 +192,40 @@ not permute constant data, and it represents a permutation of extents only. That
 pass materialises its own permuted constants and folds its own inverse
 transposes, which Section 12 already says it does.
 
+### Extension, P5: the DRAM spill slot
+
+*This subsection extends the memory model with something the allocator had to
+settle. It is marked as an extension for the same reason P4's is: a later reader
+should be able to tell which parts were designed before an allocator existed and
+which parts the allocator decided. **It amends a sentence in P4's extension
+above**, which is called out rather than left for somebody to notice, and the
+amendment is in the same commit as the code that needs it, per the rule this
+file sets for its own list of DMA producers.*
+
+**The allocator allocates DRAM, and it is the only thing that does.** P4's
+extension says that nothing below the tensor level allocates DRAM, and it said
+so to explain why a lowered function takes its outputs as trailing arguments.
+That reason still holds and the out parameter convention is unchanged. What has
+changed is that a spilled buffer needs somewhere to go: Section 13.1's spill
+semantics are a `dma_store` after the definition and a `dma_load` before each
+later use, and the store needs a destination that is not an input, not an output
+and not a constant. So `-npu-allocate-scratchpad` emits `memref.alloc` in
+`#npu.dram`, marked `npuisa.spill_slot`.
+
+The alternatives were considered and each is worse in a stateable way. A
+trailing function argument per slot would change the shape the encoder reads its
+input and output regions out of, which P4 fixed as "the first N are inputs and
+the last M are outputs"; adding a third category by position is how that
+convention becomes ambiguous. An `npuisa.const` would be a constant with data
+nobody wrote. Reusing the DRAM buffer a value was loaded from only works for
+values that came from DRAM, which is a special case masquerading as a rule.
+
+What this obliges P6 to do is exact, and it is one sentence: **the encoder gives
+each `npuisa.spill_slot` allocation an address in the DRAM map, the way it
+already does for constants and for the input and output regions.** The
+allocation is marked in the IR rather than inferred from context, so finding
+them is a predicate and not an analysis.
+
 ### Offsets are SSA operands, not attributes
 
 `AllocateScratchpad` assigns each allocation a byte offset, and materialises it
@@ -333,9 +367,21 @@ Later phases inherit these as decisions, not as suggestions:
 From the P4 extension above, on the same terms:
 
 - A lowered function takes its outputs as trailing DRAM arguments and returns
-  nothing. Nothing below the tensor level allocates DRAM.
+  nothing. Nothing below the tensor level allocates DRAM **except the allocator's
+  spill slots**, per the P5 extension, which is the one amendment this list has
+  taken.
 - The rank 1 channel broadcast is a stride 0 view over the loaded rank 1 buffer.
   No opcode for it, now or later, unless Section 5.4's instruction set is
   reopened and this file is amended in the same commit.
 - A layout encoding becomes a strided layout map over NCHW extents. Buffers are
   NCHW below the tensor level, always, whatever the tensor said.
+
+From the P5 extension, on the same terms:
+
+- A spilled value lives in a `memref.alloc` in `#npu.dram` marked
+  `npuisa.spill_slot`, and the encoder gives each of them a DRAM address. No
+  other pass allocates DRAM without amending this list in the same commit.
+- Every scratchpad offset is a multiple of 64 bytes by default, which is a row
+  of the 16 by 16 array at `f32`. The alignment is an option; the arena's own
+  allocation carries it too, because an aligned offset into an unaligned arena
+  is not aligned.

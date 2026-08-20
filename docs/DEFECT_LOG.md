@@ -544,3 +544,42 @@ None.
   loads and then `CHECK-NOT: npuisa.dma_load`, so it fails at seven and passes at
   three, and it is named after the claim rather than after the mechanism so that
   a later reader knows what it is defending.
+
+### D-0017 an int64_t pass option printed into a diagnostic as a character
+
+- **Found:** 2026-08-20, phase P5.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** on the parent of the fix, run
+
+  ```
+  npu-opt test/Dialect/NPUISA/scratchpad-alloc.mlir \
+      --npu-allocate-scratchpad=alignment=48
+  ```
+
+  The diagnostic reads `the alignment must be a positive power of two, but it
+  is 0`. The alignment given was 48. At 63 it reads `?`, at 96 a backtick, at
+  100 the letter `d`. Every one of them is the ASCII character whose code is the
+  number.
+- **What was wrong:** an ODS pass option of C++ type `int64_t` is generated as
+  an `llvm::cl::opt<int64_t>`, which converts to its data type through a user
+  defined conversion operator. Streaming one straight into an
+  `mlir::InFlightDiagnostic` picks the `char` overload of `Diagnostic::operator
+  <<` rather than the integer one, and the value is printed as a character.
+
+  Nothing about the allocation was wrong: the check itself read the right
+  number and refused the right values. What was wrong was the message, which is
+  the whole of what that code path exists to produce. A diagnostic that
+  misreports the number it was given is worse than no diagnostic, because
+  somebody acts on it: told the alignment is 0 when they passed 48, the obvious
+  conclusion is that the option was not read at all, and the next thing they do
+  is go looking in the pass manager rather than at their own value.
+
+  It is worth naming the shape of this rather than only the instance. Every
+  numeric pass option in this project is one `<<` away from the same bug, and
+  nothing about the code looks wrong at the point of use.
+- **Resolution:** the option is copied into a plain `const int64_t` before it is
+  used or printed, in both `readOptions` and `readBudget`, with a comment saying
+  why so that a later reader does not simplify it back. The regression test is
+  `test/Dialect/NPUISA/alloc-unknown-option.mlir`, which asserts the exact text
+  `but it is 48` under `-verify-diagnostics`. It fails against the character
+  form and passes against the fix.

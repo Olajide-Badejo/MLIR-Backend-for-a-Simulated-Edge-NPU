@@ -11,7 +11,9 @@
 # of the build that actually rewrites IR.
 
 add_mlir_dialect_library(MLIRNPUISATransforms
+        AllocateScratchpad.cpp
         LowerNPUToNPUISA.cpp
+        ScratchpadAllocation.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include/NPU/Dialect/NPUISA/Transforms
@@ -22,6 +24,7 @@ add_mlir_dialect_library(MLIRNPUISATransforms
         LINK_LIBS PUBLIC
         MLIRNPU
         MLIRNPUISA
+        MLIRArithDialect
         MLIRFuncDialect
         MLIRIR
         MLIRMemRefDialect

@@ -32,7 +32,7 @@ Section 12 of the build specification. This file describes the passes that
 | Pass | Level | Ablatable | Phase | Status |
 |---|---|---|---|---|
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
-| `-npu-allocate-scratchpad` | all | no | P5 | not yet written |
+| `-npu-allocate-scratchpad` | all | no | P5 | implemented |
 
 ---
 
@@ -306,5 +306,272 @@ by `-npu-fuse-ops` instead.
 
 ## `-npu-allocate-scratchpad`
 
-Not yet written. It lands at P5 with Section 13.1 in full, and this file gains
-its entry in the same commit.
+Assigns every scratchpad buffer a byte offset in one flat arena, and spills to
+DRAM when the offsets do not fit. Section 13.1 in full. Implemented in
+`lib/Dialect/NPUISA/Transforms/AllocateScratchpad.cpp`, with the arithmetic in
+`ScratchpadAllocation.cpp` beside it, registered by
+`mlir::npuisa::registerNPUISAPasses()`, and runnable from `npu-opt`.
+
+**Ablatable: no.** Section 12's table marks it so. Removing it leaves a program
+whose buffers have no addresses, which is not a program.
+
+**Ablation delta: not measured.** The harness lands at P10.
+
+### What it does
+
+Four steps, and the order of the middle two is the part that is easy to get
+backwards.
+
+1. **Liveness**, over the `memref.alloc` operations in `#npu.scratchpad` of a
+   single block function. Each range runs from the allocation to the last
+   operation that reads or writes that memref. **A use through a view is a use
+   of the buffer**: the walk follows `memref.view`, `memref.subview`,
+   `memref.reinterpret_cast` and `memref.cast`, so the rank 1 broadcast of
+   ADR 0005 keeps its scale buffer alive for as long as the multiply reads it.
+   Sizes come from the memref type and its element type, through the same
+   `computeBufferRange` the overlap rule of Section 8 measures with, so the
+   allocator and the aliasing analysis cannot disagree about how large a buffer
+   is.
+2. **The sweep line.** One event list of `(index, +size)` at each definition and
+   `(lastUse + 1, -size)` at each death, sorted once and walked once. O(n log n)
+   for the sort and O(n) for the walk. The first index with a strictly greater
+   sum wins the peak, and at equal indices deaths are ordered before
+   definitions.
+3. **Offset assignment**, in one of two strategies, described below.
+4. **Spilling**, if and only if step 3 failed.
+
+**The peak is a lower bound, not a placement test, and the spill trigger is
+"offset assignment failed".** Peak simultaneous live bytes is the smallest arena
+any placement could possibly need. Fragmentation means a program whose peak sits
+under the budget can still fail to place, so a trigger of "peak exceeded budget"
+would spill when it need not and fail to spill when it must. The two questions
+have different answers on a real program, and
+`test/Dialect/NPUISA/spill-heuristic.mlir` carries the one that separates them:
+a function whose peak is exactly the budget, which the packer places and the
+interval scheme does not.
+
+Every allocation is then replaced by a `memref.view` at a constant byte offset
+over one flat `memref<Nxi8, #npu.scratchpad>`, which is Section 8's rule that
+the offset is an SSA operand rather than a discardable attribute. `N` is the
+high water mark, not the budget: the arena is what was used.
+
+### The two offset assignment strategies
+
+Selected with `strategy=`, and both are present because Section 13.1 asks for
+the production algorithm and a named baseline to measure it against.
+
+| Value | What it does |
+|---|---|
+| `pack` (default) | The greedy by size offset calculation algorithm [R28], the one TFLite Micro's arena planner ships. Buffers are placed largest first |
+| `interval` | The named baseline: the same placement rule in definition order, which is the interval scheme this project started from |
+
+Both share one placement rule, and the sharing is the point: the difference
+between them is the order and nothing else. For each buffer, gather the already
+placed buffers whose live ranges overlap this one, walk their occupied byte
+ranges in increasing offset order, and take the first gap the buffer fits in,
+rounding the candidate offset up to the alignment after every block it skips.
+
+Ties break deterministically, per ground rule 16:
+
+- `pack`: larger bytes first, then longer span, then earlier definition index.
+- `interval`: earlier definition index, then larger bytes, then longer span.
+
+Offsets are aligned to 64 bytes by default, because the array of Section 5.3 is
+16 by 16 and consumes a row of 16 `f32` lanes at a time, which is 64 bytes. The
+alignment is a pass option so a test can pin it. **Sizes are not padded**, only
+offsets aligned, so the high water mark is the last byte genuinely occupied.
+
+### The fragmentation ratio
+
+`npuisa.fragmentation_ratio` is the assigned high water mark divided by the
+sweep line peak, which Section 13.1 calls the headline allocator metric and
+which TelaMalloc [R26], MiniMalloc [R27] and the TFLite Micro planner [R28] all
+report. It is 1.0 when the placement achieves the lower bound.
+
+The two integers it is computed from are written on the function beside it, so a
+reader can check the ratio rather than trust it.
+`experiments/allocator_fragmentation.py` reports it per model under both
+strategies.
+
+### The two spill heuristics
+
+Selected with `spill-heuristic=`. The candidate set is the buffers live across
+the pressure peak index.
+
+| Value | The rule |
+|---|---|
+| `longest-range` (default) | The longest live range crossing the peak |
+| `cost` | A Belady style rule: `cost = bytes * (1 + reloads)` where `reloads` is the number of uses strictly after the peak index, and the **smallest** cost is spilled |
+
+Ties break deterministically. `cost` breaks them by larger bytes first, then
+longer span, then earlier definition index, which is Section 13.1 word for word.
+`longest-range` uses the same three keys with span promoted to the front, so
+that an ablation between the two heuristics is not partly a measurement of two
+different tie breakers.
+
+**The default is provisional and is marked as such.** Section 13.1 requires the
+default to be chosen with data from the ablation across the whole suite, and
+that harness lands at P10 with the experiment at P13. `longest-range` is the
+simpler rule and the baseline, so changing the default later will be a move
+*towards* the smarter rule with evidence behind it rather than away from one.
+
+### Spilling, and what it emits
+
+Section 13.1's semantics exactly: a `npuisa.dma_store` after the definition and
+a `npuisa.dma_load` before each later use, with the reload replacing that use.
+This is the **second of the three permitted DMA producers** of Section 8, and
+the count is written on the function as `npuisa.spill_dma_count` so the sum over
+the three is checkable.
+
+The reload gets its own `memref.alloc`, which participates in liveness like any
+other buffer. That is why the pass recollects everything from the IR after every
+spill instead of patching a side table: a second spill round that had not seen
+the reloads would mis-size the peak, which Section 13.1 names as the failure.
+
+A buffer is **spillable** only if all of the following hold, and each has a
+reason rather than a convention:
+
+| Rule | Why |
+|---|---|
+| exactly one writer | the semantics are a store after *the* definition, and a buffer written twice has two |
+| no view of it | a view is a second SSA name for the same bytes, and rewriting only the direct uses would leave the view reading a buffer whose contents had moved |
+| not a reload, and not already spilled | both would let the loop spill its own output, which is how a spill loop fails to terminate |
+| at least one read after the write | spilling a buffer nothing reads later adds a transfer and shortens no live range |
+| an identity layout | `dma_store` requires its operands to agree, and a permuted buffer has no DRAM counterpart without deciding what order to write it in. That decision belongs to the relayouting transfer Section 12 marks as a future extension |
+
+**The spill slot is a `memref.alloc` in `#npu.dram`**, marked with
+`npuisa.spill_slot`. This is the one place in the compiler that allocates DRAM,
+and it amends the P4 sentence in `docs/ARCHITECTURE.md` that nothing below the
+tensor level does; the amendment is recorded there as a marked P5 extension.
+
+### The function attributes it sets
+
+| Attribute | Meaning |
+|---|---|
+| `npuisa.scratchpad_budget` | the budget the allocation was made against |
+| `npuisa.scratchpad_bytes` | the arena actually used, which is the assigned high water mark |
+| `npuisa.scratchpad_peak_bytes` | the sweep line peak, the lower bound the above is measured against |
+| `npuisa.fragmentation_ratio` | the first divided by the second |
+| `npuisa.spill_count` | buffers spilled |
+| `npuisa.spill_dma_count` | DMA operations this pass inserted |
+
+The budget comes from the `budget` pass option if it was given, then from the
+function's `npuisa.scratchpad_budget` attribute, then from the default of
+1048576 bytes. The option wins over the attribute because the option is a
+command line override and the attribute is data the driver wrote. The attribute
+is written back either way, so after this pass a function always says which
+budget it was allocated against.
+
+**One mebibyte is inherited, not invented.** It is the budget the previous build
+of this project called the default and reported every generous budget cell at,
+and Section 15 requires each model's tight budget to be a fraction of the peak
+observed at the default. Moving it silently would move every tight budget cell
+in the project's history at once.
+
+### Before and after
+
+Input, a three buffer chain of 1 x 8 x 4 x 4 `f32`, which is 512 bytes apiece:
+
+```mlir
+func.func @chain(%in: memref<1x8x4x4xf32, #npu.dram>,
+                 %out: memref<1x8x4x4xf32, #npu.dram>) {
+  %a = memref.alloc() : memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.dma_load %in, %a
+    : memref<1x8x4x4xf32, #npu.dram> to memref<1x8x4x4xf32, #npu.scratchpad>
+  %b = memref.alloc() : memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.relu ins(%a : memref<1x8x4x4xf32, #npu.scratchpad>)
+              outs(%b : memref<1x8x4x4xf32, #npu.scratchpad>)
+  %c = memref.alloc() : memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.relu ins(%b : memref<1x8x4x4xf32, #npu.scratchpad>)
+              outs(%c : memref<1x8x4x4xf32, #npu.scratchpad>)
+  npuisa.dma_store %c, %out
+    : memref<1x8x4x4xf32, #npu.scratchpad> to memref<1x8x4x4xf32, #npu.dram>
+  return
+}
+```
+
+Output. Three buffers, two offsets: `%c` takes `%a`'s bytes back, because `%a`
+died at the first relu.
+
+```mlir
+func.func @chain(%arg0: memref<1x8x4x4xf32, #npu.dram>,
+                 %arg1: memref<1x8x4x4xf32, #npu.dram>)
+    attributes {npuisa.fragmentation_ratio = 1.000000e+00 : f64,
+                npuisa.scratchpad_budget = 1048576 : i64,
+                npuisa.scratchpad_bytes = 1024 : i64,
+                npuisa.scratchpad_peak_bytes = 1024 : i64,
+                npuisa.spill_count = 0 : i64,
+                npuisa.spill_dma_count = 0 : i64} {
+  %alloc = memref.alloc() {alignment = 64 : i64, npuisa.scratchpad_arena}
+         : memref<1024xi8, #npu.scratchpad>
+  %c0 = arith.constant 0 : index
+  %view = memref.view %alloc[%c0][]
+        : memref<1024xi8, #npu.scratchpad> to memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.dma_load %arg0, %view
+    : memref<1x8x4x4xf32, #npu.dram> to memref<1x8x4x4xf32, #npu.scratchpad>
+  %c512 = arith.constant 512 : index
+  %view_0 = memref.view %alloc[%c512][]
+          : memref<1024xi8, #npu.scratchpad> to memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.relu ins(%view : memref<1x8x4x4xf32, #npu.scratchpad>)
+              outs(%view_0 : memref<1x8x4x4xf32, #npu.scratchpad>)
+  %c0_1 = arith.constant 0 : index
+  %view_2 = memref.view %alloc[%c0_1][]
+          : memref<1024xi8, #npu.scratchpad> to memref<1x8x4x4xf32, #npu.scratchpad>
+  npuisa.relu ins(%view_0 : memref<1x8x4x4xf32, #npu.scratchpad>)
+              outs(%view_2 : memref<1x8x4x4xf32, #npu.scratchpad>)
+  npuisa.dma_store %view_2, %arg1
+    : memref<1x8x4x4xf32, #npu.scratchpad> to memref<1x8x4x4xf32, #npu.dram>
+  return
+}
+```
+
+A buffer whose type carries a strided layout map, which is what an NHWC tensor
+lowers to, gets the view at its extents followed by a `memref.reinterpret_cast`
+that restores the layout, because `memref.view` requires an identity layout on
+its result. The bytes are the same bytes: a permutation layout spans exactly the
+contiguous extent its shape does.
+
+### What it refuses, by name
+
+| Refused | Because |
+|---|---|
+| a function with more than one block | Section 8. Liveness here is an ordering of one straight line stream, and an index in a second block is not comparable with one in the first |
+| a budget too small even after everything spillable has been spilled | Section 13.1. The message carries the budget, the size of the buffer that could not be placed, the offset it wanted, and the sweep line peak as a lower bound, so a reader can tell whether a larger budget could ever help |
+| an unknown `strategy` or `spill-heuristic` value | Section 13.1: a typo must not silently select a heuristic nobody asked for. The message names the offending string and lists the accepted values |
+| an alignment that is not a positive power of two | the rounding is a mask |
+| an allocation whose byte size cannot be computed | Section 13.1 takes sizes from the type, so a buffer it cannot measure is refused rather than guessed at |
+| a malformed `npuisa.scratchpad_budget` attribute | a silent replacement by the default would produce a valid program allocated against a budget nobody asked for, and the number would travel into a result cell as though it had been measured |
+
+**Every bad option is reported, not just the first**, so somebody who mistyped
+two of them does not fix one, rerun, and discover the second.
+
+### Where it does not fire
+
+Section 12's negative test rule.
+
+- **A function that has already been allocated is left exactly as it is**, which
+  is the idempotence guard. It is not decoration: the arena is itself a
+  scratchpad allocation, so a second run without the guard would allocate an
+  arena for the arena and grow the program every time the pipeline ran. The
+  guard is the `npuisa.scratchpad_bytes` attribute.
+- **A function with nothing to allocate gets the attributes and no arena.** Zero
+  is written down rather than left absent, because an absent attribute and an
+  attribute of zero are different claims and only one of them says the allocator
+  ran.
+- **At a budget nothing needs spilling for, nothing is spilled.** A spiller with
+  only positive tests would pass them all while spilling unconditionally, and
+  the cost of that would be invisible in a lit file and very visible in the DRAM
+  traffic numbers three phases later.
+
+### Tests
+
+| File | What it pins |
+|---|---|
+| `test/Dialect/NPUISA/scratchpad-alloc.mlir` | the offsets, by value, under both strategies: fits, reuse after death, no reuse while live, alignment rounding, fragmentation, the strided layout, the broadcast view, and the two negative cases |
+| `test/Dialect/NPUISA/spill-heuristic.mlir` | the spill trigger, the emitted store and reload, the two heuristics choosing differently on one program, and the negative case at a generous budget |
+| `test/Dialect/NPUISA/alloc-budget-too-small.mlir` | the budget diagnostic, under `-verify-diagnostics` |
+| `test/Dialect/NPUISA/alloc-multiblock.mlir` | the multi block, unmeasurable size and malformed budget refusals |
+| `test/Dialect/NPUISA/alloc-unknown-option.mlir` | all three option refusals at once |
+| `unittests/Dialect/NPUISA/AllocatorTest.cpp` | Section 17.2's property test, the placement invariant over the same randomized sets, and every tie break |
+| `experiments/compile_time_benchmark.py` | the growth curve at 500, 1000, 2000 and 5000 operations |
+| `experiments/allocator_fragmentation.py` | the fragmentation ratio per model under both strategies |

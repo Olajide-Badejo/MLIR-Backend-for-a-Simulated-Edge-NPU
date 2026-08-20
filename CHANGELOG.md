@@ -6,6 +6,55 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P5: scratchpad allocation
+
+- **`-npu-allocate-scratchpad` exists.** Every `memref.alloc` in
+  `#npu.scratchpad` is replaced by a `memref.view` at a constant byte offset
+  over one flat `memref<Nxi8, #npu.scratchpad>`, which is Section 8's rule that
+  an offset is an SSA operand and not a discardable attribute. This is a user
+  visible change in the shape of the IR the pipeline produces: after this pass
+  there are no typed scratchpad allocations left, and two buffers that are never
+  live together share bytes.
+- **Liveness follows views.** A use through a `memref.reinterpret_cast`,
+  `memref.view`, `memref.subview` or `memref.cast` is a use of the buffer
+  underneath, so the rank 1 scale buffer of ADR 0005 stays live for as long as
+  the multiply reads it.
+- **Both offset assignment strategies are selectable**, through
+  `strategy=pack`, the greedy by size algorithm TFLite Micro's arena planner
+  ships, and `strategy=interval`, the named baseline that places in definition
+  order. They produce different placements on the same program: the
+  fragmentation case in `test/Dialect/NPUISA/scratchpad-alloc.mlir` comes out at
+  768 bytes under one and 1024 under the other, for a peak of 768.
+- **Both spill heuristics are selectable**, through
+  `spill-heuristic=longest-range` and `spill-heuristic=cost`. The default is
+  `longest-range` and it is **provisional**: Section 13.1 requires the default to
+  be chosen with ablation data, which lands at P13.
+- **Spilling emits a `dma_store` after the definition and a `dma_load` before
+  each later use**, which is the second of the three permitted DMA producers of
+  Section 8. The count is recorded on the function so the sum over the three is
+  checkable.
+- **The allocator allocates DRAM, for spill slots only.** A spilled value lives
+  in a `memref.alloc` in `#npu.dram` marked `npuisa.spill_slot`. This amends
+  P4's statement that nothing below the tensor level allocates DRAM;
+  `docs/ARCHITECTURE.md` records the amendment and the obligation it places on
+  the encoder at P6.
+- **Six new function attributes**, which the encoder and the simulator read:
+  `npuisa.scratchpad_budget`, `npuisa.scratchpad_bytes`,
+  `npuisa.scratchpad_peak_bytes`, `npuisa.fragmentation_ratio`,
+  `npuisa.spill_count` and `npuisa.spill_dma_count`. The default budget is
+  1048576 bytes when a function carries none.
+- **New diagnostics.** A multi block function, a budget too small even after
+  everything spillable has been spilled, an unknown `strategy` or
+  `spill-heuristic` value, an alignment that is not a positive power of two, an
+  allocation whose size cannot be computed, and a malformed
+  `npuisa.scratchpad_budget` attribute are each refused by name. Every bad
+  option is reported rather than only the first.
+- **`NPUAllocatorTests` exists** and its CI step is switched on, per the
+  activation table. It carries Section 17.2's property test at 1000 randomized
+  interval sets and a fixed seed.
+- **`experiments/` exists**, with the compile time benchmark of Section 13.1 at
+  four sizes and the per model fragmentation ratio report.
+
 ### Phase P4: lowering to `npuisa`
 
 - **`-npu-lower-to-npuisa` exists.** It converts the `npu` tensor dialect to

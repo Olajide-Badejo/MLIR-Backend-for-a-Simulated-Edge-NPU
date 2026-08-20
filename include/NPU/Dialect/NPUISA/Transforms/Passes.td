@@ -68,4 +68,96 @@ def NPULowerToNPUISA : Pass<"npu-lower-to-npuisa", "::mlir::ModuleOp"> {
   ];
 }
 
+def NPUAllocateScratchpad
+    : Pass<"npu-allocate-scratchpad", "::mlir::func::FuncOp"> {
+  let summary = "Assigns every scratchpad buffer a byte offset in one arena.";
+  let description = [{
+    Section 13.1. Liveness runs over the `memref.alloc` operations in the
+    scratchpad space of a straight line function, each range running from the
+    allocation to the last operation that reads or writes that memref. Sizes
+    come from the memref type and its element type.
+
+    Peak pressure is computed with a **sweep line**: one event list of
+    `(index, +size)` at each definition and `(lastUse + 1, -size)` at each
+    death, sorted once and walked once. The first index with a strictly greater
+    sum wins the peak, and at equal indices deaths are ordered before
+    definitions.
+
+    **The peak is a lower bound, not a placement test.** Fragmentation means a
+    program whose peak sits under the budget can still fail to place, so the
+    spill trigger is "offset assignment failed" and never "peak exceeded
+    budget".
+
+    Each buffer is then assigned a byte offset and rewritten as a `memref.view`
+    over one flat `memref<Nxi8, #npu.scratchpad>`, which is Section 8's rule
+    that the offset is an SSA operand rather than a discardable attribute. A
+    buffer whose type carries a strided layout map gets a `memref.view` at its
+    extents followed by a `memref.reinterpret_cast` that restores the layout,
+    because `memref.view` requires an identity layout on its result.
+
+    When offset assignment fails, one buffer live across the pressure peak is
+    spilled: a `npuisa.dma_store` after its definition and a `npuisa.dma_load`
+    before each later use, with the reload replacing that use. That is the
+    second of the three permitted DMA producers of Section 8, and the count is
+    recorded on the function. A budget too small even after everything
+    spillable has been spilled is a diagnostic with the numbers in it, never a
+    wrong program.
+
+    The function comes out carrying `npuisa.scratchpad_budget`,
+    `npuisa.scratchpad_bytes`, `npuisa.scratchpad_peak_bytes`,
+    `npuisa.fragmentation_ratio`, `npuisa.spill_count` and
+    `npuisa.spill_dma_count`. A function that already carries
+    `npuisa.scratchpad_bytes` is left alone, which makes the pass idempotent:
+    the arena is itself a scratchpad allocation, and a second run without that
+    guard would allocate an arena for the arena.
+
+    This pass is **not ablatable**, per Section 12: removing it produces no
+    program at all, so an ablation of it measures nothing.
+  }];
+
+  let options = [
+    Option<"strategy", "strategy", "std::string", "\"pack\"",
+           "The offset assignment strategy: 'pack', the greedy by size "
+           "algorithm of TFLite Micro's arena planner, or 'interval', the "
+           "named baseline that places in definition order. An unknown value "
+           "is a diagnostic naming it and listing the accepted values.">,
+    Option<"spillHeuristic", "spill-heuristic", "std::string",
+           "\"longest-range\"",
+           "Which buffer to spill: 'longest-range', the longest live range "
+           "crossing the pressure peak, or 'cost', the Belady style rule "
+           "bytes * (1 + reloads) with the smallest cost spilled. The default "
+           "is provisional and Section 13.1 requires it to be chosen with the "
+           "ablation data that lands at P13.">,
+    Option<"budget", "budget", "int64_t", "-1",
+           "The scratchpad budget in bytes. Minus one means take it from the "
+           "function's npuisa.scratchpad_budget attribute, or from the default "
+           "of 1048576 when the function carries none.">,
+    Option<"alignment", "alignment", "int64_t", "64",
+           "The byte alignment of every assigned offset. A positive power of "
+           "two. The default is 64 because the array of Section 5.3 consumes "
+           "a row of 16 f32 lanes at a time.">,
+  ];
+
+  let statistics = [
+    Statistic<"allocatedBuffers", "allocated-buffers",
+              "Scratchpad buffers given an offset">,
+    Statistic<"allocatedBytes", "allocated-bytes",
+              "Assigned high water mark, summed over functions">,
+    Statistic<"peakBytes", "peak-bytes",
+              "Sweep line peak, summed over functions">,
+    Statistic<"spilledBufferCount", "spilled-buffers",
+              "Buffers spilled to DRAM">,
+    Statistic<"insertedDmaCount", "inserted-dma",
+              "DMA operations this pass inserted, per Section 8's count">,
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect",
+    "::mlir::memref::MemRefDialect",
+    "::mlir::npu::NPUDialect",
+    "::mlir::npuisa::NPUISADialect",
+  ];
+}
+
 #endif // NPUISA_PASSES
