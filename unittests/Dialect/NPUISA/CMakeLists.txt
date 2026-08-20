@@ -17,7 +17,17 @@
 # what lets this binary build in CI, where the LLVM prefix is an install rather
 # than a build tree and the bundled targets do not exist.
 
+# PARTIAL_SOURCES_INTENDED on both targets in this directory. LLVM's build
+# system enforces one target per directory and rejects a second one without it.
+# The second target is intended and is not a convenience: Section 6's layout
+# puts InterfaceTest.cpp and AllocatorTest.cpp side by side here, and Section
+# 19.0's activation table switches NPUInterfaceTests on at P2 and
+# NPUAllocatorTests at P5. One binary carrying both would mean the P2 guard
+# silently running P5's tests, which is the failure mode that table exists to
+# prevent.
+
 add_llvm_executable(NPUInterfaceTests
+        PARTIAL_SOURCES_INTENDED
         InterfaceTest.cpp
         )
 
@@ -39,6 +49,35 @@ target_link_libraries(NPUInterfaceTests
         MLIRMemRefDialect
         MLIRParser
         MLIRIR
+        MLIRSupport
+        ${NPU_GTEST_LIBRARIES}
+        )
+
+# NPUAllocatorTests, the binary the activation table switches on at P5. It holds
+# Section 17.2's property test: the sweep line peak against a brute force
+# recomputation on randomized interval sets, plus the tie breaks of the two
+# spill heuristics and the offset arithmetic.
+#
+# It links MLIRNPUISATransforms rather than MLIRNPUISA, because what it tests
+# lives in ScratchpadAllocation.cpp on the transforms side. It needs no dialect
+# and no parser: the whole point of keeping the allocator's arithmetic free of
+# IR is that a thousand interval sets can be generated as integers rather than
+# as modules.
+
+add_llvm_executable(NPUAllocatorTests
+        PARTIAL_SOURCES_INTENDED
+        AllocatorTest.cpp
+        )
+
+llvm_update_compile_flags(NPUAllocatorTests)
+
+target_include_directories(NPUAllocatorTests SYSTEM PRIVATE
+        ${NPU_GTEST_INCLUDE_DIRS}
+        )
+
+target_link_libraries(NPUAllocatorTests
+        PRIVATE
+        MLIRNPUISATransforms
         MLIRSupport
         ${NPU_GTEST_LIBRARIES}
         )

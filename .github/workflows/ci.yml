@@ -16,6 +16,7 @@
 # configure, build, check-npu.
 # Added at P1: check-reachability --skip-models, DIALECT_REFERENCE.md staleness.
 # Added at P2: NPUInterfaceTests, and the coverage job at a threshold of 0.
+# Added at P5: NPUAllocatorTests.
 # Everything else prints its off line.
 
 name: ci
@@ -291,14 +292,31 @@ jobs:
             exit 1
           fi
 
-      - name: "NPUAllocatorTests (activation table: P5)"
+      # NPUAllocatorTests: ON at P5. The guard stays in place rather than being
+      # deleted, for the same reason it did for NPUInterfaceTests at P2: it is
+      # what the activation table asks for. Now that the phase has arrived, an
+      # unsatisfied guard means the binary did not build, and reporting that as
+      # "waiting for a phase" would be the activation table's own failure mode,
+      # so the else branch fails rather than printing an off line.
+      #
+      # It carries Section 17.2's property test: the sweep line peak against a
+      # brute force recomputation over 1000 randomized interval sets at a fixed
+      # seed, plus the placement invariant over the same sets under both offset
+      # assignment strategies. The seed is a constant in the source, so a red
+      # run here reproduces locally from the case number in the message.
+      - name: "NPUAllocatorTests (activation table: P5, on)"
         run: |
           set -euo pipefail
           if [ -x build/bin/NPUAllocatorTests ]; then
             ./build/bin/NPUAllocatorTests
           else
-            echo "NPUAllocatorTests: OFF until P5 (activation table 19.0)."
-            echo "NPUAllocatorTests: guard is build/bin/NPUAllocatorTests existing."
+            echo "::error::NPUAllocatorTests did not build."
+            echo "NPUAllocatorTests: this step is ON from P5, so a missing binary"
+            echo "NPUAllocatorTests: is a build failure rather than a phase that has"
+            echo "NPUAllocatorTests: not arrived. Check the configure log for the"
+            echo "NPUAllocatorTests: 'GoogleTest:' line: the image must carry"
+            echo "NPUAllocatorTests: libgtest-dev for the system package fallback."
+            exit 1
           fi
 
       - name: "NPUEncodingTests (activation table: P6)"
