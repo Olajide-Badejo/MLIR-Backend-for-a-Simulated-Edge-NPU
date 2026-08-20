@@ -214,6 +214,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # /usr/lib/x86_64-linux-gnu/cmake/GTest, so no source build is needed; older
 # Debian derivatives shipped sources only, which is why the smoke test at the
 # end of this stage checks for the config file rather than assuming it.
+# libclang-rt-18-dev carries the sanitizer runtime archives
+# (libclang_rt.asan*.a and friends) that -fsanitize=address,undefined links
+# against. Ubuntu packages them separately from clang itself, so an image with
+# clang but without this package can compile with the sanitizers and then fail
+# at the first link, which is exactly how the sanitizers job died on its first
+# CI run (D-0025). The version is pinned to the clang this base ships.
 RUN apt-get update && apt-get install --no-install-recommends --yes \
       build-essential \
       ca-certificates \
@@ -221,6 +227,7 @@ RUN apt-get update && apt-get install --no-install-recommends --yes \
       clang \
       cmake \
       git \
+      libclang-rt-18-dev \
       libgtest-dev \
       lld \
       ninja-build \

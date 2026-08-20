@@ -902,3 +902,23 @@ None.
   the span from the start of the input to the first match, which is where the
   warning block is. Re-measured with the same fault: `check-npu` now reports 17
   of 18 with `NPU :: Encoding/objdump.mlir` red, and restoring returns 18 of 18.
+
+### D-0025 the sanitizers job died at its first link for want of the clang runtime archives
+
+- **Found:** 2026-08-20, phase P6, by the sanitizers job on its first ever CI
+  run (run 32339476756), at the CMake compiler check, before any project file
+  compiled.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** in the CI image, compile any file with
+  `clang++ -fsanitize=address,undefined` and link it. The link fails with
+  `cannot find libclang_rt.asan_static-x86_64.a`.
+- **What was wrong:** Ubuntu ships clang and its sanitizer runtime archives in
+  separate packages, and the image installed `clang` without
+  `libclang-rt-18-dev`. The local rehearsal ran under WSL's clang 21, whose
+  runtimes are installed, so the gap was invisible until the job ran where it
+  ships. Compiling works; only the link fails; CMake's try-compile catches it
+  at configure.
+- **Resolution:** `libclang-rt-18-dev` baked into the image's final stage per
+  the environment pinning rule (a job time apt install would resolve
+  differently as mirrors move), image republished, dev image repinned to the
+  new digest.
