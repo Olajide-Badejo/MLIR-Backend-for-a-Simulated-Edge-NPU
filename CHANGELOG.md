@@ -6,6 +6,16 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P4: lowering to `npuisa`
+
+- **A dynamic extent is now refused by the `npu` dialect's type constraints**
+  rather than reaching a verifier that aborted on it. `NPU_FloatTensor`,
+  `NPU_QuantTensor` and `NPU_AnyTensor` are `StaticShapeTensorOf` instead of
+  `RankedTensorOf`, which is what `NPUTypes.td` has claimed since P1. This
+  narrows what the dialect accepts: `tensor<?x4xf32>` no longer parses on any
+  `npu` operation, where before it parsed and then aborted the tool inside
+  `npu.reshape`. Defect D-0015. `docs/DIALECT_REFERENCE.md` changes 46 operand
+  rows from "ranked tensor of" to "statically shaped tensor of".
 ### Phase P3: the ONNX frontend and the model suite
 
 - **`onnxscript` is a dependency now.** torch's dynamo exporter imports it at

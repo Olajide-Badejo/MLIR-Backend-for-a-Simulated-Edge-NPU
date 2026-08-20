@@ -93,15 +93,15 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `lhs` | ranked tensor of 32-bit float values |
-| `rhs` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `lhs` | statically shaped tensor of 32-bit float values |
+| `rhs` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -159,14 +159,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `input` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -221,18 +221,18 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float values |
-| `gamma` | ranked tensor of 32-bit float values |
-| `beta` | ranked tensor of 32-bit float values |
-| `mean` | ranked tensor of 32-bit float values |
-| `variance` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `input` | statically shaped tensor of 32-bit float values |
+| `gamma` | statically shaped tensor of 32-bit float values |
+| `beta` | statically shaped tensor of 32-bit float values |
+| `mean` | statically shaped tensor of 32-bit float values |
+| `variance` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -279,14 +279,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `inputs` | variadic of ranked tensor of 32-bit float or 8-bit signless integer values |
-| `destination` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `inputs` | variadic of statically shaped tensor of 32-bit float or 8-bit signless integer values |
+| `destination` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `result` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
@@ -337,7 +337,7 @@ Effects: `MemoryEffects::Effect{}`
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `result` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
@@ -403,16 +403,16 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float values |
-| `filter` | ranked tensor of 32-bit float values |
-| `bias` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `input` | statically shaped tensor of 32-bit float values |
+| `filter` | statically shaped tensor of 32-bit float values |
+| `bias` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -469,13 +469,13 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `inputs` | variadic of ranked tensor of 32-bit float or 8-bit signless integer values |
+| `inputs` | variadic of statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `result` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
@@ -517,16 +517,16 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `lhs` | ranked tensor of 32-bit float values |
-| `rhs` | ranked tensor of 32-bit float values |
-| `bias` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `lhs` | statically shaped tensor of 32-bit float values |
+| `rhs` | statically shaped tensor of 32-bit float values |
+| `bias` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -582,14 +582,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `input` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -630,15 +630,15 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `lhs` | ranked tensor of 32-bit float values |
-| `rhs` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `lhs` | statically shaped tensor of 32-bit float values |
+| `rhs` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -675,14 +675,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float values |
-| `destination` | ranked tensor of 32-bit float values |
+| `input` | statically shaped tensor of 32-bit float values |
+| `destination` | statically shaped tensor of 32-bit float values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float values |
+| `result` | statically shaped tensor of 32-bit float values |
 
 
 
@@ -724,13 +724,13 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `input` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `result` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
@@ -781,14 +781,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `input` | ranked tensor of 32-bit float or 8-bit signless integer values |
-| `destination` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `input` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
+| `destination` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `result` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
@@ -823,7 +823,7 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `value` | ranked tensor of 32-bit float or 8-bit signless integer values |
+| `value` | statically shaped tensor of 32-bit float or 8-bit signless integer values |
 
 
 
