@@ -663,6 +663,24 @@ public:
     if (StringAttr visibility = function.getSymVisibilityAttr())
       lowered.setSymVisibilityAttr(visibility);
 
+    // Which arguments are inputs and which are outputs, said in the IR rather
+    // than left to be counted.
+    //
+    // *Added at P6.* P4 fixed the shape, the first N arguments are the model's
+    // and the last M are the outputs it returned, and P4's handoff flagged
+    // that if the encoder wanted the split explicit then an argument attribute
+    // was the place. This is that decision. Nothing about the order changes;
+    // what changes is that the encoder reads the split instead of inferring
+    // it, so a pass that appends an argument in the wrong place is a
+    // diagnostic rather than a silently mislabelled input region. The
+    // attribute is written here because this is the pass that performs the
+    // split and therefore the only one that knows the answer for certain.
+    auto in = rewriter.getStringAttr(npuisa::kArgKindIn);
+    auto out = rewriter.getStringAttr(npuisa::kArgKindOut);
+    for (size_t index = 0; index < converted.size(); ++index)
+      lowered.setArgAttr(static_cast<unsigned>(index), npuisa::kArgKindAttrName,
+                         index < inputs.size() ? in : out);
+
     // Which arguments the body actually reads has to be asked before the
     // signature is converted, because afterwards the original arguments are
     // gone. An argument nothing reads gets no load: a transfer whose result is

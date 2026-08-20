@@ -683,3 +683,242 @@ None.
   against the fix, shown both ways. The pooling case is there because the two
   operations share the verifier body and a fix that missed one would be
   invisible otherwise.
+
+### D-0020 a reshape could lose elements and validate
+
+- **Found:** 2026-08-20, phase P6.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** build a `Program` holding a `DMA_LOAD` of a 4 by 4 f32 buffer,
+  then a `RESHAPE` reading that buffer and declaring a result shape of `{4}`,
+  then a `DMA_STORE` of four elements, with an output region of four elements
+  so that nothing downstream is out of range. Call `validate()`. Before the
+  fix it returned nothing: sixteen elements went in, four came out, and the
+  file was accepted. `Validation.ResultShapeCatchesAReshapeThatLosesElements`
+  in `unittests/Encoding/ValidationTest.cpp` is that program.
+- **What was wrong:** `docs/ISA_MANUAL.md` and the `shapeRule` field of the
+  `RESHAPE` record in `include/NPU/Encoding/NPUISADescription.td` both state
+  that a reshape's element counts agree in and out. Nothing enforced it.
+  `Program::validate()` dispatched `RESHAPE` to the case that means "nothing
+  semantic beyond the generated rules", which is true of `RELU` and was not
+  true here.
+
+  It is a documentation defect and a validation defect at the same time, and
+  that pairing is what makes it worth an entry: the generated manual said a
+  rule existed, so a reader had every reason to believe it did. Section 9.4's
+  whole argument is that a description which cannot lie is better than four
+  hand maintained places that agree by discipline, and this is the residue of
+  that argument. The description carries the rule as prose in a `shapeRule`
+  string, prose is not generated into code, and the gap between the two is
+  exactly where this sat.
+
+  The consequence was bounded rather than unbounded, which is worth being
+  precise about. A short reshape does not read or write out of range: the
+  operand extent check bounds what it reads and the result range check bounds
+  what it writes. What it does is copy the wrong number of elements and leave
+  the rest of the destination holding whatever was there, which is a silent
+  wrong answer at P7 rather than a trap.
+- **Why the first regression test proved nothing, which is the more useful
+  half of this entry.** The case was found while writing the corpus of Section
+  17.3, as `reshape that loses elements`, built by changing the opcode and the
+  result shape of the base program's relu and nothing else. That case is
+  rejected with or without the fix, because leaving the rest of the program
+  alone leaves the following `DMA_STORE` reading sixty four bytes out of the
+  sixteen the reshape wrote, and `operand-extent` refuses it one instruction
+  later. The corpus test passed before the fix and after it.
+
+  A regression test that passes before the fix is not a regression test. The
+  one that counts had to be built so that the reshape's element count is the
+  **only** rule the program breaks: the store reads exactly what the reshape
+  wrote, and the output region is exactly what the store writes. It fails
+  before and passes after, shown both ways.
+- **Resolution:** `checkReshape` in `lib/Encoding/Validation.cpp`, dispatched
+  from the per opcode semantic switch, reporting `result-shape`. That name
+  rather than a new one because Section 9.2's list is what it is and inventing
+  a name would be inventing a rule the specification does not have; and
+  `result-shape` is what is wrong, since the operand is whatever it is and the
+  result shape is the one field a reshape gets to choose. The check's
+  description in the ISA description was extended to say so, which regenerates
+  into the manual.
+
+### D-0021 the validator's own range messages overflowed a signed integer
+
+- **Found:** 2026-08-20, phase P6, by UndefinedBehaviorSanitizer on the first
+  real run of the sanitizers job's build.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** build with clang and
+  `-fsanitize=address,undefined -fno-omit-frame-pointer`, then run
+  `NPUEncodingTests`. The corpus case `result address at the signed limit` sets
+  a result address of `INT64_MAX` in a program whose result is sixty four
+  bytes. `Program::validate()` rejects it, correctly, and then builds the
+  message:
+
+  ```
+  lib/Encoding/Validation.cpp:734:65: runtime error: signed integer overflow:
+  9223372036854775807 + 64 cannot be represented in type 'int64_t'
+  ```
+
+- **What was wrong:** four diagnostics said "the result runs from A to A plus
+  N", computing the end of a range that the check immediately above had just
+  established does not fit in memory. The addition is exactly the arithmetic
+  the range check exists to refuse, performed one line after refusing it.
+
+  A fifth site was not a message. `operand.address + span > *end` in the
+  operand extent check is a **comparison**, and it overflows for the same
+  reason: a file is free to declare a memory of nearly 2^64 bytes, so
+  `fitsInMemory` can pass an address near the signed limit through to a
+  comparison that adds a span to it.
+
+  **The consequence is small in practice and the reason it is worth an entry is
+  not the consequence.** On the machines this runs on the addition wraps, the
+  message prints a negative number, and the file is still rejected by the check
+  that already decided. What signed overflow actually is, though, is undefined
+  behaviour, and a compiler is entitled to assume it cannot happen. The
+  assumption it would draw from the comparison site is that
+  `operand.address + span` does not overflow, which is to say that
+  `operand.address` is small, which is a fact the compiler could then use to
+  simplify the range check above it. That is how a bounds check disappears, and
+  it is the shape of thing this project's whole validation layer exists to
+  prevent.
+
+  It is also a direct hit for the sanitizers job, which Section 19.0 activates
+  at this phase. The job found a real defect in the code it was switched on to
+  watch, on its first real run, in a path no hand written test reaches: nothing
+  in `ValidationTest.cpp` uses an address near the signed limit, because a
+  human writing a test picks a number like 4096.
+- **Resolution:** the four messages say "runs from A for N bytes" instead of
+  naming the end, which removes the arithmetic from the message entirely. The
+  comparison is `span > *end - operand.address`, which cannot overflow: the end
+  comes from a written span that contains the address, so the difference is at
+  least one. The regression test is the corpus case above, which UBSan already
+  fails against the old code and passes against the new, and the whole corpus
+  now runs clean under both sanitizers.
+
+### D-0022 the disassembler multiplied an unvalidated shape without a guard
+
+- **Found:** 2026-08-20, phase P6, by `fuzz/nbin_decode_fuzzer` under
+  UndefinedBehaviorSanitizer, on a run seeded from a corpus a previous run had
+  grown.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** `fuzz/corpus/regression_d0022_stride_overflow.nbin`, the
+  minimized crash input, 2580 bytes. Or directly:
+  `Disassembly.AStrideProductThatOverflowsDoesNotUndefineTheListing` in
+  `unittests/Encoding/EncodingTest.cpp`, which builds an operand with shape
+  `{8935141660703064067, 3}` and strides `{3, 1}`.
+
+  ```
+  lib/Encoding/Disassembler.cpp:98:16: runtime error: signed integer overflow:
+  3 * 8935141660703064067 cannot be represented in type 'long'
+  ```
+
+- **What was wrong:** `operandText` decides whether to print an operand's
+  strides by walking them against the contiguous layout its shape implies,
+  accumulating `expected *= operand.shape[index]`. Every other multiplication
+  of an extent in this subsystem is guarded, because Section 9.2's first rule
+  says to test before multiplying. This one was not, and the reason it was not
+  is worth naming: the rest of the disassembler's inputs come from a program
+  that validated, and it is easy to forget that this particular function does
+  not.
+
+  **`npu-objdump` decodes without validating.** That is the single reason
+  `decodeUnvalidated` exists. So every extent this function sees is whatever
+  the file claimed, and a claimed extent of nine quintillion is not an unlikely
+  input, it is the ordinary case for the tool's whole purpose.
+
+  The strides needed to be exactly the contiguous ones for the walk to reach
+  the overflowing extent rather than break early, which is why no hand written
+  test found it: a person writing a malformed operand writes a *wrong* stride
+  vector, and this one is right.
+- **Resolution:** the same overflow safe form the validator uses, testing
+  `expected > Program::kShapeLimit / extent` before multiplying, with a
+  non positive extent treated as not contiguous. The regression test is the
+  named case above, plus `contiguous strides over an overflowing shape` in the
+  corpus, which reaches it through the same unvalidated path the tool takes.
+  The minimized input is committed as a seed, per Section 17.3.
+
+### D-0023 an instruction with a missing operand disassembled to a blank line
+
+- **Found:** 2026-08-20, phase P6, while reading the listing of the minimized
+  crash input from D-0022.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:**
+  `Disassembly.AMissingMandatoryOperandStillPrintsTheInstruction` in
+  `unittests/Encoding/EncodingTest.cpp`: a `DMA_LOAD` with no operands at all,
+  which is what a corrupt file carries and what the `arity` check refuses.
+  Before the fix its listing line was `0000  ` and nothing else.
+- **What was wrong:** the format string renderer drops a brace group whose
+  operand reference is absent, which is how an optional bias disappears without
+  leaving an empty slot. `renderTokens` implemented that by building into a
+  local string and returning false **before** appending anything, so the same
+  early return at the **top level** discarded everything already rendered for
+  that instruction, the opcode mnemonic included.
+
+  The consequence is small and lands in the worst possible place. `npu-objdump`
+  exists so that a file which does not validate can still be looked at, and the
+  instruction somebody is looking for is the broken one. Printing a blank line
+  for exactly that instruction is the tool failing at its only job, silently.
+
+  It is also a good argument for reading a tool's output rather than only
+  asserting on it. Every disassembly test in this phase was written against
+  programs whose operands are present, because a test author writes the case
+  they are thinking about. This turned up in three seconds of looking at a real
+  listing.
+- **Resolution:** `renderTokens` takes a `dropOnMissing` flag. Group contents
+  keep the drop behaviour; the top level substitutes `<missing operand N>` and
+  prints everything else. The regression test asserts both that the mnemonic
+  appears and that the line is not blank.
+
+### D-0024 a CHECK-NOT below the listing it was meant to guard
+
+- **Found:** 2026-08-20, phase P6, while measuring how far the product side
+  activation fault reached.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** swap the two adjacent `i32` writes in `Program::encode` so that
+  `requantShift` is written before `requantMultiplier`, rebuild, and run
+  `ninja -C build check-npu`. Before the fix the suite reported 18 of 18
+  passing, against an encoder that produced a file failing its own validator.
+- **What was wrong:** `test/Encoding/objdump.mlir` carried
+  `// DUMP-NOT: WARNING` **after** the last `DUMP-NEXT`. A `CHECK-NOT` only
+  covers the span between the directives around it, so that one covered the
+  tail of the listing and nothing else, and the warning block it was written to
+  forbid appears at the very top.
+
+  The chain that made it invisible is worth writing out, because each link is
+  reasonable on its own. `npu-translate` validates the `Program` **in memory**
+  before it writes anything, which is the right thing to do and catches encoder
+  defects that corrupt the record. It does not validate the bytes it then
+  writes, so an encoder that serialises a correct record incorrectly gets past
+  it. `npu-objdump` reads those bytes, fails validation, and prints its warning
+  block above a listing whose every line still matched, because swapping two
+  fields that both round trip through the same instruction does not move any
+  address or shape. The suite scanned underneath the warning and saw nothing.
+- **What the finding actually is.** The P5 handoff's lesson says a product side
+  fault proves the whole net and usually lights the earliest gate, and this one
+  lit nothing except the step it was aimed at. Section 19.1's rule is that a
+  fault caught by a different job than expected is a finding to record rather
+  than a fault to adjust, and the same applies with more force to a fault caught
+  by no other job at all: the net in front of the encoder's *output* was one
+  badly placed directive deep, and only the unit tests were holding it.
+- **Resolution:** the `DUMP-NOT` moved above the first `DUMP`, where it covers
+  the span from the start of the input to the first match, which is where the
+  warning block is. Re-measured with the same fault: `check-npu` now reports 17
+  of 18 with `NPU :: Encoding/objdump.mlir` red, and restoring returns 18 of 18.
+
+### D-0025 the sanitizers job died at its first link for want of the clang runtime archives
+
+- **Found:** 2026-08-20, phase P6, by the sanitizers job on its first ever CI
+  run (run 32339476756), at the CMake compiler check, before any project file
+  compiled.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** in the CI image, compile any file with
+  `clang++ -fsanitize=address,undefined` and link it. The link fails with
+  `cannot find libclang_rt.asan_static-x86_64.a`.
+- **What was wrong:** Ubuntu ships clang and its sanitizer runtime archives in
+  separate packages, and the image installed `clang` without
+  `libclang-rt-18-dev`. The local rehearsal ran under WSL's clang 21, whose
+  runtimes are installed, so the gap was invisible until the job ran where it
+  ships. Compiling works; only the link fails; CMake's try-compile catches it
+  at configure.
+- **Resolution:** `libclang-rt-18-dev` baked into the image's final stage per
+  the environment pinning rule (a job time apt install would resolve
+  differently as mirrors move), image republished, dev image repinned to the
+  new digest.

@@ -7,3 +7,4 @@
 # the pipeline and the simulator join in their own phases.
 
 add_subdirectory(Dialect)
+add_subdirectory(Encoding)

@@ -377,6 +377,63 @@ failure at the first query. It also keeps the dialect library free of a
 dependency on the SCF and tensor tiling stack, which matters because that stack
 is large and the dialect library is linked into everything.
 
+### Extension, P6: the function boundary is explicit, and the DRAM map
+
+*This subsection settles the question P4 raised and P5 sharpened, and adds the
+one thing the encoder had to decide for itself. It is marked as an extension for
+the same reason the other two are. Nothing above is contradicted; one thing
+above is made checkable that was previously only conventional.*
+
+**Every argument of a lowered function says whether it is an input or an
+output.** `-npu-lower-to-npuisa` writes `npuisa.arg`, a string attribute holding
+`"in"` or `"out"`, on each argument of the function it produces, and the encoder
+refuses a function whose arguments do not all carry one.
+
+The order is unchanged: the model's own arguments first, its outputs appended
+after them, so argument N of the lowered function is still argument N of the
+model. What changed is that the split is **stated** rather than counted. P4 left
+it positional and its handoff said that if P6 wanted it explicit then an
+argument attribute was the place; P5 sharpened the question by adding spill
+slots as a third category of DRAM buffer, which made "the last M are outputs"
+one rule among several rather than the whole story.
+
+The alternatives were considered. A function level count of the outputs is one
+integer instead of N attributes, and it is exactly one off by one away from
+mislabelling every region; a per argument attribute cannot be off by one.
+Inferring the kind from the DMA at the boundary, an output being a DRAM buffer
+that is written and never read, works until an argument is neither, which is a
+legal program: `test/Dialect/NPUISA/lowering.mlir` already carries a function
+with an argument nothing reads. Leaving it positional was the third option and
+it is what this extension exists to replace, for one reason: a convention the
+compiler cannot check is a convention that breaks quietly, and the failure it
+produces is a `.nbin` that runs and reads its input out of the buffer meant for
+its output.
+
+**The lowering does not add the attribute to a function it decided was already
+lowered.** The idempotence guard makes that function legal and the pass leaves
+legal functions alone, so hand written `npuisa` IR that wants to be encodable
+carries its own attributes. `@an_already_lowered_function_is_untouched` in
+`lowering.mlir` is written that way for exactly this reason.
+
+**The DRAM map is laid out by the encoder, in one order, and nothing else
+assigns a DRAM address.** Inputs, then outputs, then constants, then the
+allocator's spill slots, each aligned to 64 bytes. The alignment matches the
+scratchpad's so that a DMA never starts on a different alignment at each end.
+This discharges the obligation the P5 extension placed on P6 in one sentence:
+every `npuisa.spill_slot` allocation gets an address the way constants and
+arguments already do.
+
+**A scratchpad address is `computeBufferRange(value)->offset` and there is no
+second implementation.** That is the same function the asynchronous overlap rule
+uses. Two implementations of "where does this buffer live" would eventually
+disagree, and the disagreement would be a wrong answer rather than a crash.
+
+**The binary format's C++ namespace is `nbin`, not `npu`.** The tensor level
+dialect already owns `mlir::npu`, and a second `::npu` would be ambiguous in
+every translation unit that said `using namespace mlir;` and then named either
+one. This is a small thing recorded in a binding list because it is a decision
+somebody would otherwise relitigate at P7 while writing the simulator.
+
 ### What this section binds
 
 Later phases inherit these as decisions, not as suggestions:
@@ -416,3 +473,16 @@ From the P5 extension, on the same terms:
   of the 16 by 16 array at `f32`. The alignment is an option; the arena's own
   allocation carries it too, because an aligned offset into an unaligned arena
   is not aligned.
+
+From the P6 extension, on the same terms:
+
+- Every argument of a lowered function carries `npuisa.arg`, holding `"in"` or
+  `"out"`. A pass that adds, removes or reorders an argument sets it. A
+  positional inference of the same fact anywhere is a defect.
+- The DRAM map is inputs, outputs, constants, spill slots, in that order, 64
+  byte aligned, assigned by the encoder. No other component assigns a DRAM
+  address.
+- A scratchpad address comes from `mlir::npuisa::computeBufferRange`. A second
+  implementation of that arithmetic is a defect.
+- The binary format lives in the C++ namespace `nbin`. Not `npu`, which the
+  dialect owns.

@@ -37,8 +37,8 @@
 // =============================================================================
 
 // CHECK-LABEL: func.func @one_load_per_dram_value(
-// CHECK-SAME:      %[[X:[^:]*]]: memref<1x3x8x8xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT:[^:]*]]: memref<1x8x8x8xf32, #npu.dram>)
+// CHECK-SAME:      %[[X:[^:]*]]: memref<1x3x8x8xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[OUT:[^:]*]]: memref<1x8x8x8xf32, #npu.dram> {npuisa.arg = "out"})
 //
 // The argument enters the scratchpad exactly once.
 // CHECK:         %[[XSP:[a-z_0-9]+]] = memref.alloc() : memref<1x3x8x8xf32, #npu.scratchpad>
@@ -158,10 +158,10 @@ func.func @nothing_between_a_convolution_and_its_activation(
 // =============================================================================
 
 // CHECK-LABEL: func.func @two_in_two_out_is_two_loads_and_two_stores(
-// CHECK-SAME:      %[[A:[^:]*]]: memref<1x4x4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[B:[^:]*]]: memref<1x4x4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT0:[^:]*]]: memref<1x4x4x4xf32, #npu.dram>,
-// CHECK-SAME:      %[[OUT1:[^:]*]]: memref<1x4x4x4xf32, #npu.dram>)
+// CHECK-SAME:      %[[A:[^:]*]]: memref<1x4x4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[B:[^:]*]]: memref<1x4x4x4xf32, #npu.dram> {npuisa.arg = "in"},
+// CHECK-SAME:      %[[OUT0:[^:]*]]: memref<1x4x4x4xf32, #npu.dram> {npuisa.arg = "out"},
+// CHECK-SAME:      %[[OUT1:[^:]*]]: memref<1x4x4x4xf32, #npu.dram> {npuisa.arg = "out"})
 // CHECK:         npuisa.dma_load %[[A]]
 // CHECK:         npuisa.dma_load %[[B]]
 // CHECK-NOT:     npuisa.dma

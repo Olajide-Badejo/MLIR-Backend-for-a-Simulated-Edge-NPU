@@ -11,13 +11,13 @@
 # that is a command rather than a paragraph.
 #
 # Base pin. The digest is the manifest digest buildx reported when
-# .github/workflows/llvm-image.yml republished the image on 2026-08-19 with
-# googletest and the MLIR Python bindings (containerimage.digest in the run
-# output, run id 32223127919). The previous digest, 008fcc74..., is the P0
-# bindings-less image and stays resolvable in GHCR for anyone reproducing the
-# P0 or P1 CI runs. The tag stays in front of the digest for the human reader;
-# the digest is what docker resolves.
-FROM ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8@sha256:43f2f9d67fd66629a9cc2de4db1d46ebb68d9c2ea12e0f3dba3af4ce35e631fb
+# .github/workflows/llvm-image.yml republished the image on 2026-08-20 with
+# the clang sanitizer runtimes, D-0025 (containerimage.digest in the run
+# output, run id 32340077290). The earlier digests stay resolvable in GHCR for
+# reproducing earlier CI runs: 008fcc74... is the P0 bindings-less image and
+# 43f2f9d6... is the P2 image without the sanitizer runtimes. The tag stays in
+# front of the digest for the human reader; the digest is what docker resolves.
+FROM ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8@sha256:2841c079e0ea8a1aba404d19bd3fe842be4e4918e0e9471b81f0629c361b2076
 
 LABEL org.opencontainers.image.title="npu-mlir-dev" \
       org.opencontainers.image.description="npu-mlir development image: LLVM and MLIR llvmorg-22.1.8 plus the pinned Python toolchain" \

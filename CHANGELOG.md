@@ -6,6 +6,104 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P6: the binary format and the generated ISA
+
+- **The instruction set is described once, in
+  `include/NPU/Encoding/NPUISADescription.td`.** The `Opcode` enum, `kMaxOpcode`,
+  the arity, field presence, memory space and element type rules the validator
+  reads, the validation check names, the disassembler's format strings, the
+  simulator's dispatch skeleton, the opcode table in `docs/ISA_MANUAL.md` and the
+  opcode list `scripts/check-reachability.py` reads are all generated from it by
+  `npu-isa-tblgen`. Before this they were four hand maintained places that
+  nothing but discipline kept consistent.
+- **`ninja -C build npu-isa-doc` regenerates `docs/ISA_MANUAL.md` and
+  `docs/ISA_OPCODES.json`**, and `scripts/check-isa-staleness.sh` is the CI gate
+  that fails when the committed artifacts drift from the description. It is the
+  same shape as the `DIALECT_REFERENCE.md` gate that has run since P1, so there
+  is one staleness mechanism in this project rather than two.
+- **`scripts/check-reachability.py` decides the encoding layer from
+  `docs/ISA_OPCODES.json`** rather than by searching a source file for the
+  operation's mnemonic. This is a user visible change to what the check reports:
+  the encoding layer becomes decidable from this phase, and the `--skip-models`
+  run now says `layers checked: import, lowering, encoding`.
+- **`docs/ISA_MANUAL.md` exists**, written like a small processor manual.
+- **The `.nbin` binary format exists**, at `Program::kVersion = 1`. A fixed
+  header, then input regions, output regions, constants with their data, the
+  allocator's spill slots, the instructions, and an optional debug section, each
+  length prefixed by a `u32` count and none of them tagged. The byte order is
+  **host order**, so a `.nbin` is not portable across byte orders, and the
+  manual says so plainly rather than claiming little endian.
+- **`ElemType` is `{ F32 = 0, I8 = 1, I32 = 2 }` and every instruction carries a
+  `scale`, a `zeroPoint`, a `requantMultiplier` and a `requantShift` from
+  version 1.** Those fields, and nothing broader, are what let P14 land without
+  a version bump.
+- **`Program::kMaxCount` is `1 << 28`**, one constant applied to every `u32`
+  count field, reported by the `count-cap` check. The decoder additionally
+  refuses any count whose payload cannot fit in the bytes that remain, before
+  anything is reserved.
+- **`Program::validate()` implements all thirty three checks of Section 9.2**
+  and returns a structured error naming the check and the instruction index.
+  `Program::decodeUnvalidated()` exists for `npu-objdump`.
+- **`-npu-lower-to-npuisa` writes `npuisa.arg` on every argument of the function
+  it produces**, holding `"in"` or `"out"`. This is a user visible change to the
+  IR the pass emits. The argument order is unchanged; what is new is that the
+  input and output split is stated rather than counted, and the encoder refuses
+  a function without it. `docs/ARCHITECTURE.md` records the decision and the
+  alternatives, and `docs/PASSES.md` records the behaviour.
+- **The encoder assigns the DRAM map**: inputs, then outputs, then constants,
+  then the allocator's `npuisa.spill_slot` allocations, each aligned to 64
+  bytes. That discharges the obligation P5 left on this phase.
+- **`npu-translate` exists.** Allocated `npuisa` IR in, a `.nbin` out, with
+  `--strip-debug` for an empty debug section. It fails and writes no output file
+  on an operation it cannot encode, and the output file is not created before
+  the encode result is known. A module holding more than one function is
+  diagnosed rather than truncated.
+- **`npu-objdump` exists.** It disassembles a `.nbin`, and it decodes without
+  validating so that a suspect file can still be dumped, with a warning block
+  naming the check that rejected it.
+- **The debug section is populated from MLIR locations**, so a pipeline
+  assembled with a pipe needs `npu-opt --mlir-print-debuginfo` for the ONNX node
+  names to survive as far as the encoder. Without it the binary carries an empty
+  debug section, which is legal.
+- **`NPUEncodingTests` exists**, the fourth GoogleTest binary. It carries the
+  round trips and the frozen constants, every named check of Section 9.2
+  triggered once, the property test of Section 17.2 at 1000 iterations and a
+  fixed seed, and the seed and regression corpus of Section 17.3 at 733 cases.
+- **A `RESHAPE` whose result holds a different number of elements from its
+  operand is now rejected**, by the `result-shape` check. The manual stated the
+  rule and nothing enforced it.
+- **`fuzz/nbin_decode_fuzzer` exists**, behind `-DNPU_ENABLE_FUZZERS=ON`, which
+  needs a clang toolchain. It decodes, validates, and asserts two properties
+  beyond crash freedom: a file it accepts re-encodes to exactly the bytes it
+  came from, and a file it frames survives the disassembler. `fuzz/corpus/`
+  carries eight seeds, every one produced by the tools rather than typed, and
+  `fuzz/README.md` carries the recipe that regenerates them.
+- **Four range diagnostics changed wording**, from "runs from A to B" to "runs
+  from A for N bytes". This is a user visible change to error messages. The old
+  form computed `A + N` for a range the check had just refused, which is signed
+  overflow when the address is near the limit; the operand extent comparison had
+  the same defect and was not only a message. Found by
+  UndefinedBehaviorSanitizer over the corpus, recorded as D-0021.
+- **`npu-objdump` prints an instruction whose mandatory operand is missing**,
+  as `<missing operand N>`, where it used to print a blank line and drop the
+  opcode with it. That is the tool failing at its only job on exactly the file
+  it exists for. Recorded as D-0023.
+- **The disassembler no longer overflows on an unvalidated shape.** Deciding
+  whether to print an operand's strides walked the contiguous layout its shape
+  implies, multiplying extents without a guard, on the one path in the project
+  that runs before validation. Found by `nbin_decode_fuzzer`, minimized, and
+  committed as a corpus seed. Recorded as D-0022.
+- **Four CI activations**, per the table in Section 19.0: the
+  `NPUEncodingTests` step, the ISA staleness step, the `sanitizers` job, which
+  becomes a real clang build with `-fsanitize=address,undefined` plus a
+  budgeted minute of the coverage guided target, and `nightly.yml`'s fuzz job,
+  which runs for thirty minutes from the committed corpus and the exported
+  seeds.
+- **`scripts/check-isa-staleness.sh` compares against `HEAD` rather than the
+  index.** A hand edit to the committed manual passed the gate, because
+  regeneration overwrote it before the diff ran. Found while rehearsing the
+  activation proof.
+
 ### Phase P5: scratchpad allocation
 
 - **`-npu-allocate-scratchpad` exists.** Every `memref.alloc` in

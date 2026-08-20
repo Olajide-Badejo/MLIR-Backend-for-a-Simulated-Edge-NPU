@@ -44,6 +44,8 @@ tool_dirs = [config.npu_tools_dir, config.llvm_tools_dir]
 tools = [
     "mlir-opt",
     "npu-opt",
+    "npu-translate",
+    "npu-objdump",
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

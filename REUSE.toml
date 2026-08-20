@@ -37,6 +37,28 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2025 Olajide Badejo <olajideayomidebadejo@gmail.com>"
 SPDX-License-Identifier = "MIT"
 
+# The fuzz seed corpus. These are binary files whose exact bytes are the test,
+# and three of them sit exactly one byte away from a valid file. A header would
+# not merely be inconvenient here, it would change the input the seed exists to
+# be. fuzz/README.md carries the recipe that regenerates every one of them, so
+# the corpus is reproducible rather than merely present.
+[[annotations]]
+path = "fuzz/corpus/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
+# The generated opcode list of Section 9.4. JSON has no comment syntax at all,
+# so a header here would not be inconvenient, it would make the file invalid
+# JSON and scripts/check-reachability.py would stop being able to read it. The
+# generator emits a `do_not_edit` field instead, which is the closest thing the
+# format has to a comment and is machine readable besides.
+[[annotations]]
+path = "docs/ISA_OPCODES.json"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
 # The dash linter fixture. Every byte of these files is the test: each one
 # exists to pin what the linter does with a particular sequence of characters,
 # and half of them are supposed to fail. A header would add lines the fixture

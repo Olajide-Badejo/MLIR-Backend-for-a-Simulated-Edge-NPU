@@ -80,6 +80,20 @@ invariant:
 3. Everything else lives in `#npu.scratchpad`: a `tensor.empty` destination
    becomes a `memref.alloc` there and the instruction's `outs`.
 
+**Every argument of the lowered function carries `npuisa.arg`**, a string
+attribute holding `"in"` or `"out"`. *Added at P6.* The order is unchanged, the
+model's arguments first and its outputs appended after them, so argument N of
+the lowered function is still argument N of the model; what the attribute adds
+is that the split is stated rather than counted. The encoder reads it to build
+the input and output regions of the binary and refuses a function without it,
+which turns a convention the compiler could not check into one it can.
+`docs/ARCHITECTURE.md` carries the reasoning and the alternatives.
+
+The attribute is written by this pass because this pass performs the split. A
+function the idempotence guard finds already lowered is left alone and therefore
+gains nothing, so hand written `npuisa` IR that wants to be encodable carries
+its own.
+
 ### Before and after
 
 Input, one convolution and one relu, in the shape the frontend emits:
@@ -103,8 +117,8 @@ func.func @conv_relu(%x: tensor<1x3x8x8xf32>) -> tensor<1x8x8x8xf32> {
 Output:
 
 ```mlir
-func.func @conv_relu(%arg0: memref<1x3x8x8xf32, #npu.dram>,
-                     %arg1: memref<1x8x8x8xf32, #npu.dram>) {
+func.func @conv_relu(%arg0: memref<1x3x8x8xf32, #npu.dram> {npuisa.arg = "in"},
+                     %arg1: memref<1x8x8x8xf32, #npu.dram> {npuisa.arg = "out"}) {
   %alloc = memref.alloc() : memref<1x3x8x8xf32, #npu.scratchpad>
   npuisa.dma_load %arg0, %alloc
     : memref<1x3x8x8xf32, #npu.dram> to memref<1x3x8x8xf32, #npu.scratchpad>

@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -41,6 +42,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 OPS_TD = REPO_ROOT / "include" / "NPU" / "Dialect" / "NPU" / "IR" / "NPUOps.td"
 EXEMPTIONS = REPO_ROOT / "docs" / "EXEMPTIONS.md"
+
+# The generated opcode list of Section 9.4. It is written by
+# `ninja -C build npu-isa-doc` from include/NPU/Encoding/NPUISADescription.td
+# and committed, and scripts/check-isa-staleness.sh keeps it honest.
+ISA_OPCODES = REPO_ROOT / "docs" / "ISA_OPCODES.json"
 
 # The five layers of law 2, in the order the pipeline meets them.
 LAYERS = ("import", "lowering", "encoding", "simulation", "model")
@@ -196,7 +202,7 @@ LAYER_HOMES: dict[str, tuple[Path, ...]] = {
         / "Transforms"
         / "LowerNPUToNPUISA.cpp",
     ),
-    "encoding": (REPO_ROOT / "lib" / "Encoding" / "InstructionEncoder.cpp",),
+    "encoding": (ISA_OPCODES,),
     "simulation": (REPO_ROOT / "lib" / "Simulator" / "Simulator.cpp",),
     "model": (REPO_ROOT / "experiments" / "models",),
 }
@@ -205,6 +211,34 @@ LAYER_HOMES: dict[str, tuple[Path, ...]] = {
 def layer_decidable(layer: str) -> bool:
     """Whether the phase that builds this layer has landed."""
     return all(home.exists() for home in LAYER_HOMES[layer])
+
+
+def encodable_operations() -> set[str]:
+    """The `npu` mnemonics the ISA description accounts for.
+
+    *Changed at P6.* Every other layer is decided by looking for the operation's
+    mnemonic in a source file, which is coarse on purpose: the job is to make
+    adding an operator without wiring it up impossible to do silently, not to
+    prove the wiring is correct. The encoding layer used to be decided the same
+    way, and Section 9.4 names that as the thing to replace, because the encoder
+    reads `npuisa` operations and the mnemonic it would be searched for is the
+    `npu` one. Grepping for `max_pool2d` in a file that says `PoolMaxOp` finds
+    nothing true either way.
+
+    So the encoding layer is decided from the generated opcode list instead. An
+    operation is encodable when some opcode names it as a source, or when the
+    description records that it reaches the encoder by elimination, which is
+    what `npu.fused_op`, `npu.yield` and `npu.constant` do. Both halves come out
+    of one description file that the staleness gate keeps honest, so this answer
+    cannot drift from the instruction set the way a substring search could.
+    """
+    data = json.loads(ISA_OPCODES.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for opcode in data.get("opcodes", []):
+        names.update(opcode.get("sources", []))
+    for entry in data.get("eliminated_sources", []):
+        names.add(entry["source"])
+    return names
 
 
 def layer_present(operation: Operation, layer: str) -> bool | None:
@@ -223,6 +257,11 @@ def layer_present(operation: Operation, layer: str) -> bool | None:
     """
     if not layer_decidable(layer):
         return None
+
+    # The encoding layer is answered from the generated opcode list rather than
+    # by searching a source file. See `encodable_operations` for why.
+    if layer == "encoding":
+        return operation.mnemonic in encodable_operations()
 
     needle = operation.mnemonic
     for home in LAYER_HOMES[layer]:
