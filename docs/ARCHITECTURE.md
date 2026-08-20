@@ -226,6 +226,35 @@ already does for constants and for the input and output regions.** The
 allocation is marked in the IR rather than inferred from context, so finding
 them is a predicate and not an analysis.
 
+**A view's byte range is computed from its strides, not from its extents, and a
+stride 0 view therefore spans the buffer it is over.** P4's handoff left this as
+an open question with the right shape: `computeBufferRange` had never been shown
+a `memref.reinterpret_cast`, the broadcast view of ADR 0005 is one, and somebody
+had to decide whether a stride 0 view has a byte range at all. It does. The
+range is `1 + sum((extent - 1) * stride)` elements from its first byte, which
+for `sizes [1, 8, 4, 4]` over `strides [0, 1, 0, 0]` is 8 elements and not 128.
+
+That is the true answer, and the reason to insist on it is not tidiness. Taking
+the span from the extents instead would be *safe* in the overlap rule's
+direction, since a range that is too large only ever reports more overlaps than
+there are. It would be wrong in the usable direction: every per channel scale in
+the pipeline would appear to collide with whatever the allocator packed within
+480 bytes of it, and the double buffering pass of Section 5.1 would be refused
+transfers it is entitled to, for races that do not exist. A conservative
+analysis that refuses everything is not conservative, it is broken.
+
+The rule is a closed hull rather than an exact set: a view whose stride exceeds
+its inner extents addresses some bytes in its range and not others, and the
+whole interval is reported. That is the only approximation in the analysis and
+it is in the safe direction.
+
+Fixing the size to come from the strides also fixed a latent unsoundness in the
+`memref.subview` case, D-0018, which had been measuring a subview by the product
+of its extents. That is the number of elements a subview holds and not the
+number of bytes it reaches across, and two subviews of one buffer that genuinely
+shared elements were reported `Disjoint`. Nothing emits a subview yet, so it had
+never fired.
+
 ### Offsets are SSA operands, not attributes
 
 `AllocateScratchpad` assigns each allocation a byte offset, and materialises it
@@ -381,6 +410,8 @@ From the P5 extension, on the same terms:
 - A spilled value lives in a `memref.alloc` in `#npu.dram` marked
   `npuisa.spill_slot`, and the encoder gives each of them a DRAM address. No
   other pass allocates DRAM without amending this list in the same commit.
+- A byte range comes from a memref's strides. An analysis that measured a view
+  by the product of its extents is a defect, not a conservative approximation.
 - Every scratchpad offset is a multiple of 64 bytes by default, which is a row
   of the 16 by 16 array at `f32`. The alignment is an option; the arena's own
   allocation carries it too, because an aligned offset into an unaligned arena

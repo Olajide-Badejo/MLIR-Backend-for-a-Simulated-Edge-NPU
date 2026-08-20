@@ -583,3 +583,45 @@ None.
   `test/Dialect/NPUISA/alloc-unknown-option.mlir`, which asserts the exact text
   `but it is 48` under `-verify-diagnostics`. It fails against the character
   form and passes against the fix.
+### D-0018 a subview's byte range was measured by the elements it holds, not the bytes it reaches
+
+- **Found:** 2026-08-20, phase P5, while adding the `memref.reinterpret_cast`
+  case that P4's handoff left open.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** take two `2 by 2` subviews of one `4 by 4` `f32` buffer, the
+  first at `[0, 0]` and the second at `[1, 0]`. They share the whole of row 1,
+  elements 4 and 5. On the parent of the fix, `mlir::npuisa::overlaps` on the
+  two returns `Disjoint`. `unittests/Dialect/NPUISA/InterfaceTest.cpp`, test
+  `OverlappingSubviewsAreNotReportedDisjoint`, is that case and it fails there.
+- **What was wrong:** `byteSize` computed a memref's size as the product of its
+  extents times its element width. For a contiguous buffer that is right. For a
+  **subview** it is the number of elements the view holds, which is not the
+  number of bytes it reaches across: a sub block of a larger buffer skips the
+  remainder of every row, so its first and last elements are further apart than
+  its element count suggests. The first subview above holds 4 elements and spans
+  6; the analysis said 16 bytes where the truth is 24.
+
+  The direction of the error is what makes it a defect rather than an
+  imprecision. A range that is too **small** can be reported disjoint from a
+  range it genuinely intersects, and the only consumer of this analysis is the
+  rule that decides whether an operation between an asynchronous transfer and
+  its `await` races with the destination. An under reported range there permits
+  a real race, silently. `Unknown` would have been safe; a confident wrong
+  answer is not.
+
+  It had never fired because no pass in this project emits a `memref.subview`
+  yet. The tiling pass of Section 13.2 is the one that will, at P13, and it
+  would have inherited a memory model that quietly permitted the race it is most
+  likely to create.
+- **Resolution:** the size is computed from the strides rather than the extents,
+  by `byteSpan`: `1 + sum((extent - 1) * stride)` elements when the type carries
+  a layout map, and the product of the extents when it does not, which are the
+  same number for a contiguous buffer. The same change is what makes a stride 0
+  broadcast view span the C floats it addresses rather than the tensor it is
+  shaped like, and `docs/ARCHITECTURE.md` records both halves as a marked P5
+  extension.
+
+  Three tests in `InterfaceTest.cpp` fail before the change and pass after:
+  `AStrideZeroBroadcastSpansTheBufferItIsOver`, `TwoAdjacentBroadcastsAreDisjoint`
+  and `OverlappingSubviewsAreNotReportedDisjoint`. Shown red by reverting
+  `byteSpan` to the extent product and rerunning, then shown green again.

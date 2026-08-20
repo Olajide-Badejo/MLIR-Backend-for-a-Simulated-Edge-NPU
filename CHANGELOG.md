@@ -49,6 +49,13 @@ Semantic Versioning once a release is tagged.
   allocation whose size cannot be computed, and a malformed
   `npuisa.scratchpad_budget` attribute are each refused by name. Every bad
   option is reported rather than only the first.
+- **A memref's byte range is now measured from its strides.** This changes what
+  `mlir::npuisa::overlaps` answers in two cases: a stride 0 broadcast view spans
+  the C floats it addresses rather than the shape it is cast to, and a
+  `memref.subview` spans the bytes it reaches across rather than the elements it
+  holds. The second was unsound in the unsafe direction and is defect D-0018;
+  the first is the question P4's handoff left open. No pass emits a subview yet,
+  so nothing observable moves today.
 - **`NPUAllocatorTests` exists** and its CI step is switched on, per the
   activation table. It carries Section 17.2's property test at 1000 randomized
   interval sets and a fixed seed.

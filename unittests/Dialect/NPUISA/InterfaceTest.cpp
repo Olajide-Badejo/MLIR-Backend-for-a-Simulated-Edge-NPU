@@ -852,6 +852,204 @@ TEST_F(NPUISAInterfaceTest, NestedViewOffsetsAccumulate) {
   EXPECT_EQ(overlaps(views[1], views[2]), OverlapResult::Disjoint);
 }
 
+//===----------------------------------------------------------------------===//
+// 4a. `memref.reinterpret_cast`, added at P5.
+//
+// P4's handoff left this analysis a question rather than a bug: the broadcast
+// view the lowering emits for ADR 0005 is a `reinterpret_cast`, this walk had
+// never been shown one, and somebody had to decide **whether a stride 0 view
+// has a byte range at all**. It does, and the answer is the range of the bytes
+// it actually addresses.
+//
+// The four tests below are the decision written as assertions rather than as
+// prose in a design document, because prose cannot fail.
+//===----------------------------------------------------------------------===//
+
+// A stride 0 broadcast spans the rank 1 buffer it is over, not the tensor it is
+// shaped like. `sizes [1, 8, 4, 4]` over `strides [0, 1, 0, 0]` is 32 bytes of
+// f32, not 512, because the only indices it can reach are the eight channels.
+TEST_F(NPUISAInterfaceTest, AStrideZeroBroadcastSpansTheBufferItIsOver) {
+  constexpr StringRef kBroadcast = R"mlir(
+    func.func @f() {
+      %c0 = arith.constant 0 : index
+      %flat = memref.alloc() : memref<1024xi8, #npu.scratchpad>
+      %scale = memref.view %flat[%c0][]
+             : memref<1024xi8, #npu.scratchpad> to memref<8xf32, #npu.scratchpad>
+      %bcast = memref.reinterpret_cast %scale to offset: [0],
+                   sizes: [1, 8, 4, 4], strides: [0, 1, 0, 0]
+             : memref<8xf32, #npu.scratchpad>
+            to memref<1x8x4x4xf32, strided<[0, 1, 0, 0]>, #npu.scratchpad>
+      memref.dealloc %flat : memref<1024xi8, #npu.scratchpad>
+      return
+    }
+  )mlir";
+
+  ModuleOp parsed = parse(kBroadcast);
+  ASSERT_TRUE(parsed);
+  llvm::SmallVector<Value> casts = resultsOf<memref::ReinterpretCastOp>(parsed);
+  ASSERT_EQ(casts.size(), 1u);
+
+  std::optional<BufferRange> range = computeBufferRange(casts[0]);
+  ASSERT_TRUE(range) << "a broadcast view must be analysable, not Unknown: it "
+                        "is what every per channel scale in the pipeline is";
+  EXPECT_EQ(range->offset, 0);
+  EXPECT_EQ(range->size, 32)
+      << "the span comes from the strides. Taking it from the extents would "
+         "claim 512 bytes for a view that reads 8 floats, and every buffer the "
+         "allocator packed within 480 bytes of it would then look like a race";
+}
+
+// The consequence that makes the decision matter. Two broadcasts over two
+// adjacent 32 byte scale buffers are disjoint. Under a span taken from the
+// extents both would claim 512 bytes from their own offset, they would overlap
+// each other and everything else in the arena, and a double buffering pass
+// would be refused a transfer it is entitled to.
+TEST_F(NPUISAInterfaceTest, TwoAdjacentBroadcastsAreDisjoint) {
+  constexpr StringRef kTwo = R"mlir(
+    func.func @f() {
+      %c0 = arith.constant 0 : index
+      %c32 = arith.constant 32 : index
+      %flat = memref.alloc() : memref<1024xi8, #npu.scratchpad>
+      %first = memref.view %flat[%c0][]
+             : memref<1024xi8, #npu.scratchpad> to memref<8xf32, #npu.scratchpad>
+      %second = memref.view %flat[%c32][]
+              : memref<1024xi8, #npu.scratchpad> to memref<8xf32, #npu.scratchpad>
+      %a = memref.reinterpret_cast %first to offset: [0],
+               sizes: [1, 8, 4, 4], strides: [0, 1, 0, 0]
+         : memref<8xf32, #npu.scratchpad>
+        to memref<1x8x4x4xf32, strided<[0, 1, 0, 0]>, #npu.scratchpad>
+      %b = memref.reinterpret_cast %second to offset: [0],
+               sizes: [1, 8, 4, 4], strides: [0, 1, 0, 0]
+         : memref<8xf32, #npu.scratchpad>
+        to memref<1x8x4x4xf32, strided<[0, 1, 0, 0]>, #npu.scratchpad>
+      memref.dealloc %flat : memref<1024xi8, #npu.scratchpad>
+      return
+    }
+  )mlir";
+
+  ModuleOp parsed = parse(kTwo);
+  ASSERT_TRUE(parsed);
+  llvm::SmallVector<Value> casts = resultsOf<memref::ReinterpretCastOp>(parsed);
+  ASSERT_EQ(casts.size(), 2u);
+
+  EXPECT_EQ(overlaps(casts[0], casts[1]), OverlapResult::Disjoint);
+  // And a broadcast does overlap the buffer it is a view of, which is the
+  // assertion that stops the test above from passing for the wrong reason.
+  llvm::SmallVector<Value> views = resultsOf<memref::ViewOp>(parsed);
+  ASSERT_EQ(views.size(), 2u);
+  EXPECT_EQ(overlaps(casts[0], views[0]), OverlapResult::Overlaps);
+  EXPECT_EQ(overlaps(casts[0], views[1]), OverlapResult::Disjoint);
+}
+
+// A permutation layout, which is what an NHWC buffer gets, spans exactly the
+// contiguous block its extents describe. The stride rule has to agree with the
+// extent rule here or every layout assigned buffer would change size.
+TEST_F(NPUISAInterfaceTest, APermutationLayoutSpansItsWholeExtent) {
+  constexpr StringRef kPermuted = R"mlir(
+    func.func @f() {
+      %c256 = arith.constant 256 : index
+      %flat = memref.alloc() : memref<4096xi8, #npu.scratchpad>
+      %v = memref.view %flat[%c256][]
+         : memref<4096xi8, #npu.scratchpad>
+        to memref<1x3x8x8xf32, #npu.scratchpad>
+      %p = memref.reinterpret_cast %v to offset: [0],
+               sizes: [1, 3, 8, 8], strides: [192, 1, 24, 3]
+         : memref<1x3x8x8xf32, #npu.scratchpad>
+        to memref<1x3x8x8xf32, strided<[192, 1, 24, 3]>, #npu.scratchpad>
+      memref.dealloc %flat : memref<4096xi8, #npu.scratchpad>
+      return
+    }
+  )mlir";
+
+  ModuleOp parsed = parse(kPermuted);
+  ASSERT_TRUE(parsed);
+  llvm::SmallVector<Value> casts = resultsOf<memref::ReinterpretCastOp>(parsed);
+  ASSERT_EQ(casts.size(), 1u);
+
+  std::optional<BufferRange> range = computeBufferRange(casts[0]);
+  ASSERT_TRUE(range);
+  // 192 elements at 4 bytes, reached as (1-1)*192 + (3-1)*1 + (8-1)*24 +
+  // (8-1)*3 + 1, which is 192 exactly.
+  EXPECT_EQ(range->size, 768);
+  EXPECT_EQ(range->offset, 256)
+      << "the view underneath the cast still contributes its byte shift";
+}
+
+// A cast at a non zero offset. Neither pass in this project writes one today,
+// and it is handled rather than refused because the operation permits it and an
+// analysis that silently answered Unknown for a legal form would push the
+// refusal into whichever pass wrote one first.
+TEST_F(NPUISAInterfaceTest, AReinterpretCastOffsetIsCountedInBytes) {
+  constexpr StringRef kOffset = R"mlir(
+    func.func @f() {
+      %c64 = arith.constant 64 : index
+      %flat = memref.alloc() : memref<1024xi8, #npu.scratchpad>
+      %v = memref.view %flat[%c64][]
+         : memref<1024xi8, #npu.scratchpad> to memref<16xf32, #npu.scratchpad>
+      %c = memref.reinterpret_cast %v to offset: [4], sizes: [4], strides: [1]
+         : memref<16xf32, #npu.scratchpad>
+        to memref<4xf32, strided<[1], offset: 4>, #npu.scratchpad>
+      memref.dealloc %flat : memref<1024xi8, #npu.scratchpad>
+      return
+    }
+  )mlir";
+
+  ModuleOp parsed = parse(kOffset);
+  ASSERT_TRUE(parsed);
+  llvm::SmallVector<Value> casts = resultsOf<memref::ReinterpretCastOp>(parsed);
+  ASSERT_EQ(casts.size(), 1u);
+
+  std::optional<BufferRange> range = computeBufferRange(casts[0]);
+  ASSERT_TRUE(range);
+  // 64 bytes from the view plus 4 f32 from the cast is 80, and the cast is 4
+  // f32 wide. The offset is counted once: the type's own layout offset is not
+  // read, because the walk gets it from the operation.
+  EXPECT_EQ(range->offset, 80);
+  EXPECT_EQ(range->size, 16);
+}
+
+// D-0018, found while adding the case above. A `memref.subview` result was
+// measured by the product of its extents, which is the number of elements it
+// holds and not the number of bytes it reaches across. Two subviews of one
+// buffer that genuinely share elements were then reported Disjoint, which is the
+// unsafe direction: the async rule would have allowed a real race.
+//
+// The two here are the top left 2 by 2 of a 4 by 4 and the 2 by 2 starting one
+// row down. They share the whole of row 1, elements 4 and 5.
+TEST_F(NPUISAInterfaceTest, OverlappingSubviewsAreNotReportedDisjoint) {
+  constexpr StringRef kSubviews = R"mlir(
+    func.func @f() {
+      %buffer = memref.alloc() : memref<4x4xf32, #npu.scratchpad>
+      %top = memref.subview %buffer[0, 0] [2, 2] [1, 1]
+           : memref<4x4xf32, #npu.scratchpad>
+          to memref<2x2xf32, strided<[4, 1]>, #npu.scratchpad>
+      %next = memref.subview %buffer[1, 0] [2, 2] [1, 1]
+            : memref<4x4xf32, #npu.scratchpad>
+           to memref<2x2xf32, strided<[4, 1], offset: 4>, #npu.scratchpad>
+      memref.dealloc %buffer : memref<4x4xf32, #npu.scratchpad>
+      return
+    }
+  )mlir";
+
+  ModuleOp parsed = parse(kSubviews);
+  ASSERT_TRUE(parsed);
+  llvm::SmallVector<Value> subviews = resultsOf<memref::SubViewOp>(parsed);
+  ASSERT_EQ(subviews.size(), 2u);
+
+  // Elements 0, 1, 4 and 5 against 4, 5, 8 and 9. The hull of the first is
+  // elements [0, 6), which is bytes [0, 24), and of the second [4, 10), which
+  // is bytes [16, 40).
+  std::optional<BufferRange> top = computeBufferRange(subviews[0]);
+  std::optional<BufferRange> next = computeBufferRange(subviews[1]);
+  ASSERT_TRUE(top);
+  ASSERT_TRUE(next);
+  EXPECT_EQ(top->size, 24)
+      << "a non contiguous subview reaches across more bytes than it holds";
+  EXPECT_EQ(next->offset, 16);
+  EXPECT_EQ(next->size, 24);
+  EXPECT_EQ(overlaps(subviews[0], subviews[1]), OverlapResult::Overlaps);
+}
+
 // The rule end to end, through the verifier, on IR whose only race is between
 // two partially overlapping views. This is the same claim as
 // PartiallyOverlappingViewsOverlap made one level up, and it is here because the
