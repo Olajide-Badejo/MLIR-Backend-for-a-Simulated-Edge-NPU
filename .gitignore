@@ -25,6 +25,22 @@ venv/
 *.onnx
 *.nbin
 
+# Except the fuzz seed corpus, which is committed on purpose.
+#
+# *.nbin above is right for the compiler's output: a binary regenerated from a
+# model is a build artifact and belongs nowhere near history. The eight files in
+# fuzz/corpus/ are the opposite. They are inputs, three of them differ from a
+# valid file by one byte, and a coverage guided run that had to start from
+# nothing would spend its first minutes rediscovering the magic word.
+#
+# This exception exists because the rule above silently swallowed them once.
+# `git add fuzz` reported nothing, committed nothing, and the corpus was absent
+# from a commit whose message described it. An ignore rule that hides a file
+# somebody meant to add is the quietest kind of mistake there is, which is why
+# the negation is here with its reason rather than as a bare line.
+!fuzz/corpus/
+!fuzz/corpus/*.nbin
+
 # LaTeX intermediates. report/generated/ is deliberately NOT ignored: Section
 # 6 of the build specification makes it tracked, because that is what lets a
 # test assert the sha in macros.tex resolves to the committed results.
