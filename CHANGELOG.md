@@ -56,6 +56,14 @@ Semantic Versioning once a release is tagged.
   holds. The second was unsound in the unsafe direction and is defect D-0018;
   the first is the question P4's handoff left open. No pass emits a subview yet,
   so nothing observable moves today.
+- **An asymmetric `pads` array is accepted by the `npuisa` windowed verifier**,
+  where it was rejected before. `npuisa.conv2d`, `npuisa.pool_max` and
+  `npuisa.pool_avg` reordered their pads before computing the output extent, so
+  every window with `padTop != padBottom` or `padLeft != padRight` was refused
+  with a wrong implied extent. This is a user visible change: `dilated_stack`
+  compiles for the first time, and it is the one model in the suite with
+  asymmetric padding. Defect D-0019. No symmetric case moves, because under a
+  symmetric pad the two orders agree, which is why it survived from P2.
 - **`NPUAllocatorTests` exists** and its CI step is switched on, per the
   activation table. It carries Section 17.2's property test at 1000 randomized
   interval sets and a fixed seed.

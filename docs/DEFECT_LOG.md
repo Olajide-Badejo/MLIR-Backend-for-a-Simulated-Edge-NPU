@@ -625,3 +625,61 @@ None.
   `AStrideZeroBroadcastSpansTheBufferItIsOver`, `TwoAdjacentBroadcastsAreDisjoint`
   and `OverlappingSubviewsAreNotReportedDisjoint`. Shown red by reverting
   `byteSpan` to the extent product and rerunning, then shown green again.
+
+### D-0019 the npuisa windowed verifier reordered its pads and rejected every asymmetric one
+
+- **Found:** 2026-08-20, phase P5, by running the model suite through the
+  allocator to measure the fragmentation ratio Section 13.1 asks for.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** compile `dilated_stack`, which is the one model in the suite
+  with asymmetric padding:
+
+  ```
+  python experiments/allocator_fragmentation.py --models dilated_stack
+  ```
+
+  On the parent of the fix the lowering's output does not verify:
+
+  ```
+  'npuisa.conv2d' op the destination width extent must be 5, the extent this
+  window implies, but the destination is 'memref<1x5x3x6xf32, #npu.scratchpad>'
+  ```
+
+  The window is input 11 by 13, kernel 3 by 3, strides 2 by 2, dilations 3 by 2,
+  pads `[0, 1, 0, 1]`. The width is `(13 + 1 + 1 - 5) / 2 + 1`, which is 6, and
+  the lowering produced 6. The `npuisa` verifier computed 5.
+- **What was wrong:** `computeWindowedShape` takes its pads in ONNX order, all
+  begins then all ends, and reads `pads[axis]` and `pads[rank + axis]` itself.
+  The `npu` verifier one level up passes them straight through, which is right.
+  The `npuisa` verifier **reordered them into per axis pairs** before the call,
+  `{pads[0], pads[2], pads[1], pads[3]}`, so the helper then read the first
+  entry of each pair as a begin and the pair after it as the ends. Height was
+  given `(padTop, padBottom)` interpreted as entries 0 and 2 of an ONNX array,
+  which they are not.
+
+  The code sat under a comment reading "Getting this reordering wrong is the
+  single easiest mistake in the whole file and it is why it is written once here
+  instead of at each call site". The comment was correct about the risk and the
+  line under it was the mistake, which is worth recording exactly that way: a
+  comment asserting that a thing is careful is not evidence that it is.
+
+  It survived from P2 to P5 because **every pad in every test was symmetric**.
+  Under a symmetric pad both orders produce the same numbers, so a test suite
+  built from `pads = [1, 1, 1, 1]` and `pads = [0, 0, 0, 0]` cannot distinguish
+  them. The suite model that carries asymmetric padding is `dilated_stack`, and
+  Section 15 put it there precisely because it forces a case nothing else
+  reaches; it did that, three phases after it was written, and the case it
+  forced was in a verifier rather than in the importer.
+
+  The consequence was a whole model that could not be lowered. It is not a
+  numerics defect: the verifier refused, loudly, rather than accepting a wrong
+  shape. That is the failure mode the shared helper was designed for, working
+  in the direction of safety while still being wrong.
+- **Resolution:** the pads are passed straight through, exactly as `NPUOps.cpp`
+  does. `conv2d_asymmetric_pads` and `pool_max_asymmetric_pads` in
+  `test/Dialect/NPUISA/ops.mlir` are the regression tests: a 4 by 8 input with
+  `pads = [0, 1, 2, 0]`, whose correct destination is 4 by 7 and which the
+  reordered form demands be 3 by 8. Both fail against the reordering and pass
+  against the fix, shown both ways. The pooling case is there because the two
+  operations share the verifier body and a fix that missed one would be
+  invisible otherwise.

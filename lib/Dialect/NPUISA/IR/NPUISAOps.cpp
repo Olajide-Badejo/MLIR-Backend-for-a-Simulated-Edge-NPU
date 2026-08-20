@@ -169,15 +169,22 @@ LogicalResult verifyWindowedDestination(Operation *op, MemRefType input,
            << "the destination channel extent must be " << expectedChannels
            << ", but the destination is " << destination;
 
-  // The pads arrive in ONNX order and the helper wants them per axis, begin
-  // then end, so height takes entries 0 and 2 and width takes 1 and 3. Getting
-  // this reordering wrong is the single easiest mistake in the whole file and
-  // it is why it is written once here instead of at each call site.
-  const SmallVector<int64_t> perAxisPads = {pads[0], pads[2], pads[1], pads[3]};
+  // `computeWindowedShape` takes its pads in ONNX order, which is every begin
+  // then every end, and reads `pads[axis]` and `pads[rank + axis]` itself. So
+  // they are passed straight through, exactly as `NPUOps.cpp` passes them one
+  // level up.
+  //
+  // This used to reorder them into per axis pairs, under a comment saying the
+  // reordering was the easiest mistake in the file to get wrong. The comment
+  // was right and the code was the mistake: it fed height the pair
+  // (padTop, padBottom) as if those were entries 0 and 2 of an ONNX array,
+  // which they are not. Every pad in every test was symmetric, so the wrong
+  // order produced the right answer everywhere until a model with asymmetric
+  // padding arrived. Defect D-0019.
   const SmallVector<int64_t> inputSpatial = {inputShape[2], inputShape[3]};
 
   npu::WindowedShapeResult windowed = npu::computeWindowedShape(
-      inputSpatial, kernel, strides, dilations, perAxisPads, ceilMode);
+      inputSpatial, kernel, strides, dilations, pads, ceilMode);
   if (!windowed.ok())
     return op->emitOpError()
            << "the window is not representable on the "
