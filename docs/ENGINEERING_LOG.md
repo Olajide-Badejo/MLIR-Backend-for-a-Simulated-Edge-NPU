@@ -2028,3 +2028,116 @@ One mechanical footnote: reverting the second perturbation also reverted that
 commit's bundled restoration of testpaths, so the restore took two commits. A
 proof commit that fixes one thing and breaks another makes its own revert a
 half measure; keep perturbation commits to exactly one change.
+
+## 2026-08-20, phase P4: lowering the npu dialect to npuisa
+
+### The one-shot-bufferize attempt, and what it actually settled
+
+The roadmap entry for this phase does not let me choose a mechanism without
+measuring first: attempt One-Shot Bufferize, record the outcome either way, and
+if two space DMA insertion is not expressible through it, write the evidence
+into a decision record. So I ran it, five ways, on one convolution and one relu
+in the shape the frontend emits, and the runs are in
+`docs/adr/0006-lowering-mechanism-and-the-bufferization-attempt.md` with their
+output.
+
+What I expected to find was a configuration problem. What I found was a
+signature:
+
+    using DefaultMemorySpaceFn = std::function<std::optional<Attribute>(TensorType)>;
+
+That hook takes a tensor **type** and returns one memory space. A function
+argument that lives in DRAM and a scratchpad temporary of identical type are the
+same argument to that function, so they get the same answer, always. The
+infrastructure's model is one space per value. This machine's model is that a
+value entering the compute units exists in two spaces with a transfer between
+them. No setting of the first expresses the second, and `must-infer-memory-space`
+says so out loud: "could not infer memory space" on the first `tensor.empty`.
+
+The thing I nearly got wrong was concluding it from run 1. Run 1 fails with "op
+was not bufferized" because no `npu` operation implements
+`BufferizableOpInterface`, and that is a fixable complaint, not an answer. It
+would have been easy to stop there and write a record saying the interface was
+not implemented, which is true and beside the point. The answer needed runs 3
+and 4: run 3 to see what the infrastructure produces when it is allowed to
+proceed, which is memrefs in the default space with no DMA anywhere, and run 4
+to see the hook refuse. Implementing the interface on all twelve operations
+would have reproduced run 3 with the `npu` operations gone, because
+`getBufferType` returns one buffer type per tensor value and the lowering needs
+two buffers and a copy for one value.
+
+Recorded because the failure mode generalises: an infrastructure that refuses
+your input at the first step is telling you about step one, and the question you
+came with is usually answered three steps later.
+
+### A crash found by a test that was asking about something else
+
+Writing the refusal cases for the lowering, I wanted an operation whose result
+type has no memory space, and reached for a reshape of a `tensor<?x4xf32>`. The
+tool aborted, inside `ReshapeOp::verify`, on an assertion in `getNumElements()`,
+with a stack trace pointing into LLVM and no diagnostic at all.
+
+`NPUTypes.td` has said since P1 that "a dynamic dimension is refused at the type
+level rather than by a verifier". The three constraints under that sentence were
+`RankedTensorOf`, which requires a static rank and says nothing about extents. So
+the sentence was a comment describing a rule nothing enforced, and it had been
+sitting there for three phases with tests passing over it, because the frontend
+refuses a dynamic extent at import and nothing else in the tree writes one.
+
+The fix is `StaticShapeTensorOf`, which is what the sentence always claimed and
+what the `npuisa` side has done since P2. That is D-0015, and it is a P1 change
+made at P4, so a reviewer should look at it as one. I did consider recording it
+and leaving it: it is not this phase's code and the phase was already large. I
+fixed it because the alternative is a known crash left in the tree behind a
+sentence that says it cannot happen, and because the fix is three lines plus a
+regenerated reference. The three regression cases abort against the old spelling
+and are diagnosed against the new one.
+
+The generalisable half: a comment asserting an invariant is worth grepping for
+the enforcement of. This one had the enforcement in the same file, one word away
+from being right.
+
+### Four transfers nobody asked for, found by reading output rather than by a test
+
+The batch norm decomposition consumes gamma, beta, mean and variance at rewrite
+time and computes a multiplier and an addend from their values. It left the four
+`npu.constant` operations behind with no uses. Everything passed. The program was
+correct.
+
+Then I read the output, and there were seven `npuisa.dma_load` operations where
+there should have been three. The conversion does not care whether a constant is
+used: it is an illegal operation, the pattern fires, and out comes a DRAM buffer
+and a transfer to bring it on chip. Nothing downstream removes them, because a
+transfer has memory effects by design and is not dead code a canonicalizer may
+delete. They would have reached the encoder and been executed.
+
+This is worth more than its two line fix. Section 8 names exactly three
+permitted producers of DMA so that a fourth is recognisable as a defect, and I
+had produced a fourth **inside the first**, in the pass that is meant to be the
+one place the invariant is established. No test caught it because no test asked
+how much DMA there was, only what it looked like. That is what
+`dma-boundaries.mlir` is for, and it is why the counting cases in it are written
+with `CHECK-NOT` after the count rather than as a list of the transfers I
+expected to see: a check that enumerates what should be there passes on a
+program that also has something else.
+
+D-0016, and the regression test is named after the claim rather than the
+mechanism.
+
+### A smaller trap, for whoever writes the next lit test
+
+Two FileCheck failures in `lowering.mlir` cost more time than the pass did, and
+both were the same mistake. `CHECK: npuisa.relu ins(%{{.*}} : memref<...>)`
+followed by `CHECK-SAME: outs(...)` cannot match: the `.*` is greedy, each
+CHECK-SAME is a separate match that must begin where the previous one ended, and
+the first pattern has already consumed the rest of the line. Within one pattern
+FileCheck backtracks and it works; across a CHECK-SAME chain it does not.
+Bounding every SSA placeholder as `%{{[a-z_0-9]+}}` fixes it and reads better,
+since the thing being matched really is a name and not arbitrary text.
+
+The second was an ordering error rather than a regex one. I wrote
+`CHECK: npuisa.const`, then `CHECK-COUNT-2: npuisa.dma_load`, on a function
+whose first transfer is the argument load and therefore appears **before** the
+constant. FileCheck matches in order, so only one load remained to be counted.
+Checks encode an order as well as a presence, and on straight line output that
+order is the program's.

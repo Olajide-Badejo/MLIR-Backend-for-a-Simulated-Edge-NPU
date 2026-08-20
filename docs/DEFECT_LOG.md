@@ -446,3 +446,101 @@ None.
   activation, where the channel count and the width are both 4, so the two
   readings are distinguishable only by knowing the rule. It fails on the
   previous implementation and passes on this one.
+
+### D-0015 a dynamic extent reached npu.reshape, which aborted instead of diagnosing
+
+- **Found:** 2026-08-20, phase P4, while writing the lowering's refusal cases.
+  The test that found it was asking a different question: it wanted an operation
+  whose result type the lowering could not assign a memory space to, and a
+  reshape of a `tensor<?x4xf32>` was the obvious way to build one.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** put `RankedTensorOf` back in place of `StaticShapeTensorOf` in
+  `include/NPU/Dialect/NPU/IR/NPUTypes.td`, rebuild, and run
+
+  ```
+  npu-opt /dev/stdin <<< 'func.func @f(%x: tensor<?x4xf32>) -> tensor<4x4xf32> {
+    %0 = npu.reshape %x : tensor<?x4xf32> to tensor<4x4xf32>
+    return %0 : tensor<4x4xf32>
+  }'
+  ```
+
+  The tool aborts inside `ReshapeOp::verify` with
+  `Assertion 'hasStaticShape() && "cannot get element count of dynamic shaped
+  type"' failed`, an LLVM stack trace, and no diagnostic. In a build without
+  assertions the same call returns a product over a dynamic extent instead.
+- **What was wrong:** `NPUTypes.td` said, in a comment carried since P1, that
+  "a dynamic dimension is refused at the type level rather than by a verifier,
+  because nothing below this dialect can represent one". The three constraints
+  under that comment were written with `RankedTensorOf`, which requires a static
+  **rank** and says nothing about the extents. So the comment described a rule
+  nothing enforced, and `ReshapeOp::verify` then read the element count of such a
+  tensor through `getNumElements()`, which asserts rather than answering.
+
+  The failure mode is the specific one every verifier in this dialect is written
+  to avoid. It is not a wrong answer, which a test would catch, and it is not a
+  diagnostic, which a reader could act on. It is an abort with a stack trace
+  pointing into LLVM, from IR that parsed.
+
+  It was never reachable from the frontend, which refuses a dynamic extent at
+  import and has a pytest saying so. It was reachable from any hand written
+  `.mlir`, which is most of this project's test surface.
+- **Resolution:** the three constraints are `StaticShapeTensorOf` now, which is
+  what the comment always claimed and what the `npuisa` side has done since P2,
+  where every memref constraint ANDs `HasStaticShapePred` for the same reason.
+  The two levels now say the same thing in the same place.
+
+  Three regression cases in `test/Dialect/NPU/invalid.mlir`:
+  `relu_with_a_dynamic_extent` proves the constraint fires on an ordinary
+  compute operation, and `reshape_from_a_dynamic_extent` and
+  `reshape_to_a_dynamic_extent` prove it fires on the operation that aborted,
+  from each side of it, since a reshape can take its dynamic extent on either
+  the operand or the result. All three abort against the old spelling and are
+  refused with `operand #0 must be statically shaped tensor of ...` against this
+  one.
+
+  `docs/DIALECT_REFERENCE.md` is regenerated in the same commit, because the
+  constraint description is part of it: 46 rows change from "ranked tensor of"
+  to "statically shaped tensor of".
+
+### D-0016 the batch norm decomposition left four constants behind, and each became a DRAM transfer
+
+- **Found:** 2026-08-20, phase P4, by reading the lowering's own output on a
+  batch norm rather than by a failing test. Nothing was failing: the program was
+  correct and every test passed.
+- **Status:** resolved 2026-08-20.
+- **Reproduce:** delete the loop in `expand()` in
+  `lib/Dialect/NPUISA/Transforms/LowerNPUToNPUISA.cpp` that erases an
+  `npu.constant` with no uses, rebuild, and run
+  `npu-opt test/Dialect/NPUISA/lowering.mlir --npu-lower-to-npuisa`. The
+  function `an_unfolded_batch_norm_loads_two_constants_not_four` comes out with
+  **seven** `npuisa.dma_load` operations instead of three: the argument, the four
+  batch norm parameters, and the two constants the decomposition computed. Its
+  `CHECK-COUNT-3` then fails.
+- **What was wrong:** the decomposition consumes gamma, beta, mean and variance
+  at rewrite time, computing the multiplier and the addend from their values, and
+  it left the four `npu.constant` operations in the block with no uses. The
+  conversion that follows does not care whether a constant is used: it is an
+  illegal operation, so the pattern fires, and out comes an `npuisa.const` in
+  DRAM and an `npuisa.dma_load` bringing it on chip.
+
+  Nothing downstream would have removed them either, and that is the part worth
+  recording. A transfer has memory effects, by design and for good reasons set
+  out in this project's own architecture notes, so it is not dead code that a
+  canonicalizer is entitled to delete. The four transfers would have survived to
+  the encoder and been executed by the simulator.
+
+  The consequence is not a wrong answer. It is four transfers per unfolded batch
+  norm of data no instruction reads, which is DRAM traffic, which moves the byte
+  counts and the energy numbers this project publishes. Section 8 is explicit
+  that unexplained DRAM traffic is a defect rather than a style question, and it
+  names exactly three permitted producers of DMA; this was a fourth, hiding
+  inside the first.
+- **Resolution:** `expand()` erases every `npu.constant` whose result has no uses
+  before the conversion sees it. One pass suffices, because a constant has no
+  operands and erasing one therefore cannot make another dead.
+
+  `an_unfolded_batch_norm_loads_two_constants_not_four` in
+  `test/Dialect/NPUISA/lowering.mlir` is the regression test. It asserts three
+  loads and then `CHECK-NOT: npuisa.dma_load`, so it fails at seven and passes at
+  three, and it is named after the claim rather than after the mechanism so that
+  a later reader knows what it is defending.

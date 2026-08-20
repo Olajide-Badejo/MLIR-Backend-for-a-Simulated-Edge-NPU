@@ -21,11 +21,18 @@
 // stack, and a tool that forgets this line gets a named error at the first use
 // saying the interface was promised and never provided.
 //
+// This project's own passes are registered by their generated entry point,
+// beside MLIR's. No pipeline is assembled here: the driver's `-O` levels belong
+// to the phase that has a whole pipeline to describe, and a pipeline name
+// registered before there is anything to put behind it would promise more than
+// it delivered.
+//
 //===----------------------------------------------------------------------===//
 
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPU/Interfaces/NPUTilingInterfaceImpl.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
+#include "NPU/Dialect/NPUISA/Transforms/Passes.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
@@ -35,6 +42,7 @@
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
+  mlir::npuisa::registerNPUISAPasses();
 
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);

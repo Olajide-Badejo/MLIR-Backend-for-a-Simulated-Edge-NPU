@@ -786,3 +786,49 @@ func.func @constant_type_disagreement() -> tensor<2x2xf32> {
        : () -> tensor<2x2xf32>
   return %0 : tensor<2x2xf32>
 }
+
+// =============================================================================
+// A dynamic extent, refused at the type level.
+//
+// The regression cases for D-0015. NPUTypes.td always claimed that a dynamic
+// dimension was refused at the type level, and until the constraints changed
+// from RankedTensorOf to StaticShapeTensorOf that claim was a comment nothing
+// enforced. The last two cases abort with an LLVM stack trace and no diagnostic
+// at all against the old spelling, because npu.reshape reaches
+// getNumElements(), which asserts rather than answering on a dynamic shape.
+//
+// There are three because they test different halves. The first proves the
+// constraint fires on an ordinary compute operation; the other two prove it
+// fires on the operation that used to crash, from each side of it, since a
+// reshape has a dynamic extent to be refused on either the operand or the
+// result.
+// =============================================================================
+
+// -----
+
+func.func @relu_with_a_dynamic_extent(%x: tensor<?x8x4x4xf32>, %n: index)
+    -> tensor<?x8x4x4xf32> {
+  %d = tensor.empty(%n) : tensor<?x8x4x4xf32>
+  // expected-error @+1 {{statically shaped tensor}}
+  %0 = npu.relu ins(%x : tensor<?x8x4x4xf32>) outs(%d : tensor<?x8x4x4xf32>)
+       -> tensor<?x8x4x4xf32>
+  return %0 : tensor<?x8x4x4xf32>
+}
+
+// -----
+
+func.func @reshape_from_a_dynamic_extent(%x: tensor<?x4xf32>)
+    -> tensor<4x4xf32> {
+  // expected-error @+1 {{statically shaped tensor}}
+  %0 = npu.reshape %x : tensor<?x4xf32> to tensor<4x4xf32>
+  return %0 : tensor<4x4xf32>
+}
+
+// -----
+
+func.func @reshape_to_a_dynamic_extent(%x: tensor<4x4xf32>)
+    -> tensor<?x4xf32> {
+  // expected-error @+1 {{statically shaped tensor}}
+  %0 = npu.reshape %x : tensor<4x4xf32> to tensor<?x4xf32>
+  return %0 : tensor<?x4xf32>
+}

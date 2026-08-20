@@ -6,6 +6,55 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P4: lowering to `npuisa`
+
+- **`-npu-lower-to-npuisa` exists.** It converts the `npu` tensor dialect to
+  `npuisa` instructions on `memref`s in the two memory spaces of Section 8, and
+  it is registered in and runnable from `npu-opt`. A function argument becomes a
+  `#npu.dram` buffer with one `npuisa.dma_load` into the scratchpad if the body
+  reads it, an `npu.constant` becomes an `npuisa.const` in DRAM with one load, a
+  `tensor.empty` destination becomes a `memref.alloc` in the scratchpad, and a
+  returned value becomes one `npuisa.dma_store`. Immediately after the pass, DMA
+  appears only at those boundaries.
+- **A lowered function returns nothing.** Its results become trailing
+  `#npu.dram` arguments, appended after the inputs, and `func.return` carries no
+  operands. This is a user visible change in the shape of the IR the pipeline
+  produces: the encoder's input and output regions are read out of the argument
+  list.
+- **An unfolded batch norm compiles rather than failing.** It decomposes into a
+  multiply and an add over per channel constants computed at rewrite time, with
+  the evaluation order documented in `docs/PASSES.md` because it is observable.
+  A parameter that is not an `npu.constant`, and a variance plus epsilon that is
+  not positive, are refused with a diagnostic naming the operation.
+- **A rank 1 right hand operand on `npu.add` or `npu.mul` lowers to a stride 0
+  view**, which is the obligation `docs/adr/0005-channel-broadcast-on-add-and-mul.md`
+  placed on this phase. No opcode was added: the view is a
+  `memref.reinterpret_cast` at the destination's extents with strides
+  `[0, 1, 0, 0]`, and it adds no transfer.
+- **An `npu.fused_op` region is flattened** into its parent, so a fused
+  convolution and its activation have no DMA between them.
+- **A layout encoding becomes the memref's strided layout map.** An NHWC tensor
+  lowers to a buffer with NCHW extents and the strides that permutation implies;
+  an NCHW tensor gets no layout map.
+- **New diagnostics.** An `scf` operation, a function with more than one block, a
+  function declaration, a dynamic extent, an unsupported element type, a
+  non constant batch norm parameter, a layout encoded constant and a layout
+  changing transpose are each refused by name rather than as a generic
+  legalization failure.
+- **A dynamic extent is now refused by the `npu` dialect's type constraints**
+  rather than reaching a verifier that aborted on it. `NPU_FloatTensor`,
+  `NPU_QuantTensor` and `NPU_AnyTensor` are `StaticShapeTensorOf` instead of
+  `RankedTensorOf`, which is what `NPUTypes.td` has claimed since P1. This
+  narrows what the dialect accepts: `tensor<?x4xf32>` no longer parses on any
+  `npu` operation, where before it parsed and then aborted the tool inside
+  `npu.reshape`. Defect D-0015. `docs/DIALECT_REFERENCE.md` changes 46 operand
+  rows from "ranked tensor of" to "statically shaped tensor of".
+- **`docs/PASSES.md` exists**, per ground rule 12, with before and after IR for
+  every pass that has landed. No ablation delta is quoted yet and each entry says
+  so rather than leaving the field blank; the harness lands at P10.
+- **`test/Dialect/NPUISA/dma-boundaries.mlir` exists**, deferred from P2 to the
+  phase that has a lowering to assert against.
+
 ### Phase P3: the ONNX frontend and the model suite
 
 - **`onnxscript` is a dependency now.** torch's dynamo exporter imports it at

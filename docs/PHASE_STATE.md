@@ -14,232 +14,207 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-08-19.
+**Last updated:** 2026-08-20.
 
 ## Current phase
 
-**P3, the ONNX frontend and the model suite.** Branch
-`phase/p3-onnx-frontend`, cut from `main` at `316f3b8`, which is the P2 merge.
-Nine commits, not pushed. The ninth is the one that carries this table, so it
-is the branch tip and is named by subject rather than by a sha it cannot know.
+**P4, lowering to `npuisa`.** Branch `phase/p4-lowering`, cut from `main` at
+`2d12588`, which is the P3 merge. Four commits, not pushed. The fourth is the
+one that carries this table, so it is the branch tip and is named by subject
+rather than by a sha it cannot know.
 
 | Commit | Subject |
 |---|---|
-| `4b289bd` | `build(deps): install onnxscript and relock the environment` |
-| `0a8bd84` | `docs(adr): record how the frontend emits npu dialect IR from Python` |
-| `0d23a76` | `feat(dialect): let add and mul take the rank 1 channel broadcast operand` |
-| `bf1dc82` | `feat(frontend): add the ONNX importer for the opset 23 operator set` |
-| `677aeb6` | `feat(frontend): add the seeded model suite of Section 15` |
-| `98603d5` | `ci: switch on mypy and pytest` |
-| `fa71f43` | `docs: record the P3 defects and hand off the phase` |
-| `16724ea` | `docs(readme): correct a phase line that has been wrong since P1` |
-| tip | `docs: refresh the phase state commit table` |
+| `f86bc64` | `fix(dialect): refuse a dynamic extent at the type level, as NPUTypes.td claimed` |
+| `e08fc78` | `docs(adr): record the lowering mechanism and the bufferization attempt` |
+| `5f08222` | `feat(npuisa): lower the npu dialect to npuisa instructions on memrefs` |
+| tip | `docs: record the P4 defects and hand off the phase` |
 
-A note on the branch point, since the previous phase had a scare about exactly
-this. Local `main` was at the P1 merge `6da2a3f` when this session began; a
-fetch showed `origin/main` at `316f3b8`, the P2 merge, and local `main` was fast
-forwarded to it before the branch was cut. P2's lesson held: the conclusion was
-drawn against `origin/main` after a fetch, not against a local ref.
+On the branch point, since two phases running have had something to say about
+it. Local `main` was stale when this session began, and P3's handoff had already
+recorded that as a recurring hazard. The first command of the session was
+`git fetch origin && git branch -f main origin/main`, which moved local `main`
+to `2d12588`, and the branch was cut from that. The conclusion was drawn against
+`origin/main` after a fetch, not against a local ref.
 
 ## Gate status
 
-The P3 gate is Section 23's, and every item is **met locally**. Item by item,
-with the test that proves it. Every test named runs in
-`python -m pytest test/Python -q`.
+The P4 gate is the roadmap entry's, plus the deliverables Sections 8 and 12
+attach to this pass. Every item is **met locally**. Item by item, with the
+proof.
 
 | Gate item | Proof |
 |---|---|
-| A pytest per converter in isolation | `test_onnx_importer.py` carries at least one positive case per registered converter: `test_conv_imports_with_its_bias_as_an_operand`, `test_gemm_with_transb_transposes_the_constant_at_import`, `test_matmul_is_rank_two_by_rank_two`, `test_same_shaped_operands_pass_straight_through`, `test_the_carve_out_reaches_mul_as_well_as_add`, `test_relu_imports`, `test_clip_with_a_zero_lower_bound_and_no_upper_bound_is_a_relu`, `test_a_chain_of_identities_is_imported_past_rather_than_refused`, `test_max_pool_imports_with_its_window`, `test_average_pool_with_count_include_pad_and_no_pads_is_accepted`, `test_global_average_pool_becomes_a_full_extent_pool`, `test_batch_normalization_imports_with_its_epsilon`, `test_a_flattening_reshape_keeps_the_batch`, `test_flatten_at_axis_one_keeps_the_batch`, `test_transpose_imports_with_its_permutation`, `test_concat_normalises_a_negative_axis` |
-| Plus the negative cases | Twenty six refusal tests, covering `auto_pad`, a `kernel_shape` disagreeing with the filter, a non constant filter, an impossible convolution extent, `alpha`, `transA`, a batched `MatMul`, a run time broadcast, relu6 and a non zero `Clip` lower bound, `MaxPool` indices, `count_include_pad` with real pads, `AveragePool` dilations, the batch norm training form and non constant parameters, a batch folding `Reshape`, `Flatten` at axis 0, `allowzero` with a literal zero, a non permutation `perm`, a dynamic extent, an integer input, another opset, a custom operator domain, the quantization pair, `Pad`, and an operator with no converter at all |
-| A structural pytest per model | `test_the_exported_graph_has_exactly_the_expected_nodes`, parametrized over all seven models, asserting **exact** node counts rather than a subset, because a subset check passes on a graph that gained a node |
-| Exactly one `Mul` surviving export in the ResNet block | `test_exactly_one_mul_survives_the_resnet_export`, plus `test_the_resnet_scale_is_a_channel_shaped_initializer` |
-| One `Transpose` in the dilated stack | `test_exactly_one_transpose_closes_the_dilated_stack`, which also asserts `perm = [0, 2, 3, 1]` |
-| The determinism test | `test_two_exports_at_the_same_seed_produce_identical_first_layer_weights` over all seven models, bit exact on the first rank 4 initializer, plus `test_a_different_seed_produces_different_weights` so a generator that ignored its seed cannot pass, plus `test_the_hand_built_models_are_deterministic_too` byte comparing the serialized model |
-| The batch preserving flatten test | `test_a_flattening_reshape_keeps_the_batch` and `test_a_reshape_that_folds_the_batch_away_is_refused`; `test_flatten_at_axis_one_keeps_the_batch` and `test_flatten_at_axis_zero_is_refused_by_name`; and `test_every_model_keeps_its_batch_dimension_end_to_end` over the whole suite |
-| The docstring agreement test | `test_the_module_docstring_lists_exactly_the_registered_converters`, asserted in both directions |
-| `Identity, Identity, Conv, BatchNormalization` imports past every `Identity` | `test_a_chain_of_identities_is_imported_past_rather_than_refused`, which asserts the convolution reads `%arg0` directly. The same sequence is at the head of `conv_bn_relu_stack`, so it is covered by a suite model as well as by a fixture |
-| A `Conv` followed by a rank 1 `Add` imports to a rank 1 addend | `test_a_conv_followed_by_a_rank_one_add_imports_to_a_rank_one_addend`, which also asserts the convolution has **no** bias operand, so `-npu-fuse-bias` has something left to fuse rather than a convolution the importer already completed |
-| Every compute operation carries a `tensor.empty` destination | `test_every_compute_operation_has_a_tensor_empty_destination` on a fixture and `test_every_compute_operation_in_every_model_has_its_own_destination` over all seven models. Both compare the sorted list of `outs(...)` operands against the sorted list of `tensor.empty` results, so a missing destination and a reused one both fail |
+| A lit lowering test per pattern, with `CHECK` and `CHECK-NOT` | `test/Dialect/NPUISA/lowering.mlir`, one case per row of the operator map in `docs/PASSES.md`: the function boundary, `constant` with `tensor.empty`, `conv2d` with and without a bias, `matmul`, `add` and `mul` in both the same shaped and the rank 1 forms, `relu`, both pools, `reshape`, `transpose`, `concat`, `batch_norm`, `fused_op`, and both layouts. Every case carries at least one `CHECK-NOT` |
+| The negative case Section 12 requires | Three of them, and the strongest is `an_already_lowered_function_is_untouched`: a function already on memrefs comes out identical, asserted with `CHECK-NEXT` throughout, which also makes the pass idempotent. Plus `same_shaped_operands_are_not_broadcast`, which asserts no `memref.reinterpret_cast` appears, and `an_unread_argument_is_not_loaded` |
+| `dma-boundaries.mlir` asserts the scoped invariant immediately after lowering | `test/Dialect/NPUISA/dma-boundaries.mlir`, six functions, all of them `npu` dialect input so that what is checked is what the lowering produced rather than what I could write by hand. The run line is `npu-opt %s --npu-lower-to-npuisa` and nothing after it, which is what scopes the claim to the one point at which it is true |
+| DMA appears only at memory boundaries | Each case brackets its computation with `CHECK-NOT: npuisa.dma`, so the assertion is that there is nothing in between rather than that the transfers I listed are present. `a_chain_keeps_its_intermediates_on_chip` runs four instructions on one load and one store |
+| None between a convolution and its fused activation | `nothing_between_a_convolution_and_its_activation`, on an `npu.fused_op` region: two loads, then `conv2d`, then `relu`, then one store, with `CHECK-NOT: npuisa.dma` between each pair |
+| An NHWC tensor lowers to a memref carrying the strides that layout implies | `nhwc_becomes_a_strided_buffer` in `lowering.mlir`: `tensor<1x8x8x3xf32, #npu.layout<nhwc>>` becomes `memref<1x3x8x8xf32, strided<[192, 1, 24, 3]>, #npu.scratchpad>`, with `CHECK-NOT: memref<1x8x8x3xf32` so the extents are asserted to have moved. `nchw_carries_no_layout_map` is the other half: an NCHW tensor gets no strided map, without which the NHWC case would prove nothing |
+| A value that cannot be assigned a memory space is refused with a naming diagnostic | `lowering-diagnostics.mlir`: `a_dynamic_extent`, `an_unsupported_element_type` and `a_dynamic_destination`. Each names the function or the operation, the argument or result number, quotes the type, and gives the reason as a clause. The decision and the explanation come out of the same branches of `convertTensorType`, so a diagnostic cannot contradict the refusal it explains |
+| Batch norm decomposes into a multiply and an add, with the constants computed at rewrite time | `batch_norm_decomposes_into_a_multiply_and_an_add` checks the computed constants **by value**, not by shape: gamma 2 and 4, beta 1 and 0, mean 0 and 1, variance 3 and 3, epsilon 1 give a multiplier of 1 and 2 and an addend of 1 and -2. The arithmetic is the thing that could be wrong while the shapes stayed right |
+| Non constant batch norm parameters produce a diagnostic naming the operation and the operand, never a generic legalization failure | `a_computed_batch_norm_parameter` matches `the gamma operand of this batch norm is not an npu.constant`, and `a_zero_denominator` covers a variance plus epsilon that is not positive |
+| The ADR 0005 rank 1 broadcast lowering | `add_broadcasts_a_rank_one_addend` and `mul_broadcasts_a_rank_one_scale` check the whole `memref.reinterpret_cast` including `strides: [0, 1, 0, 0]` and the resulting `strided<[0, 1, 0, 0]>` operand type. `a_broadcast_view_adds_no_transfer` in `dma-boundaries.mlir` checks that it costs no DMA |
+| `npu.fused_op` handling, decided and documented | Flattened, not diagnosed, and `docs/PASSES.md` says why: the gate asks for no DMA between a convolution and its fused activation, and a named diagnostic would have met the letter of "do something rather than nothing" while leaving the gate unmeetable. `fused_op_is_flattened` is the lit case |
+| An `scf` operation or a multi block function is a named diagnostic | `an_scf_loop` and `two_blocks` in `lowering-diagnostics.mlir`. The validation walk is pre order so the `scf.for` is named rather than the `scf.yield` inside it |
+| The `one-shot-bufferize` attempt made and its outcome recorded either way | `docs/adr/0006-lowering-mechanism-and-the-bufferization-attempt.md`: five runs with their commands and their output, and a section saying plainly which parts of the infrastructure were adopted and which were not |
+| `-npu-lower-to-npuisa` registered and runnable from `npu-opt` | `mlir::npuisa::registerNPUISAPasses()` in `tools/npu-opt/npu-opt.cpp`. Every lit file above runs it through `npu-opt` |
+| `docs/PASSES.md` created, per ground rule 12 | Created in the same commit as the pass, with before and after IR, the operator map, the refusal table, and the negative cases. The ablation delta field says it is not measured and why, rather than being left blank |
 
 ### Verification output
 
-Every command below was run on this branch at `98603d5`, from
-`/home/elijah/npu-mlir-v2`, in `~/npu-venv`, with `PYTHONPATH` unset in the
-calling environment.
+Every command below was run on this branch at `5f08222`, from
+`/home/elijah/npu-mlir-v2`, in `~/npu-venv`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 7 discovered, 7 passed, 0 failed |
-| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0 |
-| `python -m pytest test/Python -q -m "not slow"` | 142 passed, 7 deselected |
-| `python -m pytest test/Python -q -m "slow or not slow"` | 149 passed |
+| `ninja -C build check-npu` | 10 discovered, 10 passed, 0 failed. Seven at P3, plus this phase's three |
+| `build/bin/NPUInterfaceTests` | 18 tests, 18 passed |
+| `build/bin/NPUTilingTests` | 12 tests, 12 passed |
+| `python -m pytest test/Python -q` | 142 passed, 7 deselected, exit 0, unchanged from P3 |
 | `mypy` | no issues found in 11 source files |
 | `black --check .` | 19 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 116 of 116 files |
+| `reuse lint` | compliant, 126 of 126 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
-| `python scripts/check-reachability.py --skip-models` | pass, exit 0, and the **import layer is decidable for the first time**: 12 imported computation operations, every one found in `op_mapping.py` |
+| `python scripts/check-reachability.py --skip-models` | pass, and the **lowering layer is decidable for the first time**: 12 imported computation operations, every one found in `LowerNPUToNPUISA.cpp` |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
-| `.github/workflows/ci.yml` | parses as YAML; job list and step order confirmed |
 | `git status --short` | empty |
 
-Two extra verifications that are not gate items but are the evidence behind
-decisions taken this phase.
+**Two gtest binaries exist, not three.** `NPUInterfaceTests` and
+`NPUTilingTests` are what P1 and P2 built; `NPUAllocatorTests` is P5's and
+`NPUEncodingTests` is P6's, per the activation table. Both existing binaries are
+green and neither was touched by this phase, which is the claim that matters
+here: the dialect change in `f86bc64` narrows a type constraint, and a gtest
+building tensors with dynamic extents would have failed on it.
 
-- **`bf1dc82` stands alone.** Checked out into a detached worktree and run on
-  its own: 76 passed, mypy clean. The importer commit does not depend on the
-  model generator commit that follows it, which is what makes the two a
-  sequence rather than one change split for appearances.
-- **The lock file installs on the CI image's interpreter.** A `--dry-run`
-  install of `requirements-lock.txt` inside `ubuntu:24.04`, which is what the
-  LLVM image is built from, resolves every pin on Python 3.12.3, including
-  `torch-2.13.0+cpu-cp312`. That is the single largest risk in the new pytest
-  step and it is measured rather than assumed.
+## Activation proofs, and why there are none
 
-## Activation proofs, and the exact perturbations
+**No CI job or step activates at P4.** Section 19.0's table has no P4 row. Every
+step this phase's work runs under, `check-npu`, `dash-lint.sh`, `reuse lint`,
+`check-reachability.py --skip-models` and the `DIALECT_REFERENCE.md` staleness
+gate, activated at P0 or P1 and has been on ever since. The next activations are
+`NPUAllocatorTests` at P5, `NPUEncodingTests`, the ISA staleness gate and the
+sanitizers job at P6, `NPUSimulatorTests` at P7, and the full reachability check
+at P8.
 
-Two steps switched on this phase, and Section 19.0 requires each to be broken
-once deliberately, shown red, and restored. Both recipes below break an
-**assertion** rather than the build, so each turns exactly one step red and
-leaves the rest of the pipeline green, which is what makes the proof say
-something about that step rather than about the compiler.
+This paragraph exists so that the absence is a decision rather than an omission.
+A phase report with no activation proof section reads the same whether the
+author checked and found nothing or did not check at all, and P3's handoff spent
+real effort on two proofs, so a reader is entitled to wonder where this phase's
+went.
 
-**mypy.** In `python/npu_frontend/onnx_importer.py`:
-
-```
--PINNED_OPSET: Final[int] = 23
-+PINNED_OPSET: Final[str] = 23
-```
-
-The value is unchanged, so pytest, black and ruff all stay green and the C++
-build is untouched. Only mypy speaks. Verified locally: it reports two errors,
-the incompatible assignment itself and a knock on `arg-type` where
-`model_generator.py` passes the constant to `make_opsetid`, which is mypy
-following the type across the package and is a better proof of the step than
-one error would have been. pytest reported 142 passed on the same tree.
-
-**pytest.** In `test/Python/test_model_generator.py`:
-
-```
--    assert node_counts(suite["resnet_block"]).get("Mul") == 1
-+    assert node_counts(suite["resnet_block"]).get("Mul") == 2
-```
-
-One structural assertion, on the model that carries the only `Mul` in the suite.
-Verified locally: exactly one test fails, `mypy` stays green, and nothing else
-moves.
-
-**The exit 5 arm, which is a separate claim and deserves its own perturbation.**
-The activation table says an empty collection returns 5 and is never read as a
-pass, and a green pytest step does not prove that arm works. The recipe this
-paragraph first carried, pointing `testpaths` at a directory with no tests, was
-run and proved nothing: the CI step passes `test/Python` on the command line,
-and a command line path makes pytest ignore `testpaths` entirely, so CI stayed
-green while a bare local pytest exited 5. The working perturbation deselects
-every test through an unsatisfiable default marker expression, which travels
-through any invocation. In `pyproject.toml`:
-
-```
--addopts = "-m 'not slow'"
-+addopts = "-m 'slow and not slow'"
-```
-
-pytest then deselects everything, exits 5 through the exact command CI runs,
-and the step fails with the `::error::pytest collected no tests and exited 5.`
-line rather than passing. Both runs, the no-op green and the real red, are in
-the engineering log with the lesson: rehearse a proof under the exact
-invocation the gate uses.
+One step did change behaviour without changing its guard, and it is worth
+naming. `check-reachability.py --skip-models` has been on since P1 and reported
+the lowering layer as "not yet decidable" ever since, because
+`LAYER_HOMES["lowering"]` points at
+`lib/Dialect/NPUISA/Transforms/LowerNPUToNPUISA.cpp` and that file did not
+exist. It exists now, so the check started asking a question it had never asked,
+and it failed the first time it asked it: six operations whose mnemonics did not
+appear literally in the pass source, because C++ class names are `Conv2DOp` and
+the check looks for `conv2d`. The fix is the operator map comment at the head of
+that file, which is documentation the pass should have carried anyway. That is
+the table becoming decidable exactly as designed, on the day its source
+appeared, with no edit to the script.
 
 ## Open questions
 
-Five. None blocks the gate.
+Six. None blocks the gate.
 
-**The `npu.add` and `npu.mul` relaxation is a P1 dialect change made at P3, and
-a reviewer should look at it as one.** The reasoning is in
-`docs/adr/0005-channel-broadcast-on-add-and-mul.md` and the conflict it resolves
-is D-0012. The short version: P1's rule made Section 11's carve out
-unimplementable for `Add`, because folding the addend into the convolution at
-import leaves `-npu-fuse-bias` nothing to fuse, and unrepresentable for `Mul`,
-because a per channel scale has no bias operand to be folded into. A frontend
-cannot be written against a dialect that refuses the IR the specification asks
-it to produce. It obliges P4 and P7: an add or a multiply with a rank 1 rhs
-lowers to a per channel broadcast, and the kernel reads that operand with a
-channel stride of one and a spatial stride of zero. Both are already implied by
-`npu.batch_norm`, which is why the relaxation is cheaper than it looks, but
-neither should be discovered from a verifier failure.
+**`f86bc64` is a P1 dialect change made at P4, and a reviewer should look at it
+as one.** `NPU_FloatTensor`, `NPU_QuantTensor` and `NPU_AnyTensor` are
+`StaticShapeTensorOf` rather than `RankedTensorOf`, which narrows what the
+dialect accepts. The reasoning is D-0015: the comment above those definitions has
+claimed since P1 that a dynamic extent is refused at the type level, it was not,
+and `npu.reshape` then aborted the tool with an assertion and no diagnostic at
+all on IR that had parsed. I considered recording it and leaving it, since it is
+not this phase's code and the phase was already large. I fixed it because the
+alternative is a known crash sitting behind a sentence saying it cannot happen.
 
-**`GlobalAveragePool` does not come from the model Section 15 assigns it to.**
-The dynamo exporter on torch 2.13 lowers every spelling of adaptive average
-pooling to `ReduceMean`, which is not in this project's operator set, so the
-depthwise separable block pools with an `AveragePool` whose kernel is the full
-spatial extent. That is global average pooling and it imports to the same
-`npu.avg_pool2d`, so nothing the pipeline sees is different, but the ONNX node
-type differs from what Section 15 implies and the `GlobalAveragePool` converter
-gets its suite model in the conv plus batch norm stack instead. Recorded rather
-than quietly done, because a reader comparing the suite against Section 15's
-table will notice the difference and should find the reason here.
+**The out parameter convention is this phase's decision and P6 inherits it.** A
+lowered function returns nothing and its results are trailing `#npu.dram`
+arguments. `test/Dialect/NPUISA/ops-memref.mlir` has described a lowered function
+that way since P2, so the shape is not new, but nothing before now committed the
+compiler to producing it. The encoder reads its input and output regions out of
+that argument list, and there is no marker distinguishing an input argument from
+an output one beyond position: the first N are inputs and the last M are outputs,
+where M is the original result count. **If P6 wants that explicit, an argument
+attribute is the place, and it should be added there rather than inferred.**
 
-**mypy checks `python/npu_frontend` and `scripts`, not `test/Python`.** That is
-P0's configuration and the activation table guards the step on
-`python/npu_frontend/` existing, so the scope and the guard agree and nothing
-was weakened here. Widening it to the tests would be strictly better and is real
-work: the fixtures would need annotating under `disallow_untyped_defs`, and the
-lint job would need `pytest` installed for its `py.typed` marker. Left as a
-decision for whoever next touches the mypy configuration rather than taken
-silently in a phase that had no reason to take it.
+**The two layout diagnostics are placeholders for work `-npu-assign-layout`
+owns.** A constant carrying a layout encoding, and a transpose that changes the
+layout as well as the extents, are both refused by name. Neither is reachable
+today, because the frontend emits no layout encodings at all. Both become
+reachable at P13 and both are that pass's work: it materialises its own permuted
+constants and folds its own inverse transposes, which Section 12 already says it
+does. If P13 finds it needs a relayouting copy after all, the shape of one is
+available without a new opcode, since `npuisa.transpose` with an identity
+permutation between two buffers of differing strides is exactly a relayout under
+this representation. That is **not implemented**, no gate depends on it, and
+nothing may cite it as available.
 
-**The five input classes and the tolerance work of Section 17.4 are not here,
-and should not be.** This phase produces models and IR; there is no simulator to
-compare against until P7 and no end to end pipeline until P8. The `slow` marker
-carries seven cells today, `test_every_model_imports_at_a_second_seed`
-parametrized over the suite, so the fast and slow split is real rather than
-declared and the CI step that runs the slow cells at P10 will have something to
-run. The matrix that marker is really for arrives with it.
+**The scratchpad attributes are not set by this pass.** Section 8 says the
+function carries `npuisa.scratchpad_bytes` and `npuisa.scratchpad_budget`, which
+the encoder and the simulator read. `scratchpad_bytes` is an output of the
+allocator and cannot be known here; `scratchpad_budget` is an input to it. The
+lowering copies the function's discardable attributes across, so a budget set on
+the input function survives, and P5 owns both. Named because a reader comparing
+the lowered output against Section 8 will notice they are absent.
 
-**`experiments/models/` does not exist, and `check-reachability.py` reads it for
-the model layer.** Models are generated into a caller supplied directory and
-`.onnx` files are never committed, so there is no directory for the full check to
-point at. The full check is off until P8 per the activation table and the
-`--skip-models` form is what runs today, so nothing is broken. But whoever turns
-the full check on at P8 has to decide where the model layer looks: either the
-benchmark harness generates into `experiments/models/` before the check runs, or
-`LAYER_HOMES["model"]` moves to the generator's registry in
-`python/npu_frontend/model_generator.py`, which is where the answer actually
-lives.
+**No `memref.dealloc` is emitted, deliberately.** The allocator derives live
+intervals from the instruction stream, so a deallocation here would be a weaker
+second statement of a lifetime it computes exactly. If P5's sweep line turns out
+to want explicit lifetime markers, that is P5's decision and it should change
+this pass rather than working around it.
+
+**The overlap analysis has not been shown a `memref.reinterpret_cast`.**
+`computeBufferRange` in `NPUISAMemoryOverlap.cpp` walks `memref.view` and
+contiguous static `memref.subview` back to an allocation. The broadcast view this
+phase introduces is a `reinterpret_cast`, which is a new shape for it to meet. It
+does not matter yet, because that analysis runs only for the asynchronous DMA
+rules and this pass emits no asynchronous transfer, which
+`the_lowering_emits_no_asynchronous_transfer` asserts. It matters at P5, when the
+allocator rewrites allocations as views underneath these casts, and at the double
+buffering pass, whichever reaches it first. The conservative answer, `Unknown`,
+is the safe one and is what an unrecognised producer already yields, so the
+failure mode is a refusal rather than a race. **Whoever touches that analysis
+next should add a `reinterpret_cast` case deliberately, and decide whether a
+stride 0 view has a byte range at all**, which is a real question: it addresses C
+floats and spans none.
 
 ## Next command
 
 ```bash
-git push -u origin phase/p3-onnx-frontend
+git push -u origin phase/p4-lowering
 ```
 
-Then watch CI. Expect `lint` to run `mypy` for the first time, and
-`build-and-test` to install the Python dependencies and run `pytest` for the
-first time; that install is a few hundred megabytes on the first run and cached
-on every one after, keyed on the lock file's hash. Then perform the two
-activation proofs above, each as its own pull request so the `pull_request`
-trigger fires, record which job and which step caught each in
-`docs/ENGINEERING_LOG.md` with the run URLs, revert them, and open the merge
-pull request.
+Then watch CI. Expect no job or step to run for the first time, per the
+activation section above. Two things are worth looking at. The
+`DIALECT_REFERENCE.md` staleness gate sees a regenerated reference for the first
+time since P1, and it is the gate most likely to catch a mistake in `f86bc64`.
+And `check-reachability.py --skip-models` reports the lowering layer as checked
+rather than as undecidable for the first time. Then open the merge pull request.
 
-**No image republish is needed.** P2 switched the MLIR Python bindings on in the
-image and they are at `/opt/llvm/python_packages/mlir_core`, already on
-`PYTHONPATH` there. The new pytest step installs its Python dependencies into
-the running container from `requirements-lock.txt` rather than needing them
-baked into the image.
+There are **no activation proofs to perform this phase**, which is a change from
+P3's handoff and is explained above rather than left as a gap.
 
 ## Next phase
 
-**P4, lowering to `npuisa`.** `ConversionTarget`, `TypeConverter`,
-`applyPartialConversion`, with the `one-shot-bufferize` attempt made and its
-outcome recorded either way. Two things P3 leaves on P4's desk beyond the
-roadmap entry: `npu.add` and `npu.mul` with a rank 1 rhs need a per channel
-broadcast lowering, and `test/Dialect/NPUISA/dma-boundaries.mlir`, which Section
-8 names and which P2's handoff correctly deferred to the phase that has a
-lowering to assert against.
+**P5, scratchpad allocation.** Section 13.1 in full: both offset assignment
+strategies, `strategy=pack` and the interval scheme as the named baseline, both
+spill heuristics, the sweep line from the start, the five allocator lit cases,
+the sweep line property test against brute force in `NPUAllocatorTests`, the
+three diagnostics each with a `-verify-diagnostics` test, and
+`fragmentation_ratio` computed and reported per model.
+
+Four things P4 leaves on P5's desk beyond the roadmap entry, all expanded in the
+open questions above: the two scratchpad attributes are P5's to set, this pass
+emits no deallocations so P5 owns lifetime entirely, the allocator's views will
+sit underneath this pass's `memref.reinterpret_cast` broadcast views, and the
+overlap analysis has not been shown one.
 
 ## The frozen v1 fallback
 

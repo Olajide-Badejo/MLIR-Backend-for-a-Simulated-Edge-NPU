@@ -25,6 +25,7 @@ set(LIBS
     MLIRRegisterAllPasses
     MLIRNPU
     MLIRNPUISA
+    MLIRNPUISATransforms
   )
 
 add_llvm_executable(npu-opt npu-opt.cpp)
