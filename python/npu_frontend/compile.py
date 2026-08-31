@@ -204,6 +204,28 @@ def ablatable_passes(level: int) -> list[str]:
     ]
 
 
+def levels_that_eliminate_dead_code() -> list[int]:
+    """The levels whose pipeline removes computation nothing reads.
+
+    Section 17.3a's dead subgraph injection asserts that a subgraph feeding
+    nothing leaves the instruction count unchanged, and that is a statement
+    about a level with a pass that removes it. Which levels those are is read
+    out of the compiler's own description, so the day P9 adds `-canonicalize`
+    to `-O1` and `-O2` the check starts asserting without an edit, rather than
+    the day somebody remembers to update a list of pass names.
+
+    Empty at P8. `-O0` runs lowering and allocation, neither of which removes
+    anything, which is why the P8 form of the same check asserts that the count
+    grew by exactly what the dead subgraph brought.
+    """
+    return [
+        int(row["level"])
+        for row in describe_pipeline()["levels"]
+        if row["implemented"]
+        and any(entry["eliminates_dead_code"] for entry in row["passes"])
+    ]
+
+
 # ---------------------------------------------------------------------------
 # The stages.
 # ---------------------------------------------------------------------------

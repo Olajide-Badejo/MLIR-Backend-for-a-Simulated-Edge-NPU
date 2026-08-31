@@ -53,9 +53,11 @@ namespace {
 /// the pass.
 const PassEntry kO0[] = {
     PassEntry("npu-lower-to-npuisa", /*ablatable=*/false,
+              /*eliminatesDeadCode=*/false,
               "the dialect conversion to npuisa on memrefs; removing it "
               "produces no program at all"),
     PassEntry("npu-allocate-scratchpad", /*ablatable=*/false,
+              /*eliminatesDeadCode=*/false,
               "assigns every scratchpad buffer an offset; removing it produces "
               "no program at all"),
 };
@@ -216,6 +218,7 @@ void mlir::npu::pipeline::printDescriptionAsJson(llvm::raw_ostream &out) {
       passes.push_back(llvm::json::Object{
           {"pass", entry.argument},
           {"ablatable", entry.ablatable},
+          {"eliminates_dead_code", entry.eliminatesDeadCode},
           {"note", entry.note},
       });
     }

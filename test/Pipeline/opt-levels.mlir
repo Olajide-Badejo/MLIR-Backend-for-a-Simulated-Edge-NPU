@@ -63,8 +63,10 @@ func.func @small(%input: tensor<1x2x4x4xf32>, %scale: tensor<2xf32>) -> tensor<1
 // DESCRIBE-NEXT:     "level": 0,
 // DESCRIBE-NEXT:     "name": "-O0",
 // DESCRIBE:          "ablatable": false,
+// DESCRIBE-NEXT:     "eliminates_dead_code": false,
 // DESCRIBE:          "pass": "npu-lower-to-npuisa"
 // DESCRIBE:          "ablatable": false,
+// DESCRIBE-NEXT:     "eliminates_dead_code": false,
 // DESCRIBE:          "pass": "npu-allocate-scratchpad"
 // DESCRIBE:        "arrives_at": "P9",
 // DESCRIBE-NEXT:   "implemented": false,

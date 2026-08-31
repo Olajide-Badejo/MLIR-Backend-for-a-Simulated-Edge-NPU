@@ -74,19 +74,30 @@ llvm::StringRef arrivingPhase(OptLevel level);
 
 /// One pass in one level's pipeline.
 ///
-/// The constructor takes all three fields and none of them has a default. That
-/// is Section 12's rule that a pass registered with no `ablatable` property is a
+/// The constructor takes every field and none of them has a default. That is
+/// Section 12's rule that a pass registered with no `ablatable` property is a
 /// build error rather than a silent default, expressed as something the compiler
 /// enforces: a default of `false` would quietly shrink the ablation table by
-/// exactly the passes somebody forgot to think about.
+/// exactly the passes somebody forgot to think about. `eliminatesDeadCode` is
+/// held to the same rule for the same reason, one check further on.
 struct PassEntry {
-  PassEntry(llvm::StringRef argument, bool ablatable, llvm::StringRef note)
-      : argument(argument), ablatable(ablatable), note(note) {}
+  PassEntry(llvm::StringRef argument, bool ablatable, bool eliminatesDeadCode,
+            llvm::StringRef note)
+      : argument(argument), ablatable(ablatable),
+        eliminatesDeadCode(eliminatesDeadCode), note(note) {}
 
   /// The name `npu-opt` knows the pass by, without a leading dash.
   llvm::StringRef argument;
   /// Whether Section 16.2's leave one out ablation may remove it.
   bool ablatable;
+  /// Whether this pass removes computation nothing reads.
+  ///
+  /// Section 17.3a's dead subgraph injection asserts that a subgraph feeding
+  /// nothing leaves the instruction count unchanged. That is only true at a
+  /// level whose pipeline contains a pass which removes it, so the check reads
+  /// this flag out of the description rather than carrying a list of pass names
+  /// that would go stale the first time one was added.
+  bool eliminatesDeadCode;
   /// One line saying what it does here, or why it is not ablatable.
   llvm::StringRef note;
 };

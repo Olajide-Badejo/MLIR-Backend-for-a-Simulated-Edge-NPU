@@ -70,9 +70,19 @@ from one that is empty, and `npu-compile -O2` says "arrives at P9" rather than
 
 **Every entry carries an `ablatable` property and a missing one does not
 compile.** Section 12 asks for that in those words. `PassEntry` has a single
-constructor taking all three fields with no defaults, so a row written as
+constructor taking every field with no defaults, so a row written as
 `{"npu-fuse-ops"}` is a build error. A default of `false` would quietly shrink
 Section 16.2's ablation table by exactly the passes nobody thought about.
+
+**Each entry also declares whether it eliminates dead code**, under the same
+rule and for a second consumer. Section 17.3a's dead subgraph injection asserts
+that a subgraph feeding nothing leaves the instruction count unchanged, which is
+only true at a level whose pipeline holds a pass that removes it. The check
+reads `eliminates_dead_code` out of the description rather than carrying a list
+of pass names that would go stale the first time one was added. Both of `-O0`'s
+passes declare `false`, so the set of levels that eliminate dead code is empty
+at P8 and `-O0`'s form of the check is the opposite claim: the count grows by
+exactly the instructions the injection brought.
 
 **The description is readable at run time**, which is what Section 16.2 requires
 of the ablatable set:

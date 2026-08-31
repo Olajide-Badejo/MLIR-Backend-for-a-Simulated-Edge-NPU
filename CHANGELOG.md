@@ -43,6 +43,15 @@ Semantic Versioning once a release is tagged.
 - **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
+- **`npu_frontend.metamorphic`** holds four of Section 17.3a's five metamorphic
+  relations and its dead subgraph injection. The fifth, pad then slice back,
+  cannot be written: `Pad` is refused by this importer by name and `Slice` has
+  no converter, and adding either so a test could use it would be growing the
+  operator set to satisfy a test. It is recorded in `NOT_IMPLEMENTED` with that
+  reason and a test asserts the reason is still true.
+- **`npu-opt --npu-describe-pipeline` also reports `eliminates_dead_code` per
+  pass**, which is how the dead subgraph check knows which levels its
+  instruction count claim applies to. Both of `-O0`'s passes declare `false`.
 - **`npu_frontend.input_classes`** holds the five classes of Section 17.4 with
   their seeds derived from the cell's own identity, so a failing cell's input
   is reconstructible from the cell's name with no run log.
