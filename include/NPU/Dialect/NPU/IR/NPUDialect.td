@@ -36,6 +36,14 @@ def NPU_Dialect : Dialect {
   // defines, and the failure is a link error a long way from the cause.
   let useDefaultAttributePrinterParser = 1;
 
+  // A dialect with no constant materializer cannot have a constant put back
+  // into it. Every MLIR pass that arrives at a constant value and then needs an
+  // operation to hold it goes through `materializeConstant`, and a dialect that
+  // implements none makes those passes reach the right answer and then decline
+  // to write it down. That is D-0033, found at P9 by measuring `-sccp` on this
+  // dialect and getting no change at all on any input.
+  let hasConstantMaterializer = 1;
+
   let extraClassDeclaration = [{
     /// Registers the attributes this dialect defines. Defined in NPUAttrs.cpp
     /// so the generated storage lands in one translation unit.

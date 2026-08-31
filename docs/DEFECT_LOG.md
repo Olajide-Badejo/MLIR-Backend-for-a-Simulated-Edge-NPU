@@ -1336,3 +1336,185 @@ None.
   new CI step is the first time anybody learns what that step's environment
   actually is**, which is the argument for switching steps on one at a time and
   is why the activation table exists.
+
+---
+
+### D-0033 the dialect could not materialise a constant, so `-sccp` did nothing
+
+- **Found:** 2026-09-01, phase P9, by measuring rather than by a failing test.
+  `-sccp` is one of the four upstream passes Section 12 puts in `-O2`, and
+  before writing its Section 12 negative test I ran it over a module of `npu`
+  operations to see what its positive case looked like. There was not one: the
+  output was byte identical to the input on every module I gave it, including
+  one built specifically to have a constant to propagate.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** a private function whose only caller passes a constant.
+
+  ```mlir
+  func.func private @scaled(%x: tensor<2xf32>) -> tensor<2xf32> {
+    %c = npu.constant dense<[2.0, 3.0]> : tensor<2xf32>
+    %d = tensor.empty() : tensor<2xf32>
+    %r = npu.mul ins(%x, %c : tensor<2xf32>, tensor<2xf32>)
+                 outs(%d : tensor<2xf32>) -> tensor<2xf32>
+    return %r : tensor<2xf32>
+  }
+  func.func @main() -> tensor<2xf32> {
+    %c = npu.constant dense<[2.0, 3.0]> : tensor<2xf32>
+    %r = call @scaled(%c) : (tensor<2xf32>) -> tensor<2xf32>
+    return %r : tensor<2xf32>
+  }
+  ```
+
+  `npu-opt --sccp` on that returned it unchanged. The argument should have
+  become the constant, and the lattice said so.
+
+- **Root cause.** `NPUDialect` implemented no `materializeConstant`. MLIR's
+  constant propagation is two halves: a lattice that decides a value is a known
+  constant, and a materialiser that builds an operation to hold it. The first
+  half worked. The second had nowhere to go, so the solver asked the dialect for
+  an operation, got null, and left the value alone. No diagnostic, no warning,
+  and an exit code of zero: the pass reached the right answer and declined to
+  write it down.
+
+- **Why nothing caught it before.** `-sccp` was not in a pipeline until P9, so
+  nothing ran it. That is the honest answer and it is also the uncomfortable
+  one: the hook has been missing since P1 and would have stayed missing if P9's
+  gate had not required a **positive** test per pass. A gate that asked only for
+  the negative case would have been met by a pass that never fires, which is
+  precisely why Section 12 asks for both.
+
+- **Resolution.** `let hasConstantMaterializer = 1;` on the dialect and four
+  lines in `NPUDialect.cpp`. The guard is narrow because `npu.constant`'s
+  verifier requires the attribute's own type to equal the result type, so an
+  attribute that is not an `ElementsAttr`, or one whose type is not the
+  requested type, returns null rather than an operation that fails to verify.
+
+- **What it would have cost.** `-sccp` is one of Section 16.2's ablatable
+  passes, so at P10 it would have produced an ablation row of exactly zero on
+  every cell. A reader would have concluded that constant propagation is worth
+  nothing on this workload, which happens to be nearly true and would have been
+  true for the wrong reason. `test/Transforms/level-passes.mlir` is the test
+  that now separates the two.
+
+---
+
+### D-0034 two operations shared one destination and therefore one buffer
+
+- **Found:** 2026-09-01, phase P9, by reading the `-O2` output of
+  `test/Pipeline/opt-levels.mlir` while writing its CHECK lines. Not by a test:
+  every test still passed, because the one shape that reaches it in the model
+  suite computes the right answer anyway.
+- **Status:** resolved 2026-09-01, before `-O2` was registered.
+- **Reproduce:** two convolutions in a chain, at `-O2`.
+
+  ```mlir
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %c0 = npu.conv2d ins(%x, %w : ...) outs(%d0 : ...) {...} -> tensor<1x2x4x4xf32>
+  %d1 = tensor.empty() : tensor<1x2x4x4xf32>
+  %c1 = npu.conv2d ins(%c0, %w : ...) outs(%d1 : ...) {...} -> tensor<1x2x4x4xf32>
+  ```
+
+  came out of `npu-opt --npu-O2` as
+
+  ```mlir
+  npuisa.conv2d ins(%view, %view_0 : ...) outs(%view_1 : ...)
+  npuisa.conv2d ins(%view_1, %view_0 : ...) outs(%view_1 : ...)
+  ```
+
+  The second convolution reads that buffer through a three by three window and
+  writes it at the same time.
+
+- **Root cause, in two correct halves that are wrong together.** `-cse` merged
+  the two `tensor.empty` operations, which is right: they are identical
+  operations with no operands, `npu` operations are `Pure` and take their
+  destination by value, and a destination has no contents, so two operations
+  sharing one are two pure functions of the same meaningless input. Then
+  `-npu-lower-to-npuisa` converted one `tensor.empty` into one `memref.alloc`,
+  which had been right for four phases because the importer emits one
+  `tensor.empty` per compute operation and nothing had ever merged them.
+
+- **Why the tests did not catch it.** The shape that reaches this is a chain
+  whose second operation reads its own output buffer, and for `npu.relu` that is
+  elementwise and gives the right answer. Every model in the suite that fused
+  produced the relu shape. The convolution shape above was written by hand while
+  diagnosing something else.
+
+- **Resolution.** In `-npu-lower-to-npuisa`'s pre conversion stage, every use of
+  a `tensor.empty` after the first gets its own clone. The fix is in the
+  lowering rather than in `-cse` for the same reason the aliasing rule is: this
+  is the layer where a value becomes a buffer, and it is the layer that has to
+  say one writer, one buffer. `test/Dialect/NPUISA/lowering.mlir` carries the
+  convolution chain as its regression case.
+
+- **The lesson, because it will recur.** Two passes each correct in isolation
+  can be wrong in composition, and the composition only exists once a level runs
+  both. Every pass P9 added is correct alone and had a lit test proving it; this
+  defect is in the pipeline, and it was found by looking at what the pipeline
+  produced rather than at what the passes did.
+
+---
+
+### D-0035 hoisted constants serialised every transfer ahead of every computation
+
+- **Found:** 2026-09-01, phase P9, by measuring `-O1` against `-O0` on the seven
+  model suite before recording the baseline. LeNet's cycles went from 17766.25
+  to 24392.75, a 37 percent regression, from an optimization level.
+- **Status:** resolved 2026-09-01, before `-O2` was registered.
+- **Reproduce:** compile LeNet at `-O1` and read the statistics.
+
+  ```
+  O0 cycles 17766.25  dma_cycles 16441  compute_cycles 7955.75  overlap 0.8334
+  O1 cycles 24392.75  dma_cycles 16441  compute_cycles 7955.75  overlap 0.0005
+  ```
+
+  The same twenty five instructions, the same transfer budget, the same compute
+  budget, and none of it overlapping.
+
+- **Root cause.** `-npu-lower-to-npuisa` emits one `npuisa.const` and one
+  `npuisa.dma_load` at the position of each `npu.constant`, so where a constant
+  sits in the block decides when its bytes are fetched. The two port cost model
+  of Section 10.1 charges exactly that: a transfer overlaps a computation when
+  the computation does not depend on it. MLIR's canonicalizer hoists every
+  `ConstantLike` operation to the top of the block, which is right for an
+  operation whose cost is zero and wrong for one that becomes a DRAM transfer.
+  It moved all eleven of LeNet's constants above all of its compute, in an order
+  that put the **last** layer's weights first, so the first convolution waited
+  for essentially the whole transfer budget.
+
+- **And the second half, found by the same measurement one step later.**
+  `-npu-fuse-ops` takes every value its region reads as an operand, destinations
+  included, so both destinations of a fused chain are defined above the region
+  and the flattening leaves them there. Section 13.1's liveness runs from the
+  allocation, so a destination defined earlier than it is written is a buffer
+  held out of everyone's way for longer than the program needs it. On LeNet at
+  `-O2` that raised the sweep line peak from 194624 bytes to 195040 and **the
+  tight budget cell stopped compiling**: "the scratchpad budget of 194624 bytes
+  is too small ... the requirement is therefore at least 195104". An
+  optimization level that could not compile a program `-O0` compiled, at a
+  budget Section 15 froze at P8.
+
+- **Resolution, one rule for both.** In the same pre conversion stage, each
+  `npu.constant` is moved back down above the run of constants and destinations
+  that immediately precedes its first reader, and each `tensor.empty` is moved
+  down to the operation that writes it. Both sink past **computation and nothing
+  else**, which is why both are no operations at `-O0`, where the importer's
+  placement is already this one, and why no `-O0` cell of the baseline moved.
+
+  There is nothing to schedule here and no scheduling pass is implied: this pass
+  chooses where to put a transfer and an allocation it is about to create, and
+  the answer is where the data is used.
+
+- **What it says about the phase.** Both halves are the same mistake seen twice:
+  a pass moved an operation whose position was free at the level it was
+  reasoning about and expensive one level down. Neither pass is wrong. What was
+  missing is that the layer which turns a position into a cost had no opinion
+  about position. It has one now, and `test/Dialect/NPUISA/lowering.mlir`
+  carries the hoisted shape by hand so the rule is tested without needing a
+  pipeline to produce it.
+
+- **A note on where the tight budgets stand.** They are unchanged and still the
+  numbers `docs/adr/0008-per-model-tight-scratchpad-budgets.md` froze at P8.
+  This defect is the reason they did not have to move: the alternative to fixing
+  the lowering would have been re measuring every tight budget against `-O2`,
+  which would have moved every tight budget cell in the project's history to
+  accommodate a placement artefact.

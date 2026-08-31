@@ -24,6 +24,7 @@ set(LIBS
     MLIRRegisterAllExtensions
     MLIRRegisterAllPasses
     MLIRNPU
+    MLIRNPUTransforms
     MLIRNPUISA
     MLIRNPUISATransforms
     MLIRNPUPipeline

@@ -41,6 +41,7 @@
 
 #include "NPU/Dialect/NPU/IR/NPUDialect.h"
 #include "NPU/Dialect/NPU/Interfaces/NPUTilingInterfaceImpl.h"
+#include "NPU/Dialect/NPU/Transforms/Passes.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "NPU/Dialect/NPUISA/Transforms/Passes.h"
 #include "NPU/Pipeline/Pipeline.h"
@@ -77,6 +78,7 @@ int main(int argc, char **argv) {
   }
 
   mlir::registerAllPasses();
+  mlir::npu::registerNPUPasses();
   mlir::npuisa::registerNPUISAPasses();
   mlir::npu::pipeline::registerNPUPipelines();
 

@@ -18,23 +18,36 @@ ablation delta.
 simulator to measure against**, and `Stats::cycles` is the number a delta would
 be taken from; the harness that runs a pipeline twice and subtracts is still
 Phase P10's, so no entry below quotes one yet. Each says so in its own row rather
-than leaving the field
-blank, because a blank field reads as "no effect" and an absent measurement is
-not a measurement of zero. The two passes that exist today are both marked **not
-ablatable** in Section 12's table anyway: removing either produces no program at
-all, so an ablation of one measures nothing and fails the run for a reason that
-has nothing to do with the pass.
+than leaving the field blank, because a blank field reads as "no effect" and an
+absent measurement is not a measurement of zero.
 
-The full pass table, including the eleven ablatable passes that arrive later, is
-Section 12 of the build specification. This file describes the passes that
-**exist**, and it grows as they land.
+**What P9 could measure without that harness, it did**, and the numbers are in
+the entries: which passes fire on which models, whether forming a region changes
+the instruction count, and how far each pass moves the answer. Those are
+measurements of the same programs the ablation will run, taken one pass at a
+time.
+
+The full pass table, including the three ablatable passes that arrive at P13 and
+the calibration pass that arrives at P14, is Section 12 of the build
+specification. This file describes the passes that **exist**, and it grows as
+they land.
 
 ## The pass list, as it stands today
 
 | Pass | Level | Ablatable | Phase | Status |
 |---|---|---|---|---|
+| `-npu-constant-fold` | O1, O2 | yes | P9 | implemented, not yet in a level |
+| `-npu-fuse-bias` | O2 | yes | P9 | implemented, not yet in a level |
+| `-npu-fold-batchnorm` | O2 | yes | P9 | implemented, not yet in a level |
+| `-npu-fuse-ops` | O2 | yes | P9 | implemented, not yet in a level |
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
+
+**The four new passes exist and no level runs them yet**, which is a state that
+lasts exactly one commit and is worth being exact about rather than glossing.
+Section 12 assigns each of them a level in the table above and the commit that
+registers `-O1` and `-O2` is the next one. Until then each is reachable by name
+from `npu-opt` and tested that way, which is how its lit file drives it.
 
 ---
 
@@ -52,8 +65,8 @@ invocation per pass would be a different pipeline from the one under test.
 | Level | Registered as | Passes | Status |
 |---|---|---|---|
 | `-O0` | `npu-O0` | `-npu-lower-to-npuisa`, `-npu-allocate-scratchpad` | implemented |
-| `-O1` | not registered | canonicalize and constant fold, on top of `-O0` | P9 |
-| `-O2` | not registered | the full set of Section 12 | P9 |
+| `-O1` | not registered | canonicalize and constant fold, on top of `-O0` | next commit |
+| `-O2` | not registered | the full set of Section 12 | next commit |
 
 **`-O0` is "import and verify" and verification is not a row in the table.**
 MLIR verifies every operation when it parses it and again after every pass, so
@@ -65,8 +78,7 @@ unknown argument. That is deliberate: a level registered with an empty pipeline
 would run, produce `-O0`'s answer, and every ablation cell measured against it
 would be measuring nothing. The description below still lists them, because a
 driver that could not see `-O2` at all could not tell a level that is missing
-from one that is empty, and `npu-compile -O2` says "arrives at P9" rather than
-"unknown argument".
+from one that is empty.
 
 **Every entry carries an `ablatable` property and a missing one does not
 compile.** Section 12 asks for that in those words. `PassEntry` has a single
@@ -81,8 +93,9 @@ only true at a level whose pipeline holds a pass that removes it. The check
 reads `eliminates_dead_code` out of the description rather than carrying a list
 of pass names that would go stale the first time one was added. Both of `-O0`'s
 passes declare `false`, so the set of levels that eliminate dead code is empty
-at P8 and `-O0`'s form of the check is the opposite claim: the count grows by
-exactly the instructions the injection brought.
+until `-O1` and `-O2` are registered and `-O0`'s form of the check is the
+opposite claim: the count grows by exactly the instructions the injection
+brought.
 
 **The description is readable at run time**, which is what Section 16.2 requires
 of the ablatable set:
@@ -111,6 +124,304 @@ reaches the allocator without the driver knowing which pass consumes it:
 npu-opt model.mlir --npu-O0=budget=8192
 npu-opt model.mlir '--npu-O0=budget=8192 strategy=interval'
 ```
+
+---
+
+## `-npu-constant-fold`
+
+Evaluates `npu.add`, `npu.mul`, `npu.relu` and `npu.reshape` whose reads are all
+`npu.constant` of the result's own shape. Implemented in
+`lib/Dialect/NPU/Transforms/ConstantFold.cpp`, registered by
+`mlir::npu::registerNPUPasses()`.
+
+**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
+**Measured at P9:** it fires on no model in Section 15's suite, because an
+exported graph's constants feed convolutions rather than each other. Its value
+is to a graph a transform has already partly folded, and to the `-O1` and `-O2`
+pipelines as the thing that makes the canonicalization after it have work to do.
+
+**Why a pass and not four `fold` methods.** MLIR's folder runs inside
+`-canonicalize` and would do the same arithmetic, but Section 12 asks for
+`-npu-constant-fold` as a **named entry in the pipeline description** so that
+Section 16.2's leave one out ablation has a row for it. A fold hook is not
+something an ablation can remove; a pass is.
+
+**It moves no bit.** Every operation it evaluates is elementwise with no
+reduction in it, so `a + b` computed at compile time in `f32` and `a + b`
+computed by the kernel in `f32` are the same value. That is half of why this
+phase's numerics movement is attributable to `-npu-fold-batchnorm` alone.
+
+### Before and after
+
+```mlir
+%a = npu.constant dense<[[1.0, 2.0], [3.0, 4.0]]> : tensor<2x2xf32>
+%b = npu.constant dense<[[10.0, 20.0], [30.0, 40.0]]> : tensor<2x2xf32>
+%d = tensor.empty() : tensor<2x2xf32>
+%r = npu.add ins(%a, %b : tensor<2x2xf32>, tensor<2x2xf32>)
+             outs(%d : tensor<2x2xf32>) -> tensor<2x2xf32>
+```
+
+becomes, after this pass and the canonicalization Section 12 puts beside it:
+
+```mlir
+%cst = npu.constant dense<[[11.0, 22.0], [33.0, 44.0]]> : tensor<2x2xf32>
+```
+
+The operand constants and the `tensor.empty` are left with no users and
+`-canonicalize` removes them. This pass does not remove them itself, because a
+constant with another reader is not dead and deciding that is the
+canonicalizer's job.
+
+### Where it does not fire
+
+Section 12's negative test rule, in `test/Transforms/constant-fold.mlir`.
+
+- **A rank 1 channel broadcast addend is not folded**, and this is the load
+  bearing one. Folding `add(%x, %c)` where `%c` is the rank 1 constant of
+  Section 11's carve out would mean materialising the `N x C x H x W` expansion
+  the importer refuses to perform: it would inflate every DRAM byte count by the
+  expansion factor and leave `-npu-fuse-bias` nothing to match.
+- **An operand that is not a constant at all**, which is the case a pass firing
+  unconditionally would get wrong.
+- **A convolution over constant operands.** Foldable in principle and not folded
+  here: a reduction evaluated at compile time would sum in a different order
+  than the kernel does, which is a movement this pass does not make and
+  `docs/BREAKING_CHANGES.md` does not declare.
+
+---
+
+## `-npu-fuse-bias`
+
+Folds `add(conv2d(x, w), b)` into the convolution's bias operand. Implemented in
+`lib/Dialect/NPU/Transforms/FuseBias.cpp`.
+
+**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
+**Measured at P9:** it removes one instruction and one scratchpad buffer per
+fused add, and it fires on **no model in Section 15's suite**, because every
+convolution there carries its bias inline as a third `Conv` input. It fires on
+an imported model built for it in `test/Python/test_transform_passes.py`, which
+is the gate's clause, and the suite gap is recorded there as a finding.
+
+**This is the pass Section 11's broadcast carve out exists for.** A rank 1
+initializer of length C broadcasting against a rank 4 activation over the channel
+axis is left unexpanded by the importer *so that this guard can match*. An
+importer that expanded it would make this pass structurally unfireable, its
+ablation row a row of zeros, and the phase look done while doing nothing.
+
+**It is exact, and that is measured.** The simulator's convolution kernel
+accumulates into an `f32` and adds the bias to that same `f32` before it writes,
+which is the value the unfused program would have stored and then added to. So a
+fused and an unfused answer agree bit for bit.
+
+### Before and after
+
+```mlir
+%c = npu.conv2d ins(%x, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                outs(%d0 : tensor<1x2x4x4xf32>) {...} -> tensor<1x2x4x4xf32>
+%b = npu.constant dense<[1.0, 2.0]> : tensor<2xf32>
+%r = npu.add ins(%c, %b : tensor<1x2x4x4xf32>, tensor<2xf32>)
+             outs(%d1 : tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32>
+```
+
+becomes
+
+```mlir
+%b = npu.constant dense<[1.0, 2.0]> : tensor<2xf32>
+%r = npu.conv2d ins(%x, %w, %b : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>,
+                                 tensor<2xf32>)
+                outs(%d0 : tensor<1x2x4x4xf32>) {...} -> tensor<1x2x4x4xf32>
+```
+
+The constant is moved above the convolution, because the importer emits it above
+its own first reader and that reader has just moved earlier. `npu.constant` has
+no operands, so moving one earlier can never break its own dominance.
+
+### Where it does not fire
+
+The three cases Section 12 names by name, in `test/Transforms/fuse-bias.mlir`.
+
+| Refused | Because |
+|---|---|
+| the producer already carries a bias | there is nothing to move into, and a second bias is an operand the dialect does not have |
+| the producer's result has another reader | that reader reads the value **without** the bias, and moving it would change what it sees |
+| the addend has the result's own shape | that is a residual add, a different operation with the same spelling |
+| the addend is not an `npu.constant` | a bias operand is data the encoder writes into the binary |
+| the producer is not a convolution | there is no bias operand anywhere for the addend to become |
+
+**The commuted form is explicitly not matched**, which is the second of the two
+options Section 12 offers. `npu.add` refuses a rank 1 left hand operand in its
+verifier, so `add(b, conv(x, w))` is not representable in this dialect; the
+importer commutes at import and there is one spelling below it. A pattern for a
+form the verifier rejects would be code no test could reach.
+
+**A convolution and nothing else, for the same reason.** `npu.matmul` also
+carries an optional bias, so a matmul case looks obvious. It is not
+representable: `npu.add` admits a rank 1 right hand operand only when the result
+is rank 4, and a matmul's result is rank 2. The one shape that does reach a
+matmul is a same shaped addend, and that is a residual rather than a bias.
+
+---
+
+## `-npu-fold-batchnorm`
+
+Folds an inference batch norm into the convolution that produced its input.
+Implemented in `lib/Dialect/NPU/Transforms/FoldBatchNorm.cpp`.
+
+**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
+**Measured at P9:** on `conv_bn_relu_stack`, the one model in the suite built to
+carry unfolded batch norms, it removes both of them, which is eight instructions
+and 212 simulated cycles at the default budget, and it moves the answer by
+4.47e-08.
+
+**This is the only pass at P9 that moves a number**, and
+`docs/BREAKING_CHANGES.md` declared that before the commit that turned it on.
+
+### The identity, and the order it is evaluated in
+
+```
+invStd = 1 / sqrt(variance + epsilon)
+scale  = gamma * invStd
+shift  = beta - mean * scale
+w'[f]  = w[f] * scale[f]
+b'[f]  = b[f] * scale[f] + shift[f]
+```
+
+The order is written out because it is observable: floating point multiplication
+is not associative and these constants are computed in `f32`, so a reader
+comparing against onnxruntime needs to know which of several algebraically equal
+forms produced the number. It is deliberately the same order
+`-npu-lower-to-npuisa` uses for the decomposition of a batch norm this pass did
+not fold, so the two spellings of one identity agree with each other rather than
+by luck.
+
+**Why it moves bits.** Before the fold the machine convolves and then scales the
+result; after it the machine convolves with pre scaled weights, so every product
+in the reduction is scaled instead of the sum being scaled once at the end.
+Equal in exact arithmetic, different in the last bits of `f32`.
+
+**What it rewrites, and what it does not create.** The convolution is mutated in
+place and the batch norm is replaced by the convolution's own result, rather than
+a second convolution being built beside the first. The batch norm's destination
+and its four parameter constants are left with no users, and `-canonicalize`
+removes them: that is the canonicalization Section 12's table asks for after this
+pass, doing the work it is there for.
+
+### Where it does not fire
+
+Five guards, each with a case in `test/Transforms/fold-batchnorm.mlir`. Every one
+is a **non match and never a diagnostic**: Section 5.2 makes an unfolded batch
+norm legal, and the lowering decomposes it into a multiply and an add.
+
+| Refused | Because |
+|---|---|
+| the producer is not an `npu.conv2d` | there are no weights to scale |
+| the convolution has more than one use | rewriting it would change what the other reader sees, and cloning it would double the weights in DRAM to save one scaling pass |
+| a parameter is not an `npu.constant` | the multiplier is computed at rewrite time |
+| the filter, or the existing bias, is not an `npu.constant` | the same |
+| `variance + epsilon` is not strictly positive | the fold takes a reciprocal square root of it. `-npu-lower-to-npuisa` is the layer that refuses this with the numbers in the message, and this pass declines rather than competing with it |
+
+---
+
+## `-npu-fuse-ops`
+
+Moves a `npu.relu` and the `npu.conv2d` or `npu.matmul` that produced its input
+into one `npu.fused_op` region. Implemented in
+`lib/Dialect/NPU/Transforms/FuseOps.cpp`.
+
+**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
+**Measured at P9:** it forms regions on five of the seven models and changes the
+instruction count on none of them, and it moves no bit.
+
+**This is the pass that gave `npu.fused_op` and `npu.yield` a producer**, which
+is what closed the two dated exemptions `docs/EXEMPTIONS.md` carried from P8.
+Neither operation could appear in a model's IR until something created one.
+
+**Why a region.** Section 7.2 settles it: separate fused operation names produce
+a combinatorial explosion as the fusible set grows, and an enum cannot express
+what fusion does, which is to keep an intermediate value in the scratchpad
+instead of writing it to DRAM. A region expresses exactly that and grows without
+a migration.
+
+**It is numerically and structurally inert, and that is a property of the memory
+model rather than a weakness.** `-npu-lower-to-npuisa` flattens the region into
+its parent, so the instruction stream is the one the unfused chain produced, and
+an unfused chain already keeps its intermediate in the scratchpad because the
+only DMA producers are the boundary, the spiller and the double buffering pass.
+What the region adds is that the fusion is **stated** in the IR, which is what
+P13's tiling and double buffering read. Measuring that rather than asserting it
+is what keeps the P10 ablation row honest.
+
+### Before and after
+
+```mlir
+%d0 = tensor.empty() : tensor<1x2x4x4xf32>
+%d1 = tensor.empty() : tensor<1x2x4x4xf32>
+%r = npu.fused_op ins(%x, %w, %d0, %d1 : tensor<1x2x4x4xf32>,
+                      tensor<2x2x1x1xf32>, tensor<1x2x4x4xf32>,
+                      tensor<1x2x4x4xf32>) {
+^bb0(%a: tensor<1x2x4x4xf32>, %f: tensor<2x2x1x1xf32>,
+     %e0: tensor<1x2x4x4xf32>, %e1: tensor<1x2x4x4xf32>):
+  %c = npu.conv2d ins(%a, %f : ...) outs(%e0 : ...) {...} -> tensor<1x2x4x4xf32>
+  %t = npu.relu ins(%c : ...) outs(%e1 : ...) -> tensor<1x2x4x4xf32>
+  npu.yield %t : tensor<1x2x4x4xf32>
+} -> tensor<1x2x4x4xf32>
+```
+
+**Every value the region reads is an operand, destinations included.**
+`npu.fused_op` is `IsolatedFromAbove`, so there is no other route in, and its
+verifier admits only `npu` operations inside, so a `tensor.empty` cannot be
+cloned into the body even if it were tempting.
+
+### Where it does not fire
+
+`test/Transforms/fuse-ops.mlir`, with the two guards Section 12 names.
+
+- **The producer has more than one use.** A second reader of the intermediate
+  would have to read a value living inside a region it is not in, and the only
+  ways out of that are to duplicate the producer or to yield two results, which
+  are a compute cost and a dialect change respectively.
+- **An already fused producer is not fused again.** Running the pass twice
+  produces one region and not a region inside a region.
+- **The consumer's input is a function argument**, so there is no producer to
+  pull in.
+- **The producer is a pool.** Pooling reads a window rather than one element, so
+  there is no elementwise activation to keep on chip with it, and a region
+  around a pool alone would state a fusion that did not happen.
+
+---
+
+## The four upstream passes the levels run
+
+`-canonicalize`, `-cse`, `-sccp` and `-symbol-dce` come from MLIR and Section
+12's table puts all four in the `-O` levels. They are described here because
+what they do to `npu` operations is what this project depends on, and Section
+12's negative test rule applies to every pass in that table rather than only to
+the ones written in this repository. `test/Transforms/level-passes.mlir` carries
+a positive and a negative case for each.
+
+| Pass | What it does here | Negative case |
+|---|---|---|
+| `-canonicalize` | removes every `npu` operation nothing reads, because they all carry `Pure`, and merges duplicate constants. This is the whole mechanism behind `eliminatesDeadCode = true` and behind Section 17.3a's dead subgraph leaving the instruction count unchanged | the operations the result depends on are all still there |
+| `-cse` | merges identical operations over identical operands, including the `tensor.empty` destinations | a third operation differing in one operand is not merged |
+| `-sccp` | propagates a constant into a private function all of whose callers pass the same one | a function called with two different constants keeps its argument |
+| `-symbol-dce` | removes a private function nobody calls | a called private function, and every public one, is kept |
+
+**`-canonicalize` hoists constants and that had a cost**, which is D-0035:
+hoisting is right for an operation whose cost is zero and wrong for one that
+becomes a DRAM transfer. The fix is in `-npu-lower-to-npuisa`, which sinks a
+constant back to the operation that reads it, and it is described under that
+pass below.
+
+**`-cse` merges `tensor.empty` destinations and that had a cost too**, which is
+D-0034: two operations sharing one destination are two pure functions of the
+same meaningless input at the tensor level and two instructions writing one
+buffer below it. The fix is in the lowering, for the same reason.
+
+**`-sccp` did nothing at all until the dialect gained a constant materializer**,
+which is D-0033. It computed the right lattice and had nowhere to put the
+answer, so it reported no change on every input and its ablation row would have
+been a row of zeros for a reason that was four missing lines rather than a
+property of the pass.
 
 ---
 
@@ -306,11 +617,65 @@ fusion's benefit under this memory model is that the intermediate stays on chip,
 and flattening is how the lowering makes that true rather than a special case it
 has to remember.
 
-`-npu-fuse-ops` is the pass that creates these regions and it has not landed
-yet. The handling is here anyway rather than deferred with it, because the P4
-gate asks for no DMA between a convolution and its fused activation, and a
+`-npu-fuse-ops` is the pass that creates these regions and it landed at P9. The
+handling here landed at P4, five phases ahead of its producer, because the P4
+gate asks for no DMA between a convolution and its fused activation and a
 diagnostic would have met the letter of "do something named" while leaving the
-gate unmeetable.
+gate unmeetable. It was right the first time it was given something to flatten,
+which is the argument for writing the consumer early rather than the other way
+round.
+
+### One destination, one buffer
+
+*Added at P9, as the fix for D-0034.*
+
+A `tensor.empty` is a value with no contents, so two operations that use the
+same one as a destination are two pure functions of the same meaningless input,
+and at the tensor level that is entirely correct. This pass is the layer at
+which it stops being correct: it converts one `tensor.empty` into one
+`memref.alloc`, so a shared destination becomes two instructions writing one
+buffer, and when the second of them also *reads* that buffer through a window
+the program is simply wrong.
+
+Nothing produced this shape before `-O2` existed, because the importer emits one
+`tensor.empty` per compute operation. `-cse` produces it in one step, because
+two `tensor.empty` operations of the same type are identical operations with no
+operands and merging them is exactly what a common subexpression eliminator is
+for.
+
+So every use after the first gets its own clone, before the conversion. The fix
+is here rather than in `-cse` for the same reason the aliasing rule is here:
+this is where a value becomes a buffer.
+
+### A constant's transfer is emitted where its data is read
+
+*Added at P9, as the fix for D-0035.*
+
+This pass emits one `npuisa.const` and one `npuisa.dma_load` at the position of
+each `npu.constant`, so where a constant sits in the block decides when its
+bytes are fetched, and the two port cost model of Section 10.1 charges exactly
+that: a transfer overlaps a computation only when the computation does not
+depend on it. The importer emits every constant immediately above its first use,
+so at `-O0` the loads interleave with the compute and LeNet's overlap fraction
+is 0.83.
+
+MLIR's canonicalizer hoists every `ConstantLike` operation to the top of the
+block, which is right for an operation whose cost is zero and wrong for one that
+turns into a DRAM transfer. On LeNet at `-O1` it moved all eleven loads above all
+the compute, in an order that put the last layer's weights first, so the first
+convolution waited for essentially the whole 16441 cycle transfer budget: the
+overlap fell to 0.0005 and the cycle count rose by 37 percent. An optimization
+level that made the program slower, from a pass that changed no instruction.
+
+So each constant is moved back down, above the run of constants and destinations
+that immediately precedes its first reader. It sinks past **computation and
+nothing else**, which is why it is a no operation at `-O0`, where the importer's
+placement is already this one, and why the `-O0` baseline did not move when it
+landed.
+
+There is nothing to schedule here and no scheduling pass is implied: this pass
+chooses where to put a transfer it is about to create, and the answer is where
+the data is needed.
 
 ### The layout encoding becomes the strided layout map
 
@@ -388,11 +753,12 @@ all. Three cases in `test/Dialect/NPUISA/lowering.mlir`:
 | `test/Dialect/NPUISA/lowering-diagnostics.mlir` | every refusal above, by the substring it emits |
 
 An end to end test is the other half of the 17.1 row for a lowering pattern,
-"plus an e2e test if it is reachable from ONNX". There is no end to end pipeline
-until P8, so none of these patterns has one yet. Every pattern in the table above
-except `fused_op` and `yield` is reachable from ONNX and therefore owes one at
-P8; those two are structural, no ONNX node imports to them, and they are reached
-by `-npu-fuse-ops` instead.
+"plus an e2e test if it is reachable from ONNX". Every pattern in the table above
+except `fused_op` and `yield` is reachable from ONNX and got one at P8, in
+`test/Python/test_end_to_end.py`. Those two are structural, no ONNX node imports
+to them, and `-npu-fuse-ops` reaches them instead: since P9 the same matrix runs
+at `-O2`, where five of the seven models hold a region, so the flattening has an
+end to end test like everything else.
 
 ---
 
