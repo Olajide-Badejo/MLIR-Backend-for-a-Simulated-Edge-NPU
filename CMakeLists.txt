@@ -76,6 +76,21 @@ if(NPU_FORCE_NDEBUG)
     "NDEBUG: forced on. NDEBUG is defined, _DEBUG and _GLIBCXX_ASSERTIONS are "
     "not, and no -UNDEBUG is appended. This is the build mode Section 9.3's "
     "'every build mode' clause names.")
+  # D-0031, found at P8. Turning `_GLIBCXX_ASSERTIONS` off in this project's
+  # translation units while the LLVM they link keeps it on is an ODR violation
+  # across the link. It is benign for the targets this option exists for, which
+  # link the format library and LLVM's Support and nothing else, and it is not
+  # benign for anything that links MLIR: an `npu-opt` built here aborts inside
+  # MLIR's own context construction on an empty module. The warning is loud
+  # rather than a comment, because the failure mode is heap corruption in a
+  # binary that looks like a working compiler.
+  message(WARNING
+    "NDEBUG: this directory is for the targets that link no MLIR, which are "
+    "NPUSimulatorTests and NPUEncodingTests. Building npu-opt, npu-translate "
+    "or the lit suite here links translation units without libstdc++ "
+    "assertions against LLVM archives that have them, which is an ODR "
+    "violation and aborts inside MLIR's context construction. See D-0031 and "
+    "docs/BUILD.md. The real fix is an LLVM tree built without assertions.")
 else()
   message(STATUS
     "NDEBUG: not forced. This build inherits the assertion setting of the LLVM "

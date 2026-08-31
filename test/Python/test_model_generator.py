@@ -34,7 +34,12 @@ from npu_frontend import (
     generate_model,
     import_model_file,
 )
-from npu_frontend.model_generator import DEFAULT_SEED, first_weight, node_counts
+from npu_frontend.model_generator import (
+    DEFAULT_SEED,
+    first_weight,
+    node_counts,
+    with_batch,
+)
 
 
 @pytest.fixture(scope="session")
@@ -381,3 +386,55 @@ def test_every_model_imports_at_a_second_seed(name: str, tmp_path) -> None:
     """
     ir = import_model_file(str(generate_model(name, tmp_path, seed=DEFAULT_SEED + 1)))
     assert "func.func @main" in ir
+
+
+# =============================================================================
+# The batch override, added at P8 for Section 17.4's matrix.
+# =============================================================================
+
+
+@pytest.mark.parametrize("name", sorted(MODELS))
+def test_a_batch_override_changes_the_batch_and_nothing_else(
+    name: str, tmp_path
+) -> None:
+    """Section 17.4 sweeps the batch and Section 15 pins one per model.
+
+    The two are reconciled by making the batch a parameter of an export rather
+    than a second registry, and the property that makes that legitimate is
+    asserted here: the weights do not move. If they did, a batch 4 cell and a
+    batch 1 cell would be two different models and the matrix would be
+    comparing one to the other.
+    """
+    at_registry = onnx.load(str(generate_model(name, tmp_path)))
+    at_seven = onnx.load(str(generate_model(name, tmp_path, batch=7)))
+
+    assert at_seven.graph.input[0].type.tensor_type.shape.dim[0].dim_value == 7
+    assert at_seven.graph.output[0].type.tensor_type.shape.dim[0].dim_value == 7
+    assert node_counts(at_seven) == node_counts(at_registry)
+    np.testing.assert_array_equal(first_weight(at_seven), first_weight(at_registry))
+
+
+@pytest.mark.parametrize("name", sorted(MODELS))
+def test_the_registrys_own_batch_writes_the_registrys_own_file(
+    name: str, tmp_path
+) -> None:
+    """A caller sweeping [1, 4] exports eleven files, not fourteen.
+
+    Naming the file after the effective batch only when it differs from the
+    registry's is what lets the matrix ask for `lenet` at 1 and `lenet_batched`
+    at 4 and get the files the rest of the project already knows by name.
+    """
+    registry_batch = MODELS[name].input_shape[0]
+    default = generate_model(name, tmp_path)
+    explicit = generate_model(name, tmp_path, batch=registry_batch)
+    assert default == explicit
+    assert default.name == f"{name}.onnx"
+
+    other = generate_model(name, tmp_path, batch=registry_batch + 1)
+    assert other.name == f"{name}-n{registry_batch + 1}.onnx"
+
+
+def test_a_batch_that_is_not_a_batch_is_refused() -> None:
+    for batch in (0, -1):
+        with pytest.raises(ValueError, match="positive integer"):
+            with_batch((1, 3, 8, 8), batch)

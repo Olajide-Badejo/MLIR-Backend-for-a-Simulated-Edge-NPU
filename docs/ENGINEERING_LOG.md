@@ -2778,3 +2778,374 @@ rehearsal branch must be named under `phase/`; this one was renamed to
 that triggers on everything would remove the trap, but widening a trigger to
 serve a rehearsal that happens once per phase is the tail wagging the dog, and
 the rule is cheaper than the change.
+
+## 2026-08-31 Phase 8: the walking skeleton walked on the first try, and everything interesting was somewhere else
+
+**The end to end pipeline worked the first time it was run.** ONNX in, a
+simulated answer out, matching onnxruntime to 2.98e-8 on LeNet, at the first
+attempt, with no debugging at all. That is the least interesting sentence in
+this entry and it is here because it is true: P4 through P7 each landed a stage
+with its own tests, and the stages fitted. What follows is everything that was
+not the pipeline.
+
+### The models are twenty five instructions, not thousands
+
+P7's handoff left the quadratic executor on this phase's desk: `readyAt` is
+linear in the writes so far, so the executor is quadratic in the instruction
+count, and "P8's models are thousands of instructions". They are not. The
+largest is LeNet at **25**, and the smallest is the dilated stack at 11.
+
+The reason is structural rather than lucky, and it is worth writing down because
+it decides when the concern comes back. This machine's instructions operate on
+whole tensors: one `npu.conv2d` is one `CONV2D`, and a whole 400 by 120 matrix
+multiply is one `MATMUL`. A model is as long as its operator count plus its DMA,
+and Section 15's models have between eight and fourteen operators. Nothing in
+the pipeline multiplies that.
+
+Measured anyway, on a synthetic chain of relus, because a decision made without
+a number is a decision made twice:
+
+| instructions | wall clock | per instruction |
+|---|---|---|
+| 28 | 3 ms | 108 us |
+| 103 | 2 ms | 19 us |
+| 503 | 4 ms | 8.7 us |
+| 1003 | 8 ms | 7.8 us |
+| 2003 | 16 ms | 8.0 us |
+| 4003 | 37 ms | 9.1 us |
+
+Flat from 500 to 2000 and up by 14 percent at 4000, which is where the quadratic
+term starts to be visible over the per instruction kernel cost. At the sizes
+this compiler actually emits it is not measurable at all. **No interval
+structure, and the reason is a number rather than a shrug.** The phase that will
+feel it is P13: tiling fully unrolls its loops before lowering, per Section 5.2,
+so P13 is the first phase whose programs are long by construction.
+
+### Section 15's tight budget rule does not survive contact with these models
+
+Section 15 says to measure each model's peak from the allocated
+`npuisa.scratchpad_bytes` at the default budget and set the tight budget as a
+fixed fraction of it, rounded to a multiple of 4096. At a fraction of 0.75 all
+seven models are **refused**, and the refusal is not fragmentation:
+
+```
+lenet, budget 143360: the scratchpad budget of 143360 bytes is too small: this
+buffer of 192000 bytes could not be placed below offset 143360 in @main, and no
+buffer live across the pressure peak can be spilled
+```
+
+The peak of these models is set by one instruction's own operand set. LeNet's
+largest fully connected layer holds a 192000 byte weight matrix that has to be
+resident while the `MATMUL` reading it runs, and spilling does not help, because
+a spilled buffer is reloaded before each use and the reload is resident at the
+same moment the original would have been. Section 13 already names the remedy
+and it is tiling, at P13.
+
+Swept in 64 byte steps, the smallest allocatable budget is the peak itself on
+five of the seven models and 0.76 and 0.90 of it on the two whose pressure comes
+from several concurrently live buffers. Those two spill and the other five
+cannot be made to. The rounding quantum made it worse rather than better:
+`inception_block` spills three buffers at 6144 bytes and spills nothing at 8192,
+so applying the specification's own 4096 byte rounding would have taken the one
+model with the most interesting tight budget cell and turned it into a second
+copy of its default budget cell.
+
+Both deviations are in `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
+with the measurement that forced them. The fraction is recorded as inoperative
+rather than as 0.75, because a floor that overrides a fraction on all seven
+models makes the fraction a number that does nothing.
+
+### Section 17.4 predicted the wrong cell for its own vacuous bound
+
+The specification says the `zeros` input class produces an exactly zero
+reference, so the relative bound is vacuous there and only the absolute one
+should be asserted. It does not. Every model in this suite has biases, so a zero
+input produces a nonzero answer and the relative bound bites normally.
+
+The class that does produce an all zero reference is `large_neg` on
+`resnet_block`, where a closing relu takes everything to its dead side. There
+the assertion is stronger than any tolerance: the simulated answer must be
+**exactly** zero as well. The handling is general rather than a special case for
+that cell, so a later model that acquires the same shape is covered.
+
+### The tolerances, and the v1 lesson they were set with
+
+Measured over the whole matrix: worst absolute 4.77e-06, worst relative
+8.08e-07 against onnxruntime and 4.17e-07 against the reference interpreter.
+The bounds are 5e-05 and 5e-06.
+
+The absolute number is scale dependent and the U4 entry above is why that is
+stated rather than assumed. The worst case is `dilated_stack` at `large_neg`,
+whose answers are of order 14.5, where a float32 ulp is 9.5e-07. So 4.77e-06 is
+about **five ulps** and the bound is about fifty two, which is the same
+arithmetic quality the `normal` cells show at their own scale. The constant
+classes are at magnitude 10 rather than the 1e3 v1 used, which is what keeps one
+absolute bound usable across every class instead of unsatisfiable on two of
+them.
+
+### Four oracles, one relation that cannot be written
+
+Section 17.3a lists five metamorphic relations. The fifth, pad then slice back,
+needs an ONNX `Pad`, which this importer refuses by name for a documented
+reason, and an ONNX `Slice`, which has no converter at all. Writing a converter
+for two operators so that a test could use them would be growing the operator
+set to satisfy a test, which is what law 2 exists to prevent. It is recorded in
+`metamorphic.NOT_IMPLEMENTED` with that reason, and a test asserts the reason is
+still true, so if either operator ever gains a converter the relation gets
+written rather than staying forgotten.
+
+The four that exist agree **exactly**, not to a tolerance. None of them changes
+the order any output element's terms are summed in: an identity is erased at
+import, a transpose and its inverse move elements without arithmetic, splitting
+a convolution over output channels leaves each output element's own reduction
+untouched, and permuting independent nodes changes nothing about what is
+computed. A tolerance there would have been a place for a real disagreement to
+hide.
+
+`node_order_permutation` reaches exactly one model, and that is the relation
+rather than a limitation: a straight line graph has one topological order.
+`inception_block` is the model that exists to have parallel branches, so it is
+the one the relation acts on, and the test names it, so a suite change that
+flattened it goes red instead of leaving the relation with nowhere to apply.
+
+### The dead subgraph, and a gate clause about a level that does not exist
+
+The gate asks that a dead subgraph change neither the outputs nor the **-O2**
+instruction count. `-O2` arrives at P9. Worse, at `-O0` the second half is not
+merely unmeasurable, it is false by construction: Section 12 puts every pass
+that removes anything at `-O1` and above, so a dead subgraph at `-O0` must
+change the count.
+
+The resolution is written down rather than chosen quietly. The outputs half is
+asserted now, bit identical, on every model and every input class. The count
+half is asserted at every level whose pipeline eliminates dead code, and which
+levels those are is read out of the compiler rather than from a list of pass
+names: `PassEntry` gained an `eliminatesDeadCode` property under the same rule
+as `ablatable`, a missing one is a build error, and the level set is empty at P8
+and fills itself at P9. Beside it sits the P8 form of the same check, which is
+just as falsifiable in the other direction: the count grows by exactly the three
+instructions the injection brought, and by no more. A count that grew by four
+would mean the injection cost something it did not declare; one that grew by two
+would mean a pass nobody registered removed something.
+
+### Three defects, and the test suite found none of them
+
+**D-0030** is a test that spawned a second interpreter and let it inherit
+`PYTHONPATH`. `pythonpath` in `pyproject.toml` puts the package root on pytest's
+own `sys.path` and exports nothing, so the child found `npu_frontend` only
+because the developer wrapper used all through this phase exports it. Green on
+every run anybody had done. It would have gone red in exactly one CI job, with a
+message naming a missing module rather than a missing variable. It was found by
+`scripts/coverage.sh`, which is the same command with one variable fewer.
+
+**D-0031** is larger and is not this project's code. Running the end to end
+pipeline against the `build-ndebug` binaries aborted with a double free inside
+`npu-opt`. `echo 'module {}' | build-ndebug/bin/npu-opt -` aborts too, and that
+input reaches no operation of this dialect, no pass and no tool code at all.
+`NPU_FORCE_NDEBUG` turns `_GLIBCXX_ASSERTIONS` off in this project's translation
+units, which is exactly what it exists to do, while the LLVM they link is an
+assertions build whose archives have it on. Mixing libstdc++ hardening across a
+link changes the definition of the standard containers between translation
+units.
+
+`build-fuzz` has the mirror. AddressSanitizer's container annotations are on in
+this project's translation units and off in the LLVM archives, so an `npu-opt`
+built there reports `use-after-poison` inside `mlir::BuiltinDialect::initialize`
+before `main` has done anything of its own. The stack is thirteen frames of MLIR
+and none of this project's.
+
+Neither is new breakage. `build-ndebug` was created at P7 to prove Section 9.3's
+claim about the simulator's bounds checked accessors, and the simulator links no
+MLIR at all, so nothing had ever built an MLIR linking target in it. P8 is the
+first phase whose end to end run wants `npu-opt`. The CI sanitizers job builds
+three targets by name and none of them links MLIR, which is why CI has not seen
+it either. The real fix is a second LLVM tree built without assertions, an hour
+of build time and a decision with a cost, so it is documented loudly and left to
+be taken deliberately.
+
+**And a third, D-0032, which arrived after this entry was written**, on the
+first CI run of the coverage job's new Python arm. It belongs here rather than
+in a later entry because it is the same sentence as the other two, said a third
+way: a result that depended on what else was lying around.
+
+`scripts/coverage.sh` builds into `build-coverage/` and never told the Python
+suite so. On a developer machine the suite found its binaries in `build/`,
+sitting beside it. In the job there is no `build/`, so `npu-opt` was not found
+and the run died at collection with exit 2. The fix is that the script exports
+`NPU_BUILD_DIR` set to the directory it actually built.
+
+**The interesting half was underneath.** Three places knew how to find a binary:
+`npu_frontend.find_tool`, and a hand written `build_directory()` in each of two
+test modules. Only the first said anything; the other two **skipped**. Measured
+by letting collection survive and changing nothing else: `484 passed, 12
+skipped`, five of those skips being tests that should have run, one of them
+`test_every_case_agrees`, which is P7's gate item that the reference interpreter
+and the simulator agree on every operation. A green run, with a coverage number
+attached, describing a suite that had not run its differential oracle. Section
+17.7 says coverage is only counted from a run where every test passed; every
+test did pass, and five of them passed by not running.
+
+The rule is one now, in `test/Python/tools.py`, and the policy with it: a
+missing binary is a **skip** when nobody named a build directory, which is a
+developer running the pure Python tests, and a **failure** when somebody did,
+because naming one is asserting the build is there.
+`test/Python/test_tool_discovery.py` scans for a second copy so the next one is
+a red test rather than a thing somebody notices in a year.
+
+**What it says about rehearsals.** This phase rehearsed the coverage arm before
+switching it on and the rehearsal matched its prediction exactly. The prediction
+was about the threshold arithmetic and it was right about that. It was never a
+test of the arm's environment, and the environment is what broke. **A local
+rehearsal proves a step's logic and cannot prove its surroundings**, because the
+surroundings are the thing that differs, and the first run of a new CI step is
+the first time anybody learns what they are. That is an argument for switching
+steps on one at a time, which is what the activation table already asks for, and
+it is the strongest thing this phase learned about its own method.
+
+After the fix, under the job's conditions in a worktree with no `build/`:
+`495 passed, 7 skipped`, C++ 86.1, Python 90.61, exit 0. The Python coverage
+headroom widened from 0.27 points to 0.61, because the tests that had been
+skipping now run.
+
+### The OpenMP split, which P7 left open, is the compiler and not the image
+
+P7 recorded that the build and test job's configure prints `OpenMP: not found`
+while the coverage job in the same image finds OpenMP 4.5, and left the
+mechanism unestablished. It is the compiler. `build-and-test` and `sanitizers`
+configure with `-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++`; the
+coverage job passes no compiler and gets gcc. `find_package(OpenMP)` under gcc
+finds `libgomp`, which `g++` brings; under clang it needs `libomp` and `omp.h`,
+which `libomp-dev` brings and which the image does not install.
+
+Reproduced locally rather than reasoned about. This machine has `libgomp1` and
+no clang `libomp`, `clang -fopenmp` fails at `'omp.h' file not found`, and
+configuring this project with clang prints the CI line verbatim:
+
+```
+-- Could NOT find OpenMP_CXX (missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES)
+-- OpenMP: not found. The convolution kernel runs single threaded.
+```
+
+The consequence is smaller than it looks. Section 10.3's determinism assertion,
+that one thread and the maximum produce bitwise equal buffers, runs at full
+strength wherever OpenMP is found, which is the coverage job and every
+developer machine. The fix is one package in `docker/Dockerfile.llvm` and an
+image republish, which costs an hour and is the orchestrator's call.
+
+### A rehearsal that disagreed with its prediction, again
+
+The activation rehearsal for the reachability step edited
+`docs/ISA_OPCODES.json` by hand, flipping `needs_kernel` to false on
+`POOL_MAX`. The prediction was two catches: the reachability step red naming
+`npu.max_pool2d missing: simulation`, and the ISA staleness step red because a
+committed generated artifact no longer matched its description.
+
+The first happened. The second did not: the staleness step ran green.
+
+The mechanism is that `check-isa-staleness.sh` **regenerates** the artifacts
+before it diffs them, so a hand edit in the working tree is overwritten by the
+regeneration and the diff finds nothing. That is correct behaviour rather than a
+hole, and the distinction is worth stating: an edit somebody **commits** is
+still caught, because then the regeneration overwrites the working tree and the
+diff against `HEAD` shows the difference. Only an uncommitted edit is silently
+repaired, and silently repairing a generated file is what a generator is for.
+
+It also means the two steps interact through the filesystem: running staleness
+before reachability would have repaired the fault before reachability could see
+it. The rehearsal ran them in the other order by luck rather than by design.
+
+### The name `--stats-json` was already taken
+
+`npu-sim` writes its statistics as JSON now, so that nothing parses the human
+readable form for a number that Section 10.2 makes the only instruction count in
+this project. The flag wanted to be `--stats-json` and cannot be: LLVM's Support
+library registers that name for the `llvm::Statistic` counters, and every tool
+linking Support inherits it. The collision aborts inside
+`ParseCommandLineOptions` at the first run, which is loud rather than silent.
+The flag is `--json-stats` and the reason is beside the name rather than in a
+commit message nobody reads twice.
+
+### What the suite runtime turned out to be
+
+Section 17.4 says to mark the slow cells so a fast subset runs by default, and
+to reach for `pytest -n auto` if the full matrix exceeds ten minutes. The full
+`-O0` matrix is one hundred and forty cells and takes **twelve seconds**,
+including the exports. There is nothing to carve out, so no cell is marked
+`slow`: marking a cell that costs a tenth of a second as slow would be a label
+rather than a measurement. The marker and the CI step that runs it stay in
+place, and they start doing work at P9 and P10, when three levels and two
+budgets multiply this matrix by six and the ablation cells arrive beside it.
+
+The whole verification matrix, including two extra build directories, the
+coverage measurement and the regression baseline, is under ten minutes. The
+90 minute budget of Section 2 is a P10 figure and this phase says nothing about
+it.
+
+## 2026-08-31 Phase 8: the proof of failure gate run against CI, and what the first run of the coverage arm caught
+
+The branch's first run went red before any fault was aimed at it, and that red
+is the best result of the closing sequence. The coverage job's new Python arm
+died at collection: `npu-opt was not found`. The job configures only
+`build-coverage/`, and discovery had been finding `build/` beside it on every
+developer run, which is D-0030's failure class landing a second time, D-0032.
+The audit of the fix found the larger fault: two hand written copies of the
+discovery in the differential tests were skipping instead of failing, so five
+tests, `test_every_case_agrees` among them, had been silently absent from every
+coverage number recorded so far. The fix put discovery in one place with one
+policy, a missing binary is a skip when nobody named a build directory and a
+failure when somebody did, and a test now hunts for a third copy. The red run:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33367169622>.
+The fix, green in every job, Python coverage 90.61 on the CI host against 90.60
+here:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33428771811>.
+
+Then Section 19.1's four fault classes. The first pass at them was wrong and is
+recorded as the finding it is: all four ran as pushes to one rehearsal branch,
+went red at the right steps, and proved the wrong trigger. Section 19.1 says
+each fault is its own pull request **so the `pull_request` trigger fires**,
+because that trigger is the one that guards a merge, and a push triggered red
+says nothing about it. The push runs stand as evidence the steps catch the
+faults (33429399189, 33429985494, 33430305159, 33431674770, each red at the
+same steps as below); the gate's record is the four pull requests, numbers 9
+through 12, one fault each, opened as drafts and closed unmerged with their
+branches deleted.
+
+An em dash appended to `docs/BREAKING_CHANGES.md` went red at the lint job's
+dash lint step and nowhere else:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433615421>.
+Committing that fault locally required `--no-verify`, because the pre-commit
+hook refuses exactly this edit, and that is the point of the class rather than a
+corner cut: the gate models the commit that never ran the hooks, and the
+repository has already had one, the web edit that P7 cut as `1939b58`.
+
+A lit expectation changed from `npuisa.dma_store` to `npuisa.dma_never` went
+red at check-npu, and at coverage besides, which runs the same lit suite under
+instrumentation:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433628400>.
+
+A frozen constant expectation moved from 256 to 257 went red at the
+`NPUSimulatorTests` step, the sanitizers job's GoogleTest step, and coverage,
+the same three step net P7 measured:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433632114>.
+
+A tight budget expectation moved by one byte went red at the pytest step and at
+the coverage job's Python arm:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433634366>.
+
+The reachability activation took a different fault in CI than in the local
+rehearsal, and the reason is a finding. The local product side fault perturbs
+`docs/ISA_OPCODES.json`, which the staleness gate regenerates before diffing,
+so an uncommitted edit is silently repaired; a committed one, which is what a
+rehearsal branch pushes, is caught by the staleness step, which runs before the
+reachability step and would have stopped the job at the wrong net. The model
+side fault has no generated artifact in it: the `npu.yield` exemption row
+deleted from `docs/EXEMPTIONS.md` went red at exactly the
+`check-reachability full` step, with the lint job's `--skip-models` variant
+green beside it, which is the isolation stated in CI's terms:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432288385>.
+
+The rehearsal branch's restore, byte identical to the phase branch tip,
+returned green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432842831>.
+The `pull_request` trigger's own green is shown by the phase's merge pull
+request in the ordinary course of merging.

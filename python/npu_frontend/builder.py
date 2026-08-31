@@ -56,42 +56,55 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERIC_NPU_OP = re.compile(r'"(npu\.[a-z_0-9]+)"\([^)]*\)\s*')
 
 
-def find_npu_opt() -> Path:
-    """Locate the `npu-opt` binary, or say where it was looked for.
+def find_tool(name: str) -> Path:
+    """Locate one of this project's built binaries, or say where it was sought.
 
-    Three places, in this order: `NPU_OPT` in the environment wins, so a
-    developer with a build somewhere else sets one variable; then this
-    repository's own `build/bin`, which is where `ninja -C build` puts it; then
-    `PATH`, which is what the CI container has after its build step.
+    Four places, in this order. An environment variable named after the tool
+    wins, so `NPU_OPT` points at `npu-opt` and `NPU_TRANSLATE` at
+    `npu-translate`; then `NPU_BUILD_DIR/bin`, so a developer with one unusual
+    build directory sets one variable rather than one per tool; then this
+    repository's own `build/bin`, which is where `ninja -C build` puts them;
+    then `PATH`, which is what the CI container has after its build step.
 
-    There is deliberately no fourth branch returning None. This package cannot
-    produce verified IR without the binary, and a caller that got unverified IR
-    because the binary was missing would have no way to tell.
+    There is deliberately no fifth branch returning None. This package cannot
+    produce verified IR, or a binary, without the tools, and a caller that got
+    unverified IR because a binary was missing would have no way to tell.
     """
-    override = os.environ.get("NPU_OPT")
+    variable = name.upper().replace("-", "_")
+    override = os.environ.get(variable)
     if override:
         candidate = Path(override)
         if candidate.is_file():
             return candidate
         raise VerificationError(
-            f"NPU_OPT is set to {override!r}, which is not a file. Unset it or "
-            "point it at a built npu-opt."
+            f"{variable} is set to {override!r}, which is not a file. Unset it "
+            f"or point it at a built {name}."
         )
 
-    in_tree = REPO_ROOT / "build" / "bin" / "npu-opt"
-    if in_tree.is_file():
-        return in_tree
+    searched: list[Path] = []
+    build_dir = os.environ.get("NPU_BUILD_DIR")
+    if build_dir:
+        searched.append(Path(build_dir) / "bin" / name)
+    searched.append(REPO_ROOT / "build" / "bin" / name)
+    for candidate in searched:
+        if candidate.is_file():
+            return candidate
 
-    on_path = shutil.which("npu-opt")
+    on_path = shutil.which(name)
     if on_path:
         return Path(on_path)
 
+    places = " , ".join(str(path) for path in searched)
     raise VerificationError(
-        "npu-opt was not found, and this package cannot emit verified IR "
-        "without it. Looked at $NPU_OPT (unset or not a file), "
-        f"{in_tree} , and PATH. Build it with:\n\n"
-        "    ninja -C build npu-opt\n"
+        f"{name} was not found, and this package cannot work without it. "
+        f"Looked at ${variable} (unset or not a file), {places} , and PATH. "
+        f"Build it with:\n\n    ninja -C build {name}\n"
     )
+
+
+def find_npu_opt() -> Path:
+    """Locate the `npu-opt` binary. The oldest caller's name for `find_tool`."""
+    return find_tool("npu-opt")
 
 
 def _run_npu_opt(module_text: str, extra_args: Sequence[str] = ()) -> str:

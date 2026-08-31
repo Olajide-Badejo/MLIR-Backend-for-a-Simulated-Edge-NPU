@@ -3,17 +3,32 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# The C++ line coverage measurement of Section 17.7.
+# The coverage measurement of Section 17.7, C++ and Python.
 #
-#   bash scripts/coverage.sh              measure, report, gate at the default
-#   bash scripts/coverage.sh 85           measure, report, fail below 85 percent
+#   bash scripts/coverage.sh              measure, report, gate at the defaults
+#   bash scripts/coverage.sh 85           gate C++ line coverage at 85 percent
+#   bash scripts/coverage.sh 85 90        and gate Python at 90 percent
 #   bash scripts/coverage.sh --help       this text
 #
-# The threshold defaults to 0, which is what the activation table of Section 19.0
-# asks for between P2 and P8: the job runs from P2 so the number is recorded and
-# its trend is visible from the start, and P8 is where the real thresholds are
-# set from what P8 measures. A threshold of 0 still gates on something real,
-# because everything below still has to succeed for a number to exist at all.
+# Both thresholds default to 0, which is what the activation table of Section
+# 19.0 asked for between P2 and P8: the job ran from P2 so the number was
+# recorded and its trend visible from the start. **P8 set the real ones**, from
+# what P8 measured, and they are passed in by `.github/workflows/ci.yml` rather
+# than written here, so that the policy lives with the job and the measurement
+# lives with the script. A threshold of 0 still gates on something real, because
+# everything below still has to succeed for a number to exist at all.
+#
+# Measured on 2026-08-31, on this toolchain, at the commit that set the
+# thresholds:
+#
+#   C++ lines     86.0 percent over lib/Dialect, lib/Encoding and lib/Simulator
+#   C++ branches  77.0 percent over the same three
+#   Python lines  90.3 percent over python/npu_frontend
+#
+# The C++ threshold is 85, which is Section 17.7's floor, one point below the
+# measurement. The Python threshold is 90, which is Section 17.7's rule for it:
+# the measured value rounded down to a whole percent and never above what the
+# suite achieves.
 #
 # Three rules from Section 17.7 shape this script, and each is a line in it
 # rather than a paragraph somebody remembers:
@@ -50,26 +65,25 @@ usage() {
   sed -n '6,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-threshold="0"
 case "${1-}" in
   --help | -h)
     usage
     exit 0
     ;;
-  "")
-    ;;
-  *)
-    threshold="$1"
-    ;;
 esac
 
-# The threshold is compared numerically later, so it has to be a number now. A
+threshold="${1:-${NPU_COVERAGE_THRESHOLD:-0}}"
+python_threshold="${2:-${NPU_PYTHON_COVERAGE_THRESHOLD:-0}}"
+
+# A threshold is compared numerically later, so it has to be a number now. A
 # typo that reached the comparison would be read as 0 by some shells and as an
 # error by others, and either way the gate would stop meaning what it says.
-if ! printf '%s' "${threshold}" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
-  echo "coverage: the threshold must be a number, got '${threshold}'" >&2
-  exit 2
-fi
+for value in "${threshold}" "${python_threshold}"; do
+  if ! printf '%s' "${value}" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+    echo "coverage: a threshold must be a number, got '${value}'" >&2
+    exit 2
+  fi
+done
 
 build_dir="${root}/build-coverage"
 summary_json="${build_dir}/coverage.json"
@@ -114,7 +128,8 @@ if [ -z "${mlir_dir}" ] || [ -z "${llvm_dir}" ]; then
 fi
 
 echo "coverage: configuring ${build_dir}"
-echo "coverage: threshold is ${threshold} percent"
+echo "coverage: C++ line threshold is ${threshold} percent"
+echo "coverage: Python line threshold is ${python_threshold} percent"
 
 # --coverage on both compile and link flags. GCC needs it at link time too, to
 # pull in libgcov, and a build that has it on only the compile line fails at the
@@ -221,29 +236,180 @@ PYTHON
 EOF
 
 echo ""
-echo "coverage: line coverage   ${line_percent} percent"
-echo "coverage: branch coverage ${branch_percent} percent"
-echo "coverage: JSON summary    ${summary_json}"
-echo "coverage: HTML report     ${summary_html}"
+echo "coverage: C++ line coverage   ${line_percent} percent"
+echo "coverage: C++ branch coverage ${branch_percent} percent"
+echo "coverage: JSON summary        ${summary_json}"
+echo "coverage: HTML report         ${summary_html}"
+
+# Section 17.7: branch coverage is reported alongside line coverage **for the
+# allocator and the decoder**, where the error paths matter most. Two more
+# gcovr runs over narrower filters, reported and not gated: a per file branch
+# threshold would be a second policy to argue about and the section asks for a
+# report. The two are named by file rather than by directory, because "the
+# allocator" is two files in a directory that holds the lowering as well and
+# "the decoder" is two files in a directory that holds the encoder.
+# The per file text report goes to a file rather than to /dev/null, because
+# gcovr unlinks its output path before writing it and unlinking /dev/null is a
+# permission error rather than a no-op. Keeping the file is no loss: it is the
+# per line detail behind the summary, in the same directory as the HTML report.
+report_branches() {
+  local label="$1"
+  local slug="$2"
+  shift 2
+  echo ""
+  echo "coverage: branch coverage for ${label}"
+  gcovr \
+    --root "${root}" \
+    "$@" \
+    --exclude '.*\.inc$' \
+    --exclude '.*/build-coverage/.*' \
+    --gcov-ignore-parse-errors=negative_hits.warn_once_per_file \
+    --print-summary \
+    --txt "${build_dir}/branch-${slug}.txt"
+}
+
+report_branches "the allocator" allocator \
+  --filter "${root}/lib/Dialect/NPUISA/Transforms/ScratchpadAllocation.cpp" \
+  --filter "${root}/lib/Dialect/NPUISA/Transforms/AllocateScratchpad.cpp"
+
+report_branches "the decoder" decoder \
+  --filter "${root}/lib/Encoding/Program.cpp" \
+  --filter "${root}/lib/Encoding/Validation.cpp"
+
 echo ""
 echo "coverage: line coverage measures execution, not assertion. The percentage"
 echo "coverage: is a project management artifact and not a correctness argument."
 
 # The comparison is done in python rather than in the shell, because the numbers
 # are floating point and the shell's test builtin only compares integers.
-if ! python3 - "${line_percent}" "${threshold}" <<'PYTHON'
+above_threshold() {
+  python3 - "$1" "$2" <<'PYTHON'
 import sys
 
 measured = float(sys.argv[1])
 threshold = float(sys.argv[2])
 sys.exit(0 if measured >= threshold else 1)
 PYTHON
-then
+}
+
+if ! above_threshold "${line_percent}" "${threshold}"; then
   echo ""
-  echo "coverage: FAIL. Line coverage ${line_percent} percent is below the" >&2
+  echo "coverage: FAIL. C++ line coverage ${line_percent} percent is below the" >&2
   echo "coverage: threshold of ${threshold} percent." >&2
   exit 1
 fi
 
 echo ""
-echo "coverage: PASS. ${line_percent} percent is at or above the threshold of ${threshold} percent."
+echo "coverage: PASS. C++ ${line_percent} percent is at or above the threshold of ${threshold} percent."
+
+# ---------------------------------------------------------------------------
+# Python, per Section 17.7's second half.
+#
+# pytest-cov over python/npu_frontend, which is the one package root this
+# project has. `scripts/` is deliberately outside the measurement: those files
+# are command line entry points whose bodies are exercised by running them
+# rather than by the suite, and folding them in would make the number a
+# statement about how many scripts have a `--help` test.
+#
+# **A threshold that cannot be measured is not a gate**, so a missing dependency
+# is a failure when a threshold was asked for and an off line when it was not.
+# That is the same rule the CI activation table states: silence and success must
+# not look the same.
+# ---------------------------------------------------------------------------
+
+python_json="${build_dir}/python-coverage.json"
+
+# ---------------------------------------------------------------------------
+# D-0032. **This script builds into build-coverage/ and therefore has to say
+# so.** The suite finds a built binary through NPU_BUILD_DIR, then through
+# <repo>/build, then through PATH. This script configures build-coverage/ and
+# nothing else, and in CI there is no build/ beside it, so without the export
+# below every lookup fails: loudly in the frontend, which took the run down at
+# collection, and **silently** in the two test modules that skip when a binary
+# is missing. The silent half is the dangerous one, because a coverage number
+# taken from a run where five tests skipped describes a smaller suite than the
+# one anybody thinks was measured.
+#
+# It worked on a developer machine only because build/ happens to sit beside
+# build-coverage/ there. That is the same failure class as D-0030: a result that
+# depended on what else was lying around.
+# ---------------------------------------------------------------------------
+export NPU_BUILD_DIR="${build_dir}"
+
+# The MLIR bindings are resolved the same way and for the same reason.
+# conftest.py reads this variable first and a CMake cache second, and the cache
+# it should read is the one belonging to the build directory in use. Deriving it
+# here means this script does not depend on the job's environment happening to
+# set it.
+if [ -z "${MLIR_PYTHON_PACKAGES_DIR:-}" ]; then
+  bindings="$(cache_value MLIR_PYTHON_PACKAGES_DIR "${build_dir}/CMakeCache.txt")"
+  if [ -n "${bindings}" ]; then
+    export MLIR_PYTHON_PACKAGES_DIR="${bindings}"
+    echo "coverage: MLIR bindings from ${build_dir}/CMakeCache.txt"
+  fi
+fi
+
+# And the binaries this script just built are asserted to be where it says they
+# are, before the suite is asked to find them. A missing one here is this script
+# having failed to build it, which is a better sentence than a lookup failure
+# inside a test module three layers down.
+for required in npu-opt npu-translate npu-sim NPUSimulatorTests; do
+  if [ ! -x "${build_dir}/bin/${required}" ]; then
+    echo "coverage: FAIL. ${build_dir}/bin/${required} is missing, so the" >&2
+    echo "coverage: Python suite would skip or fail on it. That is this script" >&2
+    echo "coverage: having not built it rather than a lookup problem. D-0032." >&2
+    exit 1
+  fi
+done
+
+echo ""
+if ! python3 -c "import pytest, pytest_cov, torch, onnx, onnxruntime" >/dev/null 2>&1; then
+  if [ "${python_threshold}" != "0" ]; then
+    echo "coverage: FAIL. A Python threshold of ${python_threshold} was asked" >&2
+    echo "coverage: for and the suite's dependencies are not importable, so" >&2
+    echo "coverage: there is no number to compare. Install" >&2
+    echo "coverage: requirements-lock.txt, or pass 0." >&2
+    exit 1
+  fi
+  echo "coverage: Python coverage skipped, the suite's dependencies are not"
+  echo "coverage: importable and the threshold is 0. Nothing was measured."
+  exit 0
+fi
+
+echo "coverage: measuring Python coverage over python/npu_frontend"
+(
+  cd "${root}"
+  # The whole matrix, not the fast subset. A coverage number taken from the
+  # default marker expression would be a number about the subset.
+  python3 -m pytest test/Python -q -p no:cacheprovider -m 'slow or not slow' \
+    --cov=python/npu_frontend \
+    --cov-report="json:${python_json}"
+)
+
+read -r python_percent <<EOF
+$(python3 - "${python_json}" <<'PYTHON'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    summary = json.load(handle)
+
+# KeyError here is the point, for the same reason it is above.
+print(summary["totals"]["percent_covered"])
+PYTHON
+)
+EOF
+
+echo ""
+echo "coverage: Python line coverage ${python_percent} percent"
+echo "coverage: JSON summary         ${python_json}"
+
+if ! above_threshold "${python_percent}" "${python_threshold}"; then
+  echo ""
+  echo "coverage: FAIL. Python line coverage ${python_percent} percent is below" >&2
+  echo "coverage: the threshold of ${python_threshold} percent." >&2
+  exit 1
+fi
+
+echo ""
+echo "coverage: PASS. Python ${python_percent} percent is at or above the threshold of ${python_threshold} percent."

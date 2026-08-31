@@ -32,6 +32,8 @@ from pathlib import Path
 import pytest
 from npu_frontend import cost_model
 
+from tools import tool
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEADER = REPO_ROOT / "include" / "NPU" / "Simulator" / "CostModel.h"
 
@@ -145,26 +147,19 @@ CASE = "matmul_narrow_bias"
 CASE_M, CASE_K, CASE_N = 5, 19, 3
 
 
-def build_directory() -> Path:
-    override = os.environ.get("NPU_BUILD_DIR")
-    return Path(override) if override else REPO_ROOT / "build"
-
-
-def tool(name: str) -> Path:
-    return build_directory() / "bin" / name
-
-
 @pytest.fixture(scope="module")
 def exported() -> Iterator[Path]:
-    """The exported differential cases, which carry the program this test runs."""
+    """The exported differential cases, which carry the program this test runs.
+
+    **The lookup is `tools.tool` and no longer a copy of it**, for the reason
+    D-0032 records: this module's own `build_directory()` skipped under
+    `scripts/coverage.sh`, so the one test that checks the mirror against a real
+    `npu-sim` run did not execute and the run reported success anyway.
+    """
     exporter = tool("NPUSimulatorTests")
-    simulator = tool("npu-sim")
-    if not exporter.is_file() or not simulator.is_file():
-        pytest.skip(
-            f"{exporter} or {simulator} is missing. This test compares the "
-            f"Python mirror against the built simulator, so it needs the build "
-            f"tree. Build with `ninja -C build` or set NPU_BUILD_DIR."
-        )
+    # Resolved and discarded on purpose, so a missing simulator is one message
+    # here rather than a failure inside the run below.
+    tool("npu-sim")
 
     directory = Path(tempfile.mkdtemp(prefix="npu-costmodel-"))
     try:

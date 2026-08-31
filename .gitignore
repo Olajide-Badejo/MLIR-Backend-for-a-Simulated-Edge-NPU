@@ -25,6 +25,13 @@ venv/
 *.onnx
 *.nbin
 
+# The model IR that scripts/check-reachability.py reads for the model layer of
+# law 2, written by scripts/build-model-ir.py. A build artifact in exactly the
+# way an .onnx is, regenerated from the same seed, and never committed. The
+# whole directory rather than a suffix, because what it holds is .mlir and
+# .mlir is a source extension everywhere else in this tree.
+experiments/models/
+
 # Except the fuzz seed corpus, which is committed on purpose.
 #
 # *.nbin above is right for the compiler's output: a binary regenerated from a

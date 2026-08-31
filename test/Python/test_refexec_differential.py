@@ -43,6 +43,8 @@ import numpy as np
 import pytest
 from npu_frontend import refexec
 
+from tools import tool
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The tolerance for a value produced by two different summation orders. It is
@@ -53,31 +55,26 @@ RTOL = 1e-5
 ATOL = 1e-5
 
 
-def build_directory() -> Path:
-    """Where the binaries are, honouring an override for an unusual layout."""
-    override = os.environ.get("NPU_BUILD_DIR")
-    return Path(override) if override else REPO_ROOT / "build"
-
-
-def tool(name: str) -> Path:
-    return build_directory() / "bin" / name
-
-
 @pytest.fixture(scope="module")
 def exported() -> Iterator[Path]:
     """Runs the exporter once and yields the directory it wrote.
 
     Module scoped because the export is a subprocess and twenty cases do not
     need twenty of them.
+
+    **The lookup is `tools.tool` and no longer a copy of it.** This module used
+    to carry its own `build_directory()`, which looked at `$NPU_BUILD_DIR` and
+    `<repo>/build` and nothing else, and which **skipped** when it found
+    neither. Under `scripts/coverage.sh` that skip fired on all four tests in
+    this file, silently, and the coverage number was then measured from a run in
+    which the reference interpreter differential had not executed at all. That
+    is D-0032, and `test/Python/tools.py` is the one rule it produced.
     """
     exporter = tool("NPUSimulatorTests")
-    simulator = tool("npu-sim")
-    if not exporter.is_file() or not simulator.is_file():
-        pytest.skip(
-            f"{exporter} or {simulator} is missing. This test compares the "
-            f"reference interpreter against the built simulator, so it needs "
-            f"the build tree. Build with `ninja -C build` or set NPU_BUILD_DIR."
-        )
+    # Resolved and discarded on purpose. `run_simulator` looks it up again per
+    # case; doing it once here means a missing simulator is one message before
+    # the first case rather than the same message twenty four times.
+    tool("npu-sim")
 
     directory = Path(tempfile.mkdtemp(prefix="npu-differential-"))
     try:

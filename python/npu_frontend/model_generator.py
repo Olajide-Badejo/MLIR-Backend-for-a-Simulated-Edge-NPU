@@ -237,7 +237,20 @@ def _finish(graph: onnx.GraphProto, doc: str) -> ModelProto:
     return model
 
 
-def _build_conv_bn_relu_stack(seed: int) -> ModelProto:
+def with_batch(shape: tuple[int, ...], batch: int) -> tuple[int, ...]:
+    """`shape` with its leading extent replaced by `batch`.
+
+    Section 17.4's matrix sweeps the batch size over every model, and Section
+    15's registry pins one batch per model. The two are reconciled here rather
+    than by a second registry: a model is a structure, its batch is a parameter
+    of an export, and the weights do not depend on it.
+    """
+    if batch <= 0:
+        raise ValueError(f"a batch size is a positive integer, got {batch}")
+    return (batch, *shape[1:])
+
+
+def _build_conv_bn_relu_stack(seed: int, batch: int = 1) -> ModelProto:
     """Conv, BatchNorm, Relu twice, then a global pool, a flatten and a matmul.
 
     The batch norms are here by construction and stay unfolded, which is the
@@ -323,8 +336,8 @@ def _build_conv_bn_relu_stack(seed: int) -> ModelProto:
     graph = helper.make_graph(
         nodes,
         "conv_bn_relu_stack",
-        [helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, 8, 8])],
-        [helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 4])],
+        [helper.make_tensor_value_info("input", TensorProto.FLOAT, [batch, 3, 8, 8])],
+        [helper.make_tensor_value_info("output", TensorProto.FLOAT, [batch, 4])],
         initializer=initializers,
     )
     return _finish(
@@ -335,7 +348,7 @@ def _build_conv_bn_relu_stack(seed: int) -> ModelProto:
     )
 
 
-def _build_dilated_stack(seed: int) -> ModelProto:
+def _build_dilated_stack(seed: int, batch: int = 1) -> ModelProto:
     """Dilated convolutions with asymmetric padding, closing on a `Transpose`.
 
     The arithmetic is written out here rather than left to shape inference,
@@ -411,8 +424,8 @@ def _build_dilated_stack(seed: int) -> ModelProto:
     graph = helper.make_graph(
         nodes,
         "dilated_stack",
-        [helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 4, 12, 14])],
-        [helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 3, 6, 5])],
+        [helper.make_tensor_value_info("input", TensorProto.FLOAT, [batch, 4, 12, 14])],
+        [helper.make_tensor_value_info("output", TensorProto.FLOAT, [batch, 3, 6, 5])],
         initializer=initializers,
     )
     return _finish(
@@ -440,8 +453,18 @@ class ModelSpec:
     #: away or introduces one fails loudly instead of quietly moving what the
     #: suite covers.
     expected_nodes: Mapping[str, int]
+    #: The tight scratchpad budget in bytes, measured at P8 and frozen.
+    #:
+    #: No default, deliberately: a model added without one is an error at
+    #: import rather than a model quietly given somebody else's number. The
+    #: measurement, the two deviations from Section 15's rule and the reason
+    #: the fraction it asks for is inoperative until P13 are all in
+    #: `docs/adr/0008-per-model-tight-scratchpad-budgets.md`. These numbers are
+    #: frozen: a moved tight budget moves every tight budget cell in the
+    #: project's history at once.
+    tight_budget: int
     torch_factory: Callable[[], nn.Module] | None = None
-    onnx_builder: Callable[[int], ModelProto] | None = None
+    onnx_builder: Callable[[int, int], ModelProto] | None = None
     #: Export options, per model. Never shared, never global: a flag change
     #: applied to the whole suite would move the anchor model's graph, which
     #: moves the golden tensors, which turns a model addition into a baseline
@@ -471,6 +494,7 @@ def _torch_options(**overrides: Any) -> dict[str, Any]:
 MODELS: Final[dict[str, ModelSpec]] = {
     "lenet": ModelSpec(
         name="lenet",
+        tight_budget=194624,
         input_shape=(1, 1, 28, 28),
         summary="LeNet style CNN. The baseline and the regression anchor.",
         expected_nodes={"Conv": 2, "Relu": 4, "MaxPool": 2, "Reshape": 1, "Gemm": 3},
@@ -479,6 +503,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "depthwise_separable": ModelSpec(
         name="depthwise_separable",
+        tight_budget=8192,
         input_shape=(1, 8, 8, 8),
         summary=(
             "Depthwise separable block. Grouped convolution at group == C, a "
@@ -490,6 +515,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "resnet_block": ModelSpec(
         name="resnet_block",
+        tight_budget=6464,
         input_shape=(1, 8, 8, 8),
         summary=(
             "Small ResNet block. A residual Add over an identity shortcut, with "
@@ -501,6 +527,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "inception_block": ModelSpec(
         name="inception_block",
+        tight_budget=6144,
         input_shape=(1, 8, 8, 8),
         summary="Small Inception block. Concat over three parallel branches.",
         expected_nodes={"Conv": 3, "Concat": 1, "Relu": 1},
@@ -509,6 +536,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "conv_bn_relu_stack": ModelSpec(
         name="conv_bn_relu_stack",
+        tight_budget=6464,
         input_shape=(1, 3, 8, 8),
         summary=(
             "Conv plus BatchNorm plus ReLU stack, built with the ONNX "
@@ -527,6 +555,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "dilated_stack": ModelSpec(
         name="dilated_stack",
+        tight_budget=8064,
         input_shape=(1, 4, 12, 14),
         summary=(
             "Dilated convolution stack with asymmetric padding and a closing "
@@ -537,6 +566,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "lenet_batched": ModelSpec(
         name="lenet_batched",
+        tight_budget=200832,
         input_shape=(4, 1, 28, 28),
         summary="LeNet at N = 4. The batch path through the whole pipeline.",
         expected_nodes={"Conv": 2, "Relu": 4, "MaxPool": 2, "Reshape": 1, "Gemm": 3},
@@ -553,39 +583,75 @@ INPUT_SHAPES: Final[dict[str, tuple[int, ...]]] = {
     name: spec.input_shape for name, spec in MODELS.items()
 }
 
+#: The tight scratchpad budget of every model, as one map.
+#:
+#: Measured at P8 and frozen. `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
+#: has the measurement, the two deviations from Section 15's rule, and the
+#: reason the fraction that section asks for is inoperative until tiling lands
+#: at P13. Derived from the registry rather than written a second time, for the
+#: same reason `INPUT_SHAPES` is.
+TIGHT_BUDGETS: Final[dict[str, int]] = {
+    name: spec.tight_budget for name, spec in MODELS.items()
+}
+
+#: The budget the allocator uses when nobody names one, which is what the
+#: default budget cells of every matrix in this project mean.
+DEFAULT_BUDGET: Final[int] = 1048576
+
 
 def generate_model(
-    name: str, directory: str | os.PathLike[str], *, seed: int = DEFAULT_SEED
+    name: str,
+    directory: str | os.PathLike[str],
+    *,
+    seed: int = DEFAULT_SEED,
+    batch: int | None = None,
 ) -> Path:
     """Build one model of the suite and write it as ONNX. Returns the path.
 
     `.onnx` files are never committed. They are regenerated from this seed,
     which is the arrangement Section 22 asks for and the reason `*.onnx` is in
     `.gitignore`.
+
+    `batch` overrides the registry's batch size, which is what Section 17.4's
+    matrix needs: it sweeps the batch over every model where Section 15 pins one
+    per model. The weights do not depend on it, because every model draws them
+    from `seed` at construction time and the batch only reaches the export's
+    example input. A batch equal to the registry's writes the registry's own
+    file rather than a second copy of it, so a caller sweeping `[1, 4]` over a
+    directory exports eleven files and not fourteen.
     """
     spec = MODELS.get(name)
     if spec is None:
         raise KeyError(f"{name!r} is not in the model suite: {sorted(MODELS)}")
 
+    effective = spec.input_shape[0] if batch is None else batch
+    shape = with_batch(spec.input_shape, effective)
+
     target = Path(directory)
     target.mkdir(parents=True, exist_ok=True)
-    path = target / f"{name}.onnx"
+    stem = name if effective == spec.input_shape[0] else f"{name}-n{effective}"
+    path = target / f"{stem}.onnx"
 
     if spec.onnx_builder is not None:
-        onnx.save(spec.onnx_builder(seed), str(path))
+        onnx.save(spec.onnx_builder(seed, effective), str(path))
         return path
 
     assert spec.torch_factory is not None
     module = _seeded_module(spec.torch_factory, seed)
-    _export_torch(module, spec.input_shape, path, spec.export_options, seed)
+    _export_torch(module, shape, path, spec.export_options, seed)
     return path
 
 
 def generate_all(
-    directory: str | os.PathLike[str], *, seed: int = DEFAULT_SEED
+    directory: str | os.PathLike[str],
+    *,
+    seed: int = DEFAULT_SEED,
+    batch: int | None = None,
 ) -> dict[str, Path]:
     """Build every model of the suite into one directory."""
-    return {name: generate_model(name, directory, seed=seed) for name in MODELS}
+    return {
+        name: generate_model(name, directory, seed=seed, batch=batch) for name in MODELS
+    }
 
 
 def node_counts(model: ModelProto) -> dict[str, int]:

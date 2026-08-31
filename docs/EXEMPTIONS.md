@@ -36,8 +36,18 @@ whatever they lower to, and exercised by at least one model. Neither one needs
 an entry in this file, and adding one here would be recording as a temporary
 gap something that is a permanent and intended property.
 
-The P8 gate expects this block to be empty. An entry is a thing to be justified
-at a gate, not a routine way to land an operator that is not finished.
+The P8 gate expects this block to be empty **or** every gap to be a dated entry
+naming its phase, and at P8 it is the second of those. Two entries are in force
+and both are the same fact seen twice: `npu.fused_op` and `npu.yield` are
+created by `-npu-fuse-ops`, which lands at P9, so no model's IR can contain one
+at P8. They are structural and therefore outside the importability clause, and
+they satisfy lowering, encoding and simulation; the model layer is the one they
+cannot satisfy until the pass that creates them exists.
+
+An entry is a thing to be justified at a gate, not a routine way to land an
+operator that is not finished. These two are justified by a phase boundary
+rather than by unfinished work, they name the phase that closes them, and the
+commit that lands `-npu-fuse-ops` deletes them.
 
 ## Entry form
 
@@ -59,8 +69,25 @@ recording history. The history lives in git.
 
 ```
 # op                layer      date         phase   reason
-# (no entries)
+npu.fused_op        model      2026-08-31   P9      created by -npu-fuse-ops, which lands at P9, so no model's IR holds one yet
+npu.yield           model      2026-08-31   P9      the terminator of an npu.fused_op region, absent for exactly as long as the region is
 ```
 
-None. Every operation in the `npu` dialect meets every layer of law 2, or does
-not exist yet.
+Two, and they are one fact. Every **imported computation** operation of the
+`npu` dialect meets all five layers of law 2 at P8, with no exemption of any
+kind. The two structural operations meet lowering, encoding and simulation, and
+cannot meet the model layer until `-npu-fuse-ops` exists to create them.
+
+**The gap is a phase boundary rather than unfinished work**, and the distinction
+matters because it decides what closing it looks like. Nothing about
+`npu.fused_op` is missing: `-npu-lower-to-npuisa` flattens the region,
+`test/Dialect/NPUISA/lowering.mlir` has a case for it, the ISA description
+records both operations as reaching the encoder by elimination, and the
+simulator needs no kernel for either because neither survives to the instruction
+stream. What is missing is a **producer**. `-npu-fuse-ops` is the only thing
+that creates an `npu.fused_op`, Section 12 puts it at `-O2`, and `-O2` arrives
+at P9.
+
+So the commit that lands `-npu-fuse-ops` deletes both entries, and if it does
+not, the check goes red at the next run rather than the pass going quietly
+untested.

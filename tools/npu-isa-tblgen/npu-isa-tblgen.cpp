@@ -735,7 +735,15 @@ void emitJson(raw_ostream &os, const Description &desc) {
       os << (sourceIndex ? ", " : "");
       emitJsonString(os, source);
     }
-    os << "], \"semantic_phase\": ";
+    // `needs_kernel` is emitted from P8 for scripts/check-reachability.py's
+    // simulation layer. It says whether this opcode is computation the
+    // simulator must implement, as opposed to control it merely sequences. The
+    // guarantee that a computation opcode *has* its kernel is the compiler's
+    // rather than the script's: the generated dispatch table expands to a
+    // missing identifier and a failed static assertion when one is absent,
+    // which Section 9.4 asks for and P7 demonstrated in four places at once.
+    os << "], \"needs_kernel\": " << (op.needsKernel ? "true" : "false");
+    os << ", \"semantic_phase\": ";
     emitJsonString(os, op.semanticPhase);
     os << "}" << (index + 1 == desc.opcodes.size() ? "" : ",") << "\n";
   }

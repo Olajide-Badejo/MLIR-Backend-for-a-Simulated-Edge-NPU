@@ -12,6 +12,11 @@
 //   STATS     a program the compiler produced runs, and the statistics come out
 //             with stats.instructions among them, which Section 10.2 makes the
 //             only instruction count anywhere in this project.
+//   JSON      the same run's statistics as data, which is what a caller reads.
+//             Section 16.2's rule that nothing is scraped out of human readable
+//             text applies here for a specific reason: the one number nothing
+//             may guess at is stats.instructions, and it is exactly the number a
+//             text parser would guess at.
 //   SERIAL    the single port flag of Section 5.5, which reports no overlap.
 //   COUNT     one --input per declared input region, refused with **both**
 //             numbers when the counts disagree.
@@ -26,7 +31,8 @@
 // RUN:   | npu-translate -o %t.nbin
 // RUN: head -c 128 /dev/zero > %t.in
 // RUN: npu-sim %t.nbin --input %t.in --output %t.out0 --output %t.out1 \
-// RUN:   | FileCheck %s --check-prefix=STATS
+// RUN:   --json-stats %t.stats.json | FileCheck %s --check-prefix=STATS
+// RUN: FileCheck %s --check-prefix=JSON < %t.stats.json
 
 // RUN: wc -c < %t.out0 | FileCheck %s --check-prefix=SIZE0
 // RUN: wc -c < %t.out1 | FileCheck %s --check-prefix=SIZE1
@@ -53,6 +59,15 @@
 // STATS-NEXT: dram bytes written: 256
 // STATS:      macs: 0
 // STATS-NEXT: int8 macs: 0
+
+// The same three numbers, from the same run, as data. The keys are the text
+// labels with their spaces turned into underscores, so a field that gained a
+// spelling in one printer and not the other shows up here.
+// JSON-DAG: "instructions": 6
+// JSON-DAG: "dram_bytes_read": 128
+// JSON-DAG: "dram_bytes_written": 256
+// JSON-DAG: "reached_halt": true
+// JSON-DAG: "single_port": false
 
 // The two outputs are 2x4x4 f32 each, which is 128 bytes each. Both files are
 // measured, because "writes all outputs" is a claim about the second one.

@@ -6,6 +6,147 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P8: the walking skeleton and the safety net
+
+- **`npu-compile` exists.** One entry point from an ONNX model at the pinned
+  opset to a `.nbin`, at `-O0`, with staged output:
+
+  ```
+  scripts/npu-compile model.onnx -O 0 --emit nbin -o model.nbin
+  scripts/npu-compile model.onnx --emit npuisa
+  scripts/npu-compile model.onnx --emit npu --verbose
+  scripts/npu-compile --describe-pipeline
+  ```
+
+  `--emit` stops after `import`, `npu`, `npuisa` or `nbin`. At `-O0` the first
+  two are the same text, because `-O0` runs no `npu` level pass; a test asserts
+  that, so the day `-O1` lands the assertion moves with it. `--budget` sets the
+  scratchpad budget, `--strip-debug` writes an empty debug section, and
+  `--verbose` prints the stage timings on stderr, where they do not land in the
+  output somebody is piping. It is a Python driver at
+  `python/npu_frontend/compile.py` with a thin launcher at `scripts/npu-compile`;
+  there is no `tools/npu-compile` C++ tool, because the import step is Python by
+  design.
+- **Running the result stays `npu-sim`'s job.** The driver compiles, the way a
+  compiler does. `npu_frontend.run_program` wraps the simulator for the test
+  harnesses and returns the outputs as arrays and the statistics as a
+  dictionary.
+- **The end to end matrix runs.** Seven models, two batch sizes, five seeded
+  input classes, at `-O0`, each cell checked against `onnxruntime` and against
+  the reference interpreter, with the absolute and the relative bound asserted
+  separately. `test/Python/test_end_to_end.py`.
+- **`generate_model` takes a `batch`.** Section 17.4 sweeps the batch size over
+  every model where Section 15 pins one per model, and the batch is now a
+  parameter of an export rather than a second registry. The weights and the node
+  counts do not move with it, and a batch equal to the registry's writes the
+  registry's own file.
+- **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
+  makes the reference interpreter an oracle for a whole model rather than for
+  one operation.
+- **The coverage thresholds are real, replacing the zeros of Section 19.0.**
+  Measured on 2026-08-31: C++ lines 86.1 percent over `lib/Dialect`,
+  `lib/Encoding` and `lib/Simulator`, C++ branches 77.3 percent, Python lines
+  90.6 percent over `python/npu_frontend`. CI enforces 85 for C++, which is
+  Section 17.7's floor, and 90 for Python, which is that section's rule of the
+  measured value rounded down to a whole percent. `scripts/coverage.sh` takes
+  the Python threshold as a second argument, measures with `pytest-cov` over the
+  whole matrix rather than the fast subset, and reports branch coverage for the
+  allocator and the decoder separately, where Section 17.7 says the error paths
+  matter most: the allocator 97.8 percent of lines and 90.2 of branches, the
+  decoder 94.6 and 91.4.
+- **A Python threshold that cannot be measured is a failure, not a skip.** If
+  the suite's dependencies are not importable and a nonzero Python threshold was
+  asked for, `coverage.sh` fails rather than passing on a number nobody
+  computed. At a threshold of 0 it prints an off line and continues.
+- **`scripts/coverage.sh` tells the Python suite which build directory it
+  built.** It exports `NPU_BUILD_DIR`, derives `MLIR_PYTHON_PACKAGES_DIR` from
+  that directory's CMake cache when the caller has not set one, and refuses
+  before running pytest if the binaries it just built are missing. Without this
+  the suite looked for them in `build/`, which the coverage job does not have.
+  D-0032, found by CI.
+- **The test suite has one rule for finding a built binary**,
+  `test/Python/tools.py`, replacing three that disagreed. A missing binary is a
+  skip when nobody named a build directory and a **failure** when somebody did,
+  because naming one asserts that the build is there.
+  `test/Python/test_tool_discovery.py` makes a second copy of the rule a red
+  test.
+- **`scripts/check-reachability.py` runs in full and passes.** All five layers
+  of law 2 are decided for every operation of the `npu` dialect, and the CI
+  step is on. Every **imported computation** operation meets all five with no
+  exemption of any kind; the two structural operations, `npu.fused_op` and
+  `npu.yield`, carry dated exemptions from the model layer naming P9, because
+  `-npu-fuse-ops` is the only thing that creates one and it lands at P9.
+- **The simulation layer became mechanical**, which is what P7 left on this
+  phase's desk. It used to be a substring search over
+  `lib/Simulator/Simulator.cpp`'s operation table, which is a comment; it is now
+  decided from `docs/ISA_OPCODES.json`, generated from the ISA description and
+  kept honest by the staleness gate, the way P6 made the encoding layer
+  decidable. The description gained a `needs_kernel` field per opcode for it.
+- **`scripts/build-model-ir.py`** writes every model's `npu` and `npuisa` level
+  IR into `experiments/models/`, at both batch sizes, which is what the model
+  layer of Section 17.5 reads. It is a build artifact and nothing commits it.
+- **`scripts/regression-baseline.sh` records the safety net of Section 17.6, and
+  `--check` diffs against it.**
+
+  ```
+  bash scripts/regression-baseline.sh            build, measure, record
+  bash scripts/regression-baseline.sh --check    build, measure, diff, fail on drift
+  ```
+
+  It records into `test/baseline/baseline.json` the pass, fail and skip counts
+  and the test names of every suite plus the dash lint, the git sha, the tool
+  versions, and one cell per model per level per budget carrying the instruction
+  count, the cycles, the two DRAM byte counts, the MAC count and the largest
+  absolute error against onnxruntime. The `-O0` output tensors go to
+  `test/baseline/golden/` as `.npy`. Every number comes from a machine readable
+  source: lit's `--output`, GoogleTest's `--gtest_output=json:`, pytest's
+  `--junitxml` and the simulator's `--json-stats`. Nothing parses a log.
+- **The baseline schema is versioned and does not claim what it cannot
+  compute.** `schema_version` is 1, `--check` refuses a version it does not
+  recognise rather than reading a later field as a regression from zero, and
+  `absent_fields` names `energy` as arriving at P11 and the per level fields as
+  arriving at P9.
+- **Every model carries a tight scratchpad budget**, measured on 2026-08-31 and
+  frozen as a required field of its `ModelSpec`, with `TIGHT_BUDGETS` derived
+  from the registry. `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
+  records the measurement and two deliberate deviations from Section 15: the
+  rounding quantum is the allocator's own 64 byte alignment rather than 4096,
+  and the fixed fraction that section asks for is inoperative until tiling
+  lands at P13, because on five of the seven models the smallest allocatable
+  budget is the peak itself.
+- **`npu_frontend.metamorphic`** holds four of Section 17.3a's five metamorphic
+  relations and its dead subgraph injection. The fifth, pad then slice back,
+  cannot be written: `Pad` is refused by this importer by name and `Slice` has
+  no converter, and adding either so a test could use it would be growing the
+  operator set to satisfy a test. It is recorded in `NOT_IMPLEMENTED` with that
+  reason and a test asserts the reason is still true.
+- **`npu-opt --npu-describe-pipeline` also reports `eliminates_dead_code` per
+  pass**, which is how the dead subgraph check knows which levels its
+  instruction count claim applies to. Both of `-O0`'s passes declare `false`.
+- **`npu_frontend.input_classes`** holds the five classes of Section 17.4 with
+  their seeds derived from the cell's own identity, so a failing cell's input
+  is reconstructible from the cell's name with no run log.
+- **`npu-opt` has optimization levels.** `--npu-O0` runs the `-O0` pipeline of
+  Section 12, which is import and verify followed by `-npu-lower-to-npuisa` and
+  `-npu-allocate-scratchpad`. The level's pass list lives in `lib/Pipeline/` in
+  C++ rather than in the Python driver, because the `PassInstrumentation` of
+  Section 16.2 has to sit on the `PassManager` that actually runs the passes.
+  The allocator's options are forwarded, so `--npu-O0=budget=8192` reaches it.
+- **`--npu-O1` and `--npu-O2` are not registered and asking for one is an
+  unknown argument.** They arrive at P9. A level registered with an empty
+  pipeline would run and produce `-O0`'s answer, which is worse than a refusal.
+- **`npu-opt --npu-describe-pipeline`** prints every level as JSON with its
+  passes and their `ablatable` properties. That is how a caller reads the
+  ablatable set at run time instead of keeping a second copy of it.
+- **`npu-sim --json-stats <path>`** writes the run's statistics as JSON, which
+  is what a caller reads. Nothing scrapes them out of the human readable form,
+  because the one number nothing may guess at is `stats.instructions` and it is
+  exactly the number a text parser would guess at. The keys are the text labels
+  with their spaces turned into underscores, plus `reached_halt` and
+  `single_port`, and the file is written only when the run succeeded. The flag
+  is not spelled `--stats-json`: LLVM's Support library registers that name for
+  its own statistics counters and every tool linking Support inherits it.
+
 ### Phase P6: the binary format and the generated ISA
 
 - **The instruction set is described once, in

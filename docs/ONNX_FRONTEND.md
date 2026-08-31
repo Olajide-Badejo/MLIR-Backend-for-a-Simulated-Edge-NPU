@@ -240,6 +240,55 @@ Two exception types, and the difference between them is which side is at fault.
   `npu-opt` not being found. This one means the frontend is at fault, not the
   model.
 
+## The batch size is a parameter of an export, not a second registry
+
+*Added at P8.*
+
+Section 15 pins one batch size per model and Section 17.4's matrix sweeps the
+batch over every model. Reconciling those with two registries would mean two
+places to add a model to, so `generate_model` takes a `batch` instead:
+
+```python
+generate_model("lenet", directory)            # the registry's batch, here 1
+generate_model("lenet", directory, batch=4)   # the same model at N = 4
+```
+
+Three properties make that legitimate and each is asserted in
+`test_model_generator.py` rather than assumed.
+
+**The weights do not move.** Every model draws them from the seed at
+construction time and the batch reaches only the export's example input. If the
+weights moved, a batch 1 cell and a batch 4 cell would be two different models
+and the matrix would be comparing one against the other.
+
+**The node counts do not move.** The structure is the model; the batch is a
+shape.
+
+**The registry's own batch writes the registry's own file.** `lenet` at batch 1
+is `lenet.onnx`, and only a batch that differs from the registry's gets the
+`-n4` suffix. So a caller sweeping `[1, 4]` over the suite writes eleven files
+rather than fourteen, and `lenet_batched` at 4 is still the file the rest of the
+project knows by name.
+
+## Executing the imported IR, as an oracle
+
+*Added at P8.* `npu_frontend.refgraph.execute_module` walks the `npu` dialect IR
+this package produced and calls `refexec` for each operation, so the reference
+interpreter of Section 17.3a becomes an oracle for a whole model rather than for
+one operation.
+
+It exists beside the `onnxruntime` comparison rather than instead of it, because
+the two localise a fault differently. `onnxruntime` runs the ONNX graph, so a
+disagreement implicates the whole chain, this package included. `refexec` over
+the imported IR runs what this package actually produced, so a disagreement
+implicates only what is below it. A cell that agrees with `refexec` and
+disagrees with `onnxruntime` has an importer bug, which is a diagnosis rather
+than a search.
+
+It reads the **generic** form, because the `npu` dialect is C++ only and a
+context here cannot parse its custom assembly. That is the same constraint
+`builder.py` works under to write this IR, seen from the other side.
+
 ## How to use it
 
 Import a model that already exists:
