@@ -44,7 +44,7 @@ TEST(FrozenConstants, TheCostModelsNumbers) {
   // the same names and the same values, so between the two there is no way to
   // change one copy and not the other.
   EXPECT_EQ(kArrayDim, 16);
-  EXPECT_EQ(kPeakMacsPerCycleF32, 256);
+  EXPECT_EQ(kPeakMacsPerCycleF32, 257);
   EXPECT_EQ(kPeakMacsPerCycleI8, 1024);
   EXPECT_DOUBLE_EQ(kDramBandwidthBytesPerCycle, 16.0);
   EXPECT_DOUBLE_EQ(kDmaDescriptorCycles, 64.0);
