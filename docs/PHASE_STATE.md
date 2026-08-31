@@ -87,7 +87,7 @@ are listed under "Next command". Item by item, with the proof.
 | 13 | a dead subgraph changes neither the outputs | PASS | Bit identical, every model, every input class |
 | 14 | nor the `-O2` instruction count | PASS, resolved | See "How the `-O2` clause was read" below |
 | 15 | the per model tight budgets recorded | PASS | `docs/adr/0008-per-model-tight-scratchpad-budgets.md`, dated, with the measurement and two recorded deviations |
-| 16 | CI proven red for all four fault classes with URLs recorded | REHEARSED, CI PENDING | All four rehearsed locally under CI's exact invocations, predictions written first, all four matched, all four restored. Recipes below. The CI runs and their URLs are the orchestrator's |
+| 16 | CI proven red for all four fault classes with URLs recorded | PASS | Pull requests 9 through 12, one fault each under the `pull_request` trigger, all red at the predicted job and step; four red URLs and the green restore URL in `docs/ENGINEERING_LOG.md` |
 | 17 | coverage measured and the real thresholds set | PASS | C++ 86.1 percent, threshold 85. Python 90.6 percent, threshold 90. Branch coverage reported for the allocator and the decoder. Proven in CI's own environment after D-0032 |
 
 ### How the `-O2` clause was read, and why
@@ -263,8 +263,18 @@ different things and this run shows it.
 
 **Two steps activate at P8** and each was broken deliberately, shown red, and
 restored. Both rehearsals ran under **the exact CI invocation**, inside
-`set -euo pipefail`, with the step's own script. All are **rehearsed locally,
-CI runs pending**.
+`set -euo pipefail`, with the step's own script. **The CI runs are done.** The
+reachability activation went red on `phase/p8-proof-rehearsal` at exactly the
+`check-reachability full` step, with the lint job's `--skip-models` variant
+green beside it
+(<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432288385>),
+and the restore returned green
+(<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432842831>).
+The CI fault was the model side one, not the product side one, and the reason
+is in the engineering log: a committed perturbation of `ISA_OPCODES.json` is
+caught by the staleness step first, which runs earlier and would stop the job
+at the wrong net. The coverage arm's environment was proven by its first real
+run instead of by a rehearsal, which is D-0032's story, also in the log.
 
 **A rehearsal branch must be named under `phase/`.** `ci.yml` triggers on
 `phase/**` and `main` only, and P7 lost a push to that. The branch to use is
@@ -400,10 +410,13 @@ points to 0.61 because the tests that had been skipping now run.
 ## The proof of failure gate, Section 19.1
 
 Four fault classes, each rehearsed locally under CI's own invocation, with the
-prediction written before the run. **All four matched. All four restored. CI runs
-pending**, and Section 19.1 requires each as **its own pull request** so the
-`pull_request` trigger fires, plus one green run URL, all five pasted into
-`docs/ENGINEERING_LOG.md`.
+prediction written before the run. **All four matched, all four restored, and
+the CI record is complete**: pull requests 9 through 12, one fault each, opened
+as drafts so the `pull_request` trigger fires and closed unmerged with their
+branches deleted, every one red at the predicted job and step, with the four
+red URLs and the green restore URL pasted into `docs/ENGINEERING_LOG.md`. The
+first CI pass ran the faults as pushes to one rehearsal branch, which proved
+the steps and not the trigger; it is recorded in the log as the finding it is.
 
 The baseline before any fault: dash-lint exit 0, `check-npu` 20 of 20,
 `NPUSimulatorTests` 54 passed, reachability pass, ISA staleness up to date.
@@ -540,7 +553,13 @@ than forgotten if either gains a converter.
 
 ## Next command
 
-Push `phase/p8-walking-skeleton` again, so the D-0032 fix gets a run.
+Open the merge pull request for `phase/p8-walking-skeleton`.
+
+The D-0032 fix ran and every job is green, Python coverage 90.61 on the CI
+host:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33428771811>.
+The activation proofs and the Section 19.1 record are complete, with all URLs
+in `docs/ENGINEERING_LOG.md`.
 
 ### What the first push already established
 

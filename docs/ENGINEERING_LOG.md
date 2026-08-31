@@ -3080,3 +3080,72 @@ The whole verification matrix, including two extra build directories, the
 coverage measurement and the regression baseline, is under ten minutes. The
 90 minute budget of Section 2 is a P10 figure and this phase says nothing about
 it.
+
+## 2026-08-31 Phase 8: the proof of failure gate run against CI, and what the first run of the coverage arm caught
+
+The branch's first run went red before any fault was aimed at it, and that red
+is the best result of the closing sequence. The coverage job's new Python arm
+died at collection: `npu-opt was not found`. The job configures only
+`build-coverage/`, and discovery had been finding `build/` beside it on every
+developer run, which is D-0030's failure class landing a second time, D-0032.
+The audit of the fix found the larger fault: two hand written copies of the
+discovery in the differential tests were skipping instead of failing, so five
+tests, `test_every_case_agrees` among them, had been silently absent from every
+coverage number recorded so far. The fix put discovery in one place with one
+policy, a missing binary is a skip when nobody named a build directory and a
+failure when somebody did, and a test now hunts for a third copy. The red run:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33367169622>.
+The fix, green in every job, Python coverage 90.61 on the CI host against 90.60
+here:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33428771811>.
+
+Then Section 19.1's four fault classes. The first pass at them was wrong and is
+recorded as the finding it is: all four ran as pushes to one rehearsal branch,
+went red at the right steps, and proved the wrong trigger. Section 19.1 says
+each fault is its own pull request **so the `pull_request` trigger fires**,
+because that trigger is the one that guards a merge, and a push triggered red
+says nothing about it. The push runs stand as evidence the steps catch the
+faults (33429399189, 33429985494, 33430305159, 33431674770, each red at the
+same steps as below); the gate's record is the four pull requests, numbers 9
+through 12, one fault each, opened as drafts and closed unmerged with their
+branches deleted.
+
+An em dash appended to `docs/BREAKING_CHANGES.md` went red at the lint job's
+dash lint step and nowhere else:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433615421>.
+Committing that fault locally required `--no-verify`, because the pre-commit
+hook refuses exactly this edit, and that is the point of the class rather than a
+corner cut: the gate models the commit that never ran the hooks, and the
+repository has already had one, the web edit that P7 cut as `1939b58`.
+
+A lit expectation changed from `npuisa.dma_store` to `npuisa.dma_never` went
+red at check-npu, and at coverage besides, which runs the same lit suite under
+instrumentation:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433628400>.
+
+A frozen constant expectation moved from 256 to 257 went red at the
+`NPUSimulatorTests` step, the sanitizers job's GoogleTest step, and coverage,
+the same three step net P7 measured:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433632114>.
+
+A tight budget expectation moved by one byte went red at the pytest step and at
+the coverage job's Python arm:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33433634366>.
+
+The reachability activation took a different fault in CI than in the local
+rehearsal, and the reason is a finding. The local product side fault perturbs
+`docs/ISA_OPCODES.json`, which the staleness gate regenerates before diffing,
+so an uncommitted edit is silently repaired; a committed one, which is what a
+rehearsal branch pushes, is caught by the staleness step, which runs before the
+reachability step and would have stopped the job at the wrong net. The model
+side fault has no generated artifact in it: the `npu.yield` exemption row
+deleted from `docs/EXEMPTIONS.md` went red at exactly the
+`check-reachability full` step, with the lint job's `--skip-models` variant
+green beside it, which is the isolation stated in CI's terms:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432288385>.
+
+The rehearsal branch's restore, byte identical to the phase branch tip,
+returned green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432842831>.
+The `pull_request` trigger's own green is shown by the phase's merge pull
+request in the ordinary course of merging.
