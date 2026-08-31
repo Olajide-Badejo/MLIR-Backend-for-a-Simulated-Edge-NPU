@@ -8,3 +8,4 @@
 add_subdirectory(npu-opt)
 add_subdirectory(npu-translate)
 add_subdirectory(npu-objdump)
+add_subdirectory(npu-sim)
