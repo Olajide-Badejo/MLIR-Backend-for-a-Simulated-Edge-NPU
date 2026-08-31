@@ -20,6 +20,7 @@ set(NPU_TEST_DEPENDS
         npu-opt
         npu-translate
         npu-objdump
+        npu-sim
         )
 
 add_lit_testsuite(check-npu "Running the npu regression tests"
