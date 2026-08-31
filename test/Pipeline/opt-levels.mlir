@@ -52,7 +52,7 @@ func.func @small(%input: tensor<1x2x4x4xf32>, %scale: tensor<2xf32>) -> tensor<1
 // LOWERED: npuisa.dma_load
 // LOWERED: npuisa.mul
 // LOWERED: npuisa.relu
-// LOWERED: npuisa.dma_store
+// LOWERED: npuisa.dma_never
 
 // BUDGET: npuisa.scratchpad_budget = 512 : i64
 
