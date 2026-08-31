@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 SPDX-License-Identifier: MIT
 -->
 
-# MLIR Backend for a Simulated Edge NPU 
+# MLIR Backend for a Simulated Edge NPU
 
 This repository is mid rebuild. I am rewriting the compiler from scratch
 against the v3 build specification, and this README is a stub that says where
