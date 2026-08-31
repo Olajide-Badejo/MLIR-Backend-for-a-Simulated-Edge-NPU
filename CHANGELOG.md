@@ -6,6 +6,21 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P8: the walking skeleton and the safety net
+
+- **`npu-opt` has optimization levels.** `--npu-O0` runs the `-O0` pipeline of
+  Section 12, which is import and verify followed by `-npu-lower-to-npuisa` and
+  `-npu-allocate-scratchpad`. The level's pass list lives in `lib/Pipeline/` in
+  C++ rather than in the Python driver, because the `PassInstrumentation` of
+  Section 16.2 has to sit on the `PassManager` that actually runs the passes.
+  The allocator's options are forwarded, so `--npu-O0=budget=8192` reaches it.
+- **`--npu-O1` and `--npu-O2` are not registered and asking for one is an
+  unknown argument.** They arrive at P9. A level registered with an empty
+  pipeline would run and produce `-O0`'s answer, which is worse than a refusal.
+- **`npu-opt --npu-describe-pipeline`** prints every level as JSON with its
+  passes and their `ablatable` properties. That is how a caller reads the
+  ablatable set at run time instead of keeping a second copy of it.
+
 ### Phase P6: the binary format and the generated ISA
 
 - **The instruction set is described once, in

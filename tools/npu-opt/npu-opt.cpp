@@ -22,10 +22,20 @@
 // saying the interface was promised and never provided.
 //
 // This project's own passes are registered by their generated entry point,
-// beside MLIR's. No pipeline is assembled here: the driver's `-O` levels belong
-// to the phase that has a whole pipeline to describe, and a pipeline name
-// registered before there is anything to put behind it would promise more than
-// it delivered.
+// beside MLIR's. The `-O` levels join them at P8, from `lib/Pipeline`, which is
+// the phase that finally has a whole pipeline to describe. Until then no
+// pipeline name was registered at all, because a name registered before there
+// is anything to put behind it promises more than it delivers.
+//
+// **`--npu-describe-pipeline` is handled before `MlirOptMain` and that is
+// deliberate.** Every other option here is a question about an input file, and
+// `MlirOptMain` owns the parsing and requires one. This flag asks a question
+// about the compiler instead: which passes each level runs, and which of them
+// Section 16.2's ablation may remove. Section 16.2 requires the driver to read
+// that set at run time rather than keep a copy, so the answer has to be
+// obtainable without a file to run it on. The option is registered with
+// `llvm::cl` as well, so that `--help` lists it beside everything else rather
+// than leaving it as folklore.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +43,7 @@
 #include "NPU/Dialect/NPU/Interfaces/NPUTilingInterfaceImpl.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "NPU/Dialect/NPUISA/Transforms/Passes.h"
+#include "NPU/Pipeline/Pipeline.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
@@ -40,9 +51,34 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
+namespace {
+
+constexpr llvm::StringLiteral kDescribeFlag = "--npu-describe-pipeline";
+
+llvm::cl::opt<bool> describePipeline(
+    kDescribeFlag.drop_front(2),
+    llvm::cl::desc("Print the -O level table as JSON and exit. Answers a "
+                   "question about the compiler rather than about a file, so "
+                   "it takes no input."),
+    llvm::cl::init(false));
+
+} // namespace
+
 int main(int argc, char **argv) {
+  for (int index = 1; index < argc; ++index) {
+    if (kDescribeFlag == argv[index]) {
+      mlir::npu::pipeline::printDescriptionAsJson(llvm::outs());
+      return 0;
+    }
+  }
+
   mlir::registerAllPasses();
   mlir::npuisa::registerNPUISAPasses();
+  mlir::npu::pipeline::registerNPUPipelines();
 
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);

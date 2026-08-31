@@ -26,6 +26,7 @@ set(LIBS
     MLIRNPU
     MLIRNPUISA
     MLIRNPUISATransforms
+    MLIRNPUPipeline
   )
 
 add_llvm_executable(npu-opt npu-opt.cpp)

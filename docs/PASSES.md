@@ -38,6 +38,72 @@ Section 12 of the build specification. This file describes the passes that
 
 ---
 
+## The optimization levels
+
+*Added at P8, in `lib/Pipeline/Pipeline.cpp`.*
+
+A level is a named list of passes, and the list lives in C++ rather than in the
+Python driver. Section 6 settles that and the reason survives the summary: the
+`PassInstrumentation` of Section 16.2 has to sit on the `PassManager` that
+actually runs the passes, so a pipeline assembled in Python out of one `npu-opt`
+invocation per pass would be a different pipeline from the one under test.
+`npu-compile` names a level, `lib/Pipeline` builds it.
+
+| Level | Registered as | Passes | Status |
+|---|---|---|---|
+| `-O0` | `npu-O0` | `-npu-lower-to-npuisa`, `-npu-allocate-scratchpad` | implemented |
+| `-O1` | not registered | canonicalize and constant fold, on top of `-O0` | P9 |
+| `-O2` | not registered | the full set of Section 12 | P9 |
+
+**`-O0` is "import and verify" and verification is not a row in the table.**
+MLIR verifies every operation when it parses it and again after every pass, so
+the level gets its verification from the pass manager. A row that ran a verifier
+would be a second and weaker one beside the one that already runs.
+
+**`-O1` and `-O2` are named and not registered.** Asking `npu-opt` for one is an
+unknown argument. That is deliberate: a level registered with an empty pipeline
+would run, produce `-O0`'s answer, and every ablation cell measured against it
+would be measuring nothing. The description below still lists them, because a
+driver that could not see `-O2` at all could not tell a level that is missing
+from one that is empty, and `npu-compile -O2` says "arrives at P9" rather than
+"unknown argument".
+
+**Every entry carries an `ablatable` property and a missing one does not
+compile.** Section 12 asks for that in those words. `PassEntry` has a single
+constructor taking all three fields with no defaults, so a row written as
+`{"npu-fuse-ops"}` is a build error. A default of `false` would quietly shrink
+Section 16.2's ablation table by exactly the passes nobody thought about.
+
+**The description is readable at run time**, which is what Section 16.2 requires
+of the ablatable set:
+
+```
+npu-opt --npu-describe-pipeline
+```
+
+prints every level as JSON with its passes, their `ablatable` flags, whether the
+level is implemented, and the phase an unimplemented one arrives at. The flag is
+handled before `MlirOptMain` because it asks a question about the compiler
+rather than about a file and therefore takes no input.
+
+**The level and its pass list are asserted to agree.**
+`test/Pipeline/opt-levels.mlir` runs `--npu-O0` and the explicit
+`--npu-lower-to-npuisa --npu-allocate-scratchpad` over the same input and diffs
+the two outputs. Section 17.4 says a test that runs a hardcoded pass list
+matching no optimization level enforces nothing; the converse obligation is this
+one, that a level nobody compares against anything can drift from the passes it
+claims to run.
+
+The pipeline forwards the allocator's four options, so `npu-compile --budget`
+reaches the allocator without the driver knowing which pass consumes it:
+
+```
+npu-opt model.mlir --npu-O0=budget=8192
+npu-opt model.mlir '--npu-O0=budget=8192 strategy=interval'
+```
+
+---
+
 ## `-npu-lower-to-npuisa`
 
 Lowers the `npu` tensor dialect to `npuisa` instructions on `memref`s in the
