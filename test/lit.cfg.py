@@ -46,6 +46,7 @@ tools = [
     "npu-opt",
     "npu-translate",
     "npu-objdump",
+    "npu-sim",
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

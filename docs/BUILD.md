@@ -66,6 +66,41 @@ The build produces `build/bin/npu-opt`. Check it answers:
 ./build/bin/npu-opt --help         # P0
 ```
 
+### The second build directory, the one without assertions
+
+Section 9.3 requires the simulator's bounds checked accessors to refuse
+gracefully in **every build mode**, and requires a test to prove it in a release
+build and an assertions build alike. `build` above is the assertions build. The
+other one is:
+
+```bash
+cmake -G Ninja -S . -B build-ndebug \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNPU_FORCE_NDEBUG=ON \
+  -DMLIR_DIR=$HOME/llvm-project/build/lib/cmake/mlir \
+  -DLLVM_DIR=$HOME/llvm-project/build/lib/cmake/llvm \
+  -DLLVM_USE_LINKER=lld
+
+ninja -C build-ndebug -j6 NPUSimulatorTests    # P7
+./build-ndebug/bin/NPUSimulatorTests
+```
+
+**`-DCMAKE_BUILD_TYPE=Release` on its own does not produce a build without
+assertions, and that is D-0028 rather than a quirk worth skipping.** The LLVM
+this project is configured against is an assertions build. `LLVMConfig.cmake`
+sets `LLVM_ENABLE_ASSERTIONS` as a plain variable, which shadows any cache value
+the command line offers, and `HandleLLVMOptions` then adds `_DEBUG`,
+`_GLIBCXX_ASSERTIONS` and an explicit `-UNDEBUG` that lands **after** the
+`-DNDEBUG` a Release configuration supplies. The result compiles with assertions
+on and looks like a release build from every angle except the compiler flags.
+`-DNPU_FORCE_NDEBUG=ON` is what turns it off, the configure log says which way it
+went in a line beginning `NDEBUG:`, and the top level `CMakeLists.txt` carries
+the reasoning.
+
+The option affects this project's own targets and nothing else. It does not
+touch `~/llvm-project`, which is prebuilt, shared, and not this project's to
+rebuild.
+
 ## The Python environment
 
 The virtual environment is `~/npu-venv`, CPython 3.14.4. It is **reused, not

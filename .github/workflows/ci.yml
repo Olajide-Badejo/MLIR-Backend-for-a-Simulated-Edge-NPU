@@ -18,6 +18,8 @@
 # Added at P2: NPUInterfaceTests, and the coverage job at a threshold of 0.
 # Added at P5: NPUAllocatorTests.
 # Added at P6: NPUEncodingTests, the ISA staleness gate, and the sanitizers job.
+# Added at P7: NPUSimulatorTests, in this job and inside the sanitizers job's
+# existing GoogleTest step.
 # Everything else prints its off line.
 
 name: ci
@@ -354,14 +356,34 @@ jobs:
             exit 1
           fi
 
-      - name: "NPUSimulatorTests (activation table: P7)"
+      # NPUSimulatorTests. ON at P7, and the guard keeps its shape: what changes
+      # is that the else branch is now a failure rather than an off line, which
+      # is what NPUInterfaceTests did at P2 and NPUEncodingTests at P6.
+      #
+      # It carries the semantics test per opcode of Section 10.1's P7 list, the
+      # two timelines and the overlap fraction at both endpoints of Section 5.5,
+      # the bounds checked accessors of Section 9.3, and the determinism claim of
+      # Section 10.3. The differential export inside it is skipped here and run
+      # by the pytest step, which is the half that needs the reference
+      # interpreter beside it.
+      #
+      # This build is an assertions build. The NDEBUG half of Section 9.3's
+      # "every build mode" is the sanitizers job below, which configures
+      # RelWithDebInfo and therefore compiles with -DNDEBUG, and which runs this
+      # same binary.
+      - name: "NPUSimulatorTests (activation table: P7, on)"
         run: |
           set -euo pipefail
           if [ -x build/bin/NPUSimulatorTests ]; then
             ./build/bin/NPUSimulatorTests
           else
-            echo "NPUSimulatorTests: OFF until P7 (activation table 19.0)."
-            echo "NPUSimulatorTests: guard is build/bin/NPUSimulatorTests existing."
+            echo "::error::NPUSimulatorTests did not build."
+            echo "NPUSimulatorTests: this step is ON from P7, so a missing binary"
+            echo "NPUSimulatorTests: is a build failure rather than a phase that has"
+            echo "NPUSimulatorTests: not arrived. Check the configure log for the"
+            echo "NPUSimulatorTests: 'GoogleTest:' line and for the 'OpenMP:' line,"
+            echo "NPUSimulatorTests: which says which way that option went."
+            exit 1
           fi
 
       # ---- pytest. ON at P3.
@@ -591,24 +613,36 @@ jobs:
       - name: Build the sanitized targets
         run: |
           set -euxo pipefail
-          ninja -C build-san -j4 NPUEncodingTests nbin_decode_fuzzer
+          ninja -C build-san -j4 NPUEncodingTests NPUSimulatorTests \
+            nbin_decode_fuzzer
 
       # The whole of MalformedInputTest, plus everything else in the binary.
       # halt_on_error makes UBSan fail the step rather than print and continue;
       # without it a runtime error is a line in a log that nothing reads. That
       # matters here more than anywhere: the first real run of this job found a
       # signed overflow in the validator's own range messages, D-0021.
+      #
+      # NPUSimulatorTests joins this step at P7 rather than getting one of its
+      # own, and the reason is that it needs no new activation: this step is
+      # already on and already proven red. It also does double duty. Section 9.3
+      # requires the bounds checked accessors to refuse gracefully in **every**
+      # build mode, and this configuration is RelWithDebInfo, so it is the NDEBUG
+      # half of that claim as well as the memory safety one. The trap tests run
+      # here with assertions compiled out, which is where an accessor that had
+      # quietly become assert-only would show.
       - name: "GoogleTests under ASan and UBSan (activation table: P6, on)"
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           ASAN_OPTIONS: detect_leaks=1
         run: |
           set -euo pipefail
-          if [ ! -x build-san/bin/NPUEncodingTests ]; then
-            echo "::error::NPUEncodingTests did not build under the sanitizers."
-            exit 1
-          fi
-          ./build-san/bin/NPUEncodingTests
+          for binary in NPUEncodingTests NPUSimulatorTests; do
+            if [ ! -x "build-san/bin/$binary" ]; then
+              echo "::error::$binary did not build under the sanitizers."
+              exit 1
+            fi
+            "./build-san/bin/$binary"
+          done
 
       # Section 3.3's budgeted minute. The corpus is read from the copy the
       # nbin-fuzz-corpus target makes rather than from fuzz/corpus directly,

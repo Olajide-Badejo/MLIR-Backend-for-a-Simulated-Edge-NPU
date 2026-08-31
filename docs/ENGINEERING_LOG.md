@@ -2579,3 +2579,202 @@ The phase also cost one image republish: the sanitizers job's first run died at
 CMake's compiler check because the image carried clang without Ubuntu's
 separately packaged sanitizer runtimes, D-0025, fixed in the image per the
 pinning rule rather than with a job time install.
+
+## 2026-08-31 Phase 7: a phase resumed from an uncommitted tree, and four things its own tests could not see
+
+**How the phase started.** The session that wrote the simulator did not survive
+to commit it. What this one found on `phase/p7-simulator` was `7b9d18c`, zero
+commits, and about five thousand lines of untracked work sitting beside it:
+`include/NPU/Simulator`, `lib/Simulator`, `tools/npu-sim`, `unittests/Simulator`,
+`refexec.py`, three pytest files and five one line edits to the CMake and lit
+wiring. It built clean. Fifty one unit tests passed, `check-npu` reported 19 of
+19, pytest reported 178 passed.
+
+None of that is evidence, and saying why is the point of this entry. Tests
+written by the session that wrote the code prove the two agree with each other.
+They say nothing about whether either agrees with the specification, and a phase
+accepted on the strength of its own green suite is a phase whose gate was never
+run. So the first work was an audit against Sections 5.5, 9.3, 10.1, 10.2, 10.3,
+17.3a and 19.0, clause by clause, against the tree rather than against a summary
+of it. Three defects came out of that. The fourth came out of a rehearsal.
+
+### The gate asked for an NDEBUG build and this project could not make one
+
+Section 9.3 wants the bounds checked accessors to refuse gracefully in every
+build mode, and the P7 gate wants the trap tests in an assertions build and an
+NDEBUG build with all four runs shown. The obvious move is a second build
+directory at `-DCMAKE_BUILD_TYPE=Release`. It was made, it built, and the four
+tests passed.
+
+They passed in an assertions build. `LLVMConfig.cmake` sets
+`LLVM_ENABLE_ASSERTIONS` as a plain variable out of the LLVM tree this project is
+configured against, which shadows the cache value the obvious override sets, and
+`HandleLLVMOptions` then adds `_DEBUG`, `_GLIBCXX_ASSERTIONS` and an explicit
+`-UNDEBUG` that lands **after** the `-DNDEBUG` a Release configuration supplies.
+The last `-D` or `-U` on the line wins. Nothing about the result looks unusual:
+the directory is named for what was wanted, the configuration says Release, the
+tests are green.
+
+It was caught by reading the compile line rather than the result, which is the
+habit that caught P3's, P5's and both of P6's proofs that proved nothing. The fix
+is `NPU_FORCE_NDEBUG`, off by default, and a compile time probe that now backs
+the claim: a file whose first lines are `#ifndef NDEBUG` and `#error`, compiled
+with the exact flags `compile_commands.json` records for
+`lib/Simulator/Memory.cpp`. It exits 0 in `build-ndebug` and 1 in `build`.
+D-0028.
+
+Two attempts in between are in the defect log because each looked right. Putting
+the switch after `include(HandleLLVMOptions)` sets a variable nothing reads
+again. And rewriting `LLVM_DEFINITIONS` with `string(REPLACE)` does take the
+macros out, and then hands `add_definitions` one argument full of spaces, which
+CMake stops parsing at the first `=` and passes to the compiler as a definition
+of `_GLIBCXX_USE_CXX11_ABI` whose value is the rest of the line. Twelve
+redefinition warnings, out of a build that otherwise did exactly what was wanted.
+
+### The simulator aborted, on the one path built to prove that it would not
+
+`Simulator::runUnvalidated` exists for a single reason, stated in its own
+comment: a program that has passed `validate()` cannot reach the trap path, so a
+test that could only submit validated programs would be asserting that the last
+line of defence exists rather than that it works. It is the entry point the
+contract is proven through.
+
+Handed an instruction with no operands, it reached `operands.front()` on an empty
+vector and the process aborted inside libstdc++. An abort is precisely what
+Section 9.3 forbids on the trap path, in the words "graceful refusal is the
+contract in a release build and in an assertions build alike", and in a build
+without `_GLIBCXX_ASSERTIONS` the same call is silent undefined behaviour rather
+than a loud one. D-0026. The fix reads `minOperands` out of the table already
+generated from `NPUISADescription.td`, so there is no second arity rule to keep
+in agreement with the first.
+
+Why it was there is worth stating without excusing it. Kernels index their
+operands positionally and on the validated path they may: `validate()` refuses
+short arity and names the `arity` check, and re-testing that per element would be
+paying twice in the inner loop. The gap is exactly the width of the entry point
+that skips the first check, and that entry point was added in the same file that
+then failed to guard it.
+
+### A docstring described a check that did not exist
+
+`cost_model.py` said its charges were "checked against the simulator's own output
+on a real program". They were not. The test parsed the constants out of
+`CostModel.h` and compared them name by name, which is real and mechanical, and
+then checked the Python formulas against literals written beside them, which is a
+different claim. A mirror reproducing every constant and then charging with them
+differently would have passed every assertion in the file, and the numbers the
+later phases plot are the answers rather than the constants.
+
+The docstring is the defect rather than a symptom of one, because the next person
+reads the claim and stops looking. D-0027. The check exists now: `npu-sim` runs
+an exported case and the Python mirror reconstructs the statistics it prints. The
+case is `matmul_narrow_bias`, and narrow is the whole point. 5 by 19 by 3 folds
+into two tiles and neither fills the array; against a tile that does, the
+utilization and preload terms are both 1 and a mirror missing them would still
+pass.
+
+### The rehearsal found the fourth, by disagreeing with its own prediction
+
+The product side activation fault was `POOL_MAX` starting its accumulator at zero
+rather than negative infinity. The prediction, written down before the run: one
+hand computed test red, `Pooling.AllPaddingWindow`, because every other pooling
+case uses positive inputs and the maximum of a positive window is unchanged by a
+zero floor; `check-npu` untouched; the differential red on the two max pooling
+cases, whose inputs are random over `[-1, 1)`.
+
+All of that happened. But the differential reported **54 of 54** elements
+mismatched on `max_pool2d`, and with windows of four over `[-1, 1)` about one
+window in sixteen should have an all negative maximum. Three or four was the
+number. Fifty four was not a stronger result, it was a different one.
+
+The generator shifted its state right by 33 bits and not 32. That leaves thirty
+one significant bits, which divide into `[0, 1)` and subtract into `[-1, 0)`.
+Every input the differential suite had ever exported was negative. The `relu`
+case was comparing a buffer of zeros against a buffer of zeros. The two pooling
+cases had never seen a positive maximum. And the determinism test, which carries
+a copy of the same generator, was convolving negative inputs against negative
+weights, so every product in the reduction it exists to hold still carried the
+same sign, which is the easiest possible case for a summation order to survive.
+D-0029.
+
+**Nothing about the output looked wrong**, and that is the part to carry
+forward. The values were random, deterministic, reproducible from a seed, and
+inside the stated interval at one end. Twenty four cases agreed. A reader opening
+one of the `.bin` files would have seen plausible floats. The only signal was a
+number in a rehearsal that did not match a prediction, which is an argument for
+writing the prediction down first rather than reading the result and agreeing
+with it afterwards.
+
+Three guards went in rather than one, because a comment is not a mechanism: an
+assertion on the generator's range, an assertion on the bytes that actually
+reached the files, and an assertion that the `relu` case's reference output is
+not entirely zero. The second survives a rewrite of the C++ that keeps the
+comment and loses the property, which is the failure the first cannot see. The
+per operand form of the second is conditioned on size, and that is not
+decoration: the three element bias of `matmul_narrow_bias` is all positive in
+this export, which happens to a fair three element sample one time in four, and a
+rule that called that a defect is a rule somebody eventually deletes.
+
+### What the gate looked like once it was met
+
+Fifty five unit tests where fifty one arrived. The four additions are all things
+the specification asked for and the tree did not have: `POOL_AVG` at batch 2 and
+both elementwise opcodes at both batch sizes, because Section 10.1's list says
+"both pooling kernels" and "the elementwise operations" and a list asking for two
+things is not satisfied by covering each of them once between them; a `DEQUANT`
+refusal test, because the same section's first sentence asks for a test per
+opcode and `DEQUANT` had none; and the two arity traps from D-0026. Beside them
+`docs/adr/0007-dataflow.md`, which `CostModel.h` had been citing by path since
+before it existed.
+
+Both activation rehearsals matched their predictions exactly on the second run:
+the product fault red at one unit test and at the differential with `check-npu`
+untouched, and the test side fault red at one unit test and nowhere else.
+`check-npu` seeing neither is correct rather than a hole. `npu-sim.mlir` exists
+to assert the tool's contract with the format, and asserting numerics there would
+duplicate the unit suite in a worse language.
+
+One prediction from P6's handoff did not come true, and it is recorded rather
+than dropped: P7 was expected to be the first phase holding `nbin` and
+`mlir::npu` in one translation unit. It is not. Nothing in the simulator includes
+an MLIR header at all, which is what keeps `npu-sim` a tool that reads a file and
+runs it rather than one that links a compiler, and what keeps `NPUSimulatorTests`
+a binary that links in seconds. The namespace split stays. The phase that will
+actually test it is `npu-compile` at P8.
+
+## 2026-08-31 Phase 7: the activation proof on CI, and the branch that CI could not see
+
+The two rehearsed faults ran against CI on a scratch branch and both matched
+their local predictions. The branch's own first run, the step's first time on,
+everything green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
+
+The product fault, the pooling accumulator starting at zero, went red in three
+places: the build and test job at the `NPUSimulatorTests` step, the sanitizers
+job at its GoogleTest step, and coverage besides, which is the same three net
+pattern P6 recorded:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363102927>.
+CI showed less of this fault's net than the local rehearsal did, and the reason
+is mechanical rather than interesting: a job stops at its first red step, and
+`NPUSimulatorTests` precedes pytest, so the differential's two extra catches,
+the ones the hand computed tests structurally cannot reach, are in the local
+record only. A red step hides the depth of the net behind it.
+
+The test side fault, the frozen constants expectation moved from 16 to 17, went
+red at exactly the same three steps and nowhere else, which is what isolation
+means once CI is the frame: every step that executes the binary, and nothing
+that does not. lit and pytest saw nothing:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363280962>.
+
+The restore, byte identical to the phase branch tip, returned green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363608121>.
+
+One process finding, recorded so the next phase does not repeat the dead push.
+The first attempt ran nothing at all: the rehearsal branch was named
+`scratch/p7-activation`, and `ci.yml` triggers on `phase/**` and `main` only, so
+the push produced no run and the absence of a run is what had to be noticed. A
+rehearsal branch must be named under `phase/`; this one was renamed to
+`phase/p7-activation-rehearsal` and deleted after the restore run. A workflow
+that triggers on everything would remove the trap, but widening a trigger to
+serve a rehearsal that happens once per phase is the tail wagging the dog, and
+the rule is cheaper than the change.

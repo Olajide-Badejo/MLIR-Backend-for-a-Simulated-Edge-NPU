@@ -14,9 +14,11 @@ and after IR, what it refuses, whether it is ablatable, and its measured
 ablation delta.
 
 **On the ablation deltas.** Section 12 requires every entry here to cite a
-**measured** delta rather than a qualitative claim. The ablation harness is
-built at P10 and there is no simulator to measure against until P7, so no entry
-below quotes one yet. Each says so in its own row rather than leaving the field
+**measured** delta rather than a qualitative claim. **Since P7 there is a
+simulator to measure against**, and `Stats::cycles` is the number a delta would
+be taken from; the harness that runs a pipeline twice and subtracts is still
+Phase P10's, so no entry below quotes one yet. Each says so in its own row rather
+than leaving the field
 blank, because a blank field reads as "no effect" and an absent measurement is
 not a measurement of zero. The two passes that exist today are both marked **not
 ablatable** in Section 12's table anyway: removing either produces no program at

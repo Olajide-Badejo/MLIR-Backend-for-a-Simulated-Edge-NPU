@@ -434,6 +434,82 @@ every translation unit that said `using namespace mlir;` and then named either
 one. This is a small thing recorded in a binding list because it is a decision
 somebody would otherwise relitigate at P7 while writing the simulator.
 
+### Extension, P7: the machine, and what an address means at run time
+
+*Everything above describes where a buffer lives while the compiler is looking
+at it. This subsection describes what happens when something tries to read one.
+Nothing above is contradicted; two obligations the earlier extensions placed on
+this phase are discharged, and one question P6 left open is answered.*
+
+**The two memory spaces become two `std::vector<uint8_t>` and one class.**
+`nbin::Machine` owns the scratchpad and DRAM, and it is the only way to reach
+either. There is no accessor anywhere in the simulator that takes a raw pointer
+into one of them, which is what makes the bounds checking a property of the
+design rather than a habit.
+
+**The scratchpad is sized strictly from `scratchpadBytes`, and the alternative
+is named so nobody re-proposes it.** Section 9.3 forbids growing it to cover the
+writes found in the instruction stream, for two reasons that point the same way:
+growing it absorbs out of range result addresses, which neutralizes the very
+checking the class exists to be, and the sizing loop would be arithmetic on
+unvalidated input at the exact entry point the validation defends. A declared
+size larger than this host can allocate is a **refusal** rather than a clamp,
+because a clamped scratchpad is a different machine from the one the file
+describes and every bounds check afterwards would be checking against the wrong
+number.
+
+**Every access is checked in every build mode, and there is no assertion on the
+trap path.** An out of range access records the first trap message, returns a
+null pointer, and the caller skips the access. `build` proves it with assertions
+on and `build-ndebug` proves it with them off; `docs/BUILD.md` carries the second
+configure line and says why `-DCMAKE_BUILD_TYPE=Release` is not it.
+
+**The arity is checked once, in the executor, from the generated table.** A
+kernel indexes `operands[0]` and `operands[1]` directly, and on the validated
+path it may: `Program::validate()` refuses an instruction with too few operands
+and names the `arity` check. `Simulator::runUnvalidated` is the path that has no
+such guarantee, and it exists because a test that could only submit validated
+programs could never exercise the last line of defence. So `Simulator::execute`
+compares `operands.size()` against `opcodeInfo(opcode).minOperands` before it
+dispatches. The number comes from the same generated description `validate()`
+reads, so there is no second arity table. That this was needed at all is D-0026.
+
+**The kernel obligation of P4 is discharged, and there is no second set of
+kernels.** Every kernel indexes its operands through their strides. ADR 0005's
+rank 1 channel broadcast arrives as a stride 0 operand and needs no special case
+in the arithmetic; an NHWC buffer arrives as NCHW extents with permuted strides
+and is read by the same loop nest an NCHW buffer is. There is no layout specific
+kernel variant in `lib/Simulator/Kernels.cpp` and there must never be one: a
+second set of kernels is a second set of kernels to keep in agreement with the
+first, and the whole point of putting the layout in the strides was to avoid
+exactly that.
+
+**A program that runs out of instructions stops, and this is P6's open question
+answered.** A file without a trailing `HALT` decodes and validates, because
+Section 9.2's check list carries no name for its absence and inventing one would
+be inventing a rule the specification does not have. So the decision belongs
+here, and it is that the machine stops exactly as a `HALT` would have stopped
+it. `SimResult::reachedHalt` says which of the two endings happened and
+`npu-sim` prints a note naming it. It is **not** an error, for two reasons that
+agree: `docs/ISA_MANUAL.md` already says a machine with no branches stops when it
+runs out of straight line code, and refusing here would enforce at run time a
+rule the validator was deliberately not given, which is the worst place to put a
+rule because it is the last place anybody looks.
+
+**`nbin` and `mlir::npu` never meet, and the P6 handoff's prediction that they
+would is recorded rather than quietly dropped.** P6 named the namespace split as
+a decision somebody would otherwise relitigate at P7, on the expectation that
+P7 would be the first phase to include both headers in one translation unit. It
+is not, and the reason is a better one than the collision it was guarding
+against: nothing under `include/NPU/Simulator`, `lib/Simulator`,
+`tools/npu-sim` or `unittests/Simulator` includes an MLIR header at all. The
+simulator links `NPUEncoding` and LLVM's `Support` and nothing else. That is
+what keeps `npu-sim` a tool that reads a file and runs it rather than a tool
+that links a compiler, and it is what keeps `NPUSimulatorTests` a binary that
+compiles and links in seconds. The split stays, because the phase that does
+bring both into one file is `npu-compile` at P8 and the decision should not have
+to be made under that phase's deadline.
+
 ### What this section binds
 
 Later phases inherit these as decisions, not as suggestions:
