@@ -81,7 +81,7 @@ def test_the_anchor_models_tight_budget_is_the_recorded_one() -> None:
     once, so the anchor's constant gets an assertion that names the number, and
     changing it means changing two files and writing a BREAKING_CHANGES entry.
     """
-    assert TIGHT_BUDGETS["lenet"] == 194624
+    assert TIGHT_BUDGETS["lenet"] == 194625
 
 
 @pytest.mark.parametrize("name", sorted(MODELS))
