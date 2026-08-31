@@ -31,6 +31,21 @@ Semantic Versioning once a release is tagged.
   compiler does. `npu_frontend.run_program` wraps the simulator for the test
   harnesses and returns the outputs as arrays and the statistics as a
   dictionary.
+- **The end to end matrix runs.** Seven models, two batch sizes, five seeded
+  input classes, at `-O0`, each cell checked against `onnxruntime` and against
+  the reference interpreter, with the absolute and the relative bound asserted
+  separately. `test/Python/test_end_to_end.py`.
+- **`generate_model` takes a `batch`.** Section 17.4 sweeps the batch size over
+  every model where Section 15 pins one per model, and the batch is now a
+  parameter of an export rather than a second registry. The weights and the node
+  counts do not move with it, and a batch equal to the registry's writes the
+  registry's own file.
+- **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
+  makes the reference interpreter an oracle for a whole model rather than for
+  one operation.
+- **`npu_frontend.input_classes`** holds the five classes of Section 17.4 with
+  their seeds derived from the cell's own identity, so a failing cell's input
+  is reconstructible from the cell's name with no run log.
 - **`npu-opt` has optimization levels.** `--npu-O0` runs the `-O0` pipeline of
   Section 12, which is import and verify followed by `-npu-lower-to-npuisa` and
   `-npu-allocate-scratchpad`. The level's pass list lives in `lib/Pipeline/` in
