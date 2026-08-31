@@ -72,6 +72,43 @@ bool isImplemented(OptLevel level);
 /// The phase at which an unimplemented level arrives, for the diagnostic.
 llvm::StringRef arrivingPhase(OptLevel level);
 
+/// Which pass an entry names.
+///
+/// The enumerator rather than the argument string is what `build()` switches
+/// on, and the switch has no `default`, so a pass added to this list and not to
+/// the builder is a `-Werror=switch` build error. The argument string sits
+/// beside it for the description and for the diagnostics, and
+/// `test/Pipeline/opt-levels.mlir` runs each level against the explicit list of
+/// those strings and diffs the two, so a kind and a name that disagreed would
+/// be a red test rather than a table nobody compared.
+enum class PassKind {
+  Canonicalize,
+  CSE,
+  SCCP,
+  SymbolDCE,
+  NPUConstantFold,
+  NPUFoldBatchNorm,
+  NPUFuseBias,
+  NPUFuseOps,
+  NPULowerToNPUISA,
+  NPUAllocateScratchpad,
+};
+
+/// The two stages a pipeline can stop after.
+///
+/// `Npu` is the tensor level: everything up to but not including the dialect
+/// conversion. It exists because `npu-compile --emit npu` has to be able to ask
+/// for it, and asking for it by naming the passes in Python would be exactly
+/// the hand assembled pass list Section 17.4 says enforces nothing.
+enum class PipelineStage { Npu, NpuIsa };
+
+/// Whether a pass belongs to the tensor level half of a pipeline.
+///
+/// Derived from the kind rather than stored beside it, so the two cannot
+/// disagree. The switch has no `default` for the same reason `build()`'s does
+/// not.
+bool isTensorLevel(PassKind kind);
+
 /// One pass in one level's pipeline.
 ///
 /// The constructor takes every field and none of them has a default. That is
@@ -81,11 +118,13 @@ llvm::StringRef arrivingPhase(OptLevel level);
 /// exactly the passes somebody forgot to think about. `eliminatesDeadCode` is
 /// held to the same rule for the same reason, one check further on.
 struct PassEntry {
-  PassEntry(llvm::StringRef argument, bool ablatable, bool eliminatesDeadCode,
-            llvm::StringRef note)
-      : argument(argument), ablatable(ablatable),
+  PassEntry(PassKind kind, llvm::StringRef argument, bool ablatable,
+            bool eliminatesDeadCode, llvm::StringRef note)
+      : kind(kind), argument(argument), ablatable(ablatable),
         eliminatesDeadCode(eliminatesDeadCode), note(note) {}
 
+  /// Which pass this is, for the builder's switch.
+  PassKind kind;
   /// The name `npu-opt` knows the pass by, without a leading dash.
   llvm::StringRef argument;
   /// Whether Section 16.2's leave one out ablation may remove it.
@@ -117,6 +156,9 @@ struct PipelineOptions {
   std::string allocationStrategy = "pack";
   std::string spillHeuristic = "longest-range";
   int64_t allocationAlignment = 64;
+  /// Where to stop. `NpuIsa` is the whole level; `Npu` is the tensor level
+  /// half, which is what `npu-compile --emit npu` runs.
+  PipelineStage stopAfter = PipelineStage::NpuIsa;
 };
 
 /// Builds `level` onto `pm`.

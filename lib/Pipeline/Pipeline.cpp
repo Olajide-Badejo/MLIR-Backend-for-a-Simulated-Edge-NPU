@@ -8,7 +8,7 @@
 //
 // One table per level, and one function that walks it.
 //
-// The tables below are the whole of Section 12 that exists at Phase P8. `-O0`
+// The tables below are the whole of Section 12 that exists at Phase P9. `-O0`
 // is "import and verify" plus the two passes the table marks as running at
 // every level, and that pairing is the part worth stating: **verification is not
 // a pass here**. MLIR verifies every operation when it is parsed and again after
@@ -16,20 +16,59 @@
 // from a row in this file, and adding a row that ran a verifier would be adding
 // a second, weaker one beside the one that already runs.
 //
-// `-O1` and `-O2` are named and not built. Their rows arrive at P9 with the
-// passes that fill them, and until then `isImplemented` says so and the driver
-// refuses them by name. A level registered with an empty pipeline would be
-// worse than one that does not exist: `-O2` would run, produce `-O0`'s answer,
-// and every ablation cell measured against it would be measuring nothing.
+// **`-O1` and `-O2` arrive here at P9**, with the four `npu` level passes and
+// the four upstream ones Section 12's table names. What is deliberately absent
+// is the other four rows of that table: `-npu-assign-layout`,
+// `-npu-tile-to-scratchpad`, `-npu-double-buffer` and `-npu-calibrate`. P9's
+// roadmap entry excludes them by name, they arrive at P13 and P14, and a level
+// that claimed them would be a level whose ablation table had rows nothing
+// could fill.
+//
+// **The order in the `-O2` table is not Section 5.1's listing order, and there
+// are exactly two deviations. Both were measured rather than chosen.**
+//
+// *First*, Section 5.1 lists canonicalization ahead of constant folding;
+// `-npu-constant-fold` runs before it here, because the folder is what *creates*
+// the dead operand constants and a canonicalization that ran before it would
+// have nothing to clean up. At `-O2` there are two canonicalizations and the
+// question would be academic; at `-O1` there is one, and if it ran first every
+// folded operand would survive as an `npuisa.const` and a `dma_load` in the
+// instruction stream.
+//
+// *Second*, Section 5.1 lists the batch norm fold ahead of the bias fusion, and
+// they are the other way round here. `-npu-fold-batchnorm` matches on a
+// convolution as the batch norm's producer, and in
+// `conv -> add(bias) -> batch_norm` the producer is the add until
+// `-npu-fuse-bias` has moved it. Folding first leaves *both* passes declining
+// on a shape both would otherwise handle, and then `-npu-fuse-ops` declines too
+// because the activation's producer is a batch norm rather than a convolution:
+// one ordering choice turning three passes off. `test/Pipeline/opt-levels.mlir`
+// carries the function that shows it, and it went red the first time this table
+// was written in the listing order.
+//
+// Section 12's own note on `-npu-fold-batchnorm` says "before fusion, so the
+// convolution still has no fused **activation**", and that is `-npu-fuse-ops`,
+// which still runs after it. Everything else is Section 12's order exactly,
+// including the duplicate canonicalization around fusion, which that table
+// marks as deliberate.
+//
+// **One table, two consumers, and no second copy.** `build()` switches on
+// `PassEntry::kind` and the switch has no `default`, so a pass added to a level
+// and not to the builder is a build error. The description JSON is generated
+// from the same rows. `test/Pipeline/opt-levels.mlir` runs each level against
+// the explicit list of pass arguments and diffs the two outputs, which is what
+// catches a `kind` and an `argument` that disagree.
 //
 //===----------------------------------------------------------------------===//
 
 #include "NPU/Pipeline/Pipeline.h"
 
+#include "NPU/Dialect/NPU/Transforms/Passes.h"
 #include "NPU/Dialect/NPUISA/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "llvm/Support/JSON.h"
 
@@ -44,20 +83,90 @@ namespace {
 // The tables.
 //===----------------------------------------------------------------------===//
 
-/// `-O0`. Import and verify, then the two passes Section 12's table marks as
-/// running at every level and as **not ablatable**.
+/// The two passes Section 12's table marks as running at every level and as
+/// **not ablatable**, in the words that table uses: removing either produces no
+/// program at all, so an ablation of one of them measures nothing and fails the
+/// run for a reason that has nothing to do with the pass.
 ///
-/// Neither is ablatable and the note says why in the words Section 12 uses:
-/// removing either produces no program at all, so an ablation of one of them
-/// measures nothing and fails the run for a reason that has nothing to do with
-/// the pass.
+/// Written out per level rather than shared, because a level's row list is the
+/// thing a reader compares against Section 12's table, and a table that ended
+/// in "and then the usual two" would be a table they had to assemble first.
+
+/// `-O0`. Import and verify, then lowering and allocation.
 const PassEntry kO0[] = {
-    PassEntry("npu-lower-to-npuisa", /*ablatable=*/false,
-              /*eliminatesDeadCode=*/false,
+    PassEntry(PassKind::NPULowerToNPUISA, "npu-lower-to-npuisa",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
               "the dialect conversion to npuisa on memrefs; removing it "
               "produces no program at all"),
-    PassEntry("npu-allocate-scratchpad", /*ablatable=*/false,
+    PassEntry(PassKind::NPUAllocateScratchpad, "npu-allocate-scratchpad",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
+              "assigns every scratchpad buffer an offset; removing it produces "
+              "no program at all"),
+};
+
+/// `-O1`. Constant folding and canonicalization, on top of `-O0`.
+const PassEntry kO1[] = {
+    PassEntry(PassKind::NPUConstantFold, "npu-constant-fold",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "evaluates elementwise npu operations over constant operands; "
+              "exact, because none of them has a reduction in it"),
+    PassEntry(PassKind::Canonicalize, "canonicalize", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/true,
+              "removes the operands the folder left dead, and every other npu "
+              "operation nothing reads, because they all carry Pure"),
+    PassEntry(PassKind::NPULowerToNPUISA, "npu-lower-to-npuisa",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
+              "the dialect conversion to npuisa on memrefs; removing it "
+              "produces no program at all"),
+    PassEntry(PassKind::NPUAllocateScratchpad, "npu-allocate-scratchpad",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
+              "assigns every scratchpad buffer an offset; removing it produces "
+              "no program at all"),
+};
+
+/// `-O2`. Section 12's whole table except the four rows P9 excludes by name.
+const PassEntry kO2[] = {
+    PassEntry(PassKind::NPUConstantFold, "npu-constant-fold",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "evaluates elementwise npu operations over constant operands; "
+              "exact, because none of them has a reduction in it"),
+    PassEntry(PassKind::Canonicalize, "canonicalize", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/true,
+              "the first of the two Section 12 puts around fusion; removes the "
+              "operands the folder left dead"),
+    PassEntry(PassKind::NPUFuseBias, "npu-fuse-bias", /*ablatable=*/true,
               /*eliminatesDeadCode=*/false,
+              "before the batch norm fold, because a separate bias add sits "
+              "between a convolution and its batch norm until this has run; "
+              "exact"),
+    PassEntry(PassKind::NPUFoldBatchNorm, "npu-fold-batchnorm",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "before op fusion, so the convolution it rewrites still has no "
+              "fused activation; the one pass at this phase that moves numbers"),
+    PassEntry(PassKind::NPUFuseOps, "npu-fuse-ops", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/false,
+              "forms npu.fused_op regions; numerically inert, because the "
+              "lowering flattens them back into the same instructions"),
+    PassEntry(PassKind::Canonicalize, "canonicalize", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/true,
+              "the second of the two, after fusion, to remove the dead "
+              "parameter constants the batch norm fold left behind"),
+    PassEntry(PassKind::CSE, "cse", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/false,
+              "merges identical operations over identical operands"),
+    PassEntry(PassKind::SCCP, "sccp", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/false,
+              "propagates constants through the call graph; needs the "
+              "dialect's constant materialiser, which is D-0033"),
+    PassEntry(PassKind::SymbolDCE, "symbol-dce", /*ablatable=*/true,
+              /*eliminatesDeadCode=*/true,
+              "removes a private symbol nobody calls"),
+    PassEntry(PassKind::NPULowerToNPUISA, "npu-lower-to-npuisa",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
+              "the dialect conversion to npuisa on memrefs; removing it "
+              "produces no program at all"),
+    PassEntry(PassKind::NPUAllocateScratchpad, "npu-allocate-scratchpad",
+              /*ablatable=*/false, /*eliminatesDeadCode=*/false,
               "assigns every scratchpad buffer an offset; removing it produces "
               "no program at all"),
 };
@@ -76,11 +185,12 @@ struct LevelInfo {
 const LevelInfo kLevels[] = {
     {OptLevel::O0, "-O0", "npu-O0", llvm::ArrayRef<PassEntry>(kO0), true, "",
      "import and verify, then lowering and allocation"},
-    {OptLevel::O1, "-O1", "npu-O1", {}, false, "P9",
-     "canonicalize and constant fold, on top of -O0"},
-    {OptLevel::O2, "-O2", "npu-O2", {}, false, "P9",
-     "the full set: batch norm folding, fusion, bias fusion, CSE, SCCP, symbol "
-     "DCE, layout assignment, tiling and double buffering"},
+    {OptLevel::O1, "-O1", "npu-O1", llvm::ArrayRef<PassEntry>(kO1), true, "",
+     "constant folding and canonicalization, on top of -O0"},
+    {OptLevel::O2, "-O2", "npu-O2", llvm::ArrayRef<PassEntry>(kO2), true, "",
+     "batch norm folding, bias fusion, operation fusion, CSE, SCCP and symbol "
+     "DCE, on top of -O1. Layout assignment, tiling and double buffering "
+     "arrive at P13"},
 };
 
 const LevelInfo &infoFor(OptLevel level) {
@@ -121,6 +231,14 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       *this, "alignment",
       llvm::cl::desc("The byte alignment of every assigned offset."),
       llvm::cl::init(64)};
+  Option<std::string> stopAfter{
+      *this, "stop-after",
+      llvm::cl::desc("Where to stop: 'npuisa', the whole level, or 'npu', the "
+                     "tensor level half of it. The second is what "
+                     "npu-compile --emit npu runs, and it runs it through this "
+                     "pipeline rather than through a pass list assembled in "
+                     "Python, which Section 17.4 says would enforce nothing."),
+      llvm::cl::init("npuisa")};
 
   PipelineOptions toPipelineOptions() const {
     PipelineOptions options;
@@ -128,15 +246,90 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
     options.allocationStrategy = strategy;
     options.spillHeuristic = spillHeuristic;
     options.allocationAlignment = alignment;
+    options.stopAfter = stopAfter == "npu" ? PipelineStage::Npu
+                                           : PipelineStage::NpuIsa;
     return options;
   }
 };
+
+/// Adds one table row to `pm`.
+///
+/// The switch has no `default`, so a `PassKind` added to the enumerator and not
+/// handled here is a `-Werror=switch` build error rather than a pipeline that
+/// silently skips a pass. That is the same mechanism the simulator's opcode
+/// dispatch uses and it is here for the same reason.
+///
+/// The nesting is per pass and not per level. `-sccp` and `-symbol-dce` reason
+/// about the module: one is interprocedural and the other is about symbols, and
+/// nesting either inside a function would give it a view in which every
+/// question it asks has the wrong answer.
+void addPass(OpPassManager &pm, const PassEntry &entry,
+             const PipelineOptions &options) {
+  switch (entry.kind) {
+  case PassKind::Canonicalize:
+    pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+    return;
+  case PassKind::CSE:
+    pm.addNestedPass<func::FuncOp>(createCSEPass());
+    return;
+  case PassKind::SCCP:
+    pm.addPass(createSCCPPass());
+    return;
+  case PassKind::SymbolDCE:
+    pm.addPass(createSymbolDCEPass());
+    return;
+  case PassKind::NPUConstantFold:
+    pm.addNestedPass<func::FuncOp>(npu::createNPUConstantFold());
+    return;
+  case PassKind::NPUFoldBatchNorm:
+    pm.addNestedPass<func::FuncOp>(npu::createNPUFoldBatchNorm());
+    return;
+  case PassKind::NPUFuseBias:
+    pm.addNestedPass<func::FuncOp>(npu::createNPUFuseBias());
+    return;
+  case PassKind::NPUFuseOps:
+    pm.addNestedPass<func::FuncOp>(npu::createNPUFuseOps());
+    return;
+  case PassKind::NPULowerToNPUISA:
+    pm.addPass(npuisa::createNPULowerToNPUISA());
+    return;
+  case PassKind::NPUAllocateScratchpad: {
+    npuisa::NPUAllocateScratchpadOptions allocation;
+    allocation.budget = options.scratchpadBudget;
+    allocation.strategy = options.allocationStrategy;
+    allocation.spillHeuristic = options.spillHeuristic;
+    allocation.alignment = options.allocationAlignment;
+    pm.addNestedPass<func::FuncOp>(
+        npuisa::createNPUAllocateScratchpad(allocation));
+    return;
+  }
+  }
+  llvm_unreachable("unhandled pass kind");
+}
 
 } // namespace
 
 //===----------------------------------------------------------------------===//
 // The queries.
 //===----------------------------------------------------------------------===//
+
+bool mlir::npu::pipeline::isTensorLevel(PassKind kind) {
+  switch (kind) {
+  case PassKind::Canonicalize:
+  case PassKind::CSE:
+  case PassKind::SCCP:
+  case PassKind::SymbolDCE:
+  case PassKind::NPUConstantFold:
+  case PassKind::NPUFoldBatchNorm:
+  case PassKind::NPUFuseBias:
+  case PassKind::NPUFuseOps:
+    return true;
+  case PassKind::NPULowerToNPUISA:
+  case PassKind::NPUAllocateScratchpad:
+    return false;
+  }
+  llvm_unreachable("unhandled pass kind");
+}
 
 llvm::ArrayRef<OptLevel> mlir::npu::pipeline::allOptLevels() {
   return llvm::ArrayRef<OptLevel>(kAllLevels);
@@ -179,31 +372,11 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
          "build() was asked for a level this compiler cannot build; the caller "
          "checks isImplemented and says which phase it arrives at");
 
-  // The switch has no `default`, so a level added to the enumerator and not to
-  // this function is a `-Werror=switch` build error rather than a pipeline that
-  // silently builds nothing. That is the same mechanism the simulator's opcode
-  // dispatch uses and it is here for the same reason.
-  switch (level) {
-  case OptLevel::O0: {
-    pm.addPass(npuisa::createNPULowerToNPUISA());
-
-    npuisa::NPUAllocateScratchpadOptions allocation;
-    allocation.budget = options.scratchpadBudget;
-    allocation.strategy = options.allocationStrategy;
-    allocation.spillHeuristic = options.spillHeuristic;
-    allocation.alignment = options.allocationAlignment;
-    pm.addNestedPass<func::FuncOp>(
-        npuisa::createNPUAllocateScratchpad(allocation));
-    return;
+  for (const PassEntry &entry : infoFor(level).passes) {
+    if (options.stopAfter == PipelineStage::Npu && !isTensorLevel(entry.kind))
+      continue;
+    addPass(pm, entry, options);
   }
-  case OptLevel::O1:
-  case OptLevel::O2:
-    // Unreachable through the assertion above. Written out rather than folded
-    // into a default so that P9 gets a build error here when it adds the rows
-    // and forgets the builder.
-    llvm_unreachable("-O1 and -O2 are named and not implemented until P9");
-  }
-  llvm_unreachable("unhandled optimization level");
 }
 
 //===----------------------------------------------------------------------===//
@@ -219,6 +392,7 @@ void mlir::npu::pipeline::printDescriptionAsJson(llvm::raw_ostream &out) {
           {"pass", entry.argument},
           {"ablatable", entry.ablatable},
           {"eliminates_dead_code", entry.eliminatesDeadCode},
+          {"stage", isTensorLevel(entry.kind) ? "npu" : "npuisa"},
           {"note", entry.note},
       });
     }
@@ -248,8 +422,7 @@ void mlir::npu::pipeline::printDescriptionAsJson(llvm::raw_ostream &out) {
 void mlir::npu::pipeline::registerNPUPipelines() {
   // One registration per implemented level, written out rather than looped,
   // because `PassPipelineRegistration` is a constructor with a side effect and
-  // a list of them reads as a list of what exists. P9 adds two lines here in
-  // the same commit that fills their tables.
+  // a list of them reads as a list of what exists.
   //
   // The objects outlive the call deliberately: the registry keeps the callback
   // and the process keeps the registry. This is called once from a tool's main.
@@ -260,5 +433,21 @@ void mlir::npu::pipeline::registerNPUPipelines() {
       [](OpPassManager &pm, const PipelineCLOptions &options) {
         build(pm, OptLevel::O0, options.toPipelineOptions());
       });
+  static PassPipelineRegistration<PipelineCLOptions> registerO1(
+      "npu-O1",
+      "The -O1 pipeline of Section 12: constant folding and canonicalization, "
+      "then lowering and scratchpad allocation.",
+      [](OpPassManager &pm, const PipelineCLOptions &options) {
+        build(pm, OptLevel::O1, options.toPipelineOptions());
+      });
+  static PassPipelineRegistration<PipelineCLOptions> registerO2(
+      "npu-O2",
+      "The -O2 pipeline of Section 12: batch norm folding, bias fusion, "
+      "operation fusion, CSE, SCCP and symbol DCE on top of -O1.",
+      [](OpPassManager &pm, const PipelineCLOptions &options) {
+        build(pm, OptLevel::O2, options.toPipelineOptions());
+      });
   (void)registerO0;
+  (void)registerO1;
+  (void)registerO2;
 }

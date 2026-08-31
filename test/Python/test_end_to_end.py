@@ -15,11 +15,12 @@ that is a diagnosis rather than the beginning of a search. Section 17.3a calls
 the reference interpreter the load bearing part and Section 17.4 asks for the
 external comparison; this file does both over the same cells.
 
-**The matrix.** Seven models, two batch sizes, five input classes, at `-O0`,
-which is the only level that exists at this phase. Section 17.4's full matrix
-also sweeps levels and budgets; those axes arrive with the levels at P9 and are
-absent here rather than faked, because a cell that compiled at a level the
-compiler cannot emit would be a cell measuring nothing.
+**The matrix.** Seven models, three levels, two batch sizes, five input classes.
+The level axis arrived at P9 with the levels themselves. Section 17.4's full
+matrix also sweeps the budget; that axis is the regression baseline's, which
+records every model at every level at both budgets, and it is absent here rather
+than duplicated: a tight budget changes where the buffers go and not what the
+arithmetic is, and `test_tight_budgets.py` asserts that rather than assuming it.
 
 **Both bounds are asserted separately**, which is Section 17.4's rule and not a
 style preference. `np.testing.assert_allclose` tests
@@ -67,7 +68,11 @@ from npu_frontend import (
 from npu_frontend.input_classes import INPUT_CLASSES, make_inputs
 from npu_frontend.refgraph import execute_module
 
-#: The only level that exists at this phase.
+#: Section 17.4's level axis, which arrived with the levels at P9.
+LEVELS: Final[tuple[int, ...]] = (0, 1, 2)
+
+#: `-O0`, for the two claims below that are about one level rather than about
+#: the matrix.
 LEVEL: Final[int] = 0
 
 #: Section 17.4's two batch sizes.
@@ -107,28 +112,30 @@ ABSOLUTE_TOLERANCE: Final[float] = 5e-5
 RELATIVE_TOLERANCE: Final[float] = 5e-6
 
 
-def _cross_product() -> list[tuple[str, int, str]]:
+def _cross_product() -> list[tuple[str, int, int, str]]:
     """The matrix, computed rather than written out.
 
     `test_the_collected_cells_are_the_cross_product` recomputes this from the
-    three registries and compares, so a cell filtered out of the list below
-    fails rather than disappearing quietly.
+    registries and compares, so a cell filtered out of the list below fails
+    rather than disappearing quietly.
     """
     return [
-        (model, batch, input_class)
+        (model, level, batch, input_class)
         for model in MODELS
+        for level in LEVELS
         for batch in BATCHES
         for input_class in INPUT_CLASSES
     ]
 
 
-CELLS: Final[list[tuple[str, int, str]]] = _cross_product()
+CELLS: Final[list[tuple[str, int, int, str]]] = _cross_product()
 
 #: The id a failure reports. Section 17.4: name the class in the test id so a
-#: failure says which input broke, and the seed is derived from this triple, so
-#: the id is also the reproduction recipe.
+#: failure says which input broke, and the seed is derived from the model, the
+#: batch and the class, so the id is also the reproduction recipe.
 CELL_IDS: Final[list[str]] = [
-    f"{model}-n{batch}-{input_class}" for model, batch, input_class in CELLS
+    f"{model}-O{level}-n{batch}-{input_class}"
+    for model, level, batch, input_class in CELLS
 ]
 
 
@@ -143,8 +150,8 @@ class Suite:
     def __init__(self, directory: Path) -> None:
         self._directory = directory
         self._onnx: dict[tuple[str, int], Path] = {}
-        self._programs: dict[tuple[str, int], CompileResult] = {}
-        self._ir: dict[tuple[str, int], str] = {}
+        self._programs: dict[tuple[str, int, int], CompileResult] = {}
+        self._ir: dict[tuple[str, int, int], str] = {}
         self._sessions: dict[tuple[str, int], ort.InferenceSession] = {}
 
     def onnx(self, model: str, batch: int) -> Path:
@@ -153,18 +160,18 @@ class Suite:
             self._onnx[key] = generate_model(model, self._directory, batch=batch)
         return self._onnx[key]
 
-    def program(self, model: str, batch: int) -> CompileResult:
-        key = (model, batch)
+    def program(self, model: str, batch: int, level: int = LEVEL) -> CompileResult:
+        key = (model, batch, level)
         if key not in self._programs:
             self._programs[key] = compile_model(
-                self.onnx(model, batch), level=LEVEL, emit="nbin"
+                self.onnx(model, batch), level=level, emit="nbin"
             )
         return self._programs[key]
 
-    def npu_ir(self, model: str, batch: int) -> str:
-        key = (model, batch)
+    def npu_ir(self, model: str, batch: int, level: int = LEVEL) -> str:
+        key = (model, batch, level)
         if key not in self._ir:
-            result = compile_model(self.onnx(model, batch), level=LEVEL, emit="npu")
+            result = compile_model(self.onnx(model, batch), level=level, emit="npu")
             assert result.text is not None
             self._ir[key] = result.text
         return self._ir[key]
@@ -244,19 +251,27 @@ def assert_both_bounds(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("model", "batch", "input_class"), CELLS, ids=CELL_IDS)
+@pytest.mark.parametrize(
+    ("model", "level", "batch", "input_class"), CELLS, ids=CELL_IDS
+)
 def test_the_simulated_answer_matches_onnxruntime(
-    suite: Suite, model: str, batch: int, input_class: str
+    suite: Suite, model: str, level: int, batch: int, input_class: str
 ) -> None:
-    """The gate item: every model matches onnxruntime at -O0.
+    """The gate item: every model matches onnxruntime at every level.
 
-    All five input classes, both batch sizes, both tolerances asserted
-    separately. The drive is through the real `-O0` pipeline, because a test
-    that ran a hardcoded pass list matching no optimization level would enforce
-    nothing.
+    All five input classes, both batch sizes, all three levels, both tolerances
+    asserted separately. The drive is through the real `-O` pipelines, because a
+    test that ran a hardcoded pass list matching no optimization level would
+    enforce nothing.
+
+    **The tolerances did not move when the levels arrived**, which is the claim
+    P9's gate makes and the reason the bounds above are not restated per level.
+    The largest movement any level introduced is 4.47e-08, from
+    `-npu-fold-batchnorm` on `conv_bn_relu_stack`, and that is two orders below
+    the observed error against onnxruntime at `-O0`.
     """
-    cell = f"{model}-n{batch}-{input_class}"
-    program = suite.program(model, batch)
+    cell = f"{model}-O{level}-n{batch}-{input_class}"
+    program = suite.program(model, batch, level)
     assert program.binary is not None
 
     arrays = make_inputs(input_class, program.input_shapes, model=model, batch=batch)
@@ -268,9 +283,11 @@ def test_the_simulated_answer_matches_onnxruntime(
         assert_both_bounds(produced, reference, cell, "onnxruntime")
 
 
-@pytest.mark.parametrize(("model", "batch", "input_class"), CELLS, ids=CELL_IDS)
+@pytest.mark.parametrize(
+    ("model", "level", "batch", "input_class"), CELLS, ids=CELL_IDS
+)
 def test_the_simulated_answer_matches_the_reference_interpreter(
-    suite: Suite, model: str, batch: int, input_class: str
+    suite: Suite, model: str, level: int, batch: int, input_class: str
 ) -> None:
     """The other oracle, which localises a failure below the importer.
 
@@ -278,13 +295,19 @@ def test_the_simulated_answer_matches_the_reference_interpreter(
     `refexec`. What they share is the IR, so agreement here is evidence about
     lowering, allocation, encoding and the kernels, and nothing about the ONNX
     graph they both came from.
+
+    **At `-O1` and `-O2` the IR it runs is the optimized IR**, which is what
+    makes this the oracle for the passes rather than only for the backend: the
+    reference executes `npu.fused_op` by binding its block arguments and walking
+    its body, so a fusion that changed what the region computes disagrees here
+    without needing onnxruntime to notice.
     """
-    cell = f"{model}-n{batch}-{input_class}"
-    program = suite.program(model, batch)
+    cell = f"{model}-O{level}-n{batch}-{input_class}"
+    program = suite.program(model, batch, level)
     assert program.binary is not None
 
     arrays = make_inputs(input_class, program.input_shapes, model=model, batch=batch)
-    reference = execute_module(suite.npu_ir(model, batch), arrays)
+    reference = execute_module(suite.npu_ir(model, batch, level), arrays)
     answer = run_program(program.binary, arrays, program.output_shapes)
 
     assert len(answer.outputs) == len(reference)
@@ -307,15 +330,23 @@ def test_the_collected_cells_are_the_cross_product() -> None:
     quieter matrix.
     """
     expected = [
-        (model, batch, input_class)
+        (model, level, batch, input_class)
         for model in MODELS
+        for level in LEVELS
         for batch in BATCHES
         for input_class in INPUT_CLASSES
     ]
     assert CELLS == expected
-    assert len(CELLS) == len(MODELS) * len(BATCHES) * len(INPUT_CLASSES)
-    assert len(CELLS) == 70
+    assert len(CELLS) == len(MODELS) * len(LEVELS) * len(BATCHES) * len(INPUT_CLASSES)
+    assert len(CELLS) == 210
     assert len(set(CELL_IDS)) == len(CELL_IDS)
+
+    # The levels are the ones the compiler builds, not a list written here. A
+    # level added without this file being touched would make the two disagree,
+    # which is the failure Section 17.4 asks the cross product check to catch.
+    from npu_frontend import implemented_levels
+
+    assert list(LEVELS) == implemented_levels()
 
 
 def test_pytest_collects_every_cell_of_both_matrices() -> None:
@@ -323,8 +354,8 @@ def test_pytest_collects_every_cell_of_both_matrices() -> None:
 
     The check above compares one list against a recomputation of itself, which
     catches a filtered `CELLS` and not a `skipif` somebody added to the test.
-    This one asks pytest, in its own process, and counts. Two matrices of
-    seventy cells is a hundred and forty.
+    This one asks pytest, in its own process, and counts. Two matrices of two
+    hundred and ten cells is four hundred and twenty.
     """
     collected = subprocess.run(
         [
@@ -364,17 +395,17 @@ def test_pytest_collects_every_cell_of_both_matrices() -> None:
 def test_the_fast_subset_is_not_empty() -> None:
     """Section 17.4's second collection rule.
 
-    **At this phase the fast subset is the whole matrix, and that is measured
-    rather than assumed.** The rule exists so that a matrix too slow for an
-    edit and rerun loop still has a subset that is not. The whole `-O0` matrix
-    takes about eight seconds for one hundred and forty cells, including the
-    exports, so there is nothing to carve out and no cell here is marked
-    `slow`. Marking a cell that costs a tenth of a second as slow would be a
-    label rather than a measurement.
+    **At this phase the fast subset is still the whole matrix, and that is
+    measured rather than assumed.** The rule exists so that a matrix too slow
+    for an edit and rerun loop still has a subset that is not. P9 multiplied
+    this matrix by three, to four hundred and twenty cells across the two
+    oracles, and it takes about half a minute including the exports and the
+    compilations. That is inside an edit and rerun loop, so there is still
+    nothing to carve out and no cell here is marked `slow`.
 
-    The marker and the CI step that runs it stay in place. They start doing
-    work at P9 and P10, when three levels and two budgets multiply this matrix
-    by six and the ablation cells arrive beside it.
+    The marker and the CI step that runs it stay in place. They start doing work
+    at P10, when the ablation cells arrive beside these and the 90 minute budget
+    of Section 2 becomes a gate rather than a note.
     """
     marks = {
         mark.name

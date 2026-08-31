@@ -101,18 +101,18 @@ _DESTINATION_OPERANDS: Final[dict[str, int]] = {
 #: Why an operation of the dialect is not in the table above.
 #:
 #: Listed rather than omitted, so that meeting one produces the sentence a
-#: reader needs rather than "unknown operation". `fused_op` and `yield` cannot
-#: appear at `-O0` because nothing creates them until `-npu-fuse-ops` lands at
-#: P9; the quantization pair arrives at P14 with the integer path.
+#: reader needs rather than "unknown operation".
+#:
+#: `fused_op` and `yield` were here until P9, when `-npu-fuse-ops` gave them a
+#: producer. They are handled structurally now, by `_execute_fused` below, and
+#: not through `refexec`: a region is not an operation with a kernel, it is a
+#: nesting, and executing it means binding its block arguments and walking its
+#: body. `yield` stays absent from both tables for the same reason a terminator
+#: is not a computation.
 _NOT_EXECUTABLE: Final[dict[str, str]] = {
-    "fused_op": (
-        "npu.fused_op is created by -npu-fuse-ops, which lands at P9. Nothing "
-        "at -O0 produces one, so a module holding one did not come from this "
-        "pipeline"
-    ),
     "yield": (
-        "npu.yield is the terminator of an npu.fused_op region and cannot "
-        "appear without one"
+        "npu.yield is the terminator of an npu.fused_op region and is executed "
+        "with the region rather than on its own"
     ),
     "quantize": "the quantization pair arrives with the integer path at P14",
     "dequantize": "the quantization pair arrives with the integer path at P14",
@@ -223,6 +223,144 @@ def _read_attributes(
     return attributes
 
 
+def _execute_one(op: ir.OpView, values: dict[ir.Value, Any]) -> None:
+    """Executes one operation and records its result in `values`.
+
+    Split out of `execute_module` at P9, when `npu.fused_op` gave the walk a
+    second place to happen. The alternative was to inline the region's body into
+    the outer loop, which would have meant one loop that sometimes meant the
+    function's block and sometimes a region's, and the two have different value
+    scopes: `npu.fused_op` is `IsolatedFromAbove`, so its body sees its block
+    arguments and nothing else.
+    """
+    operation = op.operation
+    name = operation.name
+
+    if name == "tensor.empty":
+        values[op.results[0]] = _Destination(_shape_of(op.results[0]))
+        return
+
+    if not name.startswith("npu."):
+        raise ExecutionError(
+            f"{name} is not an operation this reference executes. The module "
+            "is expected to hold the npu dialect, tensor.empty destinations "
+            "and func.return, and nothing else."
+        )
+
+    mnemonic = name[len("npu.") :]
+    if mnemonic in _NOT_EXECUTABLE:
+        raise ExecutionError(
+            f"{name} cannot be executed here: {_NOT_EXECUTABLE[mnemonic]}."
+        )
+
+    result_shape = _shape_of(op.results[0])
+
+    if mnemonic == "fused_op":
+        values[op.results[0]] = _execute_fused(op, values, result_shape)
+        return
+
+    if mnemonic not in _DESTINATION_OPERANDS:
+        raise ExecutionError(
+            f"{name} is in the module and not in this file's tables. An "
+            "operation added to the dialect is added here in the same commit, "
+            "or it goes unchecked by the reference."
+        )
+
+    if mnemonic == "constant":
+        dense = ir.DenseElementsAttr(operation.attributes["value"])
+        values[op.results[0]] = np.array(dense).astype(np.float32)
+        return
+
+    operands = list(operation.operands)
+    destinations = _DESTINATION_OPERANDS[mnemonic]
+    if destinations:
+        for operand in operands[len(operands) - destinations :]:
+            holder = values[operand]
+            if not isinstance(holder, _Destination):
+                raise ExecutionError(
+                    f"{name}'s destination operand is not a tensor.empty. "
+                    "Destination passing style puts the destination last, and "
+                    "this file's operand table says how many trailing operands "
+                    "that is; a mismatch means the table and the dialect have "
+                    "drifted."
+                )
+            if holder.shape != result_shape:
+                raise ExecutionError(
+                    f"{name} writes a destination of shape {holder.shape} and "
+                    f"declares a result of {result_shape}"
+                )
+        operands = operands[: len(operands) - destinations]
+
+    arrays: list[Tensor] = []
+    for operand in operands:
+        value = values[operand]
+        if isinstance(value, _Destination):
+            raise ExecutionError(
+                f"{name} reads a tensor.empty destination as a value operand, "
+                "which has no contents to read"
+            )
+        arrays.append(value)
+
+    attributes = _read_attributes(operation, mnemonic, result_shape)
+    try:
+        produced = refexec.execute(mnemonic, arrays, attributes)
+    except (KeyError, ValueError) as failure:
+        raise ExecutionError(
+            f"{name}: the reference refused it: {failure}"
+        ) from failure
+
+    if tuple(produced.shape) != result_shape:
+        raise ExecutionError(
+            f"{name}: the reference produced {tuple(produced.shape)} and the "
+            f"operation declares {result_shape}"
+        )
+    values[op.results[0]] = produced
+
+
+def _execute_fused(
+    op: ir.OpView, values: dict[ir.Value, Any], result_shape: tuple[int, ...]
+) -> Tensor:
+    """Executes one `npu.fused_op` region and returns what it yielded.
+
+    *Added at P9, with `-npu-fuse-ops`.* The region is a nesting rather than an
+    operation with a kernel, so it is executed here and not in `refexec`: the
+    reference interpreter executes one `npu` operation from the ODS description,
+    and there is no arithmetic in a region to describe.
+
+    The operands bind to the block arguments one for one, destinations included,
+    which is what the operation's own verifier requires. `IsolatedFromAbove`
+    means the body sees those and nothing else, so the inner scope starts empty
+    rather than inheriting the enclosing one; a region that read an outer value
+    would not have verified.
+    """
+    body = op.operation.regions[0].blocks[0]
+    inner: dict[ir.Value, Any] = {}
+    for operand, argument in zip(op.operation.operands, body.arguments, strict=True):
+        inner[argument] = values[operand]
+
+    for inner_op in body.operations:
+        if inner_op.operation.name == "npu.yield":
+            yielded = inner[inner_op.operation.operands[0]]
+            if isinstance(yielded, _Destination):
+                raise ExecutionError(
+                    "npu.fused_op yields a tensor.empty destination that no "
+                    "operation in its body wrote to"
+                )
+            if tuple(yielded.shape) != result_shape:
+                raise ExecutionError(
+                    f"npu.fused_op yields {tuple(yielded.shape)} and declares a "
+                    f"result of {result_shape}"
+                )
+            return yielded
+        _execute_one(inner_op, inner)
+
+    raise ExecutionError(
+        "npu.fused_op's region has no npu.yield, so there is nothing to return "
+        "from it. The operation's verifier requires one, so a region without it "
+        "did not come through npu-opt."
+    )
+
+
 def execute_module(
     module_text: str,
     inputs: Sequence[np.ndarray],
@@ -278,15 +416,8 @@ def execute_module(
 
         results: list[Tensor] = []
         for op in block.operations:
-            operation = op.operation
-            name = operation.name
-
-            if name == "tensor.empty":
-                values[op.results[0]] = _Destination(_shape_of(op.results[0]))
-                continue
-
-            if name == "func.return":
-                for operand in operation.operands:
+            if op.operation.name == "func.return":
+                for operand in op.operation.operands:
                     value = values[operand]
                     if isinstance(value, _Destination):
                         raise ExecutionError(
@@ -295,78 +426,6 @@ def execute_module(
                         )
                     results.append(value)
                 continue
-
-            if not name.startswith("npu."):
-                raise ExecutionError(
-                    f"{name} is not an operation this reference executes. The "
-                    "module is expected to hold the npu dialect, tensor.empty "
-                    "destinations and func.return, and nothing else at -O0."
-                )
-
-            mnemonic = name[len("npu.") :]
-            if mnemonic in _NOT_EXECUTABLE:
-                raise ExecutionError(
-                    f"{name} cannot be executed here: {_NOT_EXECUTABLE[mnemonic]}."
-                )
-            if mnemonic not in _DESTINATION_OPERANDS:
-                raise ExecutionError(
-                    f"{name} is in the module and not in this file's tables. "
-                    "An operation added to the dialect is added here in the "
-                    "same commit, or it goes unchecked by the reference."
-                )
-
-            result_shape = _shape_of(op.results[0])
-
-            if mnemonic == "constant":
-                dense = ir.DenseElementsAttr(operation.attributes["value"])
-                values[op.results[0]] = np.array(dense).astype(np.float32)
-                continue
-
-            operands = list(operation.operands)
-            destinations = _DESTINATION_OPERANDS[mnemonic]
-            if destinations:
-                for operand in operands[len(operands) - destinations :]:
-                    holder = values[operand]
-                    if not isinstance(holder, _Destination):
-                        raise ExecutionError(
-                            f"{name}'s destination operand is not a "
-                            "tensor.empty. Destination passing style puts the "
-                            "destination last, and this file's operand table "
-                            "says how many trailing operands that is; a "
-                            "mismatch means the table and the dialect have "
-                            "drifted."
-                        )
-                    if holder.shape != result_shape:
-                        raise ExecutionError(
-                            f"{name} writes a destination of shape "
-                            f"{holder.shape} and declares a result of "
-                            f"{result_shape}"
-                        )
-                operands = operands[: len(operands) - destinations]
-
-            arrays: list[Tensor] = []
-            for operand in operands:
-                value = values[operand]
-                if isinstance(value, _Destination):
-                    raise ExecutionError(
-                        f"{name} reads a tensor.empty destination as a value "
-                        "operand, which has no contents to read"
-                    )
-                arrays.append(value)
-
-            attributes = _read_attributes(operation, mnemonic, result_shape)
-            try:
-                produced = refexec.execute(mnemonic, arrays, attributes)
-            except (KeyError, ValueError) as failure:
-                raise ExecutionError(
-                    f"{name}: the reference refused it: {failure}"
-                ) from failure
-
-            if tuple(produced.shape) != result_shape:
-                raise ExecutionError(
-                    f"{name}: the reference produced {tuple(produced.shape)} "
-                    f"and the operation declares {result_shape}"
-                )
-            values[op.results[0]] = produced
+            _execute_one(op, values)
 
     return results

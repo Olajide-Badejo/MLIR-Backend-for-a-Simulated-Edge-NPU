@@ -25,7 +25,7 @@ absent measurement is not a measurement of zero.
 the entries: which passes fire on which models, whether forming a region changes
 the instruction count, and how far each pass moves the answer. Those are
 measurements of the same programs the ablation will run, taken one pass at a
-time.
+time in `test/Python/test_transform_passes.py`.
 
 The full pass table, including the three ablatable passes that arrive at P13 and
 the calibration pass that arrives at P14, is Section 12 of the build
@@ -36,18 +36,23 @@ they land.
 
 | Pass | Level | Ablatable | Phase | Status |
 |---|---|---|---|---|
-| `-npu-constant-fold` | O1, O2 | yes | P9 | implemented, not yet in a level |
-| `-npu-fuse-bias` | O2 | yes | P9 | implemented, not yet in a level |
-| `-npu-fold-batchnorm` | O2 | yes | P9 | implemented, not yet in a level |
-| `-npu-fuse-ops` | O2 | yes | P9 | implemented, not yet in a level |
+| `-npu-constant-fold` | O1, O2 | yes | P9 | implemented |
+| `-canonicalize` | O1, O2 | yes | P9 | upstream, wired in |
+| `-npu-fuse-bias` | O2 | yes | P9 | implemented |
+| `-npu-fold-batchnorm` | O2 | yes | P9 | implemented |
+| `-npu-fuse-ops` | O2 | yes | P9 | implemented |
+| `-cse` | O2 | yes | P9 | upstream, wired in |
+| `-sccp` | O2 | yes | P9 | upstream, wired in |
+| `-symbol-dce` | O2 | yes | P9 | upstream, wired in |
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
 
-**The four new passes exist and no level runs them yet**, which is a state that
-lasts exactly one commit and is worth being exact about rather than glossing.
-Section 12 assigns each of them a level in the table above and the commit that
-registers `-O1` and `-O2` is the next one. Until then each is reachable by name
-from `npu-opt` and tested that way, which is how its lit file drives it.
+**Eight ablatable, and Section 12's eleven is that plus three.**
+`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` are
+excluded from P9 by name in the roadmap and arrive at P13; `-npu-calibrate` is
+never in a default `-O` level. Nothing below claims a row for any of them,
+because a level that named a pass nothing implements would give Section 16.2's
+ablation table a row it could not fill.
 
 ---
 
@@ -62,23 +67,74 @@ actually runs the passes, so a pipeline assembled in Python out of one `npu-opt`
 invocation per pass would be a different pipeline from the one under test.
 `npu-compile` names a level, `lib/Pipeline` builds it.
 
-| Level | Registered as | Passes | Status |
-|---|---|---|---|
-| `-O0` | `npu-O0` | `-npu-lower-to-npuisa`, `-npu-allocate-scratchpad` | implemented |
-| `-O1` | not registered | canonicalize and constant fold, on top of `-O0` | next commit |
-| `-O2` | not registered | the full set of Section 12 | next commit |
+| Level | Registered as | Passes, in order |
+|---|---|---|
+| `-O0` | `npu-O0` | `-npu-lower-to-npuisa`, `-npu-allocate-scratchpad` |
+| `-O1` | `npu-O1` | `-npu-constant-fold`, `-canonicalize`, then `-O0`'s two |
+| `-O2` | `npu-O2` | `-npu-constant-fold`, `-canonicalize`, `-npu-fuse-bias`, `-npu-fold-batchnorm`, `-npu-fuse-ops`, `-canonicalize`, `-cse`, `-sccp`, `-symbol-dce`, then `-O0`'s two |
+
+**All three are implemented since P9.** `-O1` and `-O2` were named and
+unregistered from P8 until then, deliberately: a level registered with an empty
+pipeline would have run, produced `-O0`'s answer, and made every ablation cell
+measured against it measure nothing.
 
 **`-O0` is "import and verify" and verification is not a row in the table.**
 MLIR verifies every operation when it parses it and again after every pass, so
 the level gets its verification from the pass manager. A row that ran a verifier
-would be a second and weaker one beside the one that already runs.
+would be a second and weaker one beside the one that already runs. Since P9 the
+driver's `npu` stage runs the level's tensor level half through `npu-opt` at
+every level including `-O0`, so the verification is one somebody performs rather
+than one the documentation claimed.
 
-**`-O1` and `-O2` are named and not registered.** Asking `npu-opt` for one is an
-unknown argument. That is deliberate: a level registered with an empty pipeline
-would run, produce `-O0`'s answer, and every ablation cell measured against it
-would be measuring nothing. The description below still lists them, because a
-driver that could not see `-O2` at all could not tell a level that is missing
-from one that is empty.
+### Why the order is what it is, and where it departs from Section 5.1
+
+Two departures, both measured rather than chosen.
+
+**`-npu-constant-fold` runs before the first `-canonicalize`**, where Section
+5.1 lists canonicalization first. The folder is what *creates* the dead operand
+constants, so a canonicalization ahead of it has nothing to clean up. At `-O2`
+there are two canonicalizations and the question would be academic; at `-O1`
+there is one, and if it ran first every folded operand would survive as an
+`npuisa.const` and a `dma_load` in the instruction stream.
+
+**`-npu-fuse-bias` runs before `-npu-fold-batchnorm`**, where Section 5.1 lists
+the batch norm fold first. `-npu-fold-batchnorm` matches on a convolution as the
+batch norm's producer, and in `conv -> add(bias) -> batch_norm` the producer is
+the add until the bias fusion has moved it. Folding first leaves **both** passes
+declining, and then `-npu-fuse-ops` declines too because the activation's
+producer is a batch norm rather than a convolution: one ordering choice turning
+three passes off. `test/Pipeline/opt-levels.mlir` carries the function that shows
+it, and that test went red the first time this table was written in the listing
+order.
+
+Section 12's own note on `-npu-fold-batchnorm` asks for it "before fusion, so
+the convolution still has no fused **activation**", and the activation fusion is
+`-npu-fuse-ops`, which still runs after it. The duplicate `-canonicalize` around
+the fusion group is Section 12's, marked there as deliberate: the first removes
+what the folder left dead, the second removes the four batch norm parameters the
+fold consumed.
+
+### Where each pass runs in the pass manager
+
+Per pass rather than per level, and it is not cosmetic. `-sccp` reasons about
+the call graph and `-symbol-dce` about symbols, so both are added at the module
+level; everything else is nested under `func.func`. Nesting either of those
+inside a function would give it a view in which every question it asks has the
+wrong answer.
+
+### `--emit npu` runs the tensor level half through the same pipeline
+
+`npu-compile --emit npu` asks for `--npu-O2=stop-after=npu`, which builds the
+level and stops before `-npu-lower-to-npuisa`. Which passes those are is
+`isTensorLevel`, a switch over `PassKind` with no `default`, so a pass added to
+the enumerator and not classified is a build error rather than a pass that
+silently lands on the wrong side of the stage boundary. The description prints
+the answer as each entry's `stage`.
+
+The alternative was for the driver to name the tensor level passes itself, and
+Section 17.4 rules it out from the other direction: a test that runs a hardcoded
+pass list matching no optimization level enforces nothing, and a driver that
+assembled one would make every such test vacuous at once.
 
 **Every entry carries an `ablatable` property and a missing one does not
 compile.** Section 12 asks for that in those words. `PassEntry` has a single
@@ -92,10 +148,19 @@ that a subgraph feeding nothing leaves the instruction count unchanged, which is
 only true at a level whose pipeline holds a pass that removes it. The check
 reads `eliminates_dead_code` out of the description rather than carrying a list
 of pass names that would go stale the first time one was added. Both of `-O0`'s
-passes declare `false`, so the set of levels that eliminate dead code is empty
-until `-O1` and `-O2` are registered and `-O0`'s form of the check is the
-opposite claim: the count grows by exactly the instructions the injection
-brought.
+passes declare `false`, `-canonicalize` and `-symbol-dce` declare `true`, so the
+set of levels that eliminate dead code was empty at P8 and became `-O1` and
+`-O2` at P9 with no edit to the test that reads it. `-O0`'s form of the check is
+the opposite claim and is kept as the control: the count grows by exactly the
+instructions the injection brought.
+
+**And each entry carries the `PassKind` the builder switches on.** *Added at
+P9.* The switch has no `default`, so a pass added to a level's table and not to
+the builder is a build error rather than a pipeline that silently skips it. The
+argument string sits beside the kind for the description and the diagnostics,
+and `test/Pipeline/opt-levels.mlir` runs each level against the explicit list of
+those strings and diffs the two outputs, which is what catches a kind and a name
+that disagree.
 
 **The description is readable at run time**, which is what Section 16.2 requires
 of the ablatable set:
@@ -109,20 +174,22 @@ level is implemented, and the phase an unimplemented one arrives at. The flag is
 handled before `MlirOptMain` because it asks a question about the compiler
 rather than about a file and therefore takes no input.
 
-**The level and its pass list are asserted to agree.**
-`test/Pipeline/opt-levels.mlir` runs `--npu-O0` and the explicit
-`--npu-lower-to-npuisa --npu-allocate-scratchpad` over the same input and diffs
-the two outputs. Section 17.4 says a test that runs a hardcoded pass list
-matching no optimization level enforces nothing; the converse obligation is this
-one, that a level nobody compares against anything can drift from the passes it
-claims to run.
+**The level and its pass list are asserted to agree, at all three levels.**
+`test/Pipeline/opt-levels.mlir` runs each `--npu-O` pipeline and the explicit
+list of its pass arguments over the same input and diffs the two outputs.
+Section 17.4 says a test that runs a hardcoded pass list matching no
+optimization level enforces nothing; the converse obligation is this one, that a
+level nobody compares against anything can drift from the passes it claims to
+run.
 
 The pipeline forwards the allocator's four options, so `npu-compile --budget`
-reaches the allocator without the driver knowing which pass consumes it:
+reaches the allocator without the driver knowing which pass consumes it, and
+`stop-after` beside them:
 
 ```
 npu-opt model.mlir --npu-O0=budget=8192
 npu-opt model.mlir '--npu-O0=budget=8192 strategy=interval'
+npu-opt model.mlir --npu-O2=stop-after=npu
 ```
 
 ---

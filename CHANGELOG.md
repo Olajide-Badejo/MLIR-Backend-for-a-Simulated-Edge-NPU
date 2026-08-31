@@ -6,6 +6,79 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P9: optimization passes and optimization levels
+
+Every user visible movement of this phase is named here, and the one that moves a
+recorded number is declared in `docs/BREAKING_CHANGES.md` as well.
+
+- **`-O1` and `-O2` exist and `npu-compile` builds them.** All three levels are
+  registered as `npu-opt` pass pipelines and all three are implemented; until
+  now the higher two were named and refused by name.
+
+  ```
+  scripts/npu-compile model.onnx -O 2 --emit nbin -o model.nbin
+  npu-opt model.mlir --npu-O2
+  npu-opt model.mlir --npu-O2=stop-after=npu
+  ```
+
+  `-O1` is `-npu-constant-fold` and `-canonicalize` on top of `-O0`. `-O2` adds
+  `-npu-fuse-bias`, `-npu-fold-batchnorm`, `-npu-fuse-ops`, a second
+  `-canonicalize`, `-cse`, `-sccp` and `-symbol-dce`. Layout assignment, tiling,
+  double buffering and calibration are the four rows of Section 12's table this
+  phase excludes by name; they arrive at P13 and P14 and no level claims them.
+- **Four new passes in the `npu` dialect**, each with a positive lit test and at
+  least one case proving it does not fire where it should not:
+  `-npu-constant-fold`, `-npu-fuse-bias`, `-npu-fold-batchnorm` and
+  `-npu-fuse-ops`. `docs/PASSES.md` carries before and after IR, the guards, and
+  what each was measured to do on the model suite.
+- **`npu.fused_op` and `npu.yield` have a producer**, so both reachability
+  exemptions are deleted and `scripts/check-reachability.py` passes with an
+  **empty** exemption block for the first time.
+- **The answers move at `-O2` on one model, by 4.47e-08.**
+  `conv_bn_relu_stack` is the only model in the suite carrying an unfolded batch
+  norm; folding it changes the accumulation order, and it also takes that model
+  from 23 instructions to 15 and from 1372.50 simulated cycles to 1160.50. Every
+  other cell of the baseline is unchanged, `-O0` included and `-O1` included.
+  `docs/BREAKING_CHANGES.md` declared it before the commit that caused it.
+- **`--emit npu` now runs the level's tensor level passes** rather than
+  returning the importer's text unchanged. At `-O0` there are none, so the stage
+  parses, verifies and reprints, and it comes out byte identical to
+  `--emit import`. At `-O1` and `-O2` it is the optimized IR, which is also what
+  the reference interpreter is given, so `refexec` is an oracle for the passes
+  and not only for the backend.
+- **`npu_frontend.refgraph` executes `npu.fused_op`**, by binding the region's
+  block arguments to its operands and walking the body.
+- **The end to end matrix gained its level axis.** Seven models, three levels,
+  two batch sizes, five input classes, two oracles: four hundred and twenty
+  cells, up from a hundred and forty. The tolerances did not move.
+- **The regression baseline records every level**, at `schema_version` 2. Forty
+  two cells where there were fourteen, twenty one golden tensors where there
+  were seven, a `levels` field, and a `max_abs_movement_vs_o0` on every cell.
+  `per_level` has left `absent_fields`; `energy` is still there and still names
+  P11.
+- **`scripts/build-model-ir.py` sweeps every level the compiler builds**, so an
+  operation that only a `-O2` pipeline creates has a model IR file to appear in.
+  The filenames gained an `-O<level>` component.
+- **`npu-opt --npu-describe-pipeline` reports a `stage` per pass**, `npu` or
+  `npuisa`, which is how the driver asks for the tensor level half of a level
+  without naming its passes.
+
+#### Fixed at P9
+
+- **`-sccp` did nothing at all on this dialect** and now does something: the
+  `npu` dialect implements a constant materializer, without which MLIR's
+  constant propagation reached the right answer and had nowhere to write it.
+  D-0033.
+- **Two operations that share a destination get two buffers.** `-cse` merges
+  identical `tensor.empty` operations, which is correct on tensors, and the
+  lowering used to turn one of them into one `memref.alloc`, which made two
+  instructions write one buffer. D-0034.
+- **A constant's transfer, and a destination's allocation, are emitted where the
+  data is used** rather than where `-canonicalize` and `-npu-fuse-ops` hoisted
+  them. Without this `-O1` was 37 percent slower than `-O0` on LeNet, because
+  every transfer was serialised ahead of every computation, and `-O2` could not
+  place LeNet's tight budget cell at all. D-0035.
+
 ### Phase P8: the walking skeleton and the safety net
 
 - **`npu-compile` exists.** One entry point from an ONNX model at the pinned

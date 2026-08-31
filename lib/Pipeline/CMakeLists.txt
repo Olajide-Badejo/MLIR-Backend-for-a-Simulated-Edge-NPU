@@ -15,9 +15,11 @@ add_mlir_library(MLIRNPUPipeline
         ${PROJECT_SOURCE_DIR}/include/NPU/Pipeline
 
         LINK_LIBS PUBLIC
+        MLIRNPUTransforms
         MLIRNPUISATransforms
         MLIRFuncDialect
         MLIRIR
         MLIRPass
         MLIRSupport
+        MLIRTransforms
         )

@@ -13,6 +13,7 @@ does not exist is refused by name are this one's.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -57,54 +58,97 @@ def test_the_level_table_comes_from_the_compiler() -> None:
     levels = {int(row["level"]): row for row in table["levels"]}
     assert sorted(levels) == [0, 1, 2]
 
-    o0 = levels[0]
-    assert o0["implemented"] is True
-    assert [entry["pass"] for entry in o0["passes"]] == [
+    # The pass list of every level, by name and in order, read out of the
+    # compiler. This is Section 12's table as the compiler holds it, and it is
+    # asserted here rather than only in the lit suite because the driver is what
+    # Section 16.2's ablation reads it through.
+    assert [entry["pass"] for entry in levels[0]["passes"]] == [
+        "npu-lower-to-npuisa",
+        "npu-allocate-scratchpad",
+    ]
+    assert [entry["pass"] for entry in levels[1]["passes"]] == [
+        "npu-constant-fold",
+        "canonicalize",
+        "npu-lower-to-npuisa",
+        "npu-allocate-scratchpad",
+    ]
+    assert [entry["pass"] for entry in levels[2]["passes"]] == [
+        "npu-constant-fold",
+        "canonicalize",
+        "npu-fuse-bias",
+        "npu-fold-batchnorm",
+        "npu-fuse-ops",
+        "canonicalize",
+        "cse",
+        "sccp",
+        "symbol-dce",
         "npu-lower-to-npuisa",
         "npu-allocate-scratchpad",
     ]
 
-    # -O1 and -O2 are named and not built, and they name the phase that builds
-    # them. A driver that could not see them at all could not tell a level that
-    # is missing from one that is empty.
-    for level in (1, 2):
-        assert levels[level]["implemented"] is False
-        assert levels[level]["arrives_at"] == "P9"
-        assert levels[level]["passes"] == []
+    # All three are built at P9, so none of them names an arriving phase any
+    # more. `arrives_at` stays in the schema, because the day a level is added
+    # ahead of its passes again it is what tells a driver the difference between
+    # a level that is missing and one that is empty.
+    for level in (0, 1, 2):
+        assert levels[level]["implemented"] is True
+        assert levels[level]["arrives_at"] == ""
+
+    # `-canonicalize` appears twice at -O2, which Section 12's table marks as
+    # deliberate: once before the fusion group and once after it, to remove the
+    # dead parameter constants the batch norm fold leaves behind.
+    assert [entry["pass"] for entry in levels[2]["passes"]].count("canonicalize") == 2
 
 
-def test_only_minus_o_zero_is_implemented_at_this_phase() -> None:
-    """The list is read from the compiler, not written down here.
+def test_every_level_this_compiler_names_is_one_it_builds() -> None:
+    """All three, since P9.
 
-    When P9 lands this test fails, and that is the point: the phase that adds a
-    level edits the assertion in the same commit that adds it, rather than
-    leaving a stale claim in a test file nobody rereads.
+    This assertion moved with the levels. Until P9 it read `== [0]` and said
+    that the phase which adds a level edits it in the same commit; this is that
+    edit. What it still asserts is that the driver reads the set from the
+    compiler rather than keeping a list, so a level added to `kLevels` and not
+    to the builder cannot pass it.
     """
-    assert implemented_levels() == [0]
+    assert implemented_levels() == [0, 1, 2]
 
 
-def test_the_ablatable_set_at_minus_o_zero_is_empty_and_correctly_so() -> None:
-    """Both of -O0's passes are marked not ablatable, per Section 12.
+def test_the_ablatable_set_grows_with_the_levels() -> None:
+    """Section 12's ablatable subset, read from the compiler at run time.
 
-    Removing either produces no program at all, so an ablation of one measures
-    nothing and fails the run for a reason that has nothing to do with the
-    pass. The emptiness is the right answer rather than an unfinished one.
+    `-O0` is empty and correctly so: both of its passes are marked not
+    ablatable, since removing either produces no program at all.
+
+    `-O2` has eight, and eight is the arithmetic Section 12 states minus the
+    three passes P9 excludes by name. That section counts eleven ablatable
+    passes in the full `-O2` set; `-npu-assign-layout`,
+    `-npu-tile-to-scratchpad` and `-npu-double-buffer` arrive at P13, and
+    8 + 3 = 11.
     """
     assert ablatable_passes(0) == []
-
-
-def test_an_unimplemented_level_is_refused_by_name(lenet: Path) -> None:
-    with pytest.raises(CompileError) as failure:
-        compile_model(lenet, level=2, emit="npu")
-    message = str(failure.value)
-    assert "-O2" in message
-    assert "P9" in message
+    assert ablatable_passes(1) == ["npu-constant-fold", "canonicalize"]
+    assert ablatable_passes(2) == [
+        "npu-constant-fold",
+        "canonicalize",
+        "npu-fuse-bias",
+        "npu-fold-batchnorm",
+        "npu-fuse-ops",
+        "cse",
+        "sccp",
+        "symbol-dce",
+    ]
+    assert len(ablatable_passes(2)) == 8
+    # The set, not the sequence: `-canonicalize` runs twice and is one pass to
+    # ablate. A duplicate here would give Section 16.2's table two rows for one
+    # pass and make the eleven of Section 12's arithmetic unreachable.
+    assert len(set(ablatable_passes(2))) == len(ablatable_passes(2))
 
 
 def test_a_level_that_is_not_a_level_lists_the_ones_that_are(lenet: Path) -> None:
     with pytest.raises(CompileError) as failure:
         compile_model(lenet, level=7, emit="npu")
-    assert "-O0" in str(failure.value)
+    message = str(failure.value)
+    assert "-O0" in message
+    assert "-O2" in message
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +156,12 @@ def test_a_level_that_is_not_a_level_lists_the_ones_that_are(lenet: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_every_stage_produces_something_and_stops_there(lenet: Path) -> None:
+@pytest.mark.parametrize("level", [0, 1, 2])
+def test_every_stage_produces_something_and_stops_there(
+    lenet: Path, level: int
+) -> None:
     for emit in EMIT_STAGES:
-        result = compile_model(lenet, level=0, emit=emit)
+        result = compile_model(lenet, level=level, emit=emit)
         assert result.emit == emit
         # The stages that ran are exactly the ones up to and including this
         # one. A stage that ran and was thrown away is work the driver did for
@@ -134,24 +181,74 @@ def test_every_stage_produces_something_and_stops_there(lenet: Path) -> None:
             assert result.binary is None
 
 
+def _operations(text: str) -> list[str]:
+    """Every `npu` operation name in the order the text holds them."""
+    return re.findall(r"\bnpu\.[a-z_0-9]+", text)
+
+
 def test_import_and_npu_are_the_same_text_at_minus_o_zero(lenet: Path) -> None:
     """-O0 runs no `npu` level pass, so the two stages agree.
 
-    This is a property of the level rather than of the driver, and it stops
-    being true at P9 when `-O1` adds canonicalization. Asserting it now means
-    the change that breaks it is the change that updates it.
+    **This is one of the three assertions P8 expected P9 to move, and it is the
+    one that did not need moving. That is a finding rather than an oversight, so
+    it is recorded here rather than quietly left alone.**
+
+    P8 predicted the two stages would stop being equal when `-O1` landed, and
+    they have not, for two independent reasons. `-O0`'s tensor level half is
+    still empty, so no pass runs. And the stage now goes through `npu-opt` at
+    every level rather than only above `-O0`, which was expected to change the
+    bytes even where it changed no operation, because the printer becomes
+    `npu-opt`'s and is asked for debug information. It does not: the importer
+    already prints locations and its output round trips through `npu-opt`
+    byte for byte. That is a stronger property than the one this test was
+    written to assert, and asserting the bytes is what keeps it stated.
+
+    What did move is the pair below: at `-O1` and `-O2` the two stages differ,
+    and they must, or the level would be a level in name only.
     """
     imported = compile_model(lenet, level=0, emit="import")
     npu_level = compile_model(lenet, level=0, emit="npu")
     assert imported.text == npu_level.text
 
 
-def test_the_npuisa_stage_is_lowered_and_allocated(lenet: Path) -> None:
-    result = compile_model(lenet, level=0, emit="npuisa")
+@pytest.mark.parametrize("level", [1, 2])
+def test_the_npu_stage_changes_the_ir_above_minus_o_zero(
+    lenet: Path, level: int
+) -> None:
+    """A level whose tensor level passes changed nothing would be a level in
+    name only, and Section 12 is explicit that an empty `-O2` would make every
+    ablation cell measured against it measure nothing."""
+    at_zero = compile_model(lenet, level=0, emit="npu")
+    higher = compile_model(lenet, level=level, emit="npu")
+    assert at_zero.text is not None and higher.text is not None
+    assert _operations(at_zero.text) != _operations(higher.text)
+
+
+def test_the_fusion_pass_reaches_the_anchor_model(lenet: Path) -> None:
+    """`-O2` puts LeNet's convolutions and their activations into regions.
+
+    `npu.fused_op` and `npu.yield` had a dated exemption in
+    `docs/EXEMPTIONS.md` from P8 until P9 for the plainest of reasons: nothing
+    produced one. This is the assertion that the producer exists and reaches a
+    real model rather than only a hand written lit case.
+    """
+    fused = compile_model(lenet, level=2, emit="npu")
+    assert fused.text is not None
+    assert "npu.fused_op" in fused.text
+    assert "npu.yield" in fused.text
+
+
+@pytest.mark.parametrize("level", [0, 1, 2])
+def test_the_npuisa_stage_is_lowered_and_allocated(lenet: Path, level: int) -> None:
+    result = compile_model(lenet, level=level, emit="npuisa")
     assert result.text is not None
     assert "npuisa.scratchpad_bytes" in result.text
     assert "npuisa.dma_load" in result.text
     assert "npu.conv2d" not in result.text
+    # The region is flattened at lowering, so nothing below the tensor level
+    # ever sees one. That is what makes fusion mean "the intermediate stays in
+    # the scratchpad" rather than "a new instruction the machine does not have".
+    assert "npu.fused_op" not in result.text
 
 
 def test_locations_survive_to_the_npuisa_stage(lenet: Path) -> None:
@@ -308,7 +405,22 @@ def test_the_launcher_describes_the_pipeline() -> None:
     assert table["source"] == "lib/Pipeline/Pipeline.cpp"
 
 
-def test_the_launcher_refuses_an_unimplemented_level(lenet: Path) -> None:
-    completed = _launch(str(lenet), "-O", "2")
+def test_the_launcher_refuses_a_level_that_is_not_one(
+    lenet: Path, tmp_path: Path
+) -> None:
+    """Moved with the levels at P9.
+
+    Until then this asked for `-O 2` and expected the refusal to name P9. Every
+    level this compiler names is now one it builds, so the refusal that is left
+    is for a number that is not a level at all, and it lists the ones that are
+    rather than saying "unknown".
+    """
+    completed = _launch(str(lenet), "-O", "7", "--emit", "npu")
     assert completed.returncode == 1
-    assert "P9" in completed.stderr
+    assert "-O2" in completed.stderr
+
+    for level in ("0", "1", "2"):
+        target = tmp_path / f"lenet-O{level}.nbin"
+        written = _launch(str(lenet), "-O", level, "-o", str(target))
+        assert written.returncode == 0, written.stderr
+        assert target.read_bytes()[:4] == b"NBIN"
