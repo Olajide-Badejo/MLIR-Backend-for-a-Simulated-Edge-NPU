@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+#
+# The launcher of Section 6. It is thin on purpose: everything is in
+# python/npu_frontend/compile.py, which is where the tests reach it and where
+# the benchmark harness imports it from. A launcher that held logic would be a
+# second entry point with its own behaviour, and the two would drift.
+#
+# The one thing it does is put this repository's package root on sys.path, so
+# that `scripts/npu-compile model.onnx` works from a checkout with nothing
+# installed. It does not touch the MLIR bindings path: those resolve out of the
+# LLVM build tree and the three places that wiring lives are named in Section
+# 3.3, none of which is here. A developer running this outside the test suite
+# sets PYTHONPATH the way docs/BUILD.md says.
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
+
+from npu_frontend.compile import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

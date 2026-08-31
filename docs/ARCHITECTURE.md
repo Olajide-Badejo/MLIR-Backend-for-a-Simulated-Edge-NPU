@@ -510,6 +510,52 @@ compiles and links in seconds. The split stays, because the phase that does
 bring both into one file is `npu-compile` at P8 and the decision should not have
 to be made under that phase's deadline.
 
+### Extension, P8: the driver, and the two namespaces that still do not meet
+
+**The compiler has four processes and one entry point.** `npu-compile` is a
+Python script; the pipeline it runs is C++ in `lib/Pipeline`; the passes it runs
+are C++ in `lib/Dialect`; the encoder and the simulator are C++ that link no
+MLIR at all. The driver's job is to name a level, hand the IR from one process
+to the next, and stop where it was asked to.
+
+The split is Section 6's and the reason survives restating. The import step is
+Python because the MLIR bindings are, so a C++ driver would shell out to Python
+for its first stage and gain nothing. The pass pipeline is C++ because the
+`PassInstrumentation` of Section 16.2 has to sit on the `PassManager` that
+actually runs the passes; a pipeline the driver assembled out of one `npu-opt`
+invocation per pass would be a different pipeline from the one under test, and
+every number measured on it would be a number about a pipeline nobody ships.
+
+**`nbin` and `mlir::npu` still never meet, and the prediction is now wrong
+twice.** P6 expected the collision at P7 and `docs/ARCHITECTURE.md` recorded
+that it did not happen. P7 then named `npu-compile` at P8 as the phase that
+would finally bring both names into one translation unit. It has not, and the
+reason is the shape above rather than an oversight: the driver is Python, so the
+three C++ tools it invokes are three processes, and each of them links exactly
+one of the two worlds. `npu-opt` links the dialects and no format library;
+`npu-translate` links both, and is the one place they could have met, and it
+does not include a simulator header; `npu-sim` links the format and the
+simulator and no MLIR.
+
+So the namespace split has never once been tested by a compilation, in three
+phases of trying, and this file says so rather than continuing to predict a
+collision. The split stays. It costs nothing and the argument for it was never
+that a collision was imminent, only that two names for two different things is
+cheaper than one name and a rule about which half you are in.
+
+**What the driver refuses.** A level it can name and not build, by name and with
+the phase that builds it. A stage that is not a stage, with the stages listed. A
+`.nbin` to a terminal, because a screenful of control characters is a thing a
+reader then has to decide was not a diagnostic. None of those is a fallback: the
+driver has no path that produces a result from an input it did not understand.
+
+**Where the numbers come from.** `npu-sim --json-stats` writes the statistics as
+data and the driver reads that file. Nothing parses the human readable form.
+Section 10.2 makes `stats.instructions` the only instruction count in this
+project, so the field a text parser would most easily misread is exactly the one
+that matters, and `run_program` raises by name when it is absent rather than
+falling back to counting anything.
+
 ### What this section binds
 
 Later phases inherit these as decisions, not as suggestions:
@@ -562,3 +608,14 @@ From the P6 extension, on the same terms:
   implementation of that arithmetic is a defect.
 - The binary format lives in the C++ namespace `nbin`. Not `npu`, which the
   dialect owns.
+
+From the P8 extension, on the same terms:
+
+- A level is a named pass list in `lib/Pipeline` and nowhere else. A caller that
+  assembles a pass list of its own is running a pipeline this project does not
+  ship, and Section 17.4 says a test that does so enforces nothing.
+- The ablatable set is read from the compiler at run time, through
+  `npu-opt --npu-describe-pipeline`. A second copy of it in any language is a
+  defect.
+- `stats.instructions` reaches a caller as a JSON field. Anything that parses
+  `npu-sim`'s printed output for a number is a defect.

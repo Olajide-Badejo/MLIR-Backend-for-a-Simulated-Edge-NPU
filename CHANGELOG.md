@@ -8,6 +8,29 @@ Semantic Versioning once a release is tagged.
 
 ### Phase P8: the walking skeleton and the safety net
 
+- **`npu-compile` exists.** One entry point from an ONNX model at the pinned
+  opset to a `.nbin`, at `-O0`, with staged output:
+
+  ```
+  scripts/npu-compile model.onnx -O 0 --emit nbin -o model.nbin
+  scripts/npu-compile model.onnx --emit npuisa
+  scripts/npu-compile model.onnx --emit npu --verbose
+  scripts/npu-compile --describe-pipeline
+  ```
+
+  `--emit` stops after `import`, `npu`, `npuisa` or `nbin`. At `-O0` the first
+  two are the same text, because `-O0` runs no `npu` level pass; a test asserts
+  that, so the day `-O1` lands the assertion moves with it. `--budget` sets the
+  scratchpad budget, `--strip-debug` writes an empty debug section, and
+  `--verbose` prints the stage timings on stderr, where they do not land in the
+  output somebody is piping. It is a Python driver at
+  `python/npu_frontend/compile.py` with a thin launcher at `scripts/npu-compile`;
+  there is no `tools/npu-compile` C++ tool, because the import step is Python by
+  design.
+- **Running the result stays `npu-sim`'s job.** The driver compiles, the way a
+  compiler does. `npu_frontend.run_program` wraps the simulator for the test
+  harnesses and returns the outputs as arrays and the statistics as a
+  dictionary.
 - **`npu-opt` has optimization levels.** `--npu-O0` runs the `-O0` pipeline of
   Section 12, which is import and verify followed by `-npu-lower-to-npuisa` and
   `-npu-allocate-scratchpad`. The level's pass list lives in `lib/Pipeline/` in
