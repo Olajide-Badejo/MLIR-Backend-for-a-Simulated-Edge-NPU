@@ -42,3 +42,4 @@ parsed and frequently edited, and a generated index is none of those.
 | 0005 | [`npu.add` and `npu.mul` take a rank 1 channel operand, and the importer normalises to it](adr/0005-channel-broadcast-on-add-and-mul.md) | Accepted | 2026-08-19 |
 | 0006 | [The lowering produces memrefs directly, and One-Shot Bufferize was measured before that was decided](adr/0006-lowering-mechanism-and-the-bufferization-attempt.md) | Accepted | 2026-08-20 |
 | 0007 | [The dataflow is weight stationary, and it is pinned](adr/0007-dataflow.md) | Accepted | 2026-08-31 |
+| 0008 | [The per model tight scratchpad budgets, measured at P8](adr/0008-per-model-tight-scratchpad-budgets.md) | Accepted | 2026-08-31 |

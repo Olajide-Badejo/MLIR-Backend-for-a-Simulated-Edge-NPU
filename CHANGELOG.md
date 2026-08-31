@@ -43,6 +43,14 @@ Semantic Versioning once a release is tagged.
 - **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
+- **Every model carries a tight scratchpad budget**, measured on 2026-08-31 and
+  frozen as a required field of its `ModelSpec`, with `TIGHT_BUDGETS` derived
+  from the registry. `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
+  records the measurement and two deliberate deviations from Section 15: the
+  rounding quantum is the allocator's own 64 byte alignment rather than 4096,
+  and the fixed fraction that section asks for is inoperative until tiling
+  lands at P13, because on five of the seven models the smallest allocatable
+  budget is the peak itself.
 - **`npu_frontend.metamorphic`** holds four of Section 17.3a's five metamorphic
   relations and its dead subgraph injection. The fifth, pad then slice back,
   cannot be written: `Pad` is refused by this importer by name and `Slice` has

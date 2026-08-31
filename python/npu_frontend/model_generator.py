@@ -453,6 +453,16 @@ class ModelSpec:
     #: away or introduces one fails loudly instead of quietly moving what the
     #: suite covers.
     expected_nodes: Mapping[str, int]
+    #: The tight scratchpad budget in bytes, measured at P8 and frozen.
+    #:
+    #: No default, deliberately: a model added without one is an error at
+    #: import rather than a model quietly given somebody else's number. The
+    #: measurement, the two deviations from Section 15's rule and the reason
+    #: the fraction it asks for is inoperative until P13 are all in
+    #: `docs/adr/0008-per-model-tight-scratchpad-budgets.md`. These numbers are
+    #: frozen: a moved tight budget moves every tight budget cell in the
+    #: project's history at once.
+    tight_budget: int
     torch_factory: Callable[[], nn.Module] | None = None
     onnx_builder: Callable[[int, int], ModelProto] | None = None
     #: Export options, per model. Never shared, never global: a flag change
@@ -484,6 +494,7 @@ def _torch_options(**overrides: Any) -> dict[str, Any]:
 MODELS: Final[dict[str, ModelSpec]] = {
     "lenet": ModelSpec(
         name="lenet",
+        tight_budget=194624,
         input_shape=(1, 1, 28, 28),
         summary="LeNet style CNN. The baseline and the regression anchor.",
         expected_nodes={"Conv": 2, "Relu": 4, "MaxPool": 2, "Reshape": 1, "Gemm": 3},
@@ -492,6 +503,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "depthwise_separable": ModelSpec(
         name="depthwise_separable",
+        tight_budget=8192,
         input_shape=(1, 8, 8, 8),
         summary=(
             "Depthwise separable block. Grouped convolution at group == C, a "
@@ -503,6 +515,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "resnet_block": ModelSpec(
         name="resnet_block",
+        tight_budget=6464,
         input_shape=(1, 8, 8, 8),
         summary=(
             "Small ResNet block. A residual Add over an identity shortcut, with "
@@ -514,6 +527,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "inception_block": ModelSpec(
         name="inception_block",
+        tight_budget=6144,
         input_shape=(1, 8, 8, 8),
         summary="Small Inception block. Concat over three parallel branches.",
         expected_nodes={"Conv": 3, "Concat": 1, "Relu": 1},
@@ -522,6 +536,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "conv_bn_relu_stack": ModelSpec(
         name="conv_bn_relu_stack",
+        tight_budget=6464,
         input_shape=(1, 3, 8, 8),
         summary=(
             "Conv plus BatchNorm plus ReLU stack, built with the ONNX "
@@ -540,6 +555,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "dilated_stack": ModelSpec(
         name="dilated_stack",
+        tight_budget=8064,
         input_shape=(1, 4, 12, 14),
         summary=(
             "Dilated convolution stack with asymmetric padding and a closing "
@@ -550,6 +566,7 @@ MODELS: Final[dict[str, ModelSpec]] = {
     ),
     "lenet_batched": ModelSpec(
         name="lenet_batched",
+        tight_budget=200832,
         input_shape=(4, 1, 28, 28),
         summary="LeNet at N = 4. The batch path through the whole pipeline.",
         expected_nodes={"Conv": 2, "Relu": 4, "MaxPool": 2, "Reshape": 1, "Gemm": 3},
@@ -565,6 +582,21 @@ MODELS: Final[dict[str, ModelSpec]] = {
 INPUT_SHAPES: Final[dict[str, tuple[int, ...]]] = {
     name: spec.input_shape for name, spec in MODELS.items()
 }
+
+#: The tight scratchpad budget of every model, as one map.
+#:
+#: Measured at P8 and frozen. `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
+#: has the measurement, the two deviations from Section 15's rule, and the
+#: reason the fraction that section asks for is inoperative until tiling lands
+#: at P13. Derived from the registry rather than written a second time, for the
+#: same reason `INPUT_SHAPES` is.
+TIGHT_BUDGETS: Final[dict[str, int]] = {
+    name: spec.tight_budget for name, spec in MODELS.items()
+}
+
+#: The budget the allocator uses when nobody names one, which is what the
+#: default budget cells of every matrix in this project mean.
+DEFAULT_BUDGET: Final[int] = 1048576
 
 
 def generate_model(
