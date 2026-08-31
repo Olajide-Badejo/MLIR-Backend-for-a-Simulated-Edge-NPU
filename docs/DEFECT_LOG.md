@@ -922,3 +922,189 @@ None.
   the environment pinning rule (a job time apt install would resolve
   differently as mirrors move), image republished, dev image repinned to the
   new digest.
+
+### D-0026 the simulator aborted on an instruction with no operands
+
+- **Found:** 2026-08-31, phase P7, by an audit of the unvalidated execution
+  path rather than by a failing test.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** build a `Program` whose single `RELU` carries no operands at
+  all, hand it to `Simulator::runUnvalidated`, and run the binary. Before the fix
+  the process aborted inside libstdc++, and gtest printed its crash handler's
+  frame list, through `abort` and `pthread_kill`, instead of a result.
+- **What was wrong:** every kernel indexes its operands positionally.
+  `kernelRELU` reads `instruction.operands.front()`, the elementwise and windowed
+  kernels read `operands[0]` and `operands[1]`, and none of them looked first. On
+  the validated path that is correct and deliberate: `Program::validate()`
+  refuses an instruction with too few operands and names the `arity` check, so
+  the guarantee is already bought and re-checking it per element would be paying
+  for it a second time in the inner loop.
+
+  `Simulator::runUnvalidated` carries no such guarantee, and it is not a hole
+  left by accident either. Section 9.3 requires the bounds checked accessors to
+  refuse gracefully in every build mode and requires a test to prove it, and a
+  program that has passed `validate()` cannot reach that path at all, so a test
+  that could only submit validated programs would be asserting that a mechanism
+  exists rather than that it works. That entry point exists to reach the last
+  line of defence. It reached past it.
+
+  **The failure is worse than a crash, which is why it is a defect and not a
+  hardening task.** `_GLIBCXX_ASSERTIONS` is defined in the default build, so
+  `vector::front()` on an empty vector aborts, and an abort is exactly the
+  assertion Section 9.3 says the trap path must not have: graceful refusal is
+  the contract in a release build and in an assertions build alike. In a build
+  without that macro the same call is silent undefined behaviour, which is the
+  version that would have reached a report.
+- **Resolution:** `Simulator::execute` compares `instruction.operands.size()`
+  against `opcodeInfo(opcode).minOperands` before dispatching and records a trap
+  naming both numbers when it is short. The bound comes from the table generated
+  out of `NPUISADescription.td`, which is the description `validate()` reads, so
+  appending an opcode creates no second arity table to keep in agreement with the
+  first. `Trap.AnInstructionWithTooFewOperandsTrapsGracefully` submits the case
+  through `runUnvalidated` and
+  `Trap.TheValidatorRefusesAnInstructionWithTooFewOperands` submits the same
+  program through `run`, which is the pair the rest of that file is written in.
+
+### D-0027 a docstring claimed a check that did not exist
+
+- **Found:** 2026-08-31, phase P7, while auditing what the cost model mirror
+  actually asserts.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** read the module docstring of
+  `python/npu_frontend/cost_model.py` as it was first written. It said the
+  charges below it are "checked against the simulator's own output on a real
+  program, so a formula that drifted from the C++ would fail rather than quietly
+  produce a second cost model". Then read
+  `test/Python/test_cost_model_mirror.py`: it parsed the constants out of
+  `CostModel.h` and compared them, and it checked the Python formulas against
+  literals written beside them. Nothing ran the simulator.
+- **What was wrong:** the constants were mechanically checked and the formulas
+  were not. A mirror reproducing every constant and then charging with them
+  differently would have passed every assertion in the file, which is the more
+  expensive half of the drift the one home rule exists to prevent: the numbers
+  agree, the answers do not, and the plots of the later phases are drawn from the
+  answers.
+
+  The docstring is the defect rather than a symptom of it. A file that describes
+  a check it does not have is worse than a file with no check, because the next
+  person reads the claim and stops looking.
+- **Resolution:** `test_the_mirror_reproduces_the_machines_own_numbers` runs
+  `npu-sim` over an exported differential case and reconstructs the statistics it
+  prints from the Python mirror's own arithmetic: the raw MAC count exactly, and
+  the occupancy terms and both timeline totals to the precision the tool prints
+  at. The case is `matmul_narrow_bias`, and it is narrow on purpose: 5 by 19 by 3
+  folds into two tiles and neither fills the array, so a mirror that had dropped
+  the utilization or the preload term disagrees. Against a tile that fills the
+  array both terms are 1 and a mirror without them would still have passed. The
+  docstring now says what the file does, and names this defect for the half it
+  did not.
+
+### D-0028 the release build kept its assertions, and the gate's NDEBUG run proved nothing
+
+- **Found:** 2026-08-31, phase P7, by reading the compile flags of a build whose
+  tests had already passed.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** configure against the assertions LLVM at `~/llvm-project/build`
+  with `-DCMAKE_BUILD_TYPE=Release`, then read the compile line for any object
+  with `ninja -C build-ndebug -t commands
+  lib/Simulator/CMakeFiles/obj.NPUSimulator.dir/Memory.cpp.o`. `-DNDEBUG` is
+  there, and so are `-D_DEBUG`, `-D_GLIBCXX_ASSERTIONS` and a `-UNDEBUG` that
+  comes **after** it. Compiling a file whose first lines are `#ifndef NDEBUG` and
+  `#error` with those same flags fails.
+- **What was wrong:** Section 9.3 requires the bounds checked accessors to hold
+  in every build mode and the P7 gate asks for the trap tests in an assertions
+  build and an NDEBUG build with all four runs shown. The first attempt at the
+  NDEBUG half configured `-DCMAKE_BUILD_TYPE=Release`, built, ran the four tests,
+  and watched them pass. They passed in an assertions build.
+
+  `LLVMConfig.cmake` sets `LLVM_ENABLE_ASSERTIONS` as a plain variable from the
+  LLVM tree this project is configured against, which shadows the cache value
+  `-DLLVM_ENABLE_ASSERTIONS=OFF` sets, so the obvious override does not take
+  either. `HandleLLVMOptions` then reads it, adds the two macros and the
+  `-UNDEBUG`, and the last `-D` or `-U` on a command line wins. The project could
+  not produce a build without assertions at all, and nothing said so.
+- **What the finding actually is.** A proof that proved nothing, which is the
+  same shape as P3's, P5's and two of P6's, caught by the same habit those
+  recorded: read the thing the gate is about rather than the result it produced.
+  A green test in the wrong build looks exactly like a green test in the right
+  one, and the gate's wording is satisfied by either.
+- **Resolution:** `NPU_FORCE_NDEBUG`, off by default, in the top level
+  `CMakeLists.txt`. It sets `LLVM_ENABLE_ASSERTIONS` to `OFF` **before**
+  `include(HandleLLVMOptions)`, which is where those flags are decided and which
+  also rebuilds `LLVM_DEFINITIONS` from the same switch, and it defines `NDEBUG`
+  explicitly so the option means what its name says under any build type. The
+  configure log prints a line beginning `NDEBUG:` saying which way it went, and
+  `docs/BUILD.md` carries the configure line and the reasoning, because the next
+  person will otherwise reach for `-DCMAKE_BUILD_TYPE=Release` exactly as this
+  one did.
+
+  Two attempts in between are worth recording because each looked correct.
+  Putting the block **after** `include(HandleLLVMOptions)` sets a variable
+  nothing reads again. And rewriting `LLVM_DEFINITIONS` with `string(REPLACE)`
+  does remove the macros, and then hands `add_definitions` one argument full of
+  spaces, which CMake stops parsing at the first `=` and passes to the compiler
+  as a definition of `_GLIBCXX_USE_CXX11_ABI` whose value is the rest of the
+  line: twelve redefinition warnings out of a build that otherwise did exactly
+  what was wanted. The forced path splits the string into a list itself for that
+  reason, and the unforced path is left alone, because it works.
+
+### D-0029 the differential oracle's random inputs were all negative
+
+- **Found:** 2026-08-31, phase P7, while rehearsing the product side activation
+  fault. It was not what the rehearsal was looking for.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** run the exporter with `NPU_DIFFERENTIAL_OUT` set and read any
+  `.in0.bin` back as f32. Before the fix every value in every file was in
+  `[-1, 0)`, against a comment that said `[-1, 1)`.
+- **What was wrong:** one bit. The generator is a linear congruential step
+  followed by
+
+  ```
+  const uint32_t bits = static_cast<uint32_t>(state >> 33);
+  return static_cast<float>(bits) / 2147483648.0f - 1.0f;
+  ```
+
+  A shift of 33 leaves 31 significant bits, so `bits` is at most `2^31 - 1`, the
+  division lands in `[0, 1)` and the subtraction in `[-1, 0)`. The intended
+  shift is 32, which keeps all thirty two bits, divides into `[0, 2)` and
+  subtracts into `[-1, 1)`. The same generator was copied into
+  `DeterminismTest.cpp`, so both carried it.
+
+  **Nothing about the output looked wrong**, which is the whole difficulty. The
+  values were random, deterministic, reproducible from the seed, and inside the
+  interval the comment named at one end. Every case still ran, every comparison
+  still passed, and the suite reported twenty four cases agreeing.
+
+  What it cost is specific. The `relu` case compared all zeros against all
+  zeros: an input drawn entirely from `[-1, 0)` makes both the reference and the
+  simulator produce a buffer of zeros, and the assertion that they agree is an
+  assertion about nothing. The two `max_pool2d` cases never saw a window whose
+  maximum was positive, which is precisely the case an accumulator initialised
+  to zero rather than to negative infinity gets wrong. And the determinism test
+  convolved negative inputs against negative weights, so every product in the
+  reduction carried the same sign, which is the easiest possible case for a
+  summation order to survive.
+- **How it was found, because the route matters.** The product side activation
+  fault for `NPUSimulatorTests` was chosen to be `POOL_MAX` starting its
+  accumulator at zero, on the prediction that the hand computed tests would
+  catch one case and the differential suite would catch the two pooling cases on
+  randomized inputs. The differential did go red, and it reported **54 of 54**
+  elements mismatched on `max_pool2d`. That number is wrong for the fault: with
+  inputs spread over `[-1, 1)` and windows of four, about one window in sixteen
+  has an all negative maximum, so the expected figure was three or four. A
+  rehearsal is supposed to confirm a prediction, and the useful part of one is
+  the number that does not match.
+- **Resolution:** the shift is 32 in both files. Three guards, because the
+  defect is invisible in the output and a comment is not a mechanism.
+  `Differential.TheStreamSpansBothSigns` draws a hundred thousand values and
+  asserts the extremes reach past 0.99 in both directions, so a range that
+  narrowed rather than shifted is caught too.
+  `test_the_exported_inputs_straddle_zero` makes the same check against the
+  bytes that actually reached the files, pooled across the export and then per
+  operand for the operands of sixteen elements or more, and it survives a
+  rewrite of the C++ that keeps the comment and loses the property. The per
+  operand rule is conditioned on size deliberately: the three element bias of
+  `matmul_narrow_bias` is all positive in this export, which happens to a fair
+  three element sample one time in four. And the same test asserts the `relu`
+  case's reference output is not entirely zero, which is the case that goes
+  vacuous first and the one a reader would least expect to.
