@@ -43,6 +43,27 @@ Semantic Versioning once a release is tagged.
 - **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
+- **`scripts/regression-baseline.sh` records the safety net of Section 17.6, and
+  `--check` diffs against it.**
+
+  ```
+  bash scripts/regression-baseline.sh            build, measure, record
+  bash scripts/regression-baseline.sh --check    build, measure, diff, fail on drift
+  ```
+
+  It records into `test/baseline/baseline.json` the pass, fail and skip counts
+  and the test names of every suite plus the dash lint, the git sha, the tool
+  versions, and one cell per model per level per budget carrying the instruction
+  count, the cycles, the two DRAM byte counts, the MAC count and the largest
+  absolute error against onnxruntime. The `-O0` output tensors go to
+  `test/baseline/golden/` as `.npy`. Every number comes from a machine readable
+  source: lit's `--output`, GoogleTest's `--gtest_output=json:`, pytest's
+  `--junitxml` and the simulator's `--json-stats`. Nothing parses a log.
+- **The baseline schema is versioned and does not claim what it cannot
+  compute.** `schema_version` is 1, `--check` refuses a version it does not
+  recognise rather than reading a later field as a regression from zero, and
+  `absent_fields` names `energy` as arriving at P11 and the per level fields as
+  arriving at P9.
 - **Every model carries a tight scratchpad budget**, measured on 2026-08-31 and
   frozen as a required field of its `ModelSpec`, with `TIGHT_BUDGETS` derived
   from the registry. `docs/adr/0008-per-model-tight-scratchpad-budgets.md`
