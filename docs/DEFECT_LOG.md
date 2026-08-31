@@ -1141,3 +1141,72 @@ None.
   failure surfaces the child's stderr instead of a `CalledProcessError`
   traceback with the interesting half in a variable nobody prints. The docstring
   says why.
+
+### D-0031 the NDEBUG and sanitizer directories cannot build anything that links MLIR
+
+- **Found:** 2026-08-31, phase P8, on the first attempt to run the end to end
+  pipeline against the `build-ndebug` binaries.
+- **Status:** resolved 2026-08-31 as a documented limit, not as a code change.
+  The real fix is out of scope and is named below.
+- **Reproduce:**
+
+  ```bash
+  ninja -C build-ndebug -j6 npu-opt
+  echo 'module {}' | ./build-ndebug/bin/npu-opt -
+  # double free or corruption (!prev), exit 134
+  ```
+
+  And the mirror, under the sanitizers:
+
+  ```bash
+  ninja -C build-fuzz -j6 npu-opt
+  echo 'module {}' | ./build-fuzz/bin/npu-opt -
+  # AddressSanitizer: use-after-poison, inside mlir::BuiltinDialect::initialize
+  ```
+
+- **What was wrong, and it is not this project's code.** Both directories set a
+  compile time option in **this project's** translation units that the prebuilt
+  LLVM they link does not share.
+
+  `build-ndebug` turns `_GLIBCXX_ASSERTIONS` off, which is exactly what
+  `NPU_FORCE_NDEBUG` exists to do, while `~/llvm-project/build` is
+  `LLVM_ENABLE_ASSERTIONS=ON` and its archives were compiled with the macro on.
+  Mixing libstdc++ hardening across a link changes the definition of standard
+  containers between translation units, which is an ODR violation and undefined
+  however carefully the flags are written.
+
+  `build-fuzz` has the mirror: AddressSanitizer's container annotations are on
+  in this project's translation units and off in the LLVM archives, so an
+  instrumented translation unit poisons a `SmallVector`'s unused capacity and
+  uninstrumented MLIR code then writes into it.
+
+- **The evidence that it is the directory and not the compiler**, because the
+  distinction is the whole entry:
+  1. `echo 'module {}' | build-ndebug/bin/npu-opt -` aborts. That input reaches
+     no operation of this dialect, no pass, no pipeline and no tool code.
+  2. The AddressSanitizer stack is `main`, `MlirOptMain`,
+     `MLIRContext::MLIRContext`, `BuiltinDialect::initialize`,
+     `addTypes<..., Float8E5M2Type, ...>`. Every frame is MLIR's, and it is
+     reached before this project's code runs at all.
+  3. The same sources built in `build` run both inputs at exit 0, and have done
+     so several thousand times across this phase.
+- **Why it went unnoticed for two phases.** `build-ndebug` was created at P7 to
+  prove Section 9.3's "every build mode" claim about the simulator's bounds
+  checked accessors, and the simulator links the format library and LLVM's
+  `Support` and no MLIR at all. Nothing had ever built an MLIR linking target in
+  it. P8 is the first phase whose end to end run wants `npu-opt`, so P8 is the
+  first phase that could find this. The CI sanitizers job builds three targets
+  by name and none of them links MLIR, which is why CI has never seen it either.
+- **Resolution.** The limit is made loud rather than papered over. The
+  `NPU_FORCE_NDEBUG` branch of the top level `CMakeLists.txt` emits a
+  `message(WARNING)` naming the two sound targets and the failure mode,
+  `docs/BUILD.md` carries the reproduction and the reasoning, and
+  `docs/PHASE_STATE.md` records it as an open question.
+
+  **The real fix is a second LLVM tree**, built with
+  `-DLLVM_ENABLE_ASSERTIONS=OFF` for the NDEBUG half and with the sanitizers for
+  the other. That is an hour of build time per tree and a decision with a cost,
+  like the third CI build P7 left open, so it is left to be taken deliberately
+  rather than taken at the end of a phase. Nothing any gate has asked for is
+  blocked by it: Section 9.3's four runs are the simulator's, and the simulator
+  is one of the two targets these directories build correctly.

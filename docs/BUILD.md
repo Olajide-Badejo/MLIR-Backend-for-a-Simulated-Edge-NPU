@@ -101,6 +101,48 @@ The option affects this project's own targets and nothing else. It does not
 touch `~/llvm-project`, which is prebuilt, shared, and not this project's to
 rebuild.
 
+### What these two directories are for, and what they are not
+
+*Found at P8, recorded as D-0031.*
+
+`build-ndebug` compiles this project's translation units **without**
+`_GLIBCXX_ASSERTIONS` and links them against LLVM and MLIR archives compiled
+**with** it. Mixing libstdc++ hardening across a link is an ODR violation, and
+it is undefined however carefully the flags are written. It is benign for the
+targets this directory exists for, which link the format library and LLVM's
+`Support` and nothing else:
+
+```bash
+ninja -C build-ndebug -j6 NPUSimulatorTests NPUEncodingTests   # sound
+```
+
+It is not benign for anything that links MLIR:
+
+```bash
+ninja -C build-ndebug -j6 npu-opt
+echo 'module {}' | ./build-ndebug/bin/npu-opt -
+# double free or corruption (!prev), exit 134
+```
+
+That input reaches no operation of this dialect, no pass, and no tool code at
+all. The abort is inside MLIR's own context construction, and the same source
+built in `build` runs the same input at exit 0. **The failure is the directory,
+not the compiler.**
+
+`build-fuzz` has the mirror of the same limit for the same reason.
+AddressSanitizer's container annotations are on in this project's translation
+units and off in the LLVM archives, so an `npu-opt` built there reports
+`use-after-poison` inside `mlir::BuiltinDialect::initialize` before `main` has
+done anything of its own. The CI sanitizers job builds three targets by name and
+none of them links MLIR, which is why that job has never seen this.
+
+**The only real fix is a second LLVM tree**, built with
+`-DLLVM_ENABLE_ASSERTIONS=OFF` for the NDEBUG half and with the sanitizers for
+the other. That is an hour of build time per tree and a decision with a cost, so
+it is recorded here and left to be taken deliberately rather than at the end of
+a phase. Until it is taken, build only the test binaries in these directories,
+which is what every phase gate has actually asked for.
+
 ## The Python environment
 
 The virtual environment is `~/npu-venv`, CPython 3.14.4. It is **reused, not
