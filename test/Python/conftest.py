@@ -34,24 +34,44 @@ DEFAULT_LLVM_BUILD = Path.home() / "llvm-project" / "build"
 _PACKAGE_SUBPATH = Path("tools") / "mlir" / "python_packages" / "mlir_core"
 
 
+def _cache_directories() -> list[Path]:
+    """The build directories whose CMake cache might carry the path.
+
+    `NPU_BUILD_DIR` first, then this repository's `build/`. The first entry was
+    added after D-0032: a caller that names a build directory is naming the one
+    whose cache should be read, and before this the conftest looked only at
+    `build/`. Under `scripts/coverage.sh` there is no `build/` in CI, so the
+    lookup fell through to a default path that does not exist in the container,
+    and the suite would have failed at `import mlir` had the job not happened to
+    set the variable itself. It should not have to.
+    """
+    directories: list[Path] = []
+    named = os.environ.get("NPU_BUILD_DIR")
+    if named:
+        directories.append(Path(named))
+    directories.append(REPO_ROOT / "build")
+    return directories
+
+
 def _from_cmake_cache() -> Path | None:
-    """Read MLIR_PYTHON_PACKAGES_DIR out of this repository's CMake cache.
+    """Read MLIR_PYTHON_PACKAGES_DIR out of a build directory's CMake cache.
 
     Reading the cache rather than guessing means pytest and lit agree on the
     path by construction: the cache is the single value the configure step
     computed, and lit.site.cfg.py is generated from that same value.
     """
-    cache = REPO_ROOT / "build" / "CMakeCache.txt"
-    if not cache.is_file():
-        return None
     pattern = re.compile(r"^MLIR_PYTHON_PACKAGES_DIR:[^=]*=(.*)$")
-    try:
-        for line in cache.read_text(encoding="utf-8").splitlines():
-            match = pattern.match(line)
-            if match and match.group(1).strip():
-                return Path(match.group(1).strip())
-    except OSError:
-        return None
+    for directory in _cache_directories():
+        cache = directory / "CMakeCache.txt"
+        if not cache.is_file():
+            continue
+        try:
+            for line in cache.read_text(encoding="utf-8").splitlines():
+                match = pattern.match(line)
+                if match and match.group(1).strip():
+                    return Path(match.group(1).strip())
+        except OSError:
+            continue
     return None
 
 

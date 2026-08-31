@@ -2928,7 +2928,7 @@ instructions the injection brought, and by no more. A count that grew by four
 would mean the injection cost something it did not declare; one that grew by two
 would mean a pass nobody registered removed something.
 
-### Two defects, both found by something other than the test suite
+### Three defects, and the test suite found none of them
 
 **D-0030** is a test that spawned a second interpreter and let it inherit
 `PYTHONPATH`. `pythonpath` in `pyproject.toml` puts the package root on pytest's
@@ -2962,6 +2962,50 @@ three targets by name and none of them links MLIR, which is why CI has not seen
 it either. The real fix is a second LLVM tree built without assertions, an hour
 of build time and a decision with a cost, so it is documented loudly and left to
 be taken deliberately.
+
+**And a third, D-0032, which arrived after this entry was written**, on the
+first CI run of the coverage job's new Python arm. It belongs here rather than
+in a later entry because it is the same sentence as the other two, said a third
+way: a result that depended on what else was lying around.
+
+`scripts/coverage.sh` builds into `build-coverage/` and never told the Python
+suite so. On a developer machine the suite found its binaries in `build/`,
+sitting beside it. In the job there is no `build/`, so `npu-opt` was not found
+and the run died at collection with exit 2. The fix is that the script exports
+`NPU_BUILD_DIR` set to the directory it actually built.
+
+**The interesting half was underneath.** Three places knew how to find a binary:
+`npu_frontend.find_tool`, and a hand written `build_directory()` in each of two
+test modules. Only the first said anything; the other two **skipped**. Measured
+by letting collection survive and changing nothing else: `484 passed, 12
+skipped`, five of those skips being tests that should have run, one of them
+`test_every_case_agrees`, which is P7's gate item that the reference interpreter
+and the simulator agree on every operation. A green run, with a coverage number
+attached, describing a suite that had not run its differential oracle. Section
+17.7 says coverage is only counted from a run where every test passed; every
+test did pass, and five of them passed by not running.
+
+The rule is one now, in `test/Python/tools.py`, and the policy with it: a
+missing binary is a **skip** when nobody named a build directory, which is a
+developer running the pure Python tests, and a **failure** when somebody did,
+because naming one is asserting the build is there.
+`test/Python/test_tool_discovery.py` scans for a second copy so the next one is
+a red test rather than a thing somebody notices in a year.
+
+**What it says about rehearsals.** This phase rehearsed the coverage arm before
+switching it on and the rehearsal matched its prediction exactly. The prediction
+was about the threshold arithmetic and it was right about that. It was never a
+test of the arm's environment, and the environment is what broke. **A local
+rehearsal proves a step's logic and cannot prove its surroundings**, because the
+surroundings are the thing that differs, and the first run of a new CI step is
+the first time anybody learns what they are. That is an argument for switching
+steps on one at a time, which is what the activation table already asks for, and
+it is the strongest thing this phase learned about its own method.
+
+After the fix, under the job's conditions in a worktree with no `build/`:
+`495 passed, 7 skipped`, C++ 86.1, Python 90.61, exit 0. The Python coverage
+headroom widened from 0.27 points to 0.61, because the tests that had been
+skipping now run.
 
 ### The OpenMP split, which P7 left open, is the compiler and not the image
 

@@ -20,9 +20,11 @@ costs more than writing these lines did.
 
 **P8, the walking skeleton and the safety net.** Branch
 `phase/p8-walking-skeleton`, cut from `main` at `7a4d060`, which is the P7
-merge. Eleven commits, not pushed. The eleventh is the one that carries this
-table, so it is the branch tip and is named by subject rather than by a sha it
-cannot know.
+merge. Twelve commits. The branch has been pushed once and its first CI run is
+recorded under "Next command"; the twelfth commit is the fix that run produced
+and is not pushed yet. The twelfth is also the one that carries this table, so
+it is the branch tip and is named by subject rather than by a sha it cannot
+know.
 
 | Commit | Subject |
 |---|---|
@@ -36,7 +38,8 @@ cannot know.
 | `852b3f5` | `feat(scripts): the reachability check in full, with a mechanical simulation layer` |
 | `68e8984` | `feat(scripts): coverage measured, and the real thresholds set` |
 | `93679c3` | `fix(build): say out loud what the NDEBUG and sanitizer directories are for` |
-| tip | `docs: record the P8 defects and hand off the phase` |
+| `6cf6c1a` | `docs: record the P8 defects and hand off the phase` |
+| tip | `fix(coverage): one rule for finding a built binary, and one policy about not` |
 
 **The commit order is the roadmap's.** The `-O0` pipeline comes first because
 nothing can name a level until one exists. The simulator's JSON statistics come
@@ -48,10 +51,12 @@ comes before the reachability and coverage work because the roadmap puts the net
 after the run it freezes.
 
 **Every commit was checked out and built on its own.** A worktree at
-`/tmp/p8check`, since removed, walked the ten in order, ran `cmake -S . -B build`
-and `ninja -C build -j6` at each, and then `ninja -C build check-npu`. All ten
-built clean and all ten reported 20 of 20. A commit sequence nobody has bisected
-is a sequence that only reads as one.
+`/tmp/p8check`, since removed, walked the first ten in order, ran
+`cmake -S . -B build` and `ninja -C build -j6` at each, and then
+`ninja -C build check-npu`. All ten built clean and all ten reported 20 of 20.
+The eleventh and twelfth touch documentation and the Python suite and build
+nothing new. A commit sequence nobody has bisected is a sequence that only reads
+as one.
 
 **The end to end pipeline worked the first time it was run**, matching
 onnxruntime to 2.98e-8 on LeNet with no debugging. That is recorded because it is
@@ -83,7 +88,7 @@ are listed under "Next command". Item by item, with the proof.
 | 14 | nor the `-O2` instruction count | PASS, resolved | See "How the `-O2` clause was read" below |
 | 15 | the per model tight budgets recorded | PASS | `docs/adr/0008-per-model-tight-scratchpad-budgets.md`, dated, with the measurement and two recorded deviations |
 | 16 | CI proven red for all four fault classes with URLs recorded | REHEARSED, CI PENDING | All four rehearsed locally under CI's exact invocations, predictions written first, all four matched, all four restored. Recipes below. The CI runs and their URLs are the orchestrator's |
-| 17 | coverage measured and the real thresholds set | PASS | C++ 86.0 percent, threshold 85. Python 90.3 percent, threshold 90. Branch coverage reported for the allocator and the decoder |
+| 17 | coverage measured and the real thresholds set | PASS | C++ 86.1 percent, threshold 85. Python 90.6 percent, threshold 90. Branch coverage reported for the allocator and the decoder. Proven in CI's own environment after D-0032 |
 
 ### How the `-O2` clause was read, and why
 
@@ -147,14 +152,14 @@ Every command below was run on this branch at `93679c3`, from
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
 | `build-fuzz/bin/NPUSimulatorTests` under ASan and UBSan | 54 passed, 1 skipped, exit 0 |
 | `build-fuzz/bin/NPUEncodingTests` under ASan and UBSan | 75 passed, 2 skipped, exit 0 |
-| `python -m pytest test/Python -q` | 482 passed, 7 skipped, 7 deselected, exit 0 |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | 489 passed, 7 skipped, exit 0. 180 at P7, plus this phase's 316 |
+| `python -m pytest test/Python -q` | 488 passed, 7 skipped, 7 deselected, exit 0 |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | 495 passed, 7 skipped, exit 0. 180 at P7, plus this phase's 322 |
 | `mypy` | no issues found in 19 source files |
 | `black --check .` | 39 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 239 of 239 files |
+| `reuse lint` | compliant, 241 of 241 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
 | `python scripts/build-model-ir.py` | 28 IR files written |
 | `python scripts/check-reachability.py` | pass, `layers checked: import, lowering, encoding, simulation, model`, 2 exemptions in force |
@@ -162,12 +167,12 @@ Every command below was run on this branch at `93679c3`, from
 | `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `bash scripts/regression-baseline.sh --check` | no drift, exit 0 |
-| `bash scripts/coverage.sh 85 90` | C++ 86.0 PASS, Python 90.3 PASS, exit 0 |
+| `bash scripts/coverage.sh 85 90` | C++ 86.1 PASS, Python 90.6 PASS, exit 0. Also run in a worktree with no `build/`, which is the coverage job's own shape |
 | `git status --short` | empty |
 
 **Five gtest binaries and one lit suite, unchanged in number.** What grew is
-pytest, from 180 to 489, which is where the end to end matrix, the two oracles,
-the driver's contract and the tight budgets all live.
+pytest, from 180 to 495, which is where the end to end matrix, the two oracles,
+the driver's contract, the tight budgets and the tool discovery rule all live.
 
 ### The baseline, recorded and checked
 
@@ -176,18 +181,28 @@ and skip counts and their full test name lists, the git sha, the tool versions,
 `absent_fields`, and 14 cells. `test/baseline/golden/` holds seven `.npy`
 tensors, one per model at `-O0`.
 
-**The recorded `git_sha` is `4cae9ab` and the branch tip is later**, which is
+**The recorded `git_sha` is `6cf6c1a` and the branch tip is later**, which is
 correct rather than stale. Section 16.1 states the same fact for result files: a
 result is committed **after** the code it measures, so it can never carry the sha
-of the commit that contains it. `--check` at `93679c3` reports no drift, which is
+of the commit that contains it. `--check` at the tip reports no drift, which is
 the claim that matters.
+
+**It was re-recorded once, in the commit that fixed D-0032**, because that
+commit adds six tests and the baseline records the test names of every suite.
+The diff is the point rather than a nuisance: `--check` reported seven
+differences, the pass count and the six added names, and **no cell and no golden
+moved**. The suite's composition changed and none of its numbers did, which is
+exactly the distinction the two halves of this file exist to draw. Section
+17.6's rule that a re-record goes in its own commit after a
+`docs/BREAKING_CHANGES.md` declaration is about an intended movement in the
+**numbers**; there was none here, so there was nothing to declare.
 
 Zero drift on unchanged code:
 
 ```
 regression-baseline --check
 
-  recorded at 4cae9abc1a23, checked at 68e8984bcdb9
+  recorded at 6cf6c1a143c9, checked at 6cf6c1a143c9
   14 cells, 7 golden tensors
   suite NPUAllocatorTests      29 passed    0 failed    0 skipped
   suite NPUEncodingTests       76 passed    0 failed    1 skipped
@@ -196,7 +211,7 @@ regression-baseline --check
   suite NPUTilingTests         12 passed    0 failed    0 skipped
   suite check-npu              20 passed    0 failed    0 skipped
   suite dash-lint               2 passed    0 failed    0 skipped
-  suite pytest                489 passed    0 failed    7 skipped
+  suite pytest                495 passed    0 failed    7 skipped
 
 regression-baseline: no drift.
 ```
@@ -316,6 +331,72 @@ has to prove.
 
 **Result.** Exactly that.
 
+**And this prediction was about the wrong thing, which the first CI run
+showed.** It tested the threshold arithmetic and was right about it. It was
+never a test of the arm's **environment**, and the environment is what broke:
+the job configures `build-coverage/` and nothing else, this machine has a
+`build/` sitting beside it, and the Python suite found its binaries through the
+second one on every local run. That is D-0032. It is fixed, and the fix is
+rehearsed below under conditions stricter than the job's own.
+
+**The general lesson, recorded because it will recur.** The first run of a new
+CI step is the first time anybody learns what that step's environment actually
+is. A local rehearsal proves the step's logic; it cannot prove the step's
+surroundings, because the surroundings are exactly what differs. That is the
+argument for switching steps on one at a time, and it is what the activation
+table is for.
+
+### 5. D-0032, rehearsed after the fact, under the job's own conditions
+
+The one rehearsal in this phase that was run **after** a CI failure rather than
+before one, and the only one whose conditions were reproduced rather than
+assumed. A worktree with no `build/`, which is what the job's checkout is, with
+`MLIR_DIR` and `LLVM_DIR` from the environment the way the image supplies them
+and `NPU_BUILD_DIR`, `NPU_OPT` and `PYTHONPATH` unset the way the job leaves
+them:
+
+```bash
+git worktree add --detach /tmp/p8cov HEAD
+cd /tmp/p8cov
+export MLIR_DIR=... LLVM_DIR=...
+unset NPU_BUILD_DIR NPU_OPT PYTHONPATH MLIR_PYTHON_PACKAGES_DIR
+bash scripts/coverage.sh 85 90
+```
+
+`MLIR_PYTHON_PACKAGES_DIR` is unset too, which is **stricter than CI**: the job
+does set it, and after the fix the script no longer needs it to.
+
+**Before the fix**, reproducing job 99449908485 exactly, including its message:
+
+```
+coverage: PASS. C++ 86.0 percent is at or above the threshold of 85 percent.
+ERROR collecting test/Python/test_metamorphic.py
+E   VerificationError: npu-opt was not found ... Looked at $NPU_OPT (unset or
+E   not a file), /tmp/p8cov/build/bin/npu-opt , and PATH.
+Interrupted: 1 error during collection
+STEP EXIT=2
+```
+
+**The five silent skips behind it**, exposed by naming `npu-opt` directly so
+collection survived and changing nothing else: `484 passed, 12 skipped`, the
+five being four tests in `test_refexec_differential.py` and one in
+`test_cost_model_mirror.py`. One of them is `test_every_case_agrees`, the P7
+gate item. A green run with a coverage number attached, describing a suite that
+had not run its differential oracle.
+
+**After the fix**, same worktree, same command:
+
+```
+coverage: PASS. C++ 86.1 percent is at or above the threshold of 85 percent.
+coverage: MLIR bindings from /tmp/p8cov/build-coverage/CMakeCache.txt
+495 passed, 7 skipped
+coverage: PASS. Python 90.60 percent is at or above the threshold of 90.
+STEP EXIT=0
+```
+
+495 where the broken state gave 484, and the Python headroom widened from 0.27
+points to 0.61 because the tests that had been skipping now run.
+
 ## The proof of failure gate, Section 19.1
 
 Four fault classes, each rehearsed locally under CI's own invocation, with the
@@ -426,13 +507,15 @@ slow would be a label rather than a measurement. The marker and the P10 CI step
 stay in place and start doing work when three levels and two budgets multiply
 this matrix by six.
 
-**The Python coverage threshold has 0.27 points of headroom.** Measured 90.273,
-threshold 90, which is Section 17.7's own rule of the measured value rounded down
-to a whole percent. **This is the thing to watch on the first CI run**: the
-container is a different platform and a branch this machine does not take could
-put the number below 90. If it does, the honest response is to record the CI
-host's measurement and set the threshold from it, not to widen it to a round
-number nobody measured.
+**The Python coverage threshold now has 0.61 points of headroom, up from 0.27.**
+The measurement moved from 90.273 to 90.606 when D-0032 was fixed, for the
+plainest of reasons: five tests that had been skipping now run. The threshold
+stays at 90, which is Section 17.7's own rule of the measured value rounded down
+to a whole percent, and raising it to 90.6 would be gating on a number measured
+on one host. Still worth watching on the next run, since the container is a
+different platform, and if it lands below 90 the honest response is to record the
+CI host's measurement and set the threshold from it rather than widen it to a
+round number nobody measured.
 
 **`scripts/regression-baseline.sh --check` is not a CI step**, and Section 19.0's
 activation table has no row for it. Two reasons, and the second is the real one:
@@ -457,38 +540,55 @@ than forgotten if either gains a converter.
 
 ## Next command
 
-Push `phase/p8-walking-skeleton` and open the merge pull request.
+Push `phase/p8-walking-skeleton` again, so the D-0032 fix gets a run.
 
-**Nothing on this branch has been pushed**, so no CI run exists for any of it.
-The first push is the first run of two newly activated steps and of a coverage
-job that now installs the Python dependencies and gates on two thresholds.
+### What the first push already established
 
-Four things are worth watching specifically on that first run.
+Run 33367169622. **`lint`, `build-and-test` and `sanitizers` all green**,
+including both of this phase's newly activated steps: the full reachability
+check with its model IR build, and everything else the build and test job gained.
 
-**The coverage job is materially different from the one that has been running
-since P2.** It now installs `requirements-lock.txt`, runs the whole pytest matrix
-under `pytest-cov`, and gates on 85 and 90 where it gated on 0. Its wall clock
-will go up by the Python suite's minute plus a first pip install, and the pip
-cache key is the same as the build and test job's, so the second run is cheaper
-than the first. The Python threshold's 0.27 points of headroom is the specific
-risk.
+**The coverage job went red**, job 99449908485, and not at a threshold. The C++
+arm passed at 86.1, one tenth of a point above the local measurement, and then
+pytest died at **collection**: the Python suite could not find `npu-opt`, because
+the job configures `build-coverage/` and nothing else and the suite was looking
+in `build/`. That is D-0032, it is fixed in the tip commit, and the fix is
+rehearsed in a worktree with no `build/` under conditions stricter than the
+job's own. The defect log carries the before and after; the short version is
+`STEP EXIT=2` becoming `STEP EXIT=0` with `495 passed, 7 skipped`.
 
-**The full reachability step runs two commands.**
-`scripts/build-model-ir.py` writes 28 IR files into `experiments/models/` and
-then the check reads them. It needs the Python dependencies and a built
-`npu-opt`, which is why it sits after the pytest step, and it needs
-`docs/ISA_OPCODES.json` to be current, which is why it sits after the ISA
-staleness gate.
+**The five silent skips are the part worth carrying forward.** Behind the loud
+failure, two test modules with their own hand written binary lookup would have
+**skipped** rather than failed, and one of them carries P7's gate item that the
+reference interpreter and the simulator agree on every operation. A green
+coverage run would have attached a number to a suite that had not run its
+differential oracle. The lookup is now one rule with one policy, and
+`test_tool_discovery.py` makes a second copy a red test.
 
-**Then the four proof of failure pull requests of Section 19.1**, each on its
-own, each from a branch named under `phase/`, with the four red URLs and one
-green URL pasted into `docs/ENGINEERING_LOG.md`. The recipes and the local
-results are above; if a fault is caught by a different job than the prediction
-says, Section 19.1 is explicit that this is a finding to record rather than a
-fault to adjust.
+### What to watch on the next run
+
+**The coverage job, again and specifically.** It is the only job whose new
+behaviour is still unproven in CI. Expect the C++ arm at about 86.1 and the
+Python arm at about 90.6, and expect the log to carry the line
+`coverage: MLIR bindings from .../build-coverage/CMakeCache.txt`, which is the
+fix reporting that it resolved the path itself rather than relying on the job's
+environment.
+
+**The other three jobs are re-runs of a green configuration** plus the tip
+commit, which touches the Python suite and documentation only.
+
+### Then, still outstanding
+
+**The four proof of failure pull requests of Section 19.1**, each on its own,
+each from a branch named under `phase/`, with the four red URLs and one green
+URL pasted into `docs/ENGINEERING_LOG.md`. The recipes and the local results are
+above; if a fault is caught by a different job than the prediction says, Section
+19.1 is explicit that this is a finding to record rather than a fault to adjust.
 
 **And the two activation proofs above**, on `phase/p8-activation-rehearsal`,
 deleted after the restore run.
+
+**Then the merge pull request.**
 
 ## Next phase
 

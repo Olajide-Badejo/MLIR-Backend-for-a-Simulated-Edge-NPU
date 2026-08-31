@@ -319,6 +319,49 @@ echo "coverage: PASS. C++ ${line_percent} percent is at or above the threshold o
 
 python_json="${build_dir}/python-coverage.json"
 
+# ---------------------------------------------------------------------------
+# D-0032. **This script builds into build-coverage/ and therefore has to say
+# so.** The suite finds a built binary through NPU_BUILD_DIR, then through
+# <repo>/build, then through PATH. This script configures build-coverage/ and
+# nothing else, and in CI there is no build/ beside it, so without the export
+# below every lookup fails: loudly in the frontend, which took the run down at
+# collection, and **silently** in the two test modules that skip when a binary
+# is missing. The silent half is the dangerous one, because a coverage number
+# taken from a run where five tests skipped describes a smaller suite than the
+# one anybody thinks was measured.
+#
+# It worked on a developer machine only because build/ happens to sit beside
+# build-coverage/ there. That is the same failure class as D-0030: a result that
+# depended on what else was lying around.
+# ---------------------------------------------------------------------------
+export NPU_BUILD_DIR="${build_dir}"
+
+# The MLIR bindings are resolved the same way and for the same reason.
+# conftest.py reads this variable first and a CMake cache second, and the cache
+# it should read is the one belonging to the build directory in use. Deriving it
+# here means this script does not depend on the job's environment happening to
+# set it.
+if [ -z "${MLIR_PYTHON_PACKAGES_DIR:-}" ]; then
+  bindings="$(cache_value MLIR_PYTHON_PACKAGES_DIR "${build_dir}/CMakeCache.txt")"
+  if [ -n "${bindings}" ]; then
+    export MLIR_PYTHON_PACKAGES_DIR="${bindings}"
+    echo "coverage: MLIR bindings from ${build_dir}/CMakeCache.txt"
+  fi
+fi
+
+# And the binaries this script just built are asserted to be where it says they
+# are, before the suite is asked to find them. A missing one here is this script
+# having failed to build it, which is a better sentence than a lookup failure
+# inside a test module three layers down.
+for required in npu-opt npu-translate npu-sim NPUSimulatorTests; do
+  if [ ! -x "${build_dir}/bin/${required}" ]; then
+    echo "coverage: FAIL. ${build_dir}/bin/${required} is missing, so the" >&2
+    echo "coverage: Python suite would skip or fail on it. That is this script" >&2
+    echo "coverage: having not built it rather than a lookup problem. D-0032." >&2
+    exit 1
+  fi
+done
+
 echo ""
 if ! python3 -c "import pytest, pytest_cov, torch, onnx, onnxruntime" >/dev/null 2>&1; then
   if [ "${python_threshold}" != "0" ]; then

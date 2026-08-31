@@ -216,7 +216,7 @@
     }
   ],
   "generator_version": "1.0.0",
-  "git_sha": "4cae9abc1a2395511fba1618101e4fe191ca17dc",
+  "git_sha": "6cf6c1a143c9ab698cb3d999d5125e2951c9d3ce",
   "schema_version": 1,
   "suites": {
     "NPUAllocatorTests": {
@@ -488,7 +488,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 489,
+      "passed": 495,
       "skipped": 7,
       "tests": [
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
@@ -986,7 +986,13 @@
         "test.Python.test_tight_budgets::test_the_tight_budget_still_allocates[inception_block]",
         "test.Python.test_tight_budgets::test_the_tight_budget_still_allocates[lenet]",
         "test.Python.test_tight_budgets::test_the_tight_budget_still_allocates[lenet_batched]",
-        "test.Python.test_tight_budgets::test_the_tight_budget_still_allocates[resnet_block]"
+        "test.Python.test_tight_budgets::test_the_tight_budget_still_allocates[resnet_block]",
+        "test.Python.test_tool_discovery::test_a_named_build_directory_makes_a_missing_binary_a_failure",
+        "test.Python.test_tool_discovery::test_an_empty_variable_counts_as_unset",
+        "test.Python.test_tool_discovery::test_no_named_build_directory_still_skips",
+        "test.Python.test_tool_discovery::test_no_test_module_builds_a_path_to_a_binary_by_hand",
+        "test.Python.test_tool_discovery::test_no_test_module_locates_a_build_directory_for_itself",
+        "test.Python.test_tool_discovery::test_the_discovery_finds_the_real_binaries_in_this_run"
       ]
     }
   },

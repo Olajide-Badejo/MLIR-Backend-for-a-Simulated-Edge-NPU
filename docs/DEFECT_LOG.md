@@ -1210,3 +1210,129 @@ None.
   rather than taken at the end of a phase. Nothing any gate has asked for is
   blocked by it: Section 9.3's four runs are the simulator's, and the simulator
   is one of the two targets these directories build correctly.
+
+### D-0032 three tool discoveries disagreed, and only one of them said so
+
+- **Found:** 2026-08-31, phase P8, **by CI**, on the first run of the coverage
+  job's new Python arm. Run 33367169622, job 99449908485. Every local run had
+  been green, and no local run could have found it.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** in a checkout with **no** `build/` directory, which is what the
+  coverage job has because it configures `build-coverage/` and nothing else:
+
+  ```bash
+  git worktree add --detach /tmp/p8cov HEAD
+  cd /tmp/p8cov
+  export MLIR_DIR=... LLVM_DIR=...      # what the container image supplies
+  unset NPU_BUILD_DIR NPU_OPT PYTHONPATH
+  bash scripts/coverage.sh 85 90
+  ```
+
+  The C++ half passes, then:
+
+  ```
+  ERROR collecting test/Python/test_metamorphic.py
+  test/Python/test_metamorphic.py:248: in <module>
+      @pytest.mark.parametrize("level", levels_that_eliminate_dead_code())
+  python/npu_frontend/compile.py:156: in describe_pipeline
+      tool = find_tool("npu-opt")
+  E   VerificationError: npu-opt was not found ... Looked at $NPU_OPT (unset or
+  E   not a file), /tmp/p8cov/build/bin/npu-opt , and PATH.
+  Interrupted: 1 error during collection
+  STEP EXIT=2
+  ```
+
+- **What was wrong.** `scripts/coverage.sh` builds into `build-coverage/` and
+  never told the Python suite so. The suite looks for a binary at
+  `$NPU_BUILD_DIR/bin`, then `<repo>/build/bin`, then `PATH`, and in that job
+  none of the three held anything.
+
+  **It worked on a developer machine only because `build/` happens to sit beside
+  `build-coverage/` there.** That is the same failure class as D-0030 two entries
+  up: a result that depended on what else was lying around rather than on what
+  the command was given.
+
+- **Why it surfaced at collection rather than as a failing test**, which is the
+  detail that made it fatal instead of merely red. `test_metamorphic.py`
+  parametrizes a test on `levels_that_eliminate_dead_code()`, which shells out
+  to `npu-opt`. A parametrization is evaluated when the module is imported, so
+  the tool lookup ran in the **collection** phase, where there is no test to
+  attach a failure or a skip to. pytest exits 2 and the whole run stops. Reading
+  the level set from the compiler is what makes the P9 check fill itself without
+  an edit, so the parametrization stays; what changes is that the environment
+  now supplies the tool.
+
+- **The two instances hiding behind the loud one, which are the worse half.**
+  Three places in this project knew how to find a built binary:
+  `npu_frontend.find_tool`, and a hand written `build_directory()` in each of
+  `test_refexec_differential.py` and `test_cost_model_mirror.py`. The copies
+  looked at `$NPU_BUILD_DIR` and `<repo>/build` and nothing else, and they
+  **skipped** rather than failing when they found neither.
+
+  Measured, by naming `npu-opt` directly so collection survived and leaving
+  everything else as the job leaves it:
+
+  ```
+  SKIPPED test/Python/test_cost_model_mirror.py:214
+  SKIPPED test/Python/test_refexec_differential.py:134
+  SKIPPED test/Python/test_refexec_differential.py:162
+  SKIPPED test/Python/test_refexec_differential.py:223
+  SKIPPED test/Python/test_refexec_differential.py:252
+  484 passed, 12 skipped
+  ```
+
+  Five tests, including `test_every_case_agrees`, which is the Phase P7 gate
+  item that the reference interpreter and the simulator agree on every
+  operation. **The run would have reported success and attached a coverage
+  number to it**, and that number would have described a suite in which the
+  differential oracle and the cost model mirror did not execute. Section 17.7
+  says coverage is only counted from a run where every test passed. Every test
+  did pass, and five of them passed by not running.
+
+- **Resolution, in two parts, because there are two faults.**
+
+  The **environment**: `scripts/coverage.sh` exports `NPU_BUILD_DIR` set to its
+  own build directory, derives `MLIR_PYTHON_PACKAGES_DIR` from that directory's
+  CMake cache when the caller has not set one, and asserts that the four
+  binaries it just built are present before it asks the suite to find them. A
+  missing one is now this script having failed to build it, which is a better
+  sentence than a lookup failure three layers down.
+
+  The **duplication**: `test/Python/tools.py` is the one rule, wrapping
+  `find_tool`, and both copies are deleted. It also carries the policy that
+  closes the silent half: a missing binary is a **skip** when nobody named a
+  build directory, which is a developer running the pure Python tests, and a
+  **failure** when somebody did, because a caller that names a build directory
+  is asserting that the build is there.
+
+  `test/Python/test_tool_discovery.py` is the mechanism rather than the
+  intention. It scans the test modules for a file locating a build directory for
+  itself, and separately for a file constructing a path to a binary by hand, so
+  a fourth copy is a red test. `scripts/` is out of scope and the test says why:
+  `regression_baseline.py` needs a *configured* directory with a `CMakeCache.txt`
+  and a `test/` subdirectory, which is a different question from where a binary
+  is.
+
+- **Verified under the job's own conditions**, in a worktree with no `build/`
+  and with `MLIR_PYTHON_PACKAGES_DIR` unset as well, which is stricter than CI:
+
+  ```
+  coverage: PASS. C++ 86.1 percent is at or above the threshold of 85 percent.
+  coverage: MLIR bindings from /tmp/p8cov/build-coverage/CMakeCache.txt
+  495 passed, 7 skipped
+  coverage: PASS. Python 90.60 percent is at or above the threshold of 90.
+  STEP EXIT=0
+  ```
+
+  495 passed where the broken state gave 484, and the Python coverage headroom
+  widened from 0.27 points to 0.61 for the plainest of reasons: the tests that
+  had been skipping now run.
+
+- **What this says about the phase's own claims.** `docs/PHASE_STATE.md` recorded
+  the coverage arm's activation rehearsal as matching its prediction, and it did,
+  on a machine where `build/` existed. The prediction was about the threshold
+  arithmetic and it was right about that; it was never a test of the arm's
+  environment, and the handoff has been corrected to say so. **The first run of a
+  new CI step is the first time anybody learns what that step's environment
+  actually is**, which is the argument for switching steps on one at a time and
+  is why the activation table exists.

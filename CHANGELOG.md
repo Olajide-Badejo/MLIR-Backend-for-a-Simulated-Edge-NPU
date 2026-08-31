@@ -44,9 +44,9 @@ Semantic Versioning once a release is tagged.
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
 - **The coverage thresholds are real, replacing the zeros of Section 19.0.**
-  Measured on 2026-08-31: C++ lines 86.0 percent over `lib/Dialect`,
-  `lib/Encoding` and `lib/Simulator`, C++ branches 77.0 percent, Python lines
-  90.3 percent over `python/npu_frontend`. CI enforces 85 for C++, which is
+  Measured on 2026-08-31: C++ lines 86.1 percent over `lib/Dialect`,
+  `lib/Encoding` and `lib/Simulator`, C++ branches 77.3 percent, Python lines
+  90.6 percent over `python/npu_frontend`. CI enforces 85 for C++, which is
   Section 17.7's floor, and 90 for Python, which is that section's rule of the
   measured value rounded down to a whole percent. `scripts/coverage.sh` takes
   the Python threshold as a second argument, measures with `pytest-cov` over the
@@ -58,6 +58,18 @@ Semantic Versioning once a release is tagged.
   the suite's dependencies are not importable and a nonzero Python threshold was
   asked for, `coverage.sh` fails rather than passing on a number nobody
   computed. At a threshold of 0 it prints an off line and continues.
+- **`scripts/coverage.sh` tells the Python suite which build directory it
+  built.** It exports `NPU_BUILD_DIR`, derives `MLIR_PYTHON_PACKAGES_DIR` from
+  that directory's CMake cache when the caller has not set one, and refuses
+  before running pytest if the binaries it just built are missing. Without this
+  the suite looked for them in `build/`, which the coverage job does not have.
+  D-0032, found by CI.
+- **The test suite has one rule for finding a built binary**,
+  `test/Python/tools.py`, replacing three that disagreed. A missing binary is a
+  skip when nobody named a build directory and a **failure** when somebody did,
+  because naming one asserts that the build is there.
+  `test/Python/test_tool_discovery.py` makes a second copy of the rule a red
+  test.
 - **`scripts/check-reachability.py` runs in full and passes.** All five layers
   of law 2 are decided for every operation of the `npu` dialect, and the CI
   step is on. Every **imported computation** operation meets all five with no
