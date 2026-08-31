@@ -43,6 +43,21 @@ Semantic Versioning once a release is tagged.
 - **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
+- **The coverage thresholds are real, replacing the zeros of Section 19.0.**
+  Measured on 2026-08-31: C++ lines 86.0 percent over `lib/Dialect`,
+  `lib/Encoding` and `lib/Simulator`, C++ branches 77.0 percent, Python lines
+  90.3 percent over `python/npu_frontend`. CI enforces 85 for C++, which is
+  Section 17.7's floor, and 90 for Python, which is that section's rule of the
+  measured value rounded down to a whole percent. `scripts/coverage.sh` takes
+  the Python threshold as a second argument, measures with `pytest-cov` over the
+  whole matrix rather than the fast subset, and reports branch coverage for the
+  allocator and the decoder separately, where Section 17.7 says the error paths
+  matter most: the allocator 97.8 percent of lines and 90.2 of branches, the
+  decoder 94.6 and 91.4.
+- **A Python threshold that cannot be measured is a failure, not a skip.** If
+  the suite's dependencies are not importable and a nonzero Python threshold was
+  asked for, `coverage.sh` fails rather than passing on a number nobody
+  computed. At a threshold of 0 it prints an off line and continues.
 - **`scripts/check-reachability.py` runs in full and passes.** All five layers
   of law 2 are decided for every operation of the `npu` dialect, and the CI
   step is on. Every **imported computation** operation meets all five with no

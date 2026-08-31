@@ -13,8 +13,10 @@ twenty four differential cases kept passing.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -108,8 +110,22 @@ def test_the_seed_survives_a_new_process() -> None:
     A seed that changed between two runs of the same command would defeat the
     whole point of deriving it from the cell, and the failure would look like a
     flaky test rather than like a seeding bug.
+
+    The child's `PYTHONPATH` is built here rather than inherited. `pythonpath`
+    in `pyproject.toml` puts this project's package root on *this* process's
+    `sys.path` and does not export anything, so a child that inherited the
+    environment would find `npu_frontend` only when the caller happened to have
+    exported it. That is D-0030: this test passed under a developer's wrapper
+    script and failed under `scripts/coverage.sh`, which is the same command
+    with one variable fewer.
     """
     here = class_seed("lenet", 4, "relu_knee")
+    package_root = str(Path(__file__).resolve().parents[2] / "python")
+    existing = os.environ.get("PYTHONPATH", "")
+    environment = dict(
+        os.environ,
+        PYTHONPATH=os.pathsep.join([package_root, *filter(None, [existing])]),
+    )
     elsewhere = subprocess.run(
         [
             sys.executable,
@@ -117,10 +133,12 @@ def test_the_seed_survives_a_new_process() -> None:
             "from npu_frontend.input_classes import class_seed;"
             "print(class_seed('lenet', 4, 'relu_knee'))",
         ],
+        env=environment,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    assert elsewhere.returncode == 0, elsewhere.stderr
     assert int(elsewhere.stdout.strip()) == here
 
 

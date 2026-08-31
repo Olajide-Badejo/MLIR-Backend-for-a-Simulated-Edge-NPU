@@ -732,29 +732,66 @@ jobs:
         shell: bash
 
     env:
-      # The threshold the activation table specifies between P2 and P8. It is an
-      # input to the script rather than a constant inside it, so that P8 sets the
-      # real number by editing one line here and the script itself does not
-      # change when the policy does.
-      NPU_COVERAGE_THRESHOLD: "0"
+      # **The real thresholds, set at P8 from what P8 measured.** They were 0
+      # from P2, which is what the activation table asked for while nobody had
+      # measured anything. They are inputs to the script rather than constants
+      # inside it, so the policy lives with the job and the measurement lives
+      # with the script.
+      #
+      # Measured on 2026-08-31: C++ lines 86.0 percent, C++ branches 77.0
+      # percent, Python lines 90.3 percent.
+      #
+      # 85 is Section 17.7's floor for C++ and sits one point below the
+      # measurement. 90 is that section's rule for Python, which is the measured
+      # value rounded down to a whole percent and never above what the suite
+      # achieves.
+      NPU_COVERAGE_THRESHOLD: "85"
+      NPU_PYTHON_COVERAGE_THRESHOLD: "90"
       NPU_COVERAGE_JOBS: "4"
+      # conftest.py resolves the bindings from this first. The coverage job
+      # configures build-coverage/ and never build/, so the cache fallback the
+      # conftest uses has nothing to read and the Python half of the measurement
+      # would fail at `import mlir` for a reason that has nothing to do with
+      # coverage.
+      MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
 
     steps:
       - name: Check out the repository
         uses: actions/checkout@v5
 
+      # The Python half of Section 17.7 needs the suite's dependencies, which
+      # this job did not install while its thresholds were 0 and the Python half
+      # did not exist. The pip cache is keyed on the lock file's hash, the same
+      # as the build and test job's, so the torch wheels are downloaded again
+      # only when the pinned environment actually moves.
+      - name: Restore the pip cache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements-lock.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: "Install the Python dependencies (activation table: P8, on)"
+        run: |
+          set -euxo pipefail
+          python3 -m pip install --break-system-packages -r requirements-lock.txt
+          python3 -m pip install --break-system-packages gcovr==8.6
+          python3 -c "import torch, onnx, onnxruntime, pytest_cov; print('deps ok')"
+
       # gcc rather than clang, and gcovr rather than llvm-cov. Section 17.7
       # permits either; gcovr against gcc's --coverage is the pairing this
       # project uses, and mixing clang's instrumentation with gcovr's gcov
       # frontend is the combination that produces a plausible looking zero.
-      - name: "coverage (activation table: P2, on; thresholds at P8)"
+      - name: "coverage (activation table: P2, on; real thresholds at P8, on)"
         run: |
           set -euo pipefail
-          echo "coverage: ON from P2 with a threshold of ${NPU_COVERAGE_THRESHOLD}."
-          echo "coverage: the number is recorded and its trend is visible from here;"
-          echo "coverage: P8 sets the real thresholds from what P8 measures."
+          echo "coverage: ON from P2, and gating for real from P8."
+          echo "coverage: C++ line threshold ${NPU_COVERAGE_THRESHOLD}, Python line threshold ${NPU_PYTHON_COVERAGE_THRESHOLD}."
+          echo "coverage: measured at P8 on 2026-08-31: C++ 86.0, Python 90.3."
           echo ""
-          bash scripts/coverage.sh "${NPU_COVERAGE_THRESHOLD}"
+          bash scripts/coverage.sh \
+            "${NPU_COVERAGE_THRESHOLD}" "${NPU_PYTHON_COVERAGE_THRESHOLD}"
 
       # The JSON summary is the artifact, not the log. Section 17.7 is explicit
       # that CI parses a JSON summary rather than grepping a percentage out of a
@@ -768,5 +805,6 @@ jobs:
           path: |
             build-coverage/coverage.json
             build-coverage/coverage.html
+            build-coverage/python-coverage.json
           if-no-files-found: warn
           retention-days: 30

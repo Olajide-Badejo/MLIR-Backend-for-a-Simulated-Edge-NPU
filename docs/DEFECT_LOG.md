@@ -1108,3 +1108,36 @@ None.
   three element sample one time in four. And the same test asserts the `relu`
   case's reference output is not entirely zero, which is the case that goes
   vacuous first and the one a reader would least expect to.
+
+### D-0030 a test's subprocess found the package only because the caller had exported it
+
+- **Found:** 2026-08-31, phase P8, by `scripts/coverage.sh` on its first run
+  with a Python threshold. Not by the test suite, which had been green.
+- **Status:** resolved 2026-08-31.
+- **Reproduce:** run `python -m pytest test/Python/test_input_classes.py` from a
+  shell that has **not** exported `PYTHONPATH`.
+  `test_the_seed_survives_a_new_process` fails with a `CalledProcessError`, and
+  the child's stderr says `ModuleNotFoundError: No module named 'npu_frontend'`.
+- **What was wrong:** the test spawns a second interpreter to prove the cell
+  seed is stable across processes, which is the property `zlib.crc32` has and
+  `hash` does not. It spawned it with the inherited environment. `pythonpath` in
+  `pyproject.toml` puts this project's package root on **pytest's own**
+  `sys.path` and exports nothing, so the child found `npu_frontend` only when
+  the caller happened to have exported `PYTHONPATH` themselves. The developer
+  wrapper used all through this phase does export it. `scripts/coverage.sh` does
+  not, and neither does the CI coverage job.
+- **Why it is worth an entry.** The failure mode is the one this project keeps
+  finding: a test that passes for a reason that is not the reason it claims. It
+  was green on every run anybody had done, it would have gone red in exactly one
+  CI job, and the message there would have named a missing module rather than a
+  missing variable. A test whose result depends on the shell that started it is
+  not a test of the code, and the two other subprocess spawning tests added in
+  this phase were checked for the same fault: `test_compile_driver.py` launches
+  `scripts/npu-compile`, which puts the package root on `sys.path` itself, and
+  `test_end_to_end.py` launches pytest, which reads `pythonpath` from
+  `pyproject.toml`. Neither depends on the caller.
+- **Resolution:** the child's `PYTHONPATH` is constructed from the repository
+  layout rather than inherited, and the subprocess runs with `check=False` so a
+  failure surfaces the child's stderr instead of a `CalledProcessError`
+  traceback with the interesting half in a variable nobody prints. The docstring
+  says why.
