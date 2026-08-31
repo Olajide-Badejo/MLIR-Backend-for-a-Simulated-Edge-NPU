@@ -31,6 +31,7 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -44,13 +45,21 @@ namespace {
 
 /// A deterministic stream of values in [-1, 1), so that a disagreement
 /// reproduces from the case name alone.
+///
+/// **The shift is 32 and not 33, and the difference is D-0029.** A 33 bit shift
+/// leaves 31 significant bits, which divided by 2^31 lands in [0, 1) and after
+/// the subtraction in [-1, 0). Every input this file exported was negative, the
+/// relu case compared all zeros against all zeros, and the two pooling cases
+/// never saw a window a maximum could be positive in. `TheStreamSpansBothSigns`
+/// below is the guard, because a generator that silently halves its range is
+/// not something a reader of the exported bytes would notice.
 class Stream {
 public:
   explicit Stream(uint64_t seed) : state(seed) {}
 
   float next() {
     state = state * 6364136223846793005ull + 1442695040888963407ull;
-    const uint32_t bits = static_cast<uint32_t>(state >> 33);
+    const uint32_t bits = static_cast<uint32_t>(state >> 32);
     return static_cast<float>(bits) / 2147483648.0f - 1.0f;
   }
 
@@ -447,6 +456,29 @@ TEST(Differential, TheCasesCanBeWrittenOutForTheReferenceInterpreter) {
             manifest.size());
   std::cout << "[          ] wrote " << all.size() << " differential cases to "
             << directory << "\n";
+}
+
+TEST(Differential, TheStreamSpansBothSigns) {
+  // D-0029's guard. The generator above shifts by 32 to keep all thirty two
+  // bits, and one bit more would halve the range to [-1, 0) without changing
+  // anything a reader of the exported files could see: the values would still
+  // look random, still be deterministic, and still reproduce. What they would
+  // not do is exercise a relu, or a maximum whose answer is positive, and the
+  // differential suite would pass while comparing zeros against zeros.
+  Stream stream(0x6e7075503744494ull);
+  float low = 1.0f;
+  float high = -1.0f;
+  for (int index = 0; index < 100000; ++index) {
+    const float value = stream.next();
+    ASSERT_GE(value, -1.0f);
+    ASSERT_LT(value, 1.0f);
+    low = std::min(low, value);
+    high = std::max(high, value);
+  }
+  // Both ends, not merely both signs: a generator that produced [-1, 0.01)
+  // would satisfy "some value is positive" and still be the same bug.
+  EXPECT_LT(low, -0.99f) << "the stream's lowest value in 100000 draws";
+  EXPECT_GT(high, 0.99f) << "the stream's highest value in 100000 draws";
 }
 
 TEST(Differential, EveryExportedCaseRunsCleanly) {

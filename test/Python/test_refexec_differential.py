@@ -159,6 +159,67 @@ def test_the_export_covers_every_operation_refexec_can_run(exported: Path) -> No
     assert expected <= covered, sorted(expected - covered)
 
 
+def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
+    """The exported bytes exercise both signs, which is D-0029's guard.
+
+    The generator in ``DifferentialExport.cpp`` has its own assertion about its
+    range. This one is here as well rather than instead, because it checks the
+    thing that matters, which is the numbers that actually reached the files,
+    and it survives a rewrite of the C++ that keeps the comment and loses the
+    property.
+
+    The defect it exists to catch was one bit: a 33 bit shift instead of a 32
+    bit one, which left every value in ``[-1, 0)``. Nothing looked wrong. The
+    files were still random, still deterministic, still reproducible. What they
+    were not was capable of exercising a relu, whose reference and simulated
+    answers were both all zeros, or a maximum whose answer is positive.
+    """
+    cases = load_cases(exported)
+
+    # Pooled across the whole export, because that is the claim: the generator
+    # covers the interval it says it covers. Both ends and not merely both
+    # signs, since a generator producing [-1, 0.01) would satisfy "something is
+    # positive" and still be the same defect.
+    everything = np.concatenate(
+        [
+            read_f32(exported / operand["file"], operand["shape"]).ravel()
+            for case in cases
+            for operand in case["inputs"]
+        ]
+    )
+    assert everything.min() < -0.9, everything.min()
+    assert everything.max() > 0.9, everything.max()
+
+    # And per operand, for the operands large enough that one sign would be a
+    # signal rather than a coincidence. The threshold is not decoration: the
+    # three element bias of `matmul_narrow_bias` is all positive in this export,
+    # which happens to a fair three element sample one time in four, and a rule
+    # that called that a defect would be a rule somebody eventually deletes.
+    # Sixteen elements puts the same coincidence at one in 32768.
+    for case in cases:
+        for operand in case["inputs"]:
+            values = read_f32(exported / operand["file"], operand["shape"])
+            if values.size < 16:
+                continue
+            assert values.min() < 0.0 < values.max(), (
+                f"{case['name']}: {operand['file']} holds {values.size} values "
+                f"of one sign, so this case exercises half the number line"
+            )
+
+    # And the case that goes vacuous first, checked as an answer rather than as
+    # an input: a relu over negative numbers only is a comparison of zeros.
+    relu = next(case for case in cases if case["operation"] == "relu")
+    operands = [
+        read_f32(exported / operand["file"], operand["shape"])
+        for operand in relu["inputs"]
+    ]
+    reference = refexec.execute("relu", operands, {})
+    assert np.count_nonzero(reference) > 0, (
+        "the relu case's reference output is entirely zero, so comparing it "
+        "against the simulator asserts nothing"
+    )
+
+
 def test_every_case_agrees(exported: Path) -> None:
     """The gate item: the two agree on every operation, on randomized inputs."""
     cases = load_cases(exported)

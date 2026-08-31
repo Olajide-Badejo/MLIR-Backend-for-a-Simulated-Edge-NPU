@@ -49,11 +49,17 @@ namespace {
 /// A fixed seed and an explicit generator rather than `std::mt19937` with a
 /// default seed: this test's whole subject is reproducibility, and a sequence
 /// that could differ between standard libraries would undermine it.
+///
+/// The shift is 32 and not 33, which is D-0029. One bit more leaves the values
+/// in [-1, 0), and a convolution over inputs and weights that are all negative
+/// has every product positive, so the reduction this test exists to hold still
+/// would have been running over terms that all carry the same sign. That is the
+/// easiest possible case for a summation order to survive.
 class Stream {
 public:
   float next() {
     state = state * 6364136223846793005ull + 1442695040888963407ull;
-    const uint32_t bits = static_cast<uint32_t>(state >> 33);
+    const uint32_t bits = static_cast<uint32_t>(state >> 32);
     return static_cast<float>(bits) / 2147483648.0f - 1.0f;
   }
 
