@@ -2741,3 +2741,40 @@ an MLIR header at all, which is what keeps `npu-sim` a tool that reads a file an
 runs it rather than one that links a compiler, and what keeps `NPUSimulatorTests`
 a binary that links in seconds. The namespace split stays. The phase that will
 actually test it is `npu-compile` at P8.
+
+## 2026-08-31 Phase 7: the activation proof on CI, and the branch that CI could not see
+
+The two rehearsed faults ran against CI on a scratch branch and both matched
+their local predictions. The branch's own first run, the step's first time on,
+everything green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
+
+The product fault, the pooling accumulator starting at zero, went red in three
+places: the build and test job at the `NPUSimulatorTests` step, the sanitizers
+job at its GoogleTest step, and coverage besides, which is the same three net
+pattern P6 recorded:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363102927>.
+CI showed less of this fault's net than the local rehearsal did, and the reason
+is mechanical rather than interesting: a job stops at its first red step, and
+`NPUSimulatorTests` precedes pytest, so the differential's two extra catches,
+the ones the hand computed tests structurally cannot reach, are in the local
+record only. A red step hides the depth of the net behind it.
+
+The test side fault, the frozen constants expectation moved from 16 to 17, went
+red at exactly the same three steps and nowhere else, which is what isolation
+means once CI is the frame: every step that executes the binary, and nothing
+that does not. lit and pytest saw nothing:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363280962>.
+
+The restore, byte identical to the phase branch tip, returned green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363608121>.
+
+One process finding, recorded so the next phase does not repeat the dead push.
+The first attempt ran nothing at all: the rehearsal branch was named
+`scratch/p7-activation`, and `ci.yml` triggers on `phase/**` and `main` only, so
+the push produced no run and the absence of a run is what had to be noticed. A
+rehearsal branch must be named under `phase/`; this one was renamed to
+`phase/p7-activation-rehearsal` and deleted after the restore run. A workflow
+that triggers on everything would remove the trap, but widening a trigger to
+serve a rehearsal that happens once per phase is the tail wagging the dog, and
+the rule is cheaper than the change.

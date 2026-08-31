@@ -186,8 +186,25 @@ theoretical: filtering proves that a broken test fails, which was never in doubt
 where what needs proving is that a failure inside the binary reaches the step's
 exit code.
 
-**These were rehearsed locally. The CI runs are pending**, because nothing has
-been pushed.
+**Both were rehearsed locally first and then run against CI**, on the scratch
+branch `phase/p7-activation-rehearsal`, since deleted. The branch's own first
+run, with the step active and everything green, is
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
+The product fault went red at the `NPUSimulatorTests` step, at the sanitizers
+job's GoogleTest step, and at coverage besides:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363102927>.
+The test side fault went red at exactly the same three steps and nowhere else,
+which is the isolation claim in CI's terms: every step that executes the binary,
+and nothing that does not:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363280962>.
+The restore, a tree byte identical to the phase branch tip, returned green:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363608121>.
+
+**CI shows less of the product fault's net than the local rehearsal did**, and
+the reason is worth a line: the job stops at its first red step, and the
+`NPUSimulatorTests` step precedes pytest, so the differential's two extra
+catches are in the local record only. The engineering log carries the detail,
+along with a process finding about the rehearsal branch's name.
 
 ### 1. Product side, which measures the net
 
@@ -322,33 +339,33 @@ mechanical is on P8's desk and `docs/ARCHITECTURE.md` says so.
 
 ## Next command
 
-```bash
-git push -u origin phase/p7-simulator
-```
+Open the merge pull request for `phase/p7-simulator`.
 
-Then watch CI. **One step runs for the first time**, `NPUSimulatorTests`, in the
-build and test job and again inside the sanitizers job. Its activation proofs are
-above and both were rehearsed locally under the same invocation, so a red run
-means the image differs from this machine rather than that the tests are wrong.
+The branch is pushed and its first run is green, with `NPUSimulatorTests`
+running for the first time in the build and test job and again inside the
+sanitizers job:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
+Both activation proofs have run against CI, red and restored, with the URLs in
+the section above.
 
 Three things are worth watching specifically.
 
-**The sanitizers job builds a third target now.** `ninja -C build-san -j4` names
-`NPUEncodingTests`, `NPUSimulatorTests` and `nbin_decode_fuzzer`. The simulator
-library carries no MLIR dependency, so the extra target is seconds rather than
-minutes, but it is the first time that job has linked it.
+Three predictions from the pre push draft of this section, and what the first
+run made of them.
 
-**OpenMP may not be found in the image**, and if it is not, the configure log
-says so in a line beginning `OpenMP:` and the determinism test says so in its own
-output rather than being skipped. Both of its runs are then single threaded and
-it asserts less than it does here, which is a weaker result and not a failure. It
-was not found in the local `build-fuzz` either, for the same reason: clang
-without `libomp`.
+**The sanitizers job linked its third target without incident.** The simulator
+library carries no MLIR dependency, so the extra target cost seconds.
 
-**`check-npu` reports 19 rather than 18**, `pytest` reports 180 rather than 142,
-and `check-reachability --skip-models` checks four layers rather than three.
+**OpenMP split the jobs, which the prediction did not foresee.** The build and
+test job's configure printed `OpenMP: not found`, and the determinism test said
+in its own output that both of its runs were single threaded, which is the
+weaker assertion and not a failure. The coverage job's configure found OpenMP
+4.5, so the thread count determinism assertion did run at full strength in CI,
+one job over from where it was expected. Why the two configures in one image
+disagree is not established and is left with P8.
 
-Then open the merge pull request.
+**`check-npu` reported 19, `pytest` 180, and `check-reachability
+--skip-models` printed its four layers**, each confirmed in the run log.
 
 ## Next phase
 
