@@ -18,12 +18,17 @@
 //
 // WHICH `npu` OPERATION IS SIMULATED BY WHICH KERNEL
 //
-// `scripts/check-reachability.py` answers the simulation layer of law 2 by
-// looking for each operation's mnemonic in this file, so the table below is
-// what that check reads. It is a table rather than a scattering of mentions
-// because a reader deserves the same answer the checker gets, and because a
-// mnemonic that appeared only inside an unrelated word would satisfy a
-// substring search while telling a human nothing.
+// The table below is for a reader. It is **not** what
+// `scripts/check-reachability.py` reads, and that changed at P8: the simulation
+// layer of law 2 is now decided from `docs/ISA_OPCODES.json`, generated from
+// `include/NPU/Encoding/NPUISADescription.td`, the way P6 made the encoding
+// layer decidable. Until then it was a substring search over this file, which
+// a mnemonic appearing inside an unrelated word would have satisfied while
+// telling a human nothing.
+//
+// The table stays, because the checker's answer and a reader's answer should be
+// the same answer, and because the description says which opcode an operation
+// reaches and this says which file its arithmetic is in.
 //
 //   npu.conv2d       CONV2D      lib/Simulator/Kernels.cpp
 //   npu.matmul       MATMUL      lib/Simulator/Kernels.cpp
@@ -54,13 +59,20 @@
 //                    so the operations its region held are the ones that run.
 //   npu.yield        is that region's terminator and disappears with it.
 //
-// The same four are recorded as eliminated sources in
-// `include/NPU/Encoding/NPUISADescription.td`, which is where the encoding
-// layer reads them from. **The simulation layer is still answered by a
-// substring search over this file and that is weaker than the encoding
-// layer's**, which Phase P6 made mechanical. Making this one mechanical too is
-// on Phase P8's desk, and `docs/PHASE_STATE.md` says so rather than leaving the
-// difference for somebody to notice.
+// Three of those four are recorded as eliminated sources in
+// `include/NPU/Encoding/NPUISADescription.td`, and `npu.batch_norm` is recorded
+// there as a source of both `ADD` and `MUL`, which is the decomposition stated
+// as data. That description is where both the encoding and the simulation
+// layers of law 2 are now answered from.
+//
+// **The guarantee that a computation opcode has a kernel is this compiler's,
+// not the script's.** The dispatch skeleton generated from the same description
+// expands to a missing identifier, and to a failed static assertion that the
+// kernel table and the ISA description disagree about how many opcodes there
+// are, when one is absent. So "reaches a computation opcode" is checked by the
+// script and "that opcode has a kernel" is checked by the build, and neither
+// half is a comment. P7 demonstrated the second half by appending a sixteenth
+// opcode and watching the build fail in four places, each naming it.
 //
 //===----------------------------------------------------------------------===//
 

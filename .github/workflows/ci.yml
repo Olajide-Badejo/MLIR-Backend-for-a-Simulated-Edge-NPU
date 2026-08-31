@@ -20,6 +20,8 @@
 # Added at P6: NPUEncodingTests, the ISA staleness gate, and the sanitizers job.
 # Added at P7: NPUSimulatorTests, in this job and inside the sanitizers job's
 # existing GoogleTest step.
+# Added at P8: check-reachability in full, with the model IR built in the same
+# step, and the coverage thresholds set from what P8 measured.
 # Everything else prints its off line.
 
 name: ci
@@ -525,17 +527,44 @@ jobs:
             exit 1
           fi
 
-      # ---- Reachability, full. Off until P8, and the table explains why the
-      # guard is a phase rather than a file: the model suite lands at P3 but
-      # the full check also wants a lowering pattern (P4), an encoder case
-      # (P6), and a simulator case (P7) for every operation. P8 is the first
-      # phase at which it is passable rather than merely runnable, so a file
-      # guard would switch it on at P3 and fail for four phases.
-      - name: "check-reachability full (activation table: P8)"
+      # ---- Reachability, full. ON at P8, and the table explains why the guard
+      # was a phase rather than a file: the model suite lands at P3 but the full
+      # check also wants a lowering pattern (P4), an encoder case (P6), and a
+      # simulator case (P7) for every operation. P8 is the first phase at which
+      # it is passable rather than merely runnable, so a file guard would have
+      # switched it on at P3 and failed for four phases.
+      #
+      # The guard keeps its shape and its else branch is now a failure, which is
+      # what NPUInterfaceTests did at P2, NPUEncodingTests at P6 and
+      # NPUSimulatorTests at P7.
+      #
+      # **Two commands, one step, and that is deliberate.** The model layer of
+      # Section 17.5 asks that each operation appear in at least one generated
+      # benchmark model's IR, and the IR is a build artifact that no phase
+      # commits. scripts/build-model-ir.py writes it into experiments/models/
+      # and it runs here rather than in a step of its own, because a step of its
+      # own would be a second activation to prove for a command whose only
+      # purpose is to give this one something to look in.
+      #
+      # It runs after the pytest step because it needs the same Python
+      # dependencies and the same built npu-opt, and after the ISA staleness
+      # gate because the check reads docs/ISA_OPCODES.json for two of its five
+      # layers and a stale one would be answering from a description the source
+      # no longer matches.
+      - name: "check-reachability full (activation table: P8, on)"
         run: |
           set -euo pipefail
-          echo "check-reachability full: OFF until P8 (activation table 19.0)."
-          echo "check-reachability full: needs lowering (P4), encoding (P6), and simulation (P7) per operation; P8 is the first phase it can pass."
+          if [ ! -f scripts/check-reachability.py ] \
+             || [ ! -f scripts/build-model-ir.py ]; then
+            echo "::error::a reachability script is missing."
+            echo "check-reachability: this step is ON from P8, so an unsatisfied"
+            echo "check-reachability: guard means a file moved rather than a phase"
+            echo "check-reachability: that has not arrived."
+            exit 1
+          fi
+          export PYTHONPATH="/opt/llvm/python_packages/mlir_core:${PWD}/python"
+          python3 scripts/build-model-ir.py
+          python3 scripts/check-reachability.py
 
   # -------------------------------------------------------------------------
   # sanitizers. ON at P6, and this is the phase where it stops being a job that

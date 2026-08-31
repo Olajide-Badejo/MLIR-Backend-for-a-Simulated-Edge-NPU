@@ -43,6 +43,21 @@ Semantic Versioning once a release is tagged.
 - **`npu_frontend.refgraph` executes an `npu` module with `refexec`**, which
   makes the reference interpreter an oracle for a whole model rather than for
   one operation.
+- **`scripts/check-reachability.py` runs in full and passes.** All five layers
+  of law 2 are decided for every operation of the `npu` dialect, and the CI
+  step is on. Every **imported computation** operation meets all five with no
+  exemption of any kind; the two structural operations, `npu.fused_op` and
+  `npu.yield`, carry dated exemptions from the model layer naming P9, because
+  `-npu-fuse-ops` is the only thing that creates one and it lands at P9.
+- **The simulation layer became mechanical**, which is what P7 left on this
+  phase's desk. It used to be a substring search over
+  `lib/Simulator/Simulator.cpp`'s operation table, which is a comment; it is now
+  decided from `docs/ISA_OPCODES.json`, generated from the ISA description and
+  kept honest by the staleness gate, the way P6 made the encoding layer
+  decidable. The description gained a `needs_kernel` field per opcode for it.
+- **`scripts/build-model-ir.py`** writes every model's `npu` and `npuisa` level
+  IR into `experiments/models/`, at both batch sizes, which is what the model
+  layer of Section 17.5 reads. It is a build artifact and nothing commits it.
 - **`scripts/regression-baseline.sh` records the safety net of Section 17.6, and
   `--check` diffs against it.**
 

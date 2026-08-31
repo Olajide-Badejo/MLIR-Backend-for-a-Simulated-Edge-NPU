@@ -203,7 +203,16 @@ LAYER_HOMES: dict[str, tuple[Path, ...]] = {
         / "LowerNPUToNPUISA.cpp",
     ),
     "encoding": (ISA_OPCODES,),
-    "simulation": (REPO_ROOT / "lib" / "Simulator" / "Simulator.cpp",),
+    # *Changed at P8.* The simulation layer used to be a substring search over
+    # lib/Simulator/Simulator.cpp's operation table, which is a comment. It is
+    # now decided from the same generated description the encoding layer reads.
+    # See `simulatable_operations`.
+    "simulation": (ISA_OPCODES,),
+    # Written by scripts/build-model-ir.py, which the CI step runs immediately
+    # before this check. The directory holds the `npu` and `npuisa` level IR of
+    # every model at both batch sizes, and the IR is what step 3 of Section 17.5
+    # asks about: an .onnx file holds ONNX operator names, so searching one for
+    # `npu.batch_norm` would find nothing whatever the truth was.
     "model": (REPO_ROOT / "experiments" / "models",),
 }
 
@@ -241,6 +250,53 @@ def encodable_operations() -> set[str]:
     return names
 
 
+def simulatable_operations() -> set[str]:
+    """The `npu` mnemonics the simulator has kernels for.
+
+    *Changed at P8, and this is the fifth thing P7 left on this phase's desk.*
+    The simulation layer used to be a substring search over
+    `lib/Simulator/Simulator.cpp`, which carries an operation table as a
+    comment. That was the weakest of the four layers and the file said so: a
+    mnemonic appearing inside an unrelated word would have satisfied it, and
+    the evidence was a comment rather than anything the compiler enforces.
+
+    It is decided from the generated description now, the way P6 made the
+    encoding layer decidable. An operation is simulatable when it reaches the
+    encoder by elimination, so no instruction ever executes it, or when every
+    opcode naming it as a source is one the simulator needs a kernel for.
+
+    **The part that makes this stronger is enforced elsewhere, and saying where
+    is the point.** This function establishes that an operation reaches a
+    computation opcode. That the computation opcode *has* a kernel is the
+    compiler's guarantee rather than this script's: the dispatch skeleton
+    generated from the same description expands to a missing identifier, and to
+    a static assertion that the kernel table and the ISA description disagree
+    about how many opcodes there are, when one is absent. P7 demonstrated that
+    by appending a sixteenth opcode and watching the build fail in four places,
+    each naming it. So the two halves of "simulatable" are checked by the two
+    mechanisms that can check them, and neither is a comment.
+
+    **What this is not.** It is close in shape to `encodable_operations`, and
+    the difference is one clause: an operation reaching only a control opcode,
+    which the simulator sequences rather than computes, would be encodable and
+    not simulatable. No operation is in that position today. The distinction is
+    thin and it is real, and stating its thinness is better than implying two
+    independent checks where there are one and a half.
+    """
+    data = json.loads(ISA_OPCODES.read_text(encoding="utf-8"))
+
+    eliminated = {entry["source"] for entry in data.get("eliminated_sources", [])}
+
+    # source -> whether every opcode reaching it needs a kernel.
+    computed: dict[str, bool] = {}
+    for opcode in data.get("opcodes", []):
+        needs_kernel = bool(opcode.get("needs_kernel", False))
+        for source in opcode.get("sources", []):
+            computed[source] = computed.get(source, True) and needs_kernel
+
+    return eliminated | {name for name, ok in computed.items() if ok}
+
+
 def layer_present(operation: Operation, layer: str) -> bool | None:
     """Whether one layer exists for one operation.
 
@@ -258,12 +314,23 @@ def layer_present(operation: Operation, layer: str) -> bool | None:
     if not layer_decidable(layer):
         return None
 
-    # The encoding layer is answered from the generated opcode list rather than
-    # by searching a source file. See `encodable_operations` for why.
+    # Two layers are answered from the generated opcode list rather than by
+    # searching a source file. See `encodable_operations` and
+    # `simulatable_operations` for why each is.
     if layer == "encoding":
         return operation.mnemonic in encodable_operations()
+    if layer == "simulation":
+        return operation.mnemonic in simulatable_operations()
 
-    needle = operation.mnemonic
+    # The model layer looks for the operation as it is spelled in the IR, so
+    # `npu.relu` and not `relu`. The dotted form is what a `.mlir` file holds,
+    # and searching for the bare mnemonic would match inside another operation's
+    # name: `add` is a substring of `batch_norm`'s neighbours and of half the
+    # SSA value names a pass ever generates.
+    if layer == "model":
+        needle = operation.name
+    else:
+        needle = operation.mnemonic
     for home in LAYER_HOMES[layer]:
         if home.is_dir():
             sources = sorted(p for p in home.rglob("*") if p.is_file())
