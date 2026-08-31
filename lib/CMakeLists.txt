@@ -8,3 +8,4 @@
 
 add_subdirectory(Dialect)
 add_subdirectory(Encoding)
+add_subdirectory(Simulator)

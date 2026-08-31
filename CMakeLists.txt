@@ -36,6 +36,55 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
+# ---------------------------------------------------------------------------
+# NDEBUG, which this project cannot otherwise have.
+#
+# Section 9.3 requires the simulator's bounds checked accessors to refuse
+# gracefully in **every build mode** and requires a test to prove it in a
+# release build and an assertions build alike. Producing the first of those is
+# not a matter of `-DCMAKE_BUILD_TYPE=Release`, and that is worth stating here
+# because the obvious attempt looks like it worked. `LLVMConfig.cmake` sets
+# `LLVM_ENABLE_ASSERTIONS` as a plain variable from the LLVM tree this project
+# is configured against, which shadows any cache value the command line offers.
+# `HandleLLVMOptions` then reads it and adds `_DEBUG`, `_GLIBCXX_ASSERTIONS`
+# and an explicit `-UNDEBUG`, and that `-UNDEBUG` lands **after** the `-DNDEBUG`
+# a Release configuration supplies. So a Release build against an assertions
+# LLVM keeps its assertions and looks like a release build from the outside.
+# That is D-0028: the first NDEBUG run of the P7 gate was made against exactly
+# such a build, and it passed, and it proved nothing.
+#
+# This block therefore sits **before** `include(HandleLLVMOptions)`, which is
+# where those flags are decided. Putting it after, which was the first attempt,
+# changes a variable nothing reads again. Setting it here is also what clears
+# `LLVM_DEFINITIONS`, because `HandleLLVMOptions` rebuilds that variable from
+# the same switch; the second half of this option, at the `add_definitions` call
+# below, is only about how the cleared string is then parsed. The LLVM at
+# `~/llvm-project/build` is an assertions build and is not this project's to
+# rebuild, so the switch lives here rather than in the toolchain, and it moves
+# this project's own targets only.
+#
+# `docs/BUILD.md` carries the configure line and `docs/PHASE_STATE.md` records
+# the four runs it exists to make possible.
+# ---------------------------------------------------------------------------
+option(NPU_FORCE_NDEBUG
+       "Compile this project's targets with NDEBUG and without libstdc++ assertions, even when the LLVM they are built against is an assertions build."
+       OFF)
+
+if(NPU_FORCE_NDEBUG)
+  set(LLVM_ENABLE_ASSERTIONS OFF)
+  message(STATUS
+    "NDEBUG: forced on. NDEBUG is defined, _DEBUG and _GLIBCXX_ASSERTIONS are "
+    "not, and no -UNDEBUG is appended. This is the build mode Section 9.3's "
+    "'every build mode' clause names.")
+else()
+  message(STATUS
+    "NDEBUG: not forced. This build inherits the assertion setting of the LLVM "
+    "tree it is configured against, which for an assertions LLVM means "
+    "assertions stay on whatever CMAKE_BUILD_TYPE says. Configure a second "
+    "directory with -DNPU_FORCE_NDEBUG=ON for the release half of Section "
+    "9.3's contract.")
+endif()
+
 include(HandleLLVMOptions)
 # --- end: derived from the LLVM standalone example --------------------------
 
@@ -76,7 +125,37 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${NPU_SOURCE_DIR}/include)
 include_directories(${NPU_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
-add_definitions(${LLVM_DEFINITIONS})
+
+# `LLVM_DEFINITIONS` is one space separated string rather than a list, and
+# `add_definitions` splits it on whitespace only as far as its own parse gets:
+# with `-D_DEBUG` leading it splits into six clean definitions, and with
+# `-D_GLIBCXX_USE_CXX11_ABI=1` leading, which is what is left once
+# `NPU_FORCE_NDEBUG` has taken the assertion macros out, it stops at the `=` and
+# hands the compiler one definition whose value is the rest of the line. That is
+# twelve `_GLIBCXX_USE_CXX11_ABI redefined` warnings for a build that is
+# otherwise correct, and it is why the forced path splits the string itself
+# rather than letting the command guess.
+#
+# The unforced path is left exactly as it was. It works, this project has built
+# through six phases on it, and changing a line that is not wrong to make two
+# branches look alike is how a working build acquires a new failure.
+if(NPU_FORCE_NDEBUG)
+  separate_arguments(NPU_LLVM_DEFINITION_LIST NATIVE_COMMAND
+                     "${LLVM_DEFINITIONS}")
+  add_definitions(${NPU_LLVM_DEFINITION_LIST})
+  # Explicit rather than left to CMAKE_CXX_FLAGS_<CONFIG>, so that the option
+  # means what its name says under a Debug configuration too.
+  add_compile_definitions(NDEBUG)
+  if("${LLVM_DEFINITIONS}" MATCHES "_GLIBCXX_ASSERTIONS|-D_DEBUG|-UNDEBUG")
+    message(FATAL_ERROR
+      "NPU_FORCE_NDEBUG cannot hold: LLVM_DEFINITIONS still carries an "
+      "assertion macro (${LLVM_DEFINITIONS}), so this build would define "
+      "NDEBUG and keep its assertions, which is the thing D-0028 was. Refusing "
+      "rather than producing it.")
+  endif()
+else()
+  add_definitions(${LLVM_DEFINITIONS})
+endif()
 
 # ---------------------------------------------------------------------------
 # The ISA generator, added before include/ rather than with the other tools.
