@@ -18,393 +18,517 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P7, the simulator and the reference interpreter.** Branch
-`phase/p7-simulator`, cut from `main` at `7b9d18c`, which is the P6 merge plus a
-README edit. Ten commits, not pushed. The tenth is the one that carries this
+**P8, the walking skeleton and the safety net.** Branch
+`phase/p8-walking-skeleton`, cut from `main` at `7a4d060`, which is the P7
+merge. Eleven commits, not pushed. The eleventh is the one that carries this
 table, so it is the branch tip and is named by subject rather than by a sha it
 cannot know.
 
 | Commit | Subject |
 |---|---|
-| `1939b58` | `style(readme): trim the trailing space the web editor left on the title` |
-| `e454d6d` | `feat(simulator): one home for the cost model, and the Python mirror a test holds to it` |
-| `018f8c2` | `feat(simulator): the machine's two memories, bounds checked in every build mode` |
-| `078b78d` | `feat(simulator): the fp32 kernels, the two timelines, and npu-sim` |
-| `b1df707` | `test(simulator): NPUSimulatorTests, a semantics test per opcode and the trap pair` |
-| `b931fac` | `test(simulator): npu-sim over a program the whole pipeline produced` |
-| `319c52d` | `feat(python): refexec, the independent numpy reference interpreter` |
-| `015e437` | `ci: switch on NPUSimulatorTests, in the default build and under the sanitizers` |
-| `a1b0920` | `fix(test): the differential oracle's random inputs were all negative` |
-| tip | `docs: record the P7 defects and hand off the phase` |
+| `b1ce3c9` | `feat(pipeline): the -O0 level, described once, in lib/Pipeline` |
+| `af73bd7` | `feat(simulator): the statistics leave npu-sim as data, not as text` |
+| `5225b5b` | `feat(driver): npu-compile, from ONNX to a .nbin at -O0, in four stages` |
+| `d19fbb1` | `test(e2e): the walking skeleton walks, checked against two oracles` |
+| `2906a25` | `test(oracles): the metamorphic relations, and a subgraph nothing reads` |
+| `4cae9ab` | `docs(adr): the per model tight scratchpad budgets, measured and frozen` |
+| `8c9fa4a` | `feat(scripts): the regression baseline of Section 17.6, and its --check` |
+| `852b3f5` | `feat(scripts): the reachability check in full, with a mechanical simulation layer` |
+| `68e8984` | `feat(scripts): coverage measured, and the real thresholds set` |
+| `93679c3` | `fix(build): say out loud what the NDEBUG and sanitizer directories are for` |
+| tip | `docs: record the P8 defects and hand off the phase` |
 
-**The commit order is the roadmap's, and P6's handoff is why it is written
-down.** The cost model comes first because it is the one home Section 5.5 asks
-for and because everything after it charges against it. The memories come
-second, because a kernel cannot be written before there is something safe to
-address. The kernels and the executor come third. Each test follows the thing it
-tests, and the reference interpreter comes last of the code because it is the
-oracle rather than the subject.
+**The commit order is the roadmap's.** The `-O0` pipeline comes first because
+nothing can name a level until one exists. The simulator's JSON statistics come
+second because the driver reads them and Section 10.2 forbids reading them any
+other way. The driver comes third, then the end to end matrix that drives it,
+then the oracles that need a pipeline to act on. The tight budgets come before
+the baseline because the baseline's tight budget cells use them. The baseline
+comes before the reachability and coverage work because the roadmap puts the net
+after the run it freezes.
 
-**Every commit was checked out and built on its own**, not merely the tip. A
-worktree at `/tmp/p7check`, since removed, walked the ten in order and ran
-`ninja -C build -j6` from a fresh configure at each. All built clean. A commit
-sequence nobody has bisected is a sequence that only reads as one.
+**Every commit was checked out and built on its own.** A worktree at
+`/tmp/p8check`, since removed, walked the ten in order, ran `cmake -S . -B build`
+and `ninja -C build -j6` at each, and then `ninja -C build check-npu`. All ten
+built clean and all ten reported 20 of 20. A commit sequence nobody has bisected
+is a sequence that only reads as one.
 
-**This phase was resumed from an uncommitted tree**, and the log's honesty
-register says to write that down rather than present the result as if it arrived
-in order. The session that wrote the simulator did not survive to commit it.
-What this one found was `7b9d18c` with zero commits and about five thousand
-lines of untracked work beside it, passing its own tests. Passing tests written
-by the same session prove internal consistency and not conformance, so the work
-above is that tree audited against the specification section by section, plus
-the four defects the audit found. Which lines came from which session is not
-recoverable and is not worth reconstructing. What matters is that nothing here
-is committed on the strength of having been found in the working tree.
+**The end to end pipeline worked the first time it was run**, matching
+onnxruntime to 2.98e-8 on LeNet with no debugging. That is recorded because it is
+the phase's headline and because everything else in this file is about something
+other than the pipeline. The four stages P4 through P7 landed with their own
+tests fitted together.
 
 ## Gate status
 
-The P7 gate is the roadmap entry's, plus Section 9.3's contract with the format,
-plus Section 19.0's activation. Every item is **met locally**. Item by item,
-with the proof.
+The P8 gate is the roadmap entry's, parsed clause by clause. Every item is **met
+locally**; the CI runs that Section 19.1 also requires are the orchestrator's and
+are listed under "Next command". Item by item, with the proof.
 
-### The roadmap's P7 gate
+| # | Gate clause | Status | Proof |
+|---|---|---|---|
+| 1 | every model matches onnxruntime at `-O0` | PASS | `test_the_simulated_answer_matches_onnxruntime`, 70 cells, all seven models. Worst absolute 4.77e-06, worst relative 8.08e-07 |
+| 2 | both tolerances asserted separately | PASS | `assert_both_bounds` makes two assertions, not one `assert_allclose`. Section 17.4 says the combined predicate lets either bound hide the other's failure and this is that rule obeyed |
+| 3 | all five input classes | PASS | `npu_frontend.input_classes`, seeded per cell from `crc32(model:batch:class)` so a failing cell's input reconstructs from its own name. `test_input_classes.py` asserts no two classes produce the same array |
+| 4 | both batch sizes | PASS | `generate_model(..., batch=)`, with a test that the weights and node counts do not move with the batch. 1 and 4, over every model |
+| 5 | the baseline records `-O0` only | PASS | `test_the_committed_baseline_records_minus_o_zero_only`. 14 cells, seven models times two budgets, one level |
+| 6 | `schema_version` set | PASS | 1. `--check` refuses a version it does not recognise rather than reading a later field as a regression from zero, asserted by `test_an_unknown_schema_version_is_refused_rather_than_guessed` |
+| 7 | energy and per level fields explicitly absent | PASS | `absent_fields` names `energy` as P11 and `per_level` as P9, and a test asserts no cell carries an energy key |
+| 8 | `--check` reports zero drift on unchanged code | PASS | Output below. `regression-baseline: no drift`, exit 0 |
+| 9 | and demonstrably fails on a deliberate cost model perturbation, both outputs shown | PASS | Output below. 32 differences across two suites and every cell's cycles, exit 1 |
+| 10 | the reachability check passes with an empty exemption block, or every gap is a dated exemption naming its phase | PASS, second form | Full mode, five layers. Every **imported computation** operation meets all five with no exemption of any kind. Two dated exemptions naming P9, both structural, both the same fact |
+| 11 | `yield` and `fused_op` classified as structural per law 2 | PASS | Read from the ODS description, not from a table in the script. `note: structural: npu.fused_op, npu.yield` |
+| 12 | the metamorphic relations pass on every model | PASS | Four of Section 17.3a's five, exact agreement on every applicable cell. The fifth cannot be written and the reason is asserted rather than asserted once |
+| 13 | a dead subgraph changes neither the outputs | PASS | Bit identical, every model, every input class |
+| 14 | nor the `-O2` instruction count | PASS, resolved | See "How the `-O2` clause was read" below |
+| 15 | the per model tight budgets recorded | PASS | `docs/adr/0008-per-model-tight-scratchpad-budgets.md`, dated, with the measurement and two recorded deviations |
+| 16 | CI proven red for all four fault classes with URLs recorded | REHEARSED, CI PENDING | All four rehearsed locally under CI's exact invocations, predictions written first, all four matched, all four restored. Recipes below. The CI runs and their URLs are the orchestrator's |
+| 17 | coverage measured and the real thresholds set | PASS | C++ 86.0 percent, threshold 85. Python 90.3 percent, threshold 90. Branch coverage reported for the allocator and the decoder |
 
-| Gate item | Proof |
-|---|---|
-| A semantics test per opcode against hand computed values | 16 of 16 opcodes. `NOP` and `HALT` in `Control.NopAdvancesAndHaltStops`; `DMA_LOAD` and `DMA_STORE` in `Dma.DmaRoundTrip`; the other twelve each by name in `SimulatorTest.cpp`, `QUANT` and `DEQUANT` by the refusal they give. Not one expected value was produced by running the kernel: each is written out above the test that asserts it, from `docs/ISA_MANUAL.md` and the ODS description, in arithmetic short enough for a reader to redo |
-| Every case in Section 10.1's **P7 list** | All of them, and the index at the top of `SimulatorTest.cpp` maps the list to the tests one line each. `POOL_MAX`; the DMA pair and `Dma.SpillRoundTrip`; `GroupedConvolution` at `group == 2`; `DepthwiseConvolution` at `group == C`; `DilatedConvolution` at dilation 2; `AsymmetricPadding` at pads `[1, 0, 0, 1]`; batch 2 and batch 4 on convolution, on **both** pooling kernels and on **both** elementwise opcodes; `TransposeIdentity` and `TransposeNchwToNhwc`; `CONCAT` on the channel axis, on the last axis, with three operands and at batch 4; `AllPaddingWindow`, which must not divide by zero; and `Dma.StridedLoad`, which exercises the stride term rather than merely defining it |
-| And no integer case | None. The two quantization opcodes are covered by the refusal they give, which names Phase P14, and `Quantization.QuantRefusesByNameUntilPhaseP14` and its `DEQUANT` mirror assert it. Nothing here asserts what an integer kernel computes |
-| An out of bounds result address traps gracefully in an assertions build and an NDEBUG build, all four runs shown | The four runs are in their own table below. The NDEBUG build is `build-ndebug`, configured `-DNPU_FORCE_NDEBUG=ON`, and that option exists because `-DCMAKE_BUILD_TYPE=Release` alone does not produce one against this LLVM. That is D-0028, and the first attempt at this gate item passed in an assertions build |
-| The two port overlap test | `Timelines.IndependentStreamsOverlapCompletely`. Twenty transfers and five computes with nothing to say to each other: the total equals the DMA timeline exactly, so the whole compute timeline is hidden underneath it |
-| The dependency serialization test | `Timelines.DependencySerializesAndOverlapReadsZero`. A chain in which every instruction waits for the one before it, ending on the compute port so the `HALT` cannot hide underneath a transfer that is still running. The total equals the sum of the two timelines |
-| `overlap_fraction` reads 0 fully serialized and approaches 1 fully overlapped, asserted | Both endpoints, twice. `CostModel.OverlapFractionReachesItsEndpoints` asserts the formula at 0, 1 and 0.5, and asserts it is **not** the naive form, which tops out near 0.5 and which somebody would otherwise simplify it back to. The two timeline tests assert the same endpoints over real programs |
-| The single port mode reproduces the sum | `Timelines.SinglePortReproducesTheSum`. Under the flag the total is the sum of the two ports and the fraction is 0; the same program on two ports is strictly faster; and both runs place the same charges on the same ports, which is what makes the flag a reproducibility switch rather than a second model |
-| The reference interpreter and the simulator agree on every operation on randomized inputs | 24 cases covering every executable operation of the dialect, `test_every_case_agrees`. `test_the_export_covers_every_operation_refexec_can_run` asserts the case set covers all ten opcode backed operations, because the failure mode of a table driven suite is that it stops growing while the cases it has keep passing |
-| A deliberately perturbed kernel makes that comparison fail, shown | `POOL_MAX` initialised to zero rather than negative infinity: `max_pool2d` 5 of 54 elements mismatched, `max_pool2d_padded` 1 of 50, `test_every_case_agrees` red. Recipe and restore below. A standing cheap version, `test_the_comparison_is_not_vacuous`, perturbs the reference by one part in a thousand on every run, so a tolerance quietly widened until everything passed goes red in CI rather than in a recipe |
+### How the `-O2` clause was read, and why
 
-### Section 9.3, the simulator's contract with the format
+The gate asks that a dead subgraph change neither the outputs nor the **-O2**
+instruction count. `-O2` arrives at P9. Worse, at `-O0` the second half is not
+merely unmeasurable, it is **false by construction**: Section 12 puts every pass
+that removes anything at `-O1` and above, so a dead subgraph at `-O0` must change
+the count.
 
-| Gate item | Proof |
-|---|---|
-| The scratchpad is sized strictly from `scratchpadBytes`, never grown | `Simulator::Simulator` passes `program.scratchpadBytes` to `Machine` and nothing inspects the instruction stream to size anything. `Trap.AnOutOfRangeResultAddressTrapsGracefully` asserts `scratchpadBytes() == 32` after the fault, so the machine that refused the write is still exactly the size the file declared |
-| Every hand built test program sets an explicit tight value with the arithmetic in a comment | Every one, and it is mechanical rather than a habit: `Builder::finish` takes the declared number and fails the test when the buffers do not add up to it, so a comment that drifted from the code is a red test |
-| A declared size this host cannot allocate is refused rather than clamped | `Trap.AnOversizedMemoryIsRefusedRatherThanClamped`, at 2^50 bytes. A clamp would be a different machine from the one the file describes and every bounds check afterwards would be checking against the wrong number |
-| Bounds checked accessors in **every** build mode, no `assert(false)` on the trap path | `grep -n 'assert(' include/NPU/Simulator/*.h lib/Simulator/*.cpp` finds one `static_assert` on the dispatch table's size and one occurrence inside a comment. The checks are real branches, in `Machine::inRange` and `Machine::elementAddress`, compiled identically in both build directories |
-| Proven in both | The four runs below |
-| An out of range access records the first trap, returns null, the caller skips the access | `Trap.TheFirstTrapIsTheOneReported` asserts the message names element zero's address and **not** element one's, over a relu that goes out of range on all four of its elements |
-| `npu-sim` compares the input file size against the declared region | `test/Simulator/npu-sim.mlir`, SIZE prefix: `input region 0 is 128 bytes and the file supplied is 64` |
-| One `--input` per declared region, refused with a message naming both numbers | Same file, COUNT prefix: `declares 1 input regions and 0 --input arguments were given` |
-| It writes **all** outputs, not just the first | Same file: two output regions, both asked for, both measured with `wc -c`, both 128 bytes. The claim is about the second one, so the second one is the one measured |
-| `validate()` is called again before execution, by contract | `Simulator::run` calls `program.validate()` and returns the named check on failure. `Trap.TheValidatorRefusesAnOutOfRangeResultAddress` asserts the message names `result-in-range` **and** that `stats.instructions` is 0, so the program did not reach a kernel |
+The resolution, recorded rather than chosen quietly:
 
-### Section 19.0, the activation table
+- **The outputs half is asserted now**, bit identical, on every model and every
+  input class. It is the stronger half and it needs no level above `-O0`.
+- **The count half is asserted at every level whose pipeline eliminates dead
+  code**, and which levels those are is read out of the compiler.
+  `PassEntry` carries an `eliminatesDeadCode` property under the same rule as
+  `ablatable`: a missing one is a build error.
+  `compile.levels_that_eliminate_dead_code()` reads it through
+  `npu-opt --npu-describe-pipeline`. The set is empty at P8 and fills itself at
+  P9 with no edit to the test.
+- **`test_no_level_this_compiler_builds_eliminates_dead_code` asserts the
+  emptiness**, so the vacuous parametrization is declared rather than left to be
+  noticed. It goes red at P9, which is correct: the phase that makes the claim
+  true is the phase that deletes the assertion.
+- **Beside it, the P8 form of the same check**, which is just as falsifiable in
+  the other direction: at `-O0` the count grows by exactly the three instructions
+  the injection brought, and by no more. Four would mean the injection cost
+  something it did not declare; two would mean a pass nobody registered removed
+  something.
 
-| Gate item | Proof |
-|---|---|
-| `NPUSimulatorTests` CI step on | Guard kept, else branch turned into a failure, which is the shape `NPUInterfaceTests` took at P2 and `NPUEncodingTests` at P6 |
-| The same binary under the sanitizers | Added to the sanitizers job's existing GoogleTest step rather than given a step of its own. A new step is a new activation to prove; a second binary inside a step that is already on and already proven red is a strengthening of a net that exists |
-| Every later phase guard still prints its off line | pytest slow cells P10, check-reachability full P8, nightly full matrix P10, mutation P15, flake P15 |
+### The two exemptions, and why they are not a weakened gate
 
-### The five things P6 left on this phase's desk
+`npu.fused_op` and `npu.yield` are missing the model layer. They are created by
+`-npu-fuse-ops`, which Section 12 puts at `-O2` and which lands at P9, so no
+model's IR can hold one at P8. The gate's own wording allows this: "with an
+**empty** exemption block ... **or** every gap is a dated exemption in
+`docs/EXEMPTIONS.md` naming its phase".
 
-| Obligation | Proof |
-|---|---|
-| The generated dispatch skeleton expanded, so a new opcode with no kernel is a build error | Shown, not asserted. A sixteenth opcode appended to `NPUISADescription.td` and nothing else fails the build in **four** places, listed below with their messages. Restored, and the tree is clean afterwards |
-| `validate()` called again before execution | Above, with the instruction count that proves the program never started |
-| The scratchpad sized strictly, tight values with the arithmetic in a comment | Above, and `Builder::finish` makes it mechanical rather than conventional |
-| A kernel indexes its operands through their strides, so ADR 0005's broadcast needs no special case | `Elementwise.ChannelBroadcastArrivesAsAStrideZeroOperand` reads a three element buffer as a rank 4 view with strides `[0, 1, 0, 0]`. There is no broadcast branch in `Kernels.cpp` to find; grepping for one returns the comment saying there is none and must never be one. `Shape.TransposeNchwToNhwc` is the other half, NCHW extents with permuted strides |
-| The namespace is `nbin`, not `npu` | It never came up, and that is the finding. Nothing under `include/NPU/Simulator`, `lib/Simulator`, `tools/npu-sim` or `unittests/Simulator` includes an MLIR header at all, so no translation unit in this phase holds both names. `docs/ARCHITECTURE.md`'s P7 extension records the prediction and what actually happened, because a prediction quietly dropped is a prediction nobody learns from |
+Nothing about either operation is unfinished. `-npu-lower-to-npuisa` flattens
+the region, the lit suite has a case for it, the ISA description records both as
+reaching the encoder by elimination, and the simulator needs no kernel for either
+because neither survives to the instruction stream. What is missing is a
+**producer**. The commit that lands `-npu-fuse-ops` deletes both entries, or the
+check goes red at the next run.
 
 ### Verification output
 
-Every command below was run on this branch at `a1b0920`, from
+Every command below was run on this branch at `93679c3`, from
 `/home/elijah/npu-mlir-v2`, in `~/npu-venv`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 19 discovered, 19 passed, 0 failed. Eighteen at P6, plus this phase's one |
-| `build/bin/NPUSimulatorTests` | 55 tests from 14 suites, 54 passed, 1 skipped. The skip is the differential export, which needs `NPU_DIFFERENTIAL_OUT` |
-| `build-ndebug/bin/NPUSimulatorTests` | 55 tests, 54 passed, 1 skipped. Configured `-DCMAKE_BUILD_TYPE=Release -DNPU_FORCE_NDEBUG=ON` |
-| `build-fuzz/bin/NPUSimulatorTests` under ASan and UBSan | 55 tests, 54 passed, 1 skipped, exit 0. clang, `-fsanitize=address,undefined`, `UBSAN_OPTIONS=halt_on_error=1` |
-| `build/bin/NPUEncodingTests` | 77 tests, 76 passed, 1 skipped, untouched by this phase |
-| `build-fuzz/bin/NPUEncodingTests` under ASan and UBSan | 75 passed, 2 skipped, exit 0, unchanged from P6 |
-| `build/bin/NPUInterfaceTests` | 23 tests, 23 passed, untouched |
-| `build/bin/NPUAllocatorTests` | 29 tests, 29 passed, untouched |
-| `build/bin/NPUTilingTests` | 12 tests, 12 passed, untouched |
-| `python -m pytest test/Python -q` | 180 passed, 7 deselected, exit 0. 142 at P6, plus this phase's 38 |
-| `mypy` | no issues found in 13 source files |
-| `black --check .` | 26 files unchanged |
+| `ninja -C build check-npu` | 20 discovered, 20 passed. Nineteen at P7, plus this phase's `test/Pipeline/opt-levels.mlir` |
+| `build/bin/NPUInterfaceTests` | 23 tests, 23 passed |
+| `build/bin/NPUTilingTests` | 12 tests, 12 passed |
+| `build/bin/NPUAllocatorTests` | 29 tests, 29 passed |
+| `build/bin/NPUEncodingTests` | 77 tests, 76 passed, 1 skipped |
+| `build/bin/NPUSimulatorTests` | 55 tests, 54 passed, 1 skipped |
+| `build-ndebug/bin/NPUSimulatorTests` | 54 passed, 1 skipped. See D-0031 for what this directory may and may not build |
+| `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
+| `build-fuzz/bin/NPUSimulatorTests` under ASan and UBSan | 54 passed, 1 skipped, exit 0 |
+| `build-fuzz/bin/NPUEncodingTests` under ASan and UBSan | 75 passed, 2 skipped, exit 0 |
+| `python -m pytest test/Python -q` | 482 passed, 7 skipped, 7 deselected, exit 0 |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | 489 passed, 7 skipped, exit 0. 180 at P7, plus this phase's 316 |
+| `mypy` | no issues found in 19 source files |
+| `black --check .` | 39 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 211 of 211 files |
+| `reuse lint` | compliant, 239 of 239 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
-| `python scripts/check-reachability.py --skip-models` | pass, `layers checked: import, lowering, encoding, simulation` |
+| `python scripts/build-model-ir.py` | 28 IR files written |
+| `python scripts/check-reachability.py` | pass, `layers checked: import, lowering, encoding, simulation, model`, 2 exemptions in force |
+| `python scripts/check-reachability.py --skip-models` | pass |
 | `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
+| `bash scripts/regression-baseline.sh --check` | no drift, exit 0 |
+| `bash scripts/coverage.sh 85 90` | C++ 86.0 PASS, Python 90.3 PASS, exit 0 |
 | `git status --short` | empty |
 
-**Five gtest binaries exist now, not four.** `NPUSimulatorTests` is this
-phase's, and it is the last one Section 19.0's table has to switch on.
+**Five gtest binaries and one lit suite, unchanged in number.** What grew is
+pytest, from 180 to 489, which is where the end to end matrix, the two oracles,
+the driver's contract and the tight budgets all live.
 
-**`check-reachability` checks four layers now, not three.** The simulation layer
-became decidable the moment `lib/Simulator/Simulator.cpp` existed, and it passes.
-It is answered by a substring search over that file's operation table, which is
-weaker than the encoding layer's; the file says so and making it mechanical is on
-P8's desk.
+### The baseline, recorded and checked
 
-### The four runs Section 9.3 asks for
+`test/baseline/baseline.json`, `schema_version` 1: 8 suites with their pass, fail
+and skip counts and their full test name lists, the git sha, the tool versions,
+`absent_fields`, and 14 cells. `test/baseline/golden/` holds seven `.npy`
+tensors, one per model at `-O0`.
 
-| Build | Test | Result |
-|---|---|---|
-| `build`, assertions | `Trap.AnOutOfRangeResultAddressTrapsGracefully` | 1 test, passed |
-| `build`, assertions | `Trap.AnOutOfRangeOperandAddressTrapsGracefully` | 1 test, passed |
-| `build-ndebug`, NDEBUG | `Trap.AnOutOfRangeResultAddressTrapsGracefully` | 1 test, passed |
-| `build-ndebug`, NDEBUG | `Trap.AnOutOfRangeOperandAddressTrapsGracefully` | 1 test, passed |
+**The recorded `git_sha` is `4cae9ab` and the branch tip is later**, which is
+correct rather than stale. Section 16.1 states the same fact for result files: a
+result is committed **after** the code it measures, so it can never carry the sha
+of the commit that contains it. `--check` at `93679c3` reports no drift, which is
+the claim that matters.
 
-The whole `Trap` suite is nine tests and passes in both directories.
+Zero drift on unchanged code:
 
-**The NDEBUG build is proven to be one rather than assumed to be**, and that is
-the part worth keeping. A file whose first lines are `#ifndef NDEBUG` and
-`#error`, compiled with the exact flags `compile_commands.json` records for
-`lib/Simulator/Memory.cpp`, exits 0 in `build-ndebug` and exits 1 in `build`.
-The same probe refuses `_GLIBCXX_ASSERTIONS` and `_DEBUG` as well, because it was
-the libstdc++ hardening rather than `NDEBUG` itself that turned D-0026 into an
-abort, and a build that cleared one and kept the other would be a third thing
-neither name describes.
+```
+regression-baseline --check
+
+  recorded at 4cae9abc1a23, checked at 68e8984bcdb9
+  14 cells, 7 golden tensors
+  suite NPUAllocatorTests      29 passed    0 failed    0 skipped
+  suite NPUEncodingTests       76 passed    0 failed    1 skipped
+  suite NPUInterfaceTests      23 passed    0 failed    0 skipped
+  suite NPUSimulatorTests      54 passed    0 failed    1 skipped
+  suite NPUTilingTests         12 passed    0 failed    0 skipped
+  suite check-npu              20 passed    0 failed    0 skipped
+  suite dash-lint               2 passed    0 failed    0 skipped
+  suite pytest                489 passed    0 failed    7 skipped
+
+regression-baseline: no drift.
+```
+
+### The deliberate cost model perturbation, and what the net caught
+
+The fault, one constant, `kDramBandwidthBytesPerCycle` from 16 to 15:
+
+```bash
+sed -i 's/kDramBandwidthBytesPerCycle = 16.0;/kDramBandwidthBytesPerCycle = 15.0;/' \
+    include/NPU/Simulator/CostModel.h
+```
+
+`--check` output with the fault in place, exit 1, abridged only in the cell list:
+
+```
+  suite NPUSimulatorTests      52 passed    2 failed    1 skipped
+  suite pytest                472 passed    2 failed    7 skipped
+
+  32 differences:
+
+    suite NPUSimulatorTests: passed 54 -> 52
+    suite NPUSimulatorTests: failed 0 -> 2
+    suite pytest: passed 474 -> 472
+    suite pytest: failed 0 -> 2
+    cell conv_bn_relu_stack-O0-default: cycles 1372.5 -> 1389.5
+    cell conv_bn_relu_stack-O0-default: dma_cycles 1015 -> 1032.8
+    ...
+    cell lenet-O0-default: cycles 17766.25 -> 18624.350000000002
+    cell lenet-O0-default: dma_cycles 16441 -> 17482.66666666667
+    ...
+    cell resnet_block-O0-tight: dma_cycles 1614 -> 1676.2666666666667
+
+regression-baseline: FAIL. An optimization that moves a cycle count is not
+necessarily wrong, but it must never move silently.
+```
+
+Restoring with `git checkout -- include/NPU/Simulator/CostModel.h` returns
+`--check` to `no drift`, exit 0, and `git status --short` to empty.
+
+**Three independent catches, and one deliberate non catch.** The frozen constants
+test in `NPUSimulatorTests`, the Python cost model mirror in pytest, and every
+cell's `cycles` and `dma_cycles`. The **golden tensors did not move**, and that is
+correct rather than a gap: a cost model constant changes what the machine is
+charged and not what it computes. The two halves of the baseline measure
+different things and this run shows it.
 
 ## Activation proofs
 
-**One step activates at P7**, `NPUSimulatorTests`, and it was broken twice
-deliberately, shown red, and restored.
+**Two steps activate at P8** and each was broken deliberately, shown red, and
+restored. Both rehearsals ran under **the exact CI invocation**, inside
+`set -euo pipefail`, with the step's own script. All are **rehearsed locally,
+CI runs pending**.
 
-Both rehearsals ran under **the exact CI invocation**, inside
-`set -euo pipefail`, with no `--gtest_filter` naming the broken test. P3, P5 and
-P6 each recorded a proof that proved nothing, so the distinction is not
-theoretical: filtering proves that a broken test fails, which was never in doubt,
-where what needs proving is that a failure inside the binary reaches the step's
-exit code.
+**A rehearsal branch must be named under `phase/`.** `ci.yml` triggers on
+`phase/**` and `main` only, and P7 lost a push to that. The branch to use is
+`phase/p8-activation-rehearsal`, deleted after the restore run.
 
-**Both were rehearsed locally first and then run against CI**, on the scratch
-branch `phase/p7-activation-rehearsal`, since deleted. The branch's own first
-run, with the step active and everything green, is
-<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
-The product fault went red at the `NPUSimulatorTests` step, at the sanitizers
-job's GoogleTest step, and at coverage besides:
-<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363102927>.
-The test side fault went red at exactly the same three steps and nowhere else,
-which is the isolation claim in CI's terms: every step that executes the binary,
-and nothing that does not:
-<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363280962>.
-The restore, a tree byte identical to the phase branch tip, returned green:
-<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33363608121>.
-
-**CI shows less of the product fault's net than the local rehearsal did**, and
-the reason is worth a line: the job stops at its first red step, and the
-`NPUSimulatorTests` step precedes pytest, so the differential's two extra
-catches are in the local record only. The engineering log carries the detail,
-along with a process finding about the rehearsal branch's name.
-
-### 1. Product side, which measures the net
-
-**The fault.** `POOL_MAX` starts its accumulator at zero rather than at negative
-infinity, which is the classic form of this bug:
+### 1. `check-reachability` full, product side: the mechanical simulation layer
 
 ```bash
-sed -i 's/IsMax ? -std::numeric_limits<float>::infinity() : 0.0f;/0.0f;/' \
-    lib/Simulator/Kernels.cpp
+sed -i 's/{"name": "POOL_MAX", "value": 9, "sources": \["max_pool2d"\], "needs_kernel": true/{"name": "POOL_MAX", "value": 9, "sources": ["max_pool2d"], "needs_kernel": false/' \
+    docs/ISA_OPCODES.json
 ```
 
-**The prediction, written before the run.** `NPUSimulatorTests` red at
-`Pooling.AllPaddingWindow` and nowhere else, because every other hand computed
-pooling case uses positive inputs and `max(0, positive)` is the positive.
-`check-npu` still 19 of 19, because the lit test asserts the tool's contract and
-not its numbers. pytest red in the differential, whose inputs are drawn from
-`[-1, 1)` and therefore contain windows whose maximum is negative.
+**Prediction, written before the run.** The reachability step red, exit 1,
+naming `npu.max_pool2d missing: simulation`, because the simulation layer is
+decided from this field now rather than by searching a comment. The ISA staleness
+step also red, because a committed generated artifact no longer matches its
+description.
 
-**The result.** Exactly that. Step exit 1, one test red,
-`Pooling.AllPaddingWindow`; `check-npu` 19 of 19; pytest 1 failed at
-`test_every_case_agrees`, with `max_pool2d` 5 of 54 elements mismatched and
-`max_pool2d_padded` 1 of 50. Restoring returns the step to exit 0 with 54
-passing, `check-npu` to 19 of 19, and pytest to 180 passed.
+**Result.** The first happened exactly. **The second did not**, and the
+disagreement is the useful part. `check-isa-staleness.sh` **regenerates** the
+artifacts before it diffs them, so a hand edit in the working tree is overwritten
+by the regeneration and the diff finds nothing. That is correct behaviour: an
+edit somebody **commits** is still caught, because then the regeneration
+overwrites the working tree and the diff against `HEAD` shows it. Only an
+uncommitted edit is silently repaired, and silently repairing a generated file is
+what a generator is for. It also means the two steps interact through the
+filesystem, and the rehearsal ran them in the order that shows the fault by luck
+rather than by design.
 
-**What the run measured is the shape of the net rather than its depth.** One
-hand written test caught this, and the differential caught two cases the hand
-written tests structurally cannot reach, because the hand computed pooling
-inputs are the small positive integers a person picks when writing an expected
-value by hand and the oracle's are not. That is the division of labour Section
-17.3a describes, seen working. `check-npu` saw nothing, which is correct rather
-than a gap: `npu-sim.mlir` exists to assert the tool's contract with the format,
-and asserting numerics there would duplicate the unit suite in a worse language.
+**Restore:** `git checkout -- docs/ISA_OPCODES.json docs/ISA_MANUAL.md`. Both
+steps green afterwards.
 
-**This rehearsal is also how D-0029 was found**, and it is recorded here rather
-than tidied away. The first run reported **54 of 54** elements mismatched on
-`max_pool2d`. That figure is wrong for the fault: with inputs spread over
-`[-1, 1)` and windows of four, about one window in sixteen has an all negative
-maximum, so three or four was the expectation. The generator was shifting its
-state right by 33 bits rather than 32, so every value it had ever produced was
-negative; the `relu` differential case had been comparing zeros against zeros and
-the two pooling cases had never seen a positive maximum. A rehearsal is supposed
-to confirm a prediction. The useful part of one is the number that does not
-match.
-
-### 2. Test side, which isolates the step
+### 2. `check-reachability` full, model side: the layer that is new
 
 ```bash
-sed -i 's/EXPECT_EQ(kArrayDim, 16);/EXPECT_EQ(kArrayDim, 17);/' \
+sed -i '/^npu\.yield  /d' docs/EXEMPTIONS.md
+```
+
+**Prediction.** The reachability step red, exit 1, naming
+`npu.yield missing: model`, and `--skip-models` still green, because the model
+layer is exactly the one that mode leaves out.
+
+**Result.** Exactly that. Full: exit 1, `npu.yield missing: model`,
+`1 exemptions in force`. `--skip-models`: exit 0. Restore returns both to pass
+with `2 exemptions in force`.
+
+### 3. The coverage thresholds, C++ arm
+
+Set `NPU_COVERAGE_THRESHOLD` to `99` in `.github/workflows/ci.yml`, or run
+`bash scripts/coverage.sh 99 90`.
+
+**Prediction.** Exit 1 at the C++ arm, printing the measured 86.0 against 99, and
+the Python phase never runs because the script exits first.
+
+**Result.** Exactly that.
+
+### 4. The coverage thresholds, Python arm
+
+`bash scripts/coverage.sh 85 99`.
+
+**Prediction.** The C++ arm passes, the Python phase runs, exit 1 naming 90.27
+below 99. Both arms are separately reachable, which is what a two threshold gate
+has to prove.
+
+**Result.** Exactly that.
+
+## The proof of failure gate, Section 19.1
+
+Four fault classes, each rehearsed locally under CI's own invocation, with the
+prediction written before the run. **All four matched. All four restored. CI runs
+pending**, and Section 19.1 requires each as **its own pull request** so the
+`pull_request` trigger fires, plus one green run URL, all five pasted into
+`docs/ENGINEERING_LOG.md`.
+
+The baseline before any fault: dash-lint exit 0, `check-npu` 20 of 20,
+`NPUSimulatorTests` 54 passed, reachability pass, ISA staleness up to date.
+
+### Fault class 1, an em dash in a markdown file
+
+```bash
+printf 'A sentence with an em dash \u2014 in it.\n' >> docs/BREAKING_CHANGES.md
+```
+
+The character is written as an escape rather than typed, because this file is
+one of the files `scripts/dash-lint.sh` reads and a recipe that contained the
+literal would fail the check it is a recipe for. `printf` in bash expands
+`\uHHHH` in its format string, so the byte that reaches the markdown file is the
+real U+2014.
+
+**Predicted:** the `lint` job, at the `dash lint` step. **Result:** exit 1,
+`docs/BREAKING_CHANGES.md:47:28: unicode-dash: em dash U+2014 is banned
+everywhere`. `check-npu` untouched at 20 of 20. Restore: `git checkout --
+docs/BREAKING_CHANGES.md`, dash-lint clean.
+
+### Fault class 2, a failing lit test
+
+```bash
+sed -i 's|// LOWERED: npuisa.dma_store|// LOWERED: npuisa.dma_never|' \
+    test/Pipeline/opt-levels.mlir
+```
+
+**Predicted:** `build-and-test`, at the `check-npu` step, one test.
+**Result:** exit 1, `FAIL: NPU :: Pipeline/opt-levels.mlir`, 19 of 20 passed.
+dash-lint untouched. Restore returns 20 of 20.
+
+### Fault class 3, a failing GoogleTest
+
+```bash
+sed -i 's/EXPECT_EQ(kPeakMacsPerCycleF32, 256);/EXPECT_EQ(kPeakMacsPerCycleF32, 257);/' \
     unittests/Simulator/CostModelTest.cpp
+ninja -C build NPUSimulatorTests -j6
 ```
 
-**The prediction.** `FrozenConstants.TheCostModelsNumbers` red and nothing else;
-step exit 1; `check-npu` still 19 of 19, because lit never compiles the unit
-tests; pytest green, because the header the Python mirror parses did not move and
-the mirror compares against that header rather than against this expectation.
+**Predicted:** `build-and-test` at the `NPUSimulatorTests` step, one test,
+`FrozenConstants.TheCostModelsNumbers`; also the `sanitizers` job's GoogleTest
+step and the `coverage` job, which both run the same binary. `check-npu` green,
+because lit never compiles the unit tests.
+**Result:** exit 1, exactly that one test, 53 passed. `check-npu` 20 of 20.
+Restore and rebuild returns 54 passed.
 
-**The result.** Exactly that. Step exit 1, one test red,
-`FrozenConstants.TheCostModelsNumbers`; `check-npu` 19 of 19; pytest 180 passed.
-Restoring returns the step to exit 0.
+### Fault class 4, a failing pytest
 
-### Adding an opcode, which Section 9.4 asks for separately
-
-Append a sixteenth opcode to `include/NPU/Encoding/NPUISADescription.td` and
-build. It fails in four places and every one of them names the opcode:
-
-```
-Kernels.cpp:917: error: 'kernelSCRATCHOP' was not declared in this scope
-Kernels.cpp:930: error: static assertion failed: the kernel table and the ISA
-                 description disagree about how many opcodes there are
-Kernels.cpp:948: error: enumeration value 'SCRATCHOP' not handled in switch
-Validation.cpp:526: error: enumeration value 'SCRATCHOP' not handled in switch
+```bash
+sed -i 's/assert TIGHT_BUDGETS\["lenet"\] == 194624/assert TIGHT_BUDGETS["lenet"] == 194625/' \
+    test/Python/test_tight_budgets.py
 ```
 
-Two mechanisms, both out of the one description. The dispatch table expands the
-generated `NPUISADispatch.def`, so a row marked as computation with no kernel
-written is a missing identifier; and the hand written switch that assigns each
-opcode a port carries no `default`, so `-Werror=switch` catches it as well. P6
-generated the skeleton and could not demonstrate the claim, because there was no
-simulator to demonstrate it in. This is that demonstration.
+**Predicted:** `build-and-test` at the `pytest` step, one test,
+`test_the_anchor_models_tight_budget_is_the_recorded_one`; and now also the
+`coverage` job's Python arm, which is new at P8 and runs the whole matrix.
+`check-npu` green.
+**Result:** exit 1, exactly that one test, 481 passed. `check-npu` 20 of 20.
+Restore returns 482 passed.
+
+**A note the orchestrator will want when reading the CI runs.** A job stops at
+its first red step, so CI will show less of each fault's net than these local
+runs did. P7 recorded the same thing and the reason is mechanical rather than
+interesting.
 
 ## Open questions
 
-Six. None blocks the gate.
+Eight. None blocks the gate.
 
-**The NDEBUG build is proven locally and not in CI.** Section 9.3 asks for the
-accessors to hold in every build mode and the gate asks for four runs; all four
-are above, but `build-ndebug` is a developer's second directory rather than a
-job. The sanitizers job is `RelWithDebInfo` against a container LLVM whose
-assertion setting this session did not read, so it cannot be claimed as the
-NDEBUG half without checking it, and the `ci.yml` comment does not claim it. **A
-third CI build is a decision for the orchestrator**, not something to add
-unilaterally at the end of a phase: it is a new activation to prove and it costs
-a job.
+**The NDEBUG and sanitizer directories cannot build anything that links MLIR.**
+D-0031, found this phase. `NPU_FORCE_NDEBUG` turns `_GLIBCXX_ASSERTIONS` off in
+this project's translation units while the LLVM they link keeps it on, which is
+an ODR violation across the link; `build-fuzz` has the mirror with
+AddressSanitizer's container annotations. Benign for the two targets these
+directories exist for and fatal for `npu-opt`, which aborts on an empty module
+inside MLIR's own context construction. **The real fix is a second LLVM tree
+built without assertions**, an hour of build time and a decision with a cost. It
+is documented loudly, warned about at configure time, and left for the
+orchestrator, exactly like the third CI build below.
 
-**Write after write and write after read are not ordered on the timeline.** An
-instruction starts at the later of its port becoming free and its **operands**
-becoming ready, which is Section 5.5's wording implemented literally. Two
-instructions writing overlapping spans on different ports are therefore not
-ordered against each other. No program this compiler emits has that shape, since
-the allocator gives a live value one span, and inventing an ordering rule the
-specification does not state would be inventing a machine. Flagged because a
-reader comparing the executor against a real machine will notice it.
+**The NDEBUG third CI build is still an open decision owned by the
+orchestrator**, and this phase did not add one. D-0031 changes the calculus in
+one direction: a third CI build would need an LLVM image without assertions, so
+the two decisions are now one decision about an image rather than two.
 
-**`readyAt` is linear in the writes so far, so the executor is quadratic in the
-instruction count.** Invisible at this phase's sizes, where the largest program
-is a few dozen instructions, and not invisible at P8's, where a model is
-thousands. An interval structure is the fix and P8 is the phase that will feel
-it. Recorded now so that a slow end to end run is diagnosed rather than
-investigated.
+**The OpenMP split is resolved and the fix is not taken.** The mechanism is the
+compiler, reproduced locally: `build-and-test` and `sanitizers` configure with
+clang, which needs `libomp` and `omp.h`; the coverage job passes no compiler and
+gets gcc, which brings `libgomp`. The image installs `clang` and not
+`libomp-dev`. The fix is one package in `docker/Dockerfile.llvm` plus an image
+republish, which costs an hour of CI. Section 10.3's determinism assertion runs
+at full strength wherever OpenMP is found, which is the coverage job and every
+developer machine, so nothing is unproven meanwhile.
 
-**`npu-sim` requires one `--output` per declared region, which is stricter than
-Section 9.3 asks.** The specification requires the tool to write all outputs and
-says nothing about refusing a caller who wanted fewer files. The refusal is here
-because "wrote one of your two outputs" is the failure the requirement exists to
-prevent, and a silent partial write is how it would happen. Recorded as a
-deliberate deviation rather than left for somebody to find in the lit test.
+**No cell of the P8 matrix is marked `slow`, and that is a measurement.** Section
+17.4 asks for a fast subset so an edit and rerun loop stays usable. The whole
+`-O0` matrix is 140 cells and takes twelve seconds including the exports, so
+there is nothing to carve out; marking a cell that costs a tenth of a second as
+slow would be a label rather than a measurement. The marker and the P10 CI step
+stay in place and start doing work when three levels and two budgets multiply
+this matrix by six.
 
-**A trapping instruction is still charged its cycles.** `transfer` computes its
-DMA charge before it checks the operand's rank, and the compute kernels charge
-before they walk. The run stops at the end of that instruction and the statistics
-go out with `SimResult::error` set, so nothing publishes them; a caller that read
-`stats` without checking `ok()` would read a number including work the machine
-refused to do. `SimResult::ok()` is the guard and every caller in the tree uses
-it.
+**The Python coverage threshold has 0.27 points of headroom.** Measured 90.273,
+threshold 90, which is Section 17.7's own rule of the measured value rounded down
+to a whole percent. **This is the thing to watch on the first CI run**: the
+container is a different platform and a branch this machine does not take could
+put the number below 90. If it does, the honest response is to record the CI
+host's measurement and set the threshold from it, not to widen it to a round
+number nobody measured.
 
-**The simulation layer of `check-reachability.py` is a substring search over
-`lib/Simulator/Simulator.cpp`.** The encoding layer became mechanical at P6 and
-this one did not. The file carries the table the checker reads, as a table rather
-than a scattering of mentions, so a human gets the same answer the checker does;
-but a mnemonic appearing inside an unrelated word would satisfy it. Making it
-mechanical is on P8's desk and `docs/ARCHITECTURE.md` says so.
+**`scripts/regression-baseline.sh --check` is not a CI step**, and Section 19.0's
+activation table has no row for it. Two reasons, and the second is the real one:
+it takes about a minute on top of a build, and its golden comparison is byte
+identical, which is a bound between two runs of the *same* build. A different
+compiler or host may contract a multiply and an add differently. Making it a CI
+step means first deciding what tolerance a cross host golden comparison has, and
+that is a decision, not an omission.
+
+**The tight budget fraction is recorded and inoperative.** Section 15 asks for a
+fixed fraction of the measured peak and the floor binds on all seven models, so
+the fraction does nothing at P8. It becomes a live knob at **P13**, when tiling
+gives the compiler a way to fit an instruction whose operands exceed the budget,
+and the phase that lands tiling re-measures these constants once, in its own
+commit, with `docs/BREAKING_CHANGES.md` written first per ground rule 7.
+
+**Section 17.3a's fifth metamorphic relation cannot be written.** Pad then slice
+back needs an ONNX `Pad`, which this importer refuses by name, and an ONNX
+`Slice`, which has no converter. It returns when Section 11's operator set does,
+and a test asserts the reason is still true so the relation is written rather
+than forgotten if either gains a converter.
 
 ## Next command
 
-Open the merge pull request for `phase/p7-simulator`.
+Push `phase/p8-walking-skeleton` and open the merge pull request.
 
-The branch is pushed and its first run is green, with `NPUSimulatorTests`
-running for the first time in the build and test job and again inside the
-sanitizers job:
-<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33362572992>.
-Both activation proofs have run against CI, red and restored, with the URLs in
-the section above.
+**Nothing on this branch has been pushed**, so no CI run exists for any of it.
+The first push is the first run of two newly activated steps and of a coverage
+job that now installs the Python dependencies and gates on two thresholds.
 
-Three things are worth watching specifically.
+Four things are worth watching specifically on that first run.
 
-Three predictions from the pre push draft of this section, and what the first
-run made of them.
+**The coverage job is materially different from the one that has been running
+since P2.** It now installs `requirements-lock.txt`, runs the whole pytest matrix
+under `pytest-cov`, and gates on 85 and 90 where it gated on 0. Its wall clock
+will go up by the Python suite's minute plus a first pip install, and the pip
+cache key is the same as the build and test job's, so the second run is cheaper
+than the first. The Python threshold's 0.27 points of headroom is the specific
+risk.
 
-**The sanitizers job linked its third target without incident.** The simulator
-library carries no MLIR dependency, so the extra target cost seconds.
+**The full reachability step runs two commands.**
+`scripts/build-model-ir.py` writes 28 IR files into `experiments/models/` and
+then the check reads them. It needs the Python dependencies and a built
+`npu-opt`, which is why it sits after the pytest step, and it needs
+`docs/ISA_OPCODES.json` to be current, which is why it sits after the ISA
+staleness gate.
 
-**OpenMP split the jobs, which the prediction did not foresee.** The build and
-test job's configure printed `OpenMP: not found`, and the determinism test said
-in its own output that both of its runs were single threaded, which is the
-weaker assertion and not a failure. The coverage job's configure found OpenMP
-4.5, so the thread count determinism assertion did run at full strength in CI,
-one job over from where it was expected. Why the two configures in one image
-disagree is not established and is left with P8.
+**Then the four proof of failure pull requests of Section 19.1**, each on its
+own, each from a branch named under `phase/`, with the four red URLs and one
+green URL pasted into `docs/ENGINEERING_LOG.md`. The recipes and the local
+results are above; if a fault is caught by a different job than the prediction
+says, Section 19.1 is explicit that this is a finding to record rather than a
+fault to adjust.
 
-**`check-npu` reported 19, `pytest` 180, and `check-reachability
---skip-models` printed its four layers**, each confirmed in the run log.
+**And the two activation proofs above**, on `phase/p8-activation-rehearsal`,
+deleted after the restore run.
 
 ## Next phase
 
-**P8, the walking skeleton and the safety net.** `npu-compile` with `-O0` and
-staged `--emit`, then the first end to end run: ONNX to simulated output,
-validated against onnxruntime across the full input class matrix at `-O0`. Then
-the net: `scripts/regression-baseline.sh` with `--check`, the `-O0` golden
-tensors, `scripts/check-reachability.py` in full, `scripts/coverage.sh`, and the
-proof of failure gate of Section 19.1. Also the metamorphic relations and the
-dead subgraph injection of Section 17.3a, and the per model tight budget
-constants of Section 15.
+**P9, optimization passes and opt levels.** Every pass in Section 12 except
+tiling, layout, double buffering and calibration, wired into `-O1` and `-O2`,
+each carrying its `ablatable` property.
 
-**It is the first legitimate stop and ship point.**
+**P8 is the first legitimate stop and ship point**, and the project is at it. The
+compiler computes correct answers end to end and can prove it.
 
-Six things P7 leaves on P8's desk.
+Six things P8 leaves on P9's desk.
 
-1. **The reference interpreter is the oracle and it is ready.** `refexec.execute`
-   dispatches on the `npu` mnemonic with every operation listed rather than swept
-   into a lookup with a default, so an operation added to the dialect and not to
-   that file raises by name rather than going unchecked. The end to end
-   comparison at `-O0` is P8's, and the harness it scales up from is the twenty
-   four case one in `test_refexec_differential.py`.
-2. **`stats.instructions` is the only instruction count in this project** and it
-   exists now. Section 10.2 is explicit that a regex over an IR dump is not one,
-   and the benchmark harness must raise if the field is missing rather than fall
-   back to counting lines.
-3. **The executor is quadratic in the instruction count.** Fine at a few dozen,
-   not fine at a few thousand. See the open question above.
-4. **`batch_norm` has no differential case and should get one at P8.** It has no
-   opcode, it decomposes at lowering into a multiply and an add, and comparing it
-   against the simulator needs the end to end pipeline. `test_refexec.py` pins
-   the decomposition rule in the meantime and
-   `test_the_export_covers_every_operation_refexec_can_run` names it as the one
-   executable operation absent by design, so the gap is asserted rather than
-   assumed.
-5. **The simulation layer of the reachability check is the weakest of the four.**
-   Making it mechanical, the way P6 made the encoding layer, is P8's.
-6. **A third CI build for NDEBUG is an open decision**, not an oversight. See the
-   open questions.
+1. **`-O1` and `-O2` are named and not registered**, in
+   `lib/Pipeline/Pipeline.cpp`. Adding a level is two lines in `kLevels`, a table
+   of `PassEntry` rows, one `PassPipelineRegistration`, and the `switch` in
+   `build()` which has no `default` and will be a build error until it is
+   handled. Three tests go red on purpose the day the level lands and each is the
+   assertion that should move with it:
+   `test_only_minus_o_zero_is_implemented_at_this_phase`,
+   `test_import_and_npu_are_the_same_text_at_minus_o_zero`, and
+   `test_no_level_this_compiler_builds_eliminates_dead_code`.
+2. **The dead subgraph's instruction count check is waiting for a pass that
+   removes something.** Mark `-canonicalize` and `-symbol-dce` with
+   `eliminatesDeadCode = true` and
+   `test_a_dead_subgraph_does_not_change_the_instruction_count` starts running
+   with no edit. If it is marked and the test does not go green, that is the
+   finding the check exists for.
+3. **The two exemptions in `docs/EXEMPTIONS.md` are `-npu-fuse-ops`'s to
+   delete.** The commit that lands the pass deletes them, or the reachability
+   check goes red at the next run.
+4. **The baseline gains per level fields and a `schema_version` bump**, per
+   Section 17.6 and P9's own gate. `absent_fields` names `per_level` today;
+   removing that name and adding the fields is the same commit.
+5. **`docs/BREAKING_CHANGES.md` is written before the commit that moves a
+   number**, then the baseline is re-recorded in its own commit. Ground rule 7,
+   and P9 is the first phase that moves numbers on purpose.
+6. **The metamorphic relations are the cheapest test P9 has.** Fusion changes
+   accumulation order, so the four relations stop being exactly equal and become
+   a tolerance question, and the answer to that question is P9's to record rather
+   than to inherit.
 
 ## The frozen v1 fallback
 
