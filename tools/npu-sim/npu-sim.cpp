@@ -25,6 +25,16 @@
 // behind and handing those to a caller as an answer would be worse than
 // handing them nothing.
 //
+// **`--stats-json` is how a program reads the statistics, and it exists so that
+// nothing scrapes them out of the text below.** Section 16.2 states the rule for
+// the instrumentation and it applies here for the same reason: a caller that
+// parsed `printStats`'s output would be one relabelled line away from reading a
+// number as zero, and Section 10.2 makes `stats.instructions` the only
+// instruction count in this project, so the one number nothing may guess at is
+// exactly the one a text parser would guess at. The JSON is written after the
+// run succeeds and never on a refusal, because a statistics file whose presence
+// did not mean the run finished would be a file every caller had to check twice.
+//
 //===----------------------------------------------------------------------===//
 
 #include "NPU/Encoding/Program.h"
@@ -34,6 +44,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
@@ -62,6 +73,18 @@ cl::opt<bool> singlePort(
 cl::opt<bool> quiet("quiet", cl::desc("Do not print the statistics"),
                     cl::init(false));
 
+// `--json-stats` and not `--stats-json`, which is the name this flag wanted and
+// cannot have: LLVM's Support library registers `--stats-json` itself, for the
+// `llvm::Statistic` counters, and every tool that links Support inherits it. The
+// collision is an abort inside `ParseCommandLineOptions` at the first run, which
+// is a loud failure and not a silent one, but the reason for the odd name
+// belongs beside the name rather than in a commit message.
+cl::opt<std::string> statsJsonFilename(
+    "json-stats",
+    cl::desc("Write the simulator's statistics here as JSON, for a caller that "
+             "reads them rather than a reader who looks at them"),
+    cl::value_desc("filename"));
+
 /// Prints `Stats` as one field per line.
 ///
 /// Section 10.2 makes `stats.instructions` the only instruction count anywhere
@@ -85,6 +108,40 @@ void printStats(raw_ostream &out, const nbin::Stats &stats) {
   out << "effective macs: " << format("%.4f", stats.effectiveMacs) << "\n";
   out << "utilization: " << format("%.6f", stats.utilization) << "\n";
   out << "delta: " << format("%.6f", stats.delta) << "\n";
+}
+
+/// The same fields as `printStats`, as JSON, under the same names.
+///
+/// The key for each field is the text label with its spaces turned into
+/// underscores, so there is one vocabulary here rather than two. A field
+/// present in one printer and absent from the other is the drift this pairing
+/// exists to make visible, and `test/Simulator/npu-sim.mlir` asserts both
+/// printers over the same run.
+///
+/// `reached_halt` is here and not in the text form, because the text form says
+/// it on stderr as a note and a note is not a field. A caller deciding whether
+/// to trust a cycle count needs to know whether the machine stopped because the
+/// program said so or because it ran out of program.
+json::Object statsAsJson(const nbin::Stats &stats, bool reachedHalt,
+                         bool singlePortRun) {
+  return json::Object{
+      {"instructions", stats.instructions},
+      {"cycles", stats.cycles},
+      {"dma_cycles", stats.dmaCycles},
+      {"compute_cycles", stats.computeCycles},
+      {"overlap_fraction", stats.overlapFraction},
+      {"dram_bytes_read", stats.dramBytesRead},
+      {"dram_bytes_written", stats.dramBytesWritten},
+      {"scratchpad_elements_read", stats.scratchpadElementsRead},
+      {"scratchpad_elements_written", stats.scratchpadElementsWritten},
+      {"macs", stats.macs},
+      {"int8_macs", stats.int8Macs},
+      {"effective_macs", stats.effectiveMacs},
+      {"utilization", stats.utilization},
+      {"delta", stats.delta},
+      {"reached_halt", reachedHalt},
+      {"single_port", singlePortRun},
+  };
 }
 
 } // namespace
@@ -190,6 +247,28 @@ int main(int argc, char **argv) {
       return 1;
     }
     out.write(reinterpret_cast<const char *>(data.data()), data.size());
+  }
+
+  if (!statsJsonFilename.empty()) {
+    std::error_code fileError;
+    raw_fd_ostream statsOut(statsJsonFilename, fileError, sys::fs::OF_Text);
+    if (fileError) {
+      WithColor::error(errs(), "npu-sim")
+          << "cannot open " << statsJsonFilename << ": " << fileError.message()
+          << "\n";
+      return 1;
+    }
+    statsOut << llvm::formatv("{0:2}",
+                              json::Value(statsAsJson(result.stats,
+                                                      result.reachedHalt,
+                                                      options.singlePort)))
+             << "\n";
+    statsOut.close();
+    if (statsOut.has_error()) {
+      WithColor::error(errs(), "npu-sim")
+          << "cannot write " << statsJsonFilename << "\n";
+      return 1;
+    }
   }
 
   if (!quiet)

@@ -20,6 +20,14 @@ Semantic Versioning once a release is tagged.
 - **`npu-opt --npu-describe-pipeline`** prints every level as JSON with its
   passes and their `ablatable` properties. That is how a caller reads the
   ablatable set at run time instead of keeping a second copy of it.
+- **`npu-sim --json-stats <path>`** writes the run's statistics as JSON, which
+  is what a caller reads. Nothing scrapes them out of the human readable form,
+  because the one number nothing may guess at is `stats.instructions` and it is
+  exactly the number a text parser would guess at. The keys are the text labels
+  with their spaces turned into underscores, plus `reached_halt` and
+  `single_port`, and the file is written only when the run succeeded. The flag
+  is not spelled `--stats-json`: LLVM's Support library registers that name for
+  its own statistics counters and every tool linking Support inherits it.
 
 ### Phase P6: the binary format and the generated ISA
 
