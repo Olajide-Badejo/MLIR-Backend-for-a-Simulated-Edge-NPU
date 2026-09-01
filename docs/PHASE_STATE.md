@@ -51,7 +51,7 @@ than by a sha it cannot know, which is what P9's handoff did for the same
 reason.
 
 **The last three commits are CI's findings, folded back in.** The branch has been
-pushed once, run 33454083280, and two activation proof pull requests have run,
+pushed once, run 33458934438, and two activation proof pull requests have run,
 33461200759 and 33461203436. Between them: three jobs green, the `ndebug` job
 green on its debut at 1 minute 5 seconds, both intended faults red exactly where
 predicted, and two defects nobody predicted. The handoff commit `e4759f5`
@@ -137,7 +137,7 @@ the project to fix nothing.
 
 ### 2. The NDEBUG CI configuration
 
-**Done, and green on its debut in run 33454083280 at 1 minute 5 seconds**, which
+**Done, and green on its debut in run 33458934438 at 1 minute 5 seconds**, which
 is well inside the 30 minute budget the job carries and faster than the estimate
 in the runbook below. Decision: **no second LLVM tree**, recorded
 in `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md` and pointed at
@@ -230,7 +230,7 @@ handoff asked for:
 ### 4. `regression-baseline --check` cross host
 
 **ANSWERED, and the answer has two halves that had to be separated.** Run
-33454083280 gave the first, and runs 33461200759 and 33461203436, the two
+33458934438 gave the first, and runs 33461200759 and 33461203436, the two
 activation proof pull requests, gave the second.
 
 **Half one: this compiler and this simulator are bit stable across hosts.** A
@@ -613,7 +613,7 @@ Four, all found by this branch and all fixed in it.
   that was later deleted stayed covered, and this branch deletes a test.
 - **D-0038**, the dash linter written in a Python the CI container does not
   have. **Found by CI**, on the first run of the `--check` step, run
-  33454083280, job 99704772026.
+  33458934438, job 99704772026.
 - **D-0039**, the baseline comparing a field with one end outside this project.
   **Found by CI**, by the two `pull_request` activation proof runs, 33461200759
   and 33461203436, beside the two faults they were opened to prove.
@@ -712,7 +712,7 @@ one repeat; the second is the only one that costs an hour.
 git push -u origin phase/p9b-debt
 ```
 
-**Run 33454083280 is that push and it is the branch's most valuable run so far.**
+**Run 33458934438 is that push and it is the branch's most valuable run so far.**
 `lint`, `sanitizers` and `coverage` green; the `ndebug` job **green on its debut
 at 1 minute 5 seconds**, comfortably inside its 30 minute budget and faster than
 the six to ten minutes estimated here; and the `regression-baseline --check` step
@@ -883,7 +883,7 @@ git push origin phase/p9b-debt
 gh workflow run llvm-image.yml --ref phase/p9b-debt
 ```
 
-**The branch has been pushed once**, run 33454083280, and the tip is not on the
+**The branch has been pushed once**, run 33458934438, and the tip is not on the
 remote. The order matters and has not changed: confirm `ci.yml` green against the
 **old** image first, so that "the new job and the new step work" is established
 before the image starts changing what they report.

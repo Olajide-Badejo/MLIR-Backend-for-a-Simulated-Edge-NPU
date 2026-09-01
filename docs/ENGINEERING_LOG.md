@@ -3490,7 +3490,7 @@ representable float and reading what came out.
 
 ## 2026-09-01 Interphase P9b, first CI run: the answer and the defect arrived together
 
-Run 33454083280. `lint`, `sanitizers` and `coverage` green, the `ndebug` job
+Run 33458934438. `lint`, `sanitizers` and `coverage` green, the `ndebug` job
 **green on its debut** at 1 minute 5 seconds, and the
 `regression-baseline --check` step red, job 99704772026.
 
@@ -3695,3 +3695,48 @@ band tightened to 1e-9 so the real values fall outside it and the field goes red
 `onnxruntime` upgrade that moved the oracle. `tool_versions` records the version
 and `requirements-lock.txt` is where an upgrade shows up in review. Neither is as
 loud, and that is the price of the fix.
+
+## 2026-09-01 The P9b closing runs: two proofs, one compound red, and a republished image
+
+The branch's first run put the new pieces through CI against the old image. The
+`ndebug` job was green on its debut in 1 minute 5 seconds, and the
+`regression-baseline --check` step went red at D-0038, whose story the previous
+entry carries:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33458934438>.
+The fix's run, green in every job with the dash lint suite back at 2 passed:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33460570488>.
+
+The two activation proofs ran as pull requests 15 and 16, drafts, closed
+unmerged with their branches deleted. **The first attempt at both was a
+compound red**: each intended fault fired exactly as predicted, and the
+`--check` step failed beside it with 18 unpredicted `max_abs_error_vs_onnxruntime`
+differences, both directions, three models, which is D-0039's finding: the
+proof runs landed on different runner hardware than the recording runs, and the
+oracle's own kernel dispatch moved. Those first runs, kept because a proof that
+found something is worth more than a proof that matched:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33461200759>
+and
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33461203436>.
+
+After D-0039's fix, both rebased and rerun, each red at exactly its own step
+and nowhere else. The NDEBUG product fault, red at the `ndebug` job's GoogleTest
+step with the assertions build unbothered:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464534276>.
+The one ulp golden fault, red at the `--check` step with its single drift line
+and no host noise behind it:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464534594>.
+The branch run beside them, green on whatever hardware it drew, which is the
+point of D-0039's fix:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464530309>.
+
+The image republish ran from the branch by dispatch, ref
+`phase/p9b-debt`, and published digest
+`sha256:844aff90b5c422e133ec38527cf459a635b5f47cb580f3aebe445e4d94fc1e35`
+under the reused tag:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33459558320>.
+Every run above started before the publish landed and pulled the old image, so
+their `OpenMP: not found` lines say nothing about the new one. The run that
+carries this very commit is the first to pull the new digest, and the reading
+that closes item 1 is its configure lines: `OpenMP: found` in build and test,
+sanitizers and ndebug, `NPUSimulatorTests` reporting its thread count, and
+coverage still on gcc's libgomp as before.

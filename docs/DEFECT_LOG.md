@@ -1691,7 +1691,7 @@ None.
 ### D-0038 the dash linter was written in a Python the CI container does not have
 
 - **Found:** 2026-09-01, interphase P9b, **by CI**, on the first run of the
-  `regression-baseline --check` step. Run 33454083280, job 99704772026. Every
+  `regression-baseline --check` step. Run 33458934438, job 99704772026. Every
   local run had been green, every `lint` job had been green, and the pre-commit
   hook had been green on every commit since P0.
 - **Status:** resolved 2026-09-01.
