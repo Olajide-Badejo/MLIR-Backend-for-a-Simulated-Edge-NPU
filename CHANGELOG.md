@@ -21,6 +21,17 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   it was before the node existed. `GENERATOR_VERSION` moves from `1.0.0` to
   `1.1.0`, every `dilated_stack` cell of the baseline moves, and
   `docs/BREAKING_CHANGES.md` declared all of it before the commit that caused it.
+- **The CI image carries `libomp-18-dev`, so two of its three jobs stop making
+  a weaker claim than the third.** `build-and-test` and `sanitizers` configure
+  with clang, which needs `libomp` and `omp.h`; the coverage job passes no
+  compiler, gets gcc, and finds `libgomp` because `g++` brings it. So one image
+  printed `OpenMP: not found` in two jobs and `found 4.5` in the third, and
+  Section 10.3's determinism assertion, that one thread and the maximum produce
+  bitwise equal buffers, was comparing a single threaded run against itself
+  wherever OpenMP was absent. The image's own smoke test now compiles, links and
+  runs an OpenMP program rather than testing for a header, which is the failure
+  class D-0025 was. **This takes effect only once the image is republished**,
+  which is a dispatch of `llvm-image.yml` and an hour of runner time.
 - **`-sccp`'s ablation row stays zero, and the distinction is written down.**
   Constant propagation needs a call graph to cross and an imported model is one
   function, so no model change alters that row. Two zero rows, one a gap in the

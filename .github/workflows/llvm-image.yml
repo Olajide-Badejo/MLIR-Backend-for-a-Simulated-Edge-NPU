@@ -17,6 +17,26 @@ on:
   # same phase: an LLVM rebuild is an hour of runner time and a moved tag
   # digest, and it should happen because somebody decided it should, never as
   # a side effect of a merge touching the Dockerfile.
+  #
+  # **How to republish from a branch, which is the question this design gets
+  # asked every time and which no comment answered until P9b.** Dispatch offers
+  # only workflows that exist on the default branch, and it separately offers a
+  # **ref to run them on**. This file exists on `main`, so it is offered; the
+  # ref selector is what decides which `docker/Dockerfile.llvm` gets built,
+  # because the checkout step below takes `github.ref`. So a Dockerfile change
+  # living on a phase branch is republished by pushing that branch and then
+  # dispatching this workflow **against it**, with no change to this file and no
+  # merge first. That ordering is the useful one: the image is live before the
+  # branch merges, so the merge run is the first green run against it rather
+  # than the run that discovers what the new image does.
+  #
+  #     gh workflow run llvm-image.yml --ref phase/<branch>
+  #
+  # The tag does not move, so nothing repins: `LLVM_IMAGE` in ci.yml names
+  # `:llvmorg-22.1.8` and a republish moves what that tag resolves to. The
+  # digest of what was published is printed by the last step below, because a
+  # moving tag with no record of which commit produced the current digest is how
+  # a bisect through a Dockerfile starts.
   workflow_dispatch:
 
 # An LLVM build is on the order of an hour of runner time. Two pushes in quick
@@ -103,6 +123,7 @@ jobs:
       # the trigger and on manual dispatch, and a build that is not pushed has
       # burned an hour of runner time to produce nothing.
       - name: Build and push the LLVM image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -117,9 +138,19 @@ jobs:
             BUILD_JOBS=4
             LINK_JOBS=2
 
+      # The tag is reused on every republish, so the tag alone does not say what
+      # is behind it. This step is the record: which ref and which commit were
+      # built, and which digest the tag now resolves to. Recording it in the run
+      # log costs nothing and it is what a later reader needs to tell one
+      # republish from another, since a run number is all the engineering log
+      # can cite otherwise.
       - name: Report the published image and the disk left
         run: |
           set -euxo pipefail
           echo "published ${IMAGE}:${LLVM_TAG}"
-          echo "build-and-test in ci.yml pulls exactly that reference"
+          echo "  from ref    ${GITHUB_REF}"
+          echo "  at commit   ${GITHUB_SHA}"
+          echo "  digest      ${{ steps.build.outputs.digest }}"
+          echo "build-and-test in ci.yml pulls exactly that reference, by tag,"
+          echo "so this digest is what the next run of ci.yml will pull."
           df -h /

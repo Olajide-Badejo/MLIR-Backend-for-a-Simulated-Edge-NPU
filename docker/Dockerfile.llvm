@@ -220,6 +220,27 @@ ENV DEBIAN_FRONTEND=noninteractive
 # clang but without this package can compile with the sanitizers and then fail
 # at the first link, which is exactly how the sanitizers job died on its first
 # CI run (D-0025). The version is pinned to the clang this base ships.
+#
+# libomp-18-dev is the P9b addition and it closes the OpenMP split P7 found and
+# P8 explained. Three jobs build this project in this image and two of them were
+# getting a weaker test than the third. build-and-test and sanitizers configure
+# with -DCMAKE_C_COMPILER=clang, and clang's OpenMP wants libomp and omp.h,
+# which no package here supplied; the coverage job passes no compiler, gets gcc,
+# and finds libgomp because g++ brings it. So `find_package(OpenMP)` printed
+# "OpenMP: not found" in two jobs and "found" in the third, out of one image.
+#
+# What that cost is specific rather than general. Section 10.3's determinism
+# claim is that one thread and the maximum produce bitwise equal buffers, and
+# `unittests/Simulator/DeterminismTest.cpp` says so in its own output: without
+# OpenMP both of its runs are single threaded and it asserts that a number
+# equals itself. The claim was being made at full strength only in the coverage
+# job and on developer machines.
+#
+# The name is pinned the same way libclang-rt-18-dev is and for the same
+# reason: `libomp-dev` is a metapackage that follows whatever clang the archive
+# currently defaults to, and an image whose OpenMP runtime and whose clang can
+# drift apart is a link error waiting for a mirror to move. This base ships
+# clang 18, so this is the 18 package.
 RUN apt-get update && apt-get install --no-install-recommends --yes \
       build-essential \
       ca-certificates \
@@ -229,6 +250,7 @@ RUN apt-get update && apt-get install --no-install-recommends --yes \
       git \
       libclang-rt-18-dev \
       libgtest-dev \
+      libomp-18-dev \
       lld \
       ninja-build \
       python3 \
@@ -274,6 +296,21 @@ ENV NPU_LLVM_TAG="${LLVM_TAG}"
 # of these is a thing a CI job will ask for within minutes of the first pull,
 # and finding out here costs one build where finding out there costs a red run
 # and a bisect through a Dockerfile.
+#
+# **The OpenMP check compiles and runs a program rather than testing for a
+# file**, which is the same argument the bindings check makes two lines below by
+# importing `mlir.ir` and constructing a `Context`. A present omp.h with no
+# runtime to link against is precisely the failure D-0025 was, one library
+# along, and `test -f` cannot tell the two apart. A build that reached here
+# without OpenMP would publish an image in which Section 10.3's determinism
+# assertion silently compares a single threaded run against itself.
+RUN printf '#include <omp.h>\nint main(void) { return omp_get_max_threads() > 0 ? 0 : 1; }\n' \
+      > /tmp/openmp-smoke.c \
+ && clang -fopenmp /tmp/openmp-smoke.c -o /tmp/openmp-smoke \
+ && /tmp/openmp-smoke \
+ && rm -f /tmp/openmp-smoke.c /tmp/openmp-smoke \
+ && echo "OpenMP: clang -fopenmp compiles, links and runs in this image"
+
 RUN mlir-opt --version \
  && test -f /opt/llvm/lib/cmake/mlir/MLIRConfig.cmake \
  && test -f /opt/llvm/lib/cmake/llvm/LLVMConfig.cmake \
