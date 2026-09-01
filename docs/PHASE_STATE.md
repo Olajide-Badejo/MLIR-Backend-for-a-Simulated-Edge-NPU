@@ -14,12 +14,14 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-01.
+**Last updated:** 2026-09-02.
 
 ## Current phase
 
 **P10, measurement.** Branch `phase/p10-measurement`, cut from `main` at
-`fe43ee4`, which is the P9b merge. Nine commits, **none pushed**.
+`fe43ee4`, which is the P9b merge. Thirteen commits. **Pushed once, run
+33559636835, which went red on D-0041; the four commits after the handoff are
+that finding and its fix, and the branch has not been pushed since.**
 
 | Commit | Subject |
 |---|---|
@@ -31,11 +33,21 @@ costs more than writing these lines did.
 | `16cf7aa` | `docs(passes): the measured ablation delta Section 12 has asked every entry for` |
 | `d318a49` | `ci: the slow cells step and the nightly full matrix, both at the phase 19.0 names` |
 | `5401d39` | `chore(baseline): re-record the suite counts, in its own commit and nothing else` |
-| tip | `docs: hand off P10, with the number Section 2 asks for and cannot be given here` |
+| `a89cc6b` | `docs: hand off P10, with the number Section 2 asks for and cannot be given here` |
+| `79eff63` | `fix(ci): fetch the history these tests ask about, and refuse rather than guess` |
+| `7acd6da` | `test(predictions): the shallow guard test asserted about the wrong repository` |
+| `5d4ffa1` | `test(predictions): the contrast half needs a source that has history` |
+| `2c58bb0` | `chore(baseline): re-record for the one test D-0041 added` |
+| tip | `docs: record what the first CI run found, at the tip that fixes it` |
 
 **The tip carries this table's own last row**, so it is named by subject rather
 than by a sha it cannot know, which is what P9 and P9b both did for the same
 reason.
+
+**The last five are the first CI run's finding and its fix**, D-0041. The three
+before them were written when the branch had never been pushed; the push
+happened, went red, and the difference between what that handoff predicted and
+what CI reported is recorded rather than edited away.
 
 **The ordering carries two of this project's rules and is the part to check
 first.** `f92de42` lands the prediction **before** `a203995` records the cells
@@ -162,8 +174,8 @@ and the timing object**, which is the same distinction made executable.
 
 ## Verification output
 
-Every command run at the tip of this branch, `5401d39`, from
-`/home/elijah/npu-mlir-v2`, in `~/npu-venv`.
+Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
+`~/npu-venv`. Re-measured at the tip after D-0041's fix.
 
 | Command | Result |
 |---|---|
@@ -176,8 +188,10 @@ Every command run at the tip of this branch, `5401d39`, from
 | `build/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q` | 945 passed, 18 skipped, 9 deselected |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **954 passed, 18 skipped**. 871 at P9b, plus 83 |
+| `python -m pytest test/Python -q` | 946 passed, 18 skipped, 9 deselected |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **955 passed, 18 skipped**. 871 at P9b, plus 84 |
+| the suite under a real `--depth 1` clone, both `push` and `pull_request` shapes | 6 failed with the shallow refusal by name, 1 skipped, and the harness refuses before measuring. D-0041's fix is that this is diagnosable rather than eight assertions about shas |
+| the same two shapes at `fetch-depth: 0` | **44 passed, 0 failed** in the affected files, and `run_benchmarks.py` exits 0 |
 | `mypy` | no issues found in 23 source files |
 | `black --check .` | 53 files unchanged |
 | `ruff check .` | all checks passed |
@@ -206,8 +220,10 @@ the same grep also reports four matches on this branch, all of them the substrin
 inside `wallMs`, which is why the recorded run is the case sensitive one with
 word boundaries.
 
-**The suite grew by 83 pytest tests and one lit test.** No existing test changed
-its result and no recorded number moved.
+**The suite grew by 84 pytest tests and one lit test.** No existing test changed
+its result and no recorded number moved: both baseline re-records on this branch
+touch `git_sha`, the suite counts and the test names, and nothing else. All 21
+golden tensors are byte identical to P9b's.
 
 **Python coverage headroom widened from 0.54 to 0.97 points**, 90.97 against a
 threshold of 90. It was 0.49 at P9 and 0.61 at P8. The threshold stays at 90.
@@ -226,7 +242,7 @@ run is green.
 seven `test_every_model_imports_at_a_second_seed` cases have been marked `slow`
 since the model suite landed, and CI has never run one of them, because the only
 step that runs slow tests is this one and this one was off. The suite runs green
-at 954 passed, 18 skipped.
+at 955 passed, 18 skipped.
 
 **Fault, and it is one only this step can catch.** Every `@pytest.mark.slow`
 removed. The step's count guard reports zero and exits 1 with the message saying
@@ -253,7 +269,26 @@ red run can have, a suite over budget or an ablation that moved the numerics.
 it wants `gh workflow run nightly.yml --ref phase/p10-measurement` rather than a
 wait until 03:30 UTC.
 
-### 3. The two traceability tests, both faults
+### 3. The shallow checkout, which is D-0041 and was not rehearsed in advance
+
+**This one was found by CI rather than by a rehearsal, and that is the honest
+label.** The two activations above were rehearsed under their own step scripts
+with predictions written first, and neither rehearsal could have caught this,
+because both ran in this repository with its history present. The variable was
+the checkout itself, and nothing local varies it.
+
+Rehearsed now, as four real fetches from a bare mirror rather than as mocks,
+because what is under test is what git does. `push` and the `pull_request` merge
+ref, each at depth 1 and depth 0. At depth 0 both are green and the harness exits
+0; at depth 1 both refuse by name. The merge ref matters separately because its
+`HEAD~1` is the base branch, so the ancestor assertions could plausibly have
+broken there and do not.
+
+**Which trigger this needs:** none of its own, and that is the point. The fix is
+in the checkout step of three jobs, so the next push exercises it, and a green
+`pytest` arm is the proof.
+
+### 4. The two traceability tests, both faults
 
 **Fault A**, a hand typed number: `resnet_block`'s cycle count changed from 1626
 to 1499 in the README table. Red, naming the number and the row it sits in.
@@ -355,9 +390,9 @@ the one that confirms it.**
 
 **What to expect.** `lint`, `sanitizers`, `coverage` and `ndebug` green.
 `build-and-test` green with two things to read: the new `pytest slow cells` step
-should report **nine** tests carrying the marker and then run 954 passed 18
+should report **nine** tests carrying the marker and then run 955 passed 18
 skipped, and `regression-baseline --check` should report no drift with the suite
-table showing `check-npu 26` and `pytest 954`.
+table showing `check-npu 26` and `pytest 955`.
 
 **The one line that is genuinely new information** is the slow cells step's
 count. It is the first time in this project's history that CI has executed
@@ -470,7 +505,14 @@ gh workflow run nightly.yml --ref phase/p10-measurement
 ```
 
 **The green condition for the push** is the `pytest slow cells` step reporting
-nine tests and running 954 passed, followed by `regression-baseline: no drift.`
+nine tests and running 955 passed, followed by `regression-baseline: no drift.`
+
+**And one line to check before anything else**, because it is what the last run
+died on: the `pytest` arm must not report a sha as a commit that does not exist.
+If it does, the checkout is shallow again and `fetch-depth: 0` did not take,
+which would be a workflow edit that was reverted rather than a new fault. The
+message will say so itself now, in the terms of D-0041, rather than blaming the
+sha.
 
 **The green condition for the nightly** is the benchmark suite printing a per
 cell cost and `run-benchmarks: inside the budget`. Record that cost in the
