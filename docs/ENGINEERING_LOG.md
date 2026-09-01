@@ -3838,3 +3838,186 @@ comparison is a measurement, and this phase is about preferring the second.
 passed, including the doctored file that drops one pass, the ten doctored files
 that each drop one field, and the sweep that ablates each of the eight and reads
 the removal back out of the instrumentation.
+
+## 2026-09-01 Phase P10: the matrix has a hole in it, and the hole is the tight budget
+
+**Symptom.** The first run of `experiments/run_benchmarks.py` died five cells in:
+
+```
+error: loc("clipped"): the scratchpad budget of 8064 bytes is too small: this
+buffer of 16016 bytes could not be placed below offset 0 in @main, and no buffer
+live across the pressure peak can be spilled. The sweep line peak is 32032
+bytes, which is a lower bound on any placement
+```
+
+`dilated_stack`, `-O0`, tight budget, batch 4.
+
+**Root cause, and it is a specification question rather than a defect.** Section
+17.4's matrix sweeps the scratchpad budget and the batch size as two independent
+axes. They are not independent. ADR 0008 defines a tight budget by measurement:
+the smallest budget in a 64 byte sweep at which the model still allocates. That
+is a property of **a program**, and `TIGHT_BUDGETS` is keyed by model, with every
+entry measured at that model's own declared batch. A model at batch 4 is a
+different program.
+
+Measured across the suite before deciding anything:
+
+| Model | Peak at declared batch | Peak at batch 4 | Allocates at batch 4 |
+|---|---|---|---|
+| `lenet` | 194592 | 200800 | no |
+| `depthwise_separable` | 8192 | 32768 | no |
+| `resnet_block` | 8480 | 26912 | no |
+| `inception_block` | 6848 | 24576 | no |
+| `conv_bn_relu_stack` | 6432 | 18720 | no |
+| `dilated_stack` | 8036 | 32080 | no |
+| `lenet_batched` | 200800 | 200800 | yes |
+
+**`lenet` is the case that settles the argument.** Its peak barely moves, from
+194592 to 200800, because a 400 by 120 weight matrix sets it and no batch size
+touches that. It still fails, by six kilobytes. So the scaling factor is not the
+batch, and any formula for a batch 4 tight budget would have been a constant
+derived from a relationship this project had just measured to be false.
+
+**Three options, and the reason each was taken or refused.**
+
+1. *Scale the batch 1 budget by the batch.* Refused on the `lenet` row above.
+2. *Extend ADR 0008's sweep to batch 4 and freeze seven more constants.* This
+   keeps the full cross product and moves nothing already recorded, and it was
+   the closest call. Refused because `docs/PHASE_STATE.md` hands re-measurement
+   of the tight budgets to P13, and P13 is the phase that makes a budget below
+   the peak reachable at all by tiling instead of spilling. Constants frozen here
+   would be constants P13 invalidates, and every tight budget cell measured
+   against them would have to be thrown away.
+3. *A cell that names the tight budget runs at the model's declared batch.*
+   Taken, and recorded as `docs/adr/0010`.
+
+**ADR 0008's own procedure was re-run before the decision, and it reproduces all
+seven of its constants to the byte** at each model's declared batch. That is
+worth as much as the decision: it says the batch 4 failures are the rule working
+rather than the rule having rotted, and it revalidates a P8 measurement against a
+model suite P9b changed.
+
+The suite is 175 cells rather than the 84 plus 112 a free cross product gives,
+and `docs/adr/0010` carries the arithmetic.
+
+## 2026-09-01 Phase P10: two of four predicted claims were wrong, and the instrumentation said why
+
+`experiments/predictions/p10-ablation-deltas.md` was committed at `f92de42`,
+before `run_benchmarks.py` had been run once. Two of its four claims are wrong.
+The file is not edited; this entry is the adjudication.
+
+### Claim 1 is wrong: two rows are not zero, not three
+
+Predicted `-npu-fuse-bias`, `-npu-fold-batchnorm` and `-canonicalize`. Measured,
+as instruction count deltas at both budgets:
+
+| Pass | Nonzero on | Delta |
+|---|---|---|
+| `-npu-fuse-bias` | `dilated_stack` | 1 |
+| `-npu-fold-batchnorm` | `conv_bn_relu_stack` | 8 |
+| every other ablatable pass | nothing | 0 |
+
+`-canonicalize` is **zero on all seven models at both budgets**, and the
+prediction said it would be the surest of the three.
+
+**The instrumentation gives the mechanism, which a delta alone could not.** The
+before and after counts on `conv_bn_relu_stack` at `-O2`:
+
+```
+with canonicalize            without canonicalize
+  npu-fuse-ops    34 -> 38     npu-fuse-ops    34 -> 38
+  canonicalize    38 -> 24
+  cse             24 -> 21     cse             38 -> 21
+```
+
+The second canonicalization is doing real work, fourteen operations of it. It is
+simply not doing anything `-cse` cannot also do: MLIR's CSE erases trivially dead
+operations as it walks, so with the canonicalization removed it arrives at the
+same twenty one operations on its own. **The two passes are redundant on this
+suite for this purpose, and a leave one out ablation cannot see a pass whose work
+another pass would have done.** That is a known limit of leave one out designs
+and it is now a measured one here rather than a caveat: the honest reading of
+`-canonicalize`'s zero row is not "canonicalization does nothing" but "nothing in
+this suite needs both".
+
+This is the clearest payment the Section 16.2 instrumentation has made so far.
+Without a before and after pair per pass, the row would have read as a pass with
+no effect, and the entry in `docs/PASSES.md` would have said so.
+
+### Claim 3 is wrong: sixteen of fifty six rows differ between the budgets
+
+Predicted that every ablation row is identical at both budgets because nothing
+spills at either. Measured: `resnet_block` and `inception_block` differ, on every
+one of the eight passes.
+
+```
+resnet_block     default  instr=14  cycles=1626.00  spills=0  dram=8800
+resnet_block     tight    instr=17  cycles=2018.00  spills=1  dram=14944
+inception_block  default  instr=14  cycles=2398.50  spills=0  dram=8624
+inception_block  tight    instr=22  cycles=3799.00  spills=3  dram=21936
+```
+
+**ADR 0008 contained the refutation and I misread my own table.** Those are
+exactly the two models it identifies as able to go below their peak, with one and
+three spills recorded there. The prediction asserted no spilling from the fact
+that five of seven cannot go below their peak, and forgot the two that can.
+
+The precise statement, which the prediction should have made: the ablation
+**deltas** are identical at both budgets, all zero for the six passes with zero
+rows and unchanged for the two with nonzero rows. The **absolutes** are not,
+because the tight budget adds spill DMA. This is Section 16.2's own reason for
+requiring ablation rows at every budget, arriving as evidence rather than as a
+rule: a table that reported only the generous budget would have shown
+`inception_block` at 14 instructions and never mentioned the 22.
+
+### Claim 2 is met, with one wording defect worth recording
+
+No ablation moved any cell outside the 5e-5 end to end band, so the run did not
+fail on numerics. Ablating `-npu-fold-batchnorm` returns
+`max_abs_movement_vs_o0` to exactly 0.0 on `conv_bn_relu_stack`, as predicted:
+the fold is the one pass in this pipeline that moves numbers, and removing it
+restores `-O0`'s answer bit for bit.
+
+The wording defect: the prediction added "and no other ablation moves that field
+at all". Fourteen ablation rows carry 4.470e-08 in it. They are not moving it;
+they are leaving it at the unablated `-O2` value, because they leave the fold in
+place. Read as "no other ablation changes the field relative to the unablated
+cell" the claim holds exactly. Read literally against zero it is false. **A
+prediction that can be read two ways has one reading too many**, and the fix is
+to the next prediction rather than to this one.
+
+### Claim 4 is met
+
+Suite total at `-O2`, default budget, declared batch: **117 instructions**,
+predicted between 100 and 130. No single ablation raises it by more than 8,
+predicted no more than 30.
+
+### The observation P9 asked P10's report to state out loud
+
+`-O1` is exactly `-O0` on every model in the suite, measured here at 25, 12, 14,
+14, 23, 13 and 25 instructions at both levels. `-O2` differs from `-O0` on
+exactly two models, `conv_bn_relu_stack` at 23 to 15 and `dilated_stack` at 13 to
+12, and those two savings are the two nonzero ablation rows seen from the other
+side.
+
+### Two numbers Section 16.1 predicted about itself
+
+`top1_agreement_vs_onnxruntime` is **1.0** and
+`cosine_similarity_vs_onnxruntime` is **0.99999999999996**. Section 16.1 forbids
+ranking configurations on either and gives the reason in advance: this suite's
+models are seeded and never trained, so argmax agreement saturates and cosine
+similarity parks at four nines with no resolution. Both numbers are recorded, the
+sentence forbidding their use is recorded in every file beside them, and SQNR,
+which is 136.87 dB on the same cell, is the metric that moves.
+
+### The suite's own cost
+
+175 cells in **1.76 minutes**, **0.60 seconds per cell**, serially, against the 90
+minute budget of Section 2. The worst gap between the instrumentation's clock and
+`--mlir-timing` over all 175 cells and all 10 trials each was **0.1881 ms**, on
+`NPUFuseOps`, inside the floor plus half bound.
+
+**0.60 seconds per cell is the measured figure that replaces Section 2's 15
+second planning number.** The spec file lives outside this repository and is not
+edited from here; `docs/PHASE_STATE.md` carries the replacement text for the
+owner.

@@ -8,6 +8,28 @@ Semantic Versioning once a release is tagged.
 
 ### Phase P10: measurement
 
+- **Every number this project publishes now comes from a recorded result file.**
+  `experiments/run_benchmarks.py` writes one JSON per cell under
+  `experiments/results/`, atomically, carrying every field of Section 16.1's
+  schema. A field a later phase fills carries `null` **and a reason naming that
+  phase**, so a reader is told which number is missing rather than left to read
+  an absence as a zero. The counted metrics and the timed ones are kept apart:
+  `instruction_count` is an exact integer, and every wall clock is an object with
+  ten trials, a median and an interval, because a single wall clock sample sitting
+  beside an exact count with nothing distinguishing them is how a reader is misled
+  about which numbers carry uncertainty.
+- **The 90 minute suite budget of Section 2 is enforced as a gate.** The run
+  fails when the measured runtime exceeds it. Measured here: **175 cells in 1.76
+  minutes, 0.60 seconds per cell.**
+- **The tight scratchpad budget does not cross the batch axis**, recorded in
+  `docs/adr/0010`. Six of the seven models do not allocate at batch 4 under the
+  tight budget measured for them at batch 1, because a tight budget is the
+  smallest budget at which *that program* allocates and a model at batch 4 is a
+  different program with a peak 2.9 to 4.0 times larger. Cells that name the
+  tight budget therefore run at the model's declared batch. **No constant in ADR
+  0008 moves**; extending them to a second batch is a re-measurement and belongs
+  to P13, which is also the phase that makes a budget below the peak reachable at
+  all.
 - **The compiler measures itself, per pass, from inside the pipeline it runs.**
   A `PassInstrumentation` in `lib/Pipeline/PassStats.cpp` walks the operation
   each pass is handed in `runBeforePass`, walks it again in `runAfterPass`, and
