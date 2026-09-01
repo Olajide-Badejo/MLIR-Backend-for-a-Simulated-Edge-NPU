@@ -3740,3 +3740,101 @@ carries this very commit is the first to pull the new digest, and the reading
 that closes item 1 is its configure lines: `OpenMP: found` in build and test,
 sanitizers and ndebug, `NPUSimulatorTests` reporting its thread count, and
 coverage still on gcc's libgomp as before.
+
+## 2026-09-01 Phase P10: instrumenting a pass manager an out of tree tool does not own
+
+**Symptom, before anything went wrong.** Section 16.2 requires the per pass
+operation counts to be computed by a `PassInstrumentation` in `runBeforePass` and
+`runAfterPass`, on the pass manager `npu-compile` actually runs. `npu-compile`
+runs `npu-opt`, and `npu-opt` was four lines around `MlirOptMain`, which builds
+its own `PassManager` inside `performActions` and never hands it to the caller.
+There is no `addInstrumentation` an out of tree tool can reach.
+
+**Four routes were considered and three were rejected for reasons worth keeping.**
+
+1. **Run one pass at a time from Python and subtract.** This is the arrangement
+   Section 16.2 rejects by name: quadratic in the pass count, and it measures a
+   pipeline that is not the one under test, which is the same fault Section 17.4
+   names from the test side.
+2. **Give `npu-opt` a second entry point that builds its own `PassManager` from
+   `pipeline::build()`.** It would work and the pipeline would be the same table,
+   but it would be a second path through which every future flag has to be
+   threaded twice, and the two would drift.
+3. **`--print-op-stats`.** Named in an earlier draft of the specification and
+   corrected there. It prints one summary for one invocation. There is no before
+   and after pair per pass in it, so a gate written against it is unmeetable.
+4. **`MlirOptMainConfig::setPassPipelineSetupFn`**, which is the hook
+   `performActions` calls with the real manager immediately before running it.
+   This is what was used.
+
+**The chosen fix.** `npu-opt` unrolls the four argument `MlirOptMain` into what it
+does, which is `registerAndParseCLIOptions` followed by the five argument form,
+and wraps the config's pipeline setup callback: the wrapper installs the
+instrumentation on the manager it is given and then calls the callback the
+command line had already installed. **The unrolled path runs only when
+`--npu-pass-stats-json` is given.** The unrolled form does not reproduce
+`--show-dialects` and `--list-passes`, which are answered inside the library by
+functions an out of tree tool cannot call, and losing two flags to gain one would
+be a bad trade. `test/Pipeline/pass-stats.mlir` diffs the tool's output with and
+without the flag, so the claim that the default path did not move is a check
+rather than a sentence.
+
+### Two decisions inside the instrumentation, both measured
+
+**Adaptors are filtered on the pass having no command line argument, not on a
+type test.** MLIR instruments the `OpToOpPassAdaptor` that wraps a nested
+pipeline exactly the way it instruments a real pass, so an unfiltered
+instrumentation records every nested run twice. MLIR's own `PassTiming` writes a
+type test against `OpToOpPassAdaptor`; that type is declared only in
+`mlir/lib/Pass/PassDetail.h`, which an out of tree build does not get. An adaptor
+is not registered and therefore has no command line argument, while every pass in
+`lib/Pipeline/Pipeline.cpp` has one and is keyed on it in that table, so filtering
+on the argument asks the same question through the field the pipeline description
+already uses, and the two agree by construction.
+
+**The operation walk is outside the timed span**, and this is the decision the
+cross check is built on. Counting is a full traversal, which on the larger models
+costs as much as a cheap pass. MLIR's timer opens before this instrumentation is
+called and closes after it, so MLIR's figure per pass **contains** this project's
+walk and this project's does not. That gives the comparison a direction: MLIR's
+number is always the larger, and the difference is this file's own cost. A per
+pass figure that came out larger than MLIR's, or smaller by more than the tree
+display's resolution, would mean the two were not measuring the same run.
+
+**Measured on 2026-09-01**, all seven models at all three levels, with both flags
+on one invocation so that the two clocks describe the same execution:
+
+```
+worst gap, MLIR minus the instrumentation   0.069 ms, on a pass MLIR timed at 1.1 ms
+worst case MLIR came out below              0.034 ms, inside the display resolution
+```
+
+The bound is a floor of 0.15 ms plus half of MLIR's figure, rather than one
+absolute number. The floor is the display's own resolution, since the tree prints
+seconds to four places. The fraction is the walk, which is work proportional to
+the module and therefore to the time the pass took. An absolute bound would have
+been a bound that held here and went red on a slower machine for a reason that is
+not a defect, which is the mistake `tolerances.py` already records having been
+made once about `onnxruntime`.
+
+### The ablation could not refuse in C++, so it is checked by measurement
+
+`PipelineOptions::ablatedPass` skips one ablatable entry when the pipeline is
+built. It cannot refuse a request to remove `-npu-lower-to-npuisa`, because
+MLIR's `PassPipelineRegistration` builder returns nothing and there is no path
+from inside it to a readable command line error, and a fatal error raised from a
+library is a worse answer than none.
+
+What closes the hole is on the other side and is better than a refusal would have
+been. The driver reads the ablatable set out of the compiler at run time and
+refuses by name before it runs anything, and **every ablation run is instrumented
+and its recorded pass list is compared against the level's list minus the named
+pass**. An ablation that quietly did nothing is a raise naming the pass, not a
+row of zeros that reads as a pass with no effect. The refusal is a claim; the
+comparison is a measurement, and this phase is about preferring the second.
+
+**Verification.** `ninja check-npu` 26 discovered, 26 passed, up from 25 with
+`test/Pipeline/pass-stats.mlir`. `test/Python/test_pass_instrumentation.py` 26
+passed, including the doctored file that drops one pass, the ten doctored files
+that each drop one field, and the sweep that ablates each of the eight and reads
+the removal back out of the instrumentation.

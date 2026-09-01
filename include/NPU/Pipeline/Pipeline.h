@@ -146,10 +146,10 @@ llvm::ArrayRef<PassEntry> describe(OptLevel level);
 
 /// What the caller gets to choose about a pipeline.
 ///
-/// Everything here belongs to the allocator, which is the only pass in the
-/// `-O0` set that takes options at all. The fields carry the pass's own
-/// defaults so that a caller who sets nothing gets the pipeline the pass
-/// description documents.
+/// Most of this belongs to the allocator, which is the only pass in the `-O0`
+/// set that takes options at all. The fields carry the pass's own defaults so
+/// that a caller who sets nothing gets the pipeline the pass description
+/// documents.
 struct PipelineOptions {
   /// The scratchpad budget in bytes. Minus one means the allocator's default.
   int64_t scratchpadBudget = -1;
@@ -159,6 +159,26 @@ struct PipelineOptions {
   /// Where to stop. `NpuIsa` is the whole level; `Npu` is the tensor level
   /// half, which is what `npu-compile --emit npu` runs.
   PipelineStage stopAfter = PipelineStage::NpuIsa;
+  /// The pass to leave out, by argument, for Section 16.2's leave one out
+  /// ablation. Empty is the whole level.
+  ///
+  /// **One pass, not a list, and the singular is the point.** Section 16.2
+  /// specifies leave *one* out: the whole value of the table is that each row
+  /// differs from the baseline in exactly one thing, so a delta names a cause.
+  /// A field that took a set would make a row that removed three passes look
+  /// like a row in the same table.
+  ///
+  /// **A request to remove a pass this table marks as not ablatable is
+  /// ignored, deliberately, and is caught by measurement rather than by
+  /// refusal.** MLIR's pipeline registration builder returns nothing, so there
+  /// is no path from here to a readable command line error, and a `report_fatal
+  /// _error` in a library is a worse answer than none. What closes the hole is
+  /// on the other side: the harness reads the ablatable set out of this table at
+  /// run time and never asks for a pass that is not in it, and the Section 16.2
+  /// instrumentation then records which passes actually ran, so an ablation that
+  /// quietly did nothing is a mismatch between the recorded list and the
+  /// expected one rather than a row of zeros nobody questioned.
+  std::string ablatedPass;
 };
 
 /// Builds `level` onto `pm`.

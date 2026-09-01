@@ -27,6 +27,30 @@ the instruction count, and how far each pass moves the answer. Those are
 measurements of the same programs the ablation will run, taken one pass at a
 time in `test/Python/test_transform_passes.py`.
 
+**How an ablation is run, since P10.** `npu-compile --ablate <pass>` builds the
+level's own pipeline with that pass left out, through the pipeline's `ablate`
+option in `lib/Pipeline/Pipeline.cpp`, and never through a pass list assembled
+beside it. Three properties of that arrangement are worth stating because each
+closes a way the table could have been wrong.
+
+- **The ablatable set is read from the compiler at run time**, through
+  `npu-opt --npu-describe-pipeline`. A pass added to `-O2` and marked ablatable
+  appears in the sweep the day it lands, and Section 16.2 asks for exactly that
+  because a hardcoded list stops covering a pass and nothing goes red.
+- **A pass this table marks as not ablatable is refused by the driver**, by
+  name, quoting the reason rather than the rule: removing `-npu-lower-to-npuisa`
+  or `-npu-allocate-scratchpad` produces no program at all, so the failure would
+  be attributed to the wrong thing.
+- **The removal is verified by measurement rather than trusted.** Every ablation
+  run carries the Section 16.2 instrumentation, and the recorded pass list is
+  compared against the level's list minus the named pass. An ablation that
+  quietly did nothing is a raise with the pass named, not a row of zeros that
+  reads as a pass with no effect.
+
+`-canonicalize` has two positions at `-O2` and is **one** pass to ablate, so its
+row removes both. Removing one of the two would be measuring an ordering change
+rather than the absence of canonicalization.
+
 The full pass table, including the three ablatable passes that arrive at P13 and
 the calibration pass that arrives at P14, is Section 12 of the build
 specification. This file describes the passes that **exist**, and it grows as

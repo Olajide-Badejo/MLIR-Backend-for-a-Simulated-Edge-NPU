@@ -6,6 +6,26 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P10: measurement
+
+- **The compiler measures itself, per pass, from inside the pipeline it runs.**
+  A `PassInstrumentation` in `lib/Pipeline/PassStats.cpp` walks the operation
+  each pass is handed in `runBeforePass`, walks it again in `runAfterPass`, and
+  records the pair with a wall clock, as JSON. Two new flags surface it:
+  `npu-compile --pass-stats-json PATH` and
+  `npu-opt --npu-pass-stats-json=PATH`. `npu-compile --mlir-timing` passes
+  MLIR's own timing output through as the independent cross check that the two
+  clocks measured the same run. **No flag computes the counts**, which Section
+  16.2 states as a correction of an earlier draft: `--print-op-stats` prints one
+  summary for one invocation and cannot produce a before and after pair per pass
+  inside a running pipeline.
+- **`npu-compile --ablate PASS` runs Section 16.2's leave one out ablation**
+  through the level's own pipeline, with the pass left out by the pipeline's own
+  `ablate` option rather than by a pass list assembled in Python. The ablatable
+  set is read from the compiler at run time and a pass outside it is refused by
+  name. `-canonicalize` has two positions at `-O2` and is one pass to ablate, so
+  its row removes both.
+
 ### Interphase P9b: the open questions P9 handed on, decided
 
 Four items the P9 handoff carried as open questions, taken deliberately between

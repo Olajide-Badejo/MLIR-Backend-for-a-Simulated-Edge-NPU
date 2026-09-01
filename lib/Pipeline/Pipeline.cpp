@@ -231,6 +231,14 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       *this, "alignment",
       llvm::cl::desc("The byte alignment of every assigned offset."),
       llvm::cl::init(64)};
+  Option<std::string> ablate{
+      *this, "ablate",
+      llvm::cl::desc("Leave this pass out, by its argument, for Section 16.2's "
+                     "leave one out ablation. Only a pass the table marks "
+                     "ablatable is removed; naming another is ignored here and "
+                     "caught by the pass statistics, which record what actually "
+                     "ran."),
+      llvm::cl::init("")};
   Option<std::string> stopAfter{
       *this, "stop-after",
       llvm::cl::desc("Where to stop: 'npuisa', the whole level, or 'npu', the "
@@ -248,6 +256,7 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
     options.allocationAlignment = alignment;
     options.stopAfter = stopAfter == "npu" ? PipelineStage::Npu
                                            : PipelineStage::NpuIsa;
+    options.ablatedPass = ablate;
     return options;
   }
 };
@@ -374,6 +383,14 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
 
   for (const PassEntry &entry : infoFor(level).passes) {
     if (options.stopAfter == PipelineStage::Npu && !isTensorLevel(entry.kind))
+      continue;
+    // Section 16.2's leave one out ablation. `-canonicalize` has two entries at
+    // `-O2` and this removes **both**, which is the right reading and not an
+    // accident of matching on the argument: an ablation removes the pass, and a
+    // row that removed one of two positions would be measuring an ordering
+    // change rather than the absence of canonicalization.
+    if (entry.ablatable && !options.ablatedPass.empty() &&
+        entry.argument == options.ablatedPass)
       continue;
     addPass(pm, entry, options);
   }
