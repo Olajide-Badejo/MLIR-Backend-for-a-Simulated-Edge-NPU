@@ -81,7 +81,11 @@ public:
                            const char *what) {
     const std::vector<uint8_t> &memory = storage(space);
     if (!inRange(memory.size(), byteAddress, bytes))
+#ifdef NDEBUG
+      return nullptr;
+#else
       return outOfRange(space, byteAddress, bytes, what);
+#endif
     return memory.data() + byteAddress;
   }
 
