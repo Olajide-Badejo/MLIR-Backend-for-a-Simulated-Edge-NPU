@@ -239,6 +239,44 @@ def test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor() -> None:
     )
 
 
+def test_at_least_one_committed_result_names_a_prediction() -> None:
+    """The path is known to have been walked, not merely to be available.
+
+    Section 17.8's reason for landing the mechanism at P10 is that a mechanism
+    arriving with its first consumer has never been tested when it matters. That
+    argument is only worth something if P10 actually walks it, so this asserts
+    the directory, the two schema fields and the ancestor test have all been
+    exercised by a real recorded measurement rather than by a fixture.
+
+    `test_every_result_that_names_a_prediction_predates_it` is vacuously green
+    over an empty results directory. This one is not, and that is the division of
+    labour between the two.
+    """
+    results = committed_results()
+    if not results:
+        pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
+
+    naming = []
+    for path in results:
+        cell = json.loads(path.read_text(encoding="utf-8"))
+        if cell["prediction_id"] is not None:
+            naming.append(cell)
+
+    assert naming, (
+        "no committed result names a prediction, so the P10 path has been built "
+        "and never walked, which is the exact situation Section 17.8 landed the "
+        "mechanism a phase early to avoid"
+    )
+    assert {cell["prediction_id"] for cell in naming} == {"p10-ablation-deltas"}
+    assert len({cell["prediction_sha"] for cell in naming}) == 1
+
+    # Every ablation row is evidence for it, and so is each unablated `-O2` cell
+    # its deltas are taken against. Counted rather than asserted loosely, so that
+    # a wiring change which quietly stopped tagging the baselines is red.
+    assert len(naming) == 126
+    assert sum(1 for cell in naming if cell["cell"]["ablated_pass"] is not None) == 112
+
+
 def test_a_prediction_landing_commit_is_an_ancestor_of_head() -> None:
     """What a result recorded right now would be asserting.
 

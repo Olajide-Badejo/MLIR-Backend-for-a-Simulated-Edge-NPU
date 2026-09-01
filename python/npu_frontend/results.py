@@ -685,7 +685,7 @@ def _check_nulls(block: dict[str, Any], where: str) -> None:
         if key.endswith("_null_reason"):
             continue
         reason = f"{key}_null_reason"
-        if value is None and key not in _NULL_WITHOUT_REASON:
+        if value is None and key not in NULL_WITHOUT_REASON:
             if not block.get(reason):
                 raise ResultSchemaError(
                     f"{where}: {key!r} is null and carries no {reason}. A null "
@@ -700,14 +700,19 @@ def _check_nulls(block: dict[str, Any], where: str) -> None:
             )
 
 
-#: The fields whose `null` is the answer rather than an absence, and which
+#: The fields whose `null` **is** the answer rather than an absence, and which
 #: therefore carry no reason.
+#:
+#: Public, and read by `test/Python/test_result_schema.py` rather than restated
+#: there. A test that carried its own copy of this set would pass while the
+#: validator used a different one, which is the shape of duplication D-0032's fix
+#: built a test to hunt for.
 #:
 #: `ablated_pass` is null on every cell that is not an ablation, which is most of
 #: them; `baseline_cell` follows it; `prediction_id` and `prediction_sha` are
 #: null for a cell no prediction covers, which Section 16.1 calls legitimate and
 #: common in those words; `deltas` is null wherever `ablated_pass` is.
-_NULL_WITHOUT_REASON: Final[frozenset[str]] = frozenset(
+NULL_WITHOUT_REASON: Final[frozenset[str]] = frozenset(
     {
         "ablated_pass",
         "baseline_cell",

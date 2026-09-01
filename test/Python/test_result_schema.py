@@ -36,6 +36,7 @@ from npu_frontend.results import (
     MANIFEST_KEYS,
     NORMALIZED_KEYS,
     NULL_REASONS,
+    NULL_WITHOUT_REASON,
     RESULTS_DIR,
     ROOFLINE_KEYS,
     SCHEMA_VERSION,
@@ -179,15 +180,28 @@ def test_the_counted_and_the_timed_are_not_mixed(results: list[dict[str, Any]]) 
 
 
 def test_every_null_carries_a_reason(results: list[dict[str, Any]]) -> None:
-    """The clause Section 16.1 spends a paragraph on."""
+    """The clause Section 16.1 spends a paragraph on.
+
+    The exceptions come from `NULL_WITHOUT_REASON` rather than from a copy here.
+    They are the fields whose null *is* the answer: a cell that ablates nothing
+    has no `ablated_pass`, and a cell no prediction covers has no
+    `prediction_id`, which Section 16.1 calls legitimate and common. A second
+    copy of that set in a test would pass while the validator used a different
+    one.
+    """
+    checked = 0
     for result in results:
         for group in GROUPS:
             for key, value in result[group].items():
                 if key.endswith("_null_reason") or value is not None:
                     continue
+                if key in NULL_WITHOUT_REASON:
+                    continue
                 reason = result[group].get(f"{key}_null_reason")
                 assert reason, f"{result['cell']['name']}: {group}.{key} has no reason"
                 assert len(reason) > 20, "a reason that says nothing is not a reason"
+                checked += 1
+    assert checked, "no null was checked, so this test asserted nothing"
 
 
 def test_a_missing_key_is_refused(results: list[dict[str, Any]]) -> None:
