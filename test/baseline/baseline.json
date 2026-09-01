@@ -677,7 +677,7 @@
     }
   ],
   "generator_version": "1.1.0",
-  "git_sha": "d318a49091c32dcca5f7662e39b8770d9560191b",
+  "git_sha": "5d4ffa1f224c734396b6eb58565cbf01e098875e",
   "levels": [
     0,
     1,
@@ -960,7 +960,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 954,
+      "passed": 955,
       "skipped": 18,
       "tests": [
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
@@ -1797,6 +1797,7 @@
         "test.Python.test_predictions::test_every_entry_landed_in_a_commit_this_repository_has",
         "test.Python.test_predictions::test_every_result_that_names_a_prediction_predates_it",
         "test.Python.test_predictions::test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor",
+        "test.Python.test_predictions::test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout",
         "test.Python.test_predictions::test_the_directory_holds_at_least_one_prediction",
         "test.Python.test_predictions::test_the_entries_are_where_section_6_puts_them",
         "test.Python.test_predictions::test_the_p11_divergence_prediction_is_here_and_unanswered",
