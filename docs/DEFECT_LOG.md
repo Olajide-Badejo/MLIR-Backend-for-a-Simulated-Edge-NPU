@@ -1685,3 +1685,116 @@ None.
   After the deletion, `coverage: PASS. C++ 86.5 percent`, `coverage: PASS.
   Python 90.50425671250818 percent`, exit 0, and the run leaves 41 files behind
   that the next run will clear.
+
+---
+
+### D-0038 the dash linter was written in a Python the CI container does not have
+
+- **Found:** 2026-09-01, interphase P9b, **by CI**, on the first run of the
+  `regression-baseline --check` step. Run 33454083280, job 99704772026. Every
+  local run had been green, every `lint` job had been green, and the pre-commit
+  hook had been green on every commit since P0.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run the linter under the interpreter the CI image ships, which
+  is Ubuntu 24.04's, on a box with no project venv:
+
+  ```bash
+  docker run --rm -v "$PWD:/work:ro" -w /work \
+    ubuntu:24.04@sha256:1e0a86e5... bash -c \
+    'apt-get update -qq && apt-get install -qq --yes python3 git &&
+     bash scripts/dash-lint.sh'
+  ```
+
+  ```
+  File "/work/scripts/dash_lint.py", line 235
+      except subprocess.CalledProcessError, FileNotFoundError:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  SyntaxError: multiple exception types must be parenthesized
+  ```
+
+  Exit 1 for both `dash-lint.sh` and `dash-lint.sh --self-test`, which is
+  exactly the `0 passed 2 failed` the drift report named.
+
+- **What was wrong.** Two `except A, B:` clauses without parentheses, at
+  `dash_lint.py:235` and `:255`. PEP 758 made that spelling legal in **Python
+  3.14**; it is a `SyntaxError` in every earlier version. The module did not
+  parse, so the linter never ran, and both invocations failed for one reason.
+
+- **What it is not**, because four plausible mechanisms were checked and
+  discarded before the fifth was found. Not the locale: `LANG` is unset in the
+  container and Python still reports `utf-8` for both the filesystem encoding
+  and the preferred encoding, so the unicode scanning was never at risk. Not
+  `PATH`, not the working directory, and not a GNU `grep -P` dependence, because
+  the linter shells out to `git ls-files` and does its scanning in Python. There
+  is no `grep` in it at all.
+
+- **Why several phases of green said nothing.** Four places run this linter and
+  the fault is invisible in three of them.
+
+  | Where | Interpreter | Why |
+  |---|---|---|
+  | developer machine | 3.14 | `dash-lint.sh` prefers `$HOME/npu-venv/bin/python` |
+  | pre-commit | 3.14 | the same venv |
+  | the `lint` job | 3.14 | `actions/setup-python` at `3.14`, on a plain runner |
+  | the `build-and-test` container | **3.12** | the image's `python3`, and the script falls back to it because there is no venv |
+
+  **The container had never run the linter.** The `lint` job does not run in a
+  container and nothing else in `build-and-test` invoked it, so the
+  `regression-baseline --check` step is the first thing in this project's
+  history to run `dash-lint.sh` inside the image. It found this on its first
+  attempt.
+
+- **Why no tool caught it, which is the half worth fixing.** `pyproject.toml`
+  declared `requires-python = ">=3.11"` and then configured black, ruff and mypy
+  alike at `py314`. The promise was in a field nothing reads and every checker
+  was pointed at the developer's interpreter rather than at the floor. The
+  comment beside `target-version` argued for py314 **deliberately**, against the
+  v1 tree's py312, on the grounds that an older grammar target applied to code
+  running on 3.14 shows up as a formatting argument rather than as an actionable
+  error. That reasoning is sound and it looks in one direction only. **The
+  interpreter that matters is the lowest one that runs the code, not the
+  highest.**
+
+- **Resolution, in three parts because there are three faults.**
+
+  The **syntax**: both clauses are parenthesised, which is what
+  `requires-python` already promised.
+
+  The **mechanism**: `[tool.ruff]` and `[tool.black]` are at `py311`, so the
+  declared floor is enforced by a tool instead of promised in a field. Measured
+  before the fix, at py311 ruff reports exactly these two errors over the whole
+  tree and nothing else, and `black --check --target-version py311` leaves all
+  forty two files unchanged, so the formatting argument the old comment feared
+  does not arise here. mypy goes to `3.12` and not `3.11`, because at 3.11 it
+  stops inside **numpy's own shipped stubs**, `numpy/__init__.pyi:737: Type
+  statement is only supported in Python 3.12 and greater`, and checks nothing
+  further. 3.12 is clean and is exactly the interpreter the CI image ships.
+
+  The **diagnosability**: `run_dash_lint` in `scripts/regression_baseline.py`
+  prints the child's output when it fails. Every other suite the baseline runs
+  writes a machine readable file, so a failing test reaches the drift report by
+  name; this one contributes a count, and the CI log said `suite dash-lint:
+  passed 2 -> 0` while the `SyntaxError` explaining it went to a pipe nobody
+  read. That is the standard the golden drift lines were rewritten to meet
+  earlier on this branch, applied to the one suite that had been missed.
+
+- **The baseline is unchanged and deliberately not re-recorded.** The recorded
+  `2 passed 0 failed` was always right and the container was wrong. Re-recording
+  here would have written a broken environment into the file as if it were
+  correct, which is the thing `regression-baseline.sh` warns about in its own
+  words.
+
+- **What it says about the step that found it.** The `--check` step was switched
+  on to answer a question about floating point reproducibility across hosts. It
+  answered that question, in the affirmative, on the same run, and then caught a
+  defect with nothing to do with it in a script five phases old, because it is
+  the first thing that ever ran that script in that environment. **A step that
+  runs the whole suite somewhere new is worth more than the reason it was added
+  for.** That is the third time on this branch that the environment rather than
+  the code turned out to be the thing under test.
+
+- **Verified** under the conditions that reproduced it: a container from the
+  pinned base digest, Python 3.12.3, no venv. `dash-lint: clean` exit 0,
+  `self-test: all 8 expectations met` exit 0, and the baseline runner's own
+  invocation reporting `suite dash-lint  2 passed  0 failed`, which is the line
+  the recorded baseline expects. Unchanged on 3.14 in the venv.

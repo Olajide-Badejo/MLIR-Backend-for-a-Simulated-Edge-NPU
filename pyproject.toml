@@ -52,17 +52,35 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = []
 
+# ---------------------------------------------------------------------------
+# The grammar target of both formatters is `requires-python`'s floor and not the
+# developer's interpreter, and that is D-0038 rather than a preference.
+#
+# It said py314 here, with a comment arguing against the v1 tree's py312 on the
+# grounds that applying an older grammar target to code running on a 3.14
+# interpreter shows up as a formatting argument rather than as an actionable
+# error. That reasoning was right about the direction it looked and wrong about
+# which interpreter matters. **The interpreter that matters is the lowest one
+# that runs this code, not the highest.** `scripts/dash-lint.sh` deliberately
+# falls back to whatever `python3` is on `PATH`, because CI calls it before any
+# venv exists, and inside the CI container that is Ubuntu 24.04's 3.12. So a
+# py314 target let two unparenthesised `except A, B:` clauses through, PEP 758
+# syntax that is a `SyntaxError` on 3.12, and the whole linter failed to parse
+# the first time anything ran it in the container. Three phases after it landed.
+#
+# py311 is `requires-python` above, so the declared floor is now enforced by a
+# tool instead of promised in a field nothing reads. Measured on 2026-09-01
+# before the change: at py311 ruff finds exactly those two errors in the whole
+# tree and nothing else, and `black --check --target-version py311` leaves all
+# forty two files unchanged. So the v1 formatting argument the old comment
+# feared does not arise here, which is a measurement rather than a hope.
 [tool.black]
 line-length = 88
-# py314, not py312. The v1 tree said py312 and it is a documented trap: black
-# and ruff then apply an older grammar target to code running on a 3.14
-# interpreter, and the mismatch shows up as a formatting argument rather than
-# as an error anyone can act on.
-target-version = ["py314"]
+target-version = ["py311"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py314"
+target-version = "py311"
 extend-exclude = ["scripts/testdata"]
 
 [tool.ruff.lint]
@@ -78,7 +96,21 @@ ignore = ["E501"]
 "test/lit.site.cfg.py.in" = ["F821"]
 
 [tool.mypy]
-python_version = "3.14"
+# 3.12 and not 3.14, for D-0038's reason, and not 3.11, for a different one that
+# is worth recording rather than rounding off.
+#
+# The reason it is not 3.14: mypy at the developer's interpreter would accept a
+# 3.14 only stdlib call in code that runs on the CI container's 3.12, which is
+# the type checked half of the defect the grammar targets above fix.
+#
+# The reason it is not 3.11, which is `requires-python`'s floor: at
+# `--python-version 3.11` mypy stops inside **numpy's own shipped stubs**,
+# `numpy/__init__.pyi:737: Type statement is only supported in Python 3.12 and
+# greater`, and checks nothing further. So the floor this project can type check
+# against is set by a dependency rather than by its own code. 3.12 is clean and
+# is also exactly the interpreter the CI image ships, which makes it the useful
+# bound: it is the lowest interpreter this project is actually run on.
+python_version = "3.12"
 files = ["python/npu_frontend", "scripts"]
 warn_unused_configs = true
 warn_redundant_casts = true

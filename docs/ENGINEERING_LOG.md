@@ -3487,3 +3487,121 @@ is the same sentence for one element moving in its last bit and for every elemen
 moving, and those are opposite findings. It now names the count, the index, both
 values and the movement in ulps, proven by pushing one golden element to the next
 representable float and reading what came out.
+
+## 2026-09-01 Interphase P9b, first CI run: the answer and the defect arrived together
+
+Run 33454083280. `lint`, `sanitizers` and `coverage` green, the `ndebug` job
+**green on its debut** at 1 minute 5 seconds, and the
+`regression-baseline --check` step red, job 99704772026.
+
+**The answer first, because the red nearly buried it.** The step reported 42
+cells, 21 golden tensors and a largest movement against `-O0` of 4.470e-08, with
+**zero drift on every numeric field**. A baseline recorded under gcc on WSL2
+reproduces **bit for bit** under clang in the container, across two compilers,
+two libcs and two hosts. That is the question P8 raised, P9 sharpened and neither
+could answer, and it is answered in the affirmative. `GOLDEN_TOLERANCE` stays at
+zero on evidence rather than on principle.
+
+**Which is the first thing worth recording about the run.** The interesting
+result was on stdout, above the failure, and the exit code was about something
+else entirely. The handoff's watch plan listed three outcomes as alternatives;
+two fired in the same run and the plan had not imagined that. **When reading a
+red `--check`, read the whole report and not the verdict.** The cells and the
+goldens are printed before the verdict precisely so a run that fails for one
+reason still delivers the measurement it was asked for, and that design paid for
+itself on its first outing.
+
+### The defect, and the four mechanisms it was not
+
+The recorded suite table says `dash-lint 2 passed 0 failed`; the container
+reported `0 passed 2 failed`, while the `lint` job's own dash lint steps were
+green in the same run. Four mechanisms were plausible, and ruling each out was
+most of the work: the locale affecting the unicode scan, `PATH`, a GNU `grep -P`
+dependence, and the working directory.
+
+None of them. `LANG` is unset in the container and Python still reports `utf-8`
+for both the filesystem and the preferred encoding, so the unicode scan was never
+at risk, and there is no `grep` in the linter at all: it shells out to
+`git ls-files` and scans in Python. The mechanism is one line.
+
+```
+File "/work/scripts/dash_lint.py", line 235
+    except subprocess.CalledProcessError, FileNotFoundError:
+SyntaxError: multiple exception types must be parenthesized
+```
+
+Two unparenthesised `except A, B:` clauses. PEP 758 made that legal in **Python
+3.14** and it is a `SyntaxError` everywhere below it. The CI image is Ubuntu
+24.04 and ships **3.12**; `dash-lint.sh` falls back to `python3` on `PATH`
+because CI calls it before any venv exists. The module did not parse, so the
+linter never ran, and both invocations failed for the same reason, which is why
+the count was zero and two rather than one of each.
+
+**Why it had been green everywhere.** Three of the four places that run this
+linter use 3.14: the developer machine and pre-commit through the venv, the
+`lint` job through `actions/setup-python`. The `lint` job is not in a container,
+and nothing else in `build-and-test` invoked the linter. **Nothing had ever run
+it inside the image**, and the `--check` step is the first thing in this
+project's history that did.
+
+### The part that deserved the real fix
+
+`pyproject.toml` declared `requires-python = ">=3.11"` and then configured black,
+ruff and mypy alike at `py314`. The promise sat in a field nothing reads while
+every checker pointed at the developer's interpreter, so no tool could have
+objected.
+
+The comment beside `target-version` argued for py314 **deliberately**, against
+the v1 tree's py312, on the grounds that an older grammar target applied to code
+running on a 3.14 interpreter shows up as a formatting argument rather than as an
+actionable error. That reasoning is sound and it looks in one direction only.
+**The interpreter that matters is the lowest one that runs the code, not the
+highest**, and this project's lowest is a container nobody was thinking about
+when the comment was written.
+
+Both grammar targets are `py311` now, which is what `requires-python` says, so
+the floor is enforced by a tool rather than promised in a field. Measured before
+the fix: at py311 ruff finds exactly those two errors over the whole tree and
+nothing else, at py312 it finds them again, and
+`black --check --target-version py311` leaves all forty two files unchanged. The
+mechanism costs nothing, which is the argument for taking it rather than fixing
+two lines and moving on.
+
+mypy is `3.12` and not `3.11`, and the reason is worth keeping. At
+`--python-version 3.11` it stops inside **numpy's own shipped stubs**,
+`numpy/__init__.pyi:737: Type statement is only supported in Python 3.12 and
+greater`, and checks nothing further. So the floor this project can type check
+against is set by a dependency rather than by its own code, which leaves
+`requires-python` and the checkable floor a minor version apart. That is recorded
+as an open question rather than resolved by quietly moving a published contract.
+
+### The half that made it a hunt
+
+The CI log said `suite dash-lint: passed 2 -> 0` and nothing more. Every other
+suite the baseline runs writes a machine readable file, so a failing test arrives
+in the drift report by name; this one has none and contributes a count, and the
+`SyntaxError` that explained everything went to a pipe nobody read.
+
+`run_dash_lint` prints the child's output on failure now. That is the same
+standard the golden drift lines were rewritten to meet earlier in this branch,
+and the omission is instructive: the standard was applied to the failure mode
+that was being thought about and not to the one that was not. **A rule about
+diagnosability is worth applying to every output a step has, including the one
+that has never failed.**
+
+### What this says about the step, and about the branch
+
+The step was added to answer a floating point question. It answered that on its
+first run and then caught a defect with nothing to do with it, in a script five
+phases old, because it is the first thing that ever ran that script in that
+environment. **A step that runs the whole suite somewhere new is worth more than
+the reason it was added for.**
+
+That makes four defects on this branch and the set has a shape. D-0030 and
+D-0032 were results that depended on what else was lying around in CI, invisible
+locally. D-0037 is the mirror, invisible in CI. D-0038 is a third position: code
+correct in every environment anybody had run it in and wrong in the one nobody
+had. D-0036 is the fourth, a claim never measured anywhere at all. **In none of
+the four was the code under test the thing that was wrong**, and in all four the
+fix was to make an environment or a claim checkable by a tool rather than by a
+habit.

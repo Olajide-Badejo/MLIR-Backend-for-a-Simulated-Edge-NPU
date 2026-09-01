@@ -40,7 +40,14 @@ four, the model suite change, moves numbers that P10 is going to report.
 | `f65378b` | `ci: an ndebug job, because the one CI thought it had was a comment` | 2 |
 | `ff6991d` | `ci: regression-baseline --check, with the tolerance left at zero on purpose` | 4 |
 | `ed63b0f` | `fix(coverage): clear the previous run's counters, so the number is about this run` | D-0037 |
-| tip | `docs: hand off the interphase P9b debt branch` | all |
+| `e4759f5` | `docs: hand off the interphase P9b debt branch` | all |
+| tip | `fix(lint): parenthesise the except clauses, and target the floor CI has` | D-0038 |
+
+**The tip is the first CI run's finding, folded back in.** Run 33454083280 is the
+branch's first push. Three jobs green, the `ndebug` job green on its debut at 1
+minute 5 seconds, and the `--check` step red on D-0038. The handoff commit above
+it describes the branch as it stood before that run; this section, item 4 and the
+defects section describe it as it stands now.
 
 **The first four commits are ground rule 7's ordering and they are the part a
 reviewer should check first.** The declaration at `cb74831` is strictly before
@@ -121,7 +128,9 @@ the project to fix nothing.
 
 ### 2. The NDEBUG CI configuration
 
-**Done and live on the next push.** Decision: **no second LLVM tree**, recorded
+**Done, and green on its debut in run 33454083280 at 1 minute 5 seconds**, which
+is well inside the 30 minute budget the job carries and faster than the estimate
+in the runbook below. Decision: **no second LLVM tree**, recorded
 in `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md` and pointed at
 from D-0031, which stays open as the limit it is.
 
@@ -211,8 +220,26 @@ handoff asked for:
 
 ### 4. `regression-baseline --check` cross host
 
-**The step is written and rehearsed. The question is not answered and cannot be
-until it runs in the container.** That is the honest status and it is by design.
+**ANSWERED on the step's first run, and the answer is yes.** Run 33454083280.
+
+**A baseline recorded under gcc on WSL2 reproduces bit for bit under clang in
+the container.** All 42 cells, all 21 golden tensors and the 4.470e-08 largest
+movement against `-O0`, with zero drift on every numeric field. Two compilers,
+two libcs, two hosts, and not one bit moved. That is the question P8 raised and
+P9 sharpened, and it is closed.
+
+**So `GOLDEN_TOLERANCE` stays at zero on evidence rather than on principle.** Be
+precise about what has been shown: the golden comparison is a bound between two
+runs, and it now has one measurement across two hosts rather than none. A
+different host, compiler or libc could still move it, and this step is the thing
+that would say so.
+
+**The same run turned the step red on something else entirely**, which is the
+third category of the watch plan below and is D-0038. The recorded suite table
+says `dash-lint 2 passed 0 failed` and the container reported `0 passed 2
+failed`, while the `lint` job's own dash lint steps were green in the same run.
+The mechanism, the fix and why the baseline was **not** re-recorded are under
+"Defects" below.
 
 - **What changed.** A step at the end of `build-and-test`, with
   `NPU_BASELINE_JOBS: "4"`, and `GOLDEN_TOLERANCE` left at **zero**.
@@ -437,9 +464,52 @@ build cache does **not** keep a `NOTFOUND` for OpenMP, `FindOpenMP` re-runs its
 `try_compile`, and the cache key change I had planned was deleted rather than
 committed.
 
+### 7. D-0038, reproduced and then re-run under the conditions that produced it
+
+Added after the first CI run, and it is the only rehearsal on this branch that
+started from a real red rather than from a prediction. The environment is what
+the container has and the developer machine does not: **Ubuntu 24.04's Python
+3.12, no venv, `dash-lint.sh` falling back to `python3` on `PATH`.**
+
+```bash
+docker run --rm -v "$PWD:/work:ro" -w /work \
+  ubuntu:24.04@sha256:1e0a86e5... bash -c \
+  'apt-get update -qq && apt-get install -qq --yes python3 git &&
+   bash scripts/dash-lint.sh; bash scripts/dash-lint.sh --self-test'
+```
+
+**Before the fix**, which is the reproduction of the CI failure:
+
+```
+File "/work/scripts/dash_lint.py", line 235
+    except subprocess.CalledProcessError, FileNotFoundError:
+SyntaxError: multiple exception types must be parenthesized
+  tree     EXIT=1
+  selftest EXIT=1
+```
+
+`python3 -V` reports 3.12.3, `LANG` is unset, and Python still reports `utf-8`
+for the filesystem and preferred encodings, which is what rules the locale out.
+
+**After the fix**, in the same container: `dash-lint: clean` exit 0,
+`self-test: all 8 expectations met` exit 0, and `run_dash_lint`'s own invocation
+replayed on 3.12 reporting `suite dash-lint  2 passed  0 failed`, which is the
+line the recorded baseline expects and therefore the drift going away. On 3.14 in
+the venv, unchanged.
+
+**And the tool that will catch the next one**, checked in both directions before
+the fix landed: `ruff check --target-version py311 .` finds exactly these two
+errors and nothing else in the whole tree, and finds them again at py312;
+`black --check --target-version py311 .` leaves all forty two files unchanged.
+After the fix, both are clean at the new configured target.
+
+**Which trigger this needs:** none of its own. It is a step that is now on, so
+the next push runs it, and the shape of a green run is the `dash-lint 2 passed`
+row in the step's own suite table.
+
 ## Defects
 
-Two, both found by this branch and both fixed in it.
+Three, all found by this branch and all fixed in it.
 
 - **D-0036**, the NDEBUG build CI named and did not have. Found while writing the
   job that replaces the claim. Not by a test, and no test could have found it:
@@ -448,35 +518,98 @@ Two, both found by this branch and both fixed in it.
   had ever seen. Found by this branch's own closing verification matrix, which
   died at collection. The crash is the harmless half; a line covered by a test
   that was later deleted stayed covered, and this branch deletes a test.
+- **D-0038**, the dash linter written in a Python the CI container does not
+  have. **Found by CI**, on the first run of the `--check` step, run
+  33454083280, job 99704772026.
 
-**The two are the same shape from opposite sides**, and it is worth saying so
-once. D-0030 and D-0032 were results that depended on what else was lying around
-in CI and were invisible locally. D-0037 is a result that depends on what is
-lying around locally and is invisible in CI. D-0036 is neither: it is a claim
-that was never measured in any environment, which is the failure class D-0028
-named and which this project has now met twice.
+### D-0038, because it is the one the first CI run found
+
+**The mechanism, named rather than guessed at.** Two `except A, B:` clauses
+without parentheses, at `scripts/dash_lint.py:235` and `:255`. PEP 758 made that
+spelling legal in **Python 3.14** and it is a `SyntaxError` in every earlier
+version. The CI image is Ubuntu 24.04 and ships **3.12**, `dash-lint.sh`
+deliberately falls back to whatever `python3` is on `PATH` because CI calls it
+before any venv exists, and there is no venv in the container. So the module did
+not parse, the linter never ran, and both invocations failed for one reason,
+which is why the count was `0 passed 2 failed` rather than one of each.
+
+**Four plausible mechanisms were checked and discarded first**, and recording
+that is worth as much as recording the answer. Not the locale: `LANG` is unset
+in the container and Python still reports `utf-8` for both the filesystem and
+the preferred encoding. Not `PATH`, not the working directory, and not a GNU
+`grep -P` dependence, because the linter shells out to `git ls-files` and does
+its scanning in Python. There is no `grep` in it at all.
+
+**Why it was invisible everywhere else.** The developer machine, pre-commit and
+the `lint` job all run it on 3.14, the first two through the venv and the third
+through `actions/setup-python`. The `lint` job is not in a container. **Nothing
+had ever run this linter inside the image**, and the `--check` step is the first
+thing in the project's history that did.
+
+**Why no tool caught it, which is the half that got the real fix.**
+`pyproject.toml` declared `requires-python = ">=3.11"` and configured black,
+ruff and mypy alike at `py314`, so the promise sat in a field nothing reads
+while every checker pointed at the developer's interpreter. Both grammar targets
+are `py311` now. Measured before the fix: at py311 ruff reports exactly these two
+errors over the whole tree and nothing else, and
+`black --check --target-version py311` leaves all forty two files unchanged, so
+this costs nothing. mypy is `3.12` and not `3.11`, because at 3.11 it stops
+inside numpy's own shipped stubs and checks nothing further; 3.12 is clean and
+is the interpreter the image actually ships.
+
+**And the diagnosability, which is why this took a hunt.** The CI log said
+`suite dash-lint: passed 2 -> 0` and nothing else, because that suite is the one
+the baseline runs with no machine readable output, so its whole contribution is
+a count. The `SyntaxError` that explained it was going to a pipe nobody read.
+`run_dash_lint` prints the child's output on failure now, which is the standard
+the golden drift lines were rewritten to meet earlier on this branch, applied to
+the one suite that had been missed.
+
+**The baseline was not re-recorded and that is deliberate.** The recorded
+`2 passed 0 failed` was always right; the container was wrong. Re-recording here
+would have written a broken environment into the file as if it were correct,
+which is exactly what `regression-baseline.sh` warns about in its own words.
+
+**The four are worth reading as a set.** D-0030 and D-0032 were results that
+depended on what else was lying around in CI and were invisible locally. D-0037
+is the mirror, a result that depends on what is lying around locally and is
+invisible in CI. D-0038 is a third position: code that was correct in every
+environment anybody had run it in, and wrong in the one nobody had. D-0036 is
+the fourth, a claim never measured in any environment at all. **In none of the
+four was the code under test the thing that was wrong.**
 
 ## The orchestrator's runbook
 
-Four things to run, in this order. The first is the only one that costs an hour.
+Four things to run, in this order. The first has happened once already and needs
+one repeat; the second is the only one that costs an hour.
 
-### 1. Push the branch
+### 1. Push the branch. Done once, and it needs one more
 
 ```
 git push -u origin phase/p9b-debt
 ```
 
-That is the first CI run of the `ndebug` job and of the
-`regression-baseline --check` step. **Expect `build-and-test` to be several
-minutes longer than at P9**, because the baseline check is a second full pass
-over the suite: 1 minute 42 seconds here on many cores, so four to eight minutes
-on four vCPUs is the range to expect and anything near thirty is worth reading.
-The `ndebug` job is a container pull, a configure, twenty eight ninja edges and
-two binaries, so six to ten minutes end to end.
+**Run 33454083280 is that push and it is the branch's most valuable run so far.**
+`lint`, `sanitizers` and `coverage` green; the `ndebug` job **green on its debut
+at 1 minute 5 seconds**, comfortably inside its 30 minute budget and faster than
+the six to ten minutes estimated here; and the `regression-baseline --check` step
+red, job 99704772026, on D-0038 rather than on anything it was switched on to
+find. The cross host answer arrived in the same run and is recorded under item 4.
 
-**This run happens against the old image**, which has no `libomp`. That is
+**Push again with the D-0038 fix at the tip.** What to expect this time: the
+step's suite table reading `suite dash-lint 2 passed 0 failed 0 skipped` and
+`regression-baseline: no drift`, exit 0. That row is the whole of the green
+condition; nothing else about that step changed.
+
+**Both runs happen against the old image**, which has no `libomp`. That is
 correct and it is the useful order: it separates "the new job and the new step
 work" from "the new image changes what they report".
+
+**And note the one wall clock this branch now has rather than estimates.** The
+`--check` step is a second full pass over the suite: 1 minute 42 seconds here on
+many cores. The first CI run reached the drift comparison, so the runner does get
+through it; read the actual figure off the green run and put it here, replacing
+the four to eight minute guess.
 
 ### 2. Republish the image
 
@@ -517,16 +650,23 @@ Re-run the workflow on the branch after the image is live.
   rather than the one to assume.
 - **`regression-baseline --check`.** See the watch plan below.
 
-### 4. The `regression-baseline --check` first run watch plan
+### 4. The `regression-baseline --check` watch plan, and how the first run went
 
-This is the item that is not decided and it is deliberate. Three outcomes.
+**The first run has happened and the plan's three outcomes are no longer
+hypothetical**, so this section is kept with the result written into it rather
+than deleted. Two of the three fired at once, which the plan did not anticipate
+and which is the useful thing to record: the numeric half was green and the
+suite half was red, in one run.
 
-- **Green.** Then a baseline recorded under gcc on WSL2 reproduces bit for bit
-  under clang in the container, which is a stronger reproducibility property
-  than this project had any evidence for, and it should be recorded in
-  `ENGINEERING_LOG.md` in those words. `GOLDEN_TOLERANCE` stays at zero and the
-  question P8 and P9 both deferred is answered.
-- **Red on goldens only, by a few ulps.** Then the drift report **is** the data.
+- **Green.** *This is what happened, on the half the step exists for.* A baseline
+  recorded under gcc on WSL2 reproduces bit for bit under clang in the container:
+  42 cells, 21 goldens, largest movement 4.470e-08, zero drift on every numeric
+  field. `GOLDEN_TOLERANCE` stays at zero and the question P8 and P9 both
+  deferred is answered. Keep this branch for the next host change; it is the only
+  measurement of it there is.
+- **Red on goldens only, by a few ulps.** Did not happen. Kept because it is the
+  outcome a future host or compiler change would produce, and the response has
+  not changed: the drift report **is** the data.
   Record the exact lines, which carry the element count, the index, both values
   and the ulp count. **Do not widen `GOLDEN_TOLERANCE` to whatever makes it
   green.** The decision to take then is between two options and it wants the
@@ -535,24 +675,44 @@ This is the item that is not decided and it is deliberate. Three outcomes.
   host and the check becomes a same host comparison. Both are decisions above a
   CI step's pay grade and neither should be taken in the same hour the red
   arrives.
-- **Red on a cell or a suite count.** Then it is not the cross host question at
-  all. A moved cell is a change somebody made, declared in
-  `BREAKING_CHANGES.md` and re-recorded, or a defect. A moved suite count in the
-  container most likely means a test skipped there that runs here, which is
-  D-0032's family and would be a real find.
+- **Red on a cell or a suite count.** *This is also what happened, and it is
+  where the run went red.* `suite dash-lint: passed 2 -> 0` and
+  `failed 0 -> 2`, which is D-0038 and had nothing to do with the cross host
+  question. The plan guessed this category would be "a test skipped there that
+  runs here"; it was a script that did not parse there and does here, which is
+  the same family and a worse case. **The baseline was not re-recorded**, because
+  the recorded value was right and the environment was wrong, and re-recording
+  would have written the broken environment into the file as if it were correct.
 
 The step prints all three readings in its own failure output, so the log says
-this too.
+this too. **What the log did not say was why dash-lint failed**, and that is
+fixed on this branch: the runner prints the child's output now.
+
+**The lesson this run teaches about the plan itself.** The three categories were
+written as alternatives and two of them fired together, which meant the red
+masked the green: the interesting answer was on stdout, above the failure, and
+the exit code was about something else. When reading a red `--check`, read the
+whole report and not the last line. The cells and goldens are reported before the
+verdict for exactly this reason.
 
 ## Open questions
 
-Five, down from nine. Four of P9's are closed by this branch and are not
-repeated here.
+Five, down from nine. Four of P9's are closed by this branch, and the one this
+branch opened on purpose closed on the first CI run, so one new one takes its
+place.
 
-**`GOLDEN_TOLERANCE` is zero across hosts and nobody has run the experiment
-yet.** This is item 4's whole point and it is open by construction: the step
-exists, the tolerance is unwidened, and the first container run is the
-measurement. It closes on the next CI run either way. See the watch plan above.
+**The declared Python floor and the checkable one differ by a minor version, and
+nothing decides which is right.** `requires-python` says 3.11 and black and ruff
+are held to it since D-0038. mypy cannot go below **3.12**, because at 3.11 it
+stops inside numpy's own shipped stubs, `numpy/__init__.pyi:737: Type statement
+is only supported in Python 3.12 and greater`, and checks nothing further. The
+interpreter this project is actually run on at its lowest is the CI image's, and
+that is 3.12 too. So a case can be made that `requires-python` should read
+`>=3.12` and that the three tools should then agree on one number. That is a
+change to a published contract rather than a lint setting, it moves nothing
+today because 3.11 is the stricter of the two for the tools that can express it,
+and it belongs to whoever next has a reason to care about the floor. Recorded so
+the mismatch is a decision somebody declined rather than one nobody noticed.
 
 **The NDEBUG and sanitizer directories still cannot build anything that links
 MLIR**, D-0031. What P9b decided is that the second LLVM tree is not worth its
@@ -575,17 +735,23 @@ still true.
 
 ## Next command
 
-Push the branch and open the merge pull request for `phase/p9b-debt`, then
-dispatch the image republish against the branch.
+Push the D-0038 fix, confirm the `--check` step goes green, then dispatch the
+image republish against the branch.
 
 ```
-git push -u origin phase/p9b-debt
+git push origin phase/p9b-debt
 gh workflow run llvm-image.yml --ref phase/p9b-debt
 ```
 
-**Nothing has been pushed.** The order matters: the push is what makes the ref
-dispatchable, and the first `ci.yml` run against the old image is what separates
-"the new job works" from "the new image changed what it says".
+**The branch has been pushed once**, run 33454083280, and the tip is not on the
+remote. The order matters and has not changed: confirm `ci.yml` green against the
+**old** image first, so that "the new job and the new step work" is established
+before the image starts changing what they report.
+
+**The green condition for the step is one row**,
+`suite dash-lint 2 passed 0 failed 0 skipped`, followed by
+`regression-baseline: no drift.` Everything else in that step was already green
+on the first run.
 
 ## Next phase
 

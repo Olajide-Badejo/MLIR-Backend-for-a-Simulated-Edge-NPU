@@ -330,6 +330,16 @@ def run_dash_lint() -> SuiteResult:
     It has no machine readable output and needs none: it is two commands and
     each either succeeds or does not. The names are the invocations, so a
     baseline reader sees which two ran.
+
+    **A failure prints the child's output, and that is D-0038.** Every other
+    suite here writes a machine readable file, so a failing test reaches the
+    drift report by name and the reader knows what broke. This one has no such
+    file, so its whole contribution is a count, and the first CI run of the
+    `--check` step reported `suite dash-lint: passed 2 -> 0` with nothing about
+    why. The why was a `SyntaxError`: the linter did not parse under the
+    container's interpreter, and it had been printing that to a pipe nobody
+    read. Two lines of stderr turn a diagnosis into a glance, which is the
+    standard the golden drift lines were rewritten to meet in the same phase.
     """
     result = SuiteResult()
     for arguments, name in (
@@ -348,6 +358,15 @@ def run_dash_lint() -> SuiteResult:
             result.passed += 1
         else:
             result.failed += 1
+            print(
+                f"regression-baseline: {name} exited {completed.returncode}. "
+                f"Its output follows, because a count of zero says nothing a "
+                f"reader can act on:",
+                file=sys.stderr,
+            )
+            for stream in (completed.stdout, completed.stderr):
+                for line in stream.rstrip().splitlines():
+                    print(f"  {line}", file=sys.stderr)
     return result
 
 

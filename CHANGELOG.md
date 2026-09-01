@@ -48,10 +48,26 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   same build and CI is a different compiler and a different libc; neither phase
   could answer whether that matters without a run. The step is the run. If the
   container reproduces the developer machine bit for bit, that is a property
-  worth having proven; if it does not, the drift report is the measurement, and
+  worth having proven. **It does.** On the step's first run, all 42 cells, all
+  21 golden tensors and the 4.470e-08 largest movement reproduced bit for bit
+  under clang in the container against a baseline recorded under gcc on WSL2,
+  with zero drift on every numeric field. The tolerance stays at zero, now on
+  evidence rather than on principle. Had it not, the drift report is the
+  measurement, and
   the report was rewritten to carry it: a golden difference now names how many
   elements moved, at which index, from what to what, and how many units in the
   last place that is.
+- **The dash linter runs on the interpreter CI actually has.** Two
+  unparenthesised `except A, B:` clauses were PEP 758 syntax, legal on Python
+  3.14 and a `SyntaxError` on the 3.12 the CI image ships, so the linter failed
+  to parse the first time anything ran it inside the container. The grammar
+  target of black and ruff is `py311` now, which is what `requires-python`
+  declares, so the floor is enforced by a tool rather than promised in a field
+  nothing reads; mypy is at `3.12`, the lowest it can go while numpy's own
+  shipped stubs need 3.12. And the baseline runner prints the child's output
+  when a dash lint invocation fails, because that suite has no machine readable
+  file and a count of zero says nothing a reader can act on. D-0038, found by
+  the first CI run of the step above.
 - **`scripts/coverage.sh` clears the previous run's execution counters**, so the
   number it reports describes the suite that just ran rather than the union of
   every suite the build directory has ever run. gcov accumulates, and nothing
