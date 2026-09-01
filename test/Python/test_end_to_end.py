@@ -67,6 +67,7 @@ from npu_frontend import (
 )
 from npu_frontend.input_classes import INPUT_CLASSES, make_inputs
 from npu_frontend.refgraph import execute_module
+from npu_frontend.tolerances import ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE
 
 #: Section 17.4's level axis, which arrived with the levels at P9.
 LEVELS: Final[tuple[int, ...]] = (0, 1, 2)
@@ -79,37 +80,17 @@ LEVEL: Final[int] = 0
 BATCHES: Final[tuple[int, ...]] = (1, 4)
 
 # --------------------------------------------------------------------------
-# The tolerances.
+# The tolerances, which live in `npu_frontend.tolerances` since P9b.
 #
-# Measured on 2026-08-31 over the whole matrix, on this toolchain, and written
-# down here because Section 17.4 requires the observed value beside the bound
-# that was set from it.
-#
-#   against onnxruntime   worst absolute 4.77e-06   worst relative 8.08e-07
-#   against refexec       worst absolute 4.77e-06   worst relative 4.17e-07
-#
-# Both worst cases are the `dilated_stack` and `depthwise_separable` cells at
-# the two constant classes, whose answers have magnitudes in the tens and whose
-# convolutions accumulate a few hundred same signed terms. That is where a
-# summation order difference is largest, and a summation order difference is
-# what these numbers are: the reference sums whole tensor slices per kernel
-# position, the simulator walks one output element at a time, and neither is
-# wrong.
-#
-# The bounds are roughly ten and six times the observed maxima. Not two, and
-# the reason is stated rather than left as taste: this suite runs on at least
-# two hosts, the developer machine and the CI container, and `onnxruntime`
-# chooses its own vectorisation per host. A bound two times the observed value
-# on one machine is a bound that goes red on another for a reason that is not a
-# defect. Ten is far below the 1e-3 against 3e-8 that Section 17.4 names as the
-# tolerance that cannot fail.
-#
-# Never loosened to make a cell pass. If a cell needs a wider bound, that is a
-# finding: record the measured value and say why the bound moved.
+# They were declared here, with the measurement they were set from and the
+# argument for their size. Both moved to the package with the constants and
+# neither changed: `scripts/regression_baseline.py` needs the same band this
+# matrix enforces, a script cannot import a test module, and a second copy of a
+# tolerance constant is the duplication `test_tool_discovery.py` exists to hunt
+# for. Read the module docstring there for the measured maxima, for why the
+# bounds are ten and six times them rather than two, and for the P9b runs that
+# turned the per host caveat in that argument into a number.
 # --------------------------------------------------------------------------
-
-ABSOLUTE_TOLERANCE: Final[float] = 5e-5
-RELATIVE_TOLERANCE: Final[float] = 5e-6
 
 
 def _cross_product() -> list[tuple[str, int, int, str]]:

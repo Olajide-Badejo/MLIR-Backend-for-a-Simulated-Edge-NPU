@@ -1798,3 +1798,113 @@ None.
   `self-test: all 8 expectations met` exit 0, and the baseline runner's own
   invocation reporting `suite dash-lint  2 passed  0 failed`, which is the line
   the recorded baseline expects. Unchanged on 3.14 in the venv.
+
+---
+
+### D-0039 the baseline compared a field with one end outside this project
+
+- **Found:** 2026-09-01, interphase P9b, **by CI**, by the two `pull_request`
+  activation proof runs for the step that carries the field. Runs 33461200759
+  (PR 15, the NDEBUG fault) and 33461203436 (PR 16, the golden ulp fault). Both
+  intended faults fired exactly as predicted; this arrived beside them, in both
+  runs, unpredicted.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run `scripts/regression-baseline.sh --check` against a baseline
+  recorded on different CPU hardware. Eighteen cells report a moved
+  `max_abs_error_vs_onnxruntime`:
+
+  ```
+  cell conv_bn_relu_stack-O0-default: max_abs_error_vs_onnxruntime
+      1.894070e-07 -> 8.940697e-08
+  cell inception_block-O2-tight: max_abs_error_vs_onnxruntime
+      5.160464e-07 -> 5.960464e-07
+  ```
+
+  Three models, `conv_bn_relu_stack`, `inception_block` and `resnet_block`, at
+  every level and both budgets, which is three times three times two. The
+  movement is between 1e-8 and 1e-7 and it goes in **both directions**:
+  `inception_block` came out *closer* to the oracle on the other hardware.
+  **No golden tensor drifted and no cycle count moved.**
+
+- **What was wrong, and it is the step's design rather than a line of code.**
+  `max_abs_error_vs_onnxruntime` is the distance between this compiler's answer
+  and `onnxruntime`'s. It has two ends and only one of them belongs to this
+  project. Comparing it for **equality** asserted that both ends hold still.
+
+  **This compiler's end does hold still, and the same file proves it.** The
+  golden tensors pin every default budget cell's output bit for bit at a
+  tolerance of zero, and `test/Python/test_tight_budgets.py` pins each tight
+  budget answer to its default budget one. So with green goldens this field
+  **cannot** move because of anything the compiler did. Every difference it can
+  still report is a change at the other end.
+
+  **The other end is `onnxruntime`, which dispatches its CPU kernels on what the
+  host supports**, and GitHub's hosted runners are not homogeneous. The two
+  earlier push runs of this step happened to land on hardware matching the
+  recording host, which is why the first CI run reported zero drift on every
+  numeric field and the cross host question looked answered in full.
+
+- **The knowledge already existed in this repository and the baseline did not
+  inherit it.** `test/Python/test_end_to_end.py` set its tolerances at ten and
+  six times the observed maxima and said why, at P8, in these words: "this suite
+  runs on at least two hosts ... and `onnxruntime` chooses its own vectorisation
+  per host. A bound two times the observed value on one machine is a bound that
+  goes red on another for a reason that is not a defect." The regression
+  baseline then recorded the same quantity and compared it at a bound of
+  **zero**. One file argued for a wide band on a number and another asserted
+  equality on it, two phases apart, and nothing connected them.
+
+- **Why the activation proofs found it and the ordinary runs did not.** The
+  first two runs were pushes and both landed on matching hardware. The proof
+  runs are two more pull requests, so these were the third and fourth samples of
+  a population nobody had noticed was a population. **Two green cross host runs
+  are one sample and not a proof**, and a step that runs on a fleet of
+  heterogeneous machines has a distribution rather than an answer.
+
+- **Resolution, and what is deliberately not changed.**
+
+  `GOLDEN_TOLERANCE` stays at **zero** and every other cell field stays compared
+  for **equality**. Those proved themselves on the same runs and nothing here
+  touches them.
+
+  `ORACLE_FIELD` names the one exception. It is checked against Section 17.4's
+  absolute end to end band instead, which is the only thing the number ever
+  meant, and the band is `npu_frontend.tolerances.ABSOLUTE_TOLERANCE`,
+  **imported** rather than restated. The constants moved out of
+  `test/Python/test_end_to_end.py` into the package for exactly that reason: a
+  script cannot import a test module, and a second copy of a tolerance is the
+  duplication D-0032's fix built `test_tool_discovery.py` to hunt for. A
+  tolerance is the worst thing in a project to have two of, because the copies
+  agree until somebody widens one.
+
+  The recorded value **stays in the baseline**, as documentation of what the
+  recording host measured. That is the status `tool_versions` already has in
+  this file and it is the same argument: recorded because a reader wants it, not
+  compared because it describes the machine rather than the project.
+
+  A movement inside the band is **printed** rather than passed over, with its
+  magnitude and its direction. A check that was switched off has to say so in
+  its own output, which is Section 19.0's rule about silence and success not
+  looking alike, applied to a field rather than to a step.
+
+- **What is lost, stated rather than glossed.** The field can no longer catch an
+  `onnxruntime` upgrade that moved the oracle. Two things still can: the version
+  is recorded in `tool_versions`, and an upgrade is a diff in
+  `requirements-lock.txt`, which is reviewed and which the pip cache key hashes.
+  Neither is as loud, and that is the price of the fix.
+
+- **Verified**, three ways, under the step's own script.
+
+  1. Unperturbed: the numeric half is unchanged and the field reports nothing.
+  2. With the recorded values perturbed by the magnitudes CI reported, in both
+     directions, on exactly the three models CI named: **eighteen notes and no
+     drift**, each naming the direction and the magnitude.
+  3. With the band tightened to 1e-9 so the real measured values fall outside
+     it: every affected cell produces a drift line naming the value, the band
+     and the recorded figure, and the step goes red. The field is bounded, not
+     ignored.
+
+  And in `test/Python/test_regression_baseline.py`, four tests: a move inside
+  the band in **both** directions is not drift, a move is reported as a note, a
+  value outside the band is drift and is not also a note, and the band is the
+  same object the end to end matrix imports.

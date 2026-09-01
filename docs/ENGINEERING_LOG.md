@@ -3605,3 +3605,93 @@ had. D-0036 is the fourth, a claim never measured anywhere at all. **In none of
 the four was the code under test the thing that was wrong**, and in all four the
 fix was to make an environment or a claim checkable by a tool rather than by a
 habit.
+
+## 2026-09-01 Interphase P9b, the activation proofs: two green runs were one sample
+
+Runs 33461200759 and 33461203436, the two `pull_request` proofs for the job and
+the step this branch switched on. **Both intended faults fired exactly as
+predicted**, which is the boring half: the NDEBUG fault took the `ndebug` job red
+at its GoogleTest step with `build-and-test`'s assertions half unbothered beside
+it, and the golden ulp fault produced the rewritten drift line with its element
+count, index, both values and the movement in ulps.
+
+**And both runs reported eighteen differences nobody predicted**, the same
+eighteen cells in both, in one field: `max_abs_error_vs_onnxruntime` on
+`conv_bn_relu_stack`, `inception_block` and `resnet_block`, at every level and
+both budgets, moving between 1e-8 and 1e-7 **in both directions**. No golden
+tensor drifted. No cycle count moved.
+
+### The diagnosis was free, and that is the design working
+
+**The goldens are what made it certain rather than plausible.** They pin this
+compiler's answer bit for bit at a tolerance of zero and they were green, so the
+end of that distance which belongs to this project did not move and the end that
+did is `onnxruntime`'s. `onnxruntime` dispatches its CPU kernels on what the host
+supports, and GitHub's hosted runners are not homogeneous.
+
+Two bands, two questions, one measurement each: that structure was argued into
+`regression_baseline.py` at P9 and it is what turned an eighteen line red into a
+one sentence diagnosis. **A comparison that keeps its subjects apart can tell you
+which subject moved.** Had the goldens been compared at the same loose band as
+the field, this would have been undiagnosable from the log.
+
+### The knowledge was already in the repository
+
+`test/Python/test_end_to_end.py` set its tolerances at ten and six times the
+observed maxima at P8, and the comment beside them says, in these words: "this
+suite runs on at least two hosts, the developer machine and the CI container, and
+`onnxruntime` chooses its own vectorisation per host. A bound two times the
+observed value on one machine is a bound that goes red on another for a reason
+that is not a defect."
+
+The regression baseline then recorded the same quantity and compared it at a
+bound of **zero**. One file argued for a wide band on a number and another
+asserted equality on it, two phases apart, and nothing connected them. That is
+the finding and it is not really about `onnxruntime`: **a project can hold the
+right answer in one file and the wrong assumption in another indefinitely,
+because nothing makes two files disagree out loud.**
+
+So the fix connects them rather than restating the conclusion. The constants
+moved into `npu_frontend.tolerances` and both the matrix and the baseline import
+one object, which is D-0032's rule applied to a number instead of to a function.
+A tolerance is the worst thing in a project to have two of, because the copies
+agree until somebody widens one and then the looser wins wherever it is read.
+
+### Two green runs were one sample
+
+**The first CI run reported zero drift on every numeric field** and the handoff
+recorded the cross host question as answered on that basis. It was not wrong
+about the numbers; it was wrong about how many samples it had. Both pushes
+happened to land on runner hardware matching the recording host. The proof runs
+were the third and fourth samples and their hardware differed.
+
+The answer is two part now and the second part took four runs to see. **The
+compiler and the simulator are bit stable across hosts**, which is a stronger
+property than this project had evidence for and which `GOLDEN_TOLERANCE` at zero
+now rests on. **The distance to the oracle is a property of the measuring host**,
+and asserting equality on it made the step flaky per runner.
+
+It generalises past this field. A green run on a fleet of heterogeneous machines
+is a sample from a distribution, and "it was green" is a statement about the
+sample. Nothing in the watch plan said how many runs an answer needs; the honest
+number here was four, and it needed runs whose hardware happened to differ.
+
+### What was deliberately not changed
+
+`GOLDEN_TOLERANCE` stays at zero and every other cell field stays compared for
+equality. Those proved themselves on the same runs, and widening anything else
+because one field turned out to be badly posed would have thrown away the result
+the runs actually delivered.
+
+The field is bounded against Section 17.4's absolute end to end band, which is
+the only thing it ever meant, and a movement inside the band is **printed** with
+its magnitude and its direction rather than passed over. A check that has been
+switched off has to say so in its own output: Section 19.0's rule about silence
+and success, applied to a field rather than to a step. Rehearsed three ways,
+including a synthetic per host shift built from the magnitudes CI reported and a
+band tightened to 1e-9 so the real values fall outside it and the field goes red.
+
+**What it costs, stated rather than glossed:** the field can no longer catch an
+`onnxruntime` upgrade that moved the oracle. `tool_versions` records the version
+and `requirements-lock.txt` is where an upgrade shows up in review. Neither is as
+loud, and that is the price of the fix.

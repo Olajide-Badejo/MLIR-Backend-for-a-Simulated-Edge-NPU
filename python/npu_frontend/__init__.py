@@ -56,13 +56,16 @@ from .model_generator import (
 )
 from .onnx_importer import PINNED_OPSET, import_model, import_model_file
 from .op_mapping import CONVERTERS, DEFERRED
+from .tolerances import ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE
 
 __all__ = [
+    "ABSOLUTE_TOLERANCE",
     "CONVERTERS",
     "DEFERRED",
     "GENERATOR_VERSION",
     "INPUT_SHAPES",
     "MODELS",
+    "RELATIVE_TOLERANCE",
     "CompileError",
     "CompileResult",
     "ONNXImportError",

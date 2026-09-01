@@ -138,6 +138,81 @@ def test_a_moved_metric_is_reported_with_both_values(empty_goldens: Path) -> Non
     assert "lenet-O0-default" in drift[0]
 
 
+def test_a_moved_oracle_distance_inside_the_band_is_not_drift(
+    empty_goldens: Path,
+) -> None:
+    """D-0039, and it is the one field that is bounded rather than fixed.
+
+    `max_abs_error_vs_onnxruntime` has two ends and only one of them is this
+    project's. This compiler's end is pinned bit for bit by the golden tensors,
+    so with green goldens a moved distance is `onnxruntime` moving, and
+    `onnxruntime` dispatches its CPU kernels on what the host supports. Two CI
+    runs on different runner hardware moved eighteen of these by 1e-8 to 1e-7 in
+    both directions with no golden and no cycle count moving at all.
+
+    Both directions are tested, because the P9b measurement had both: one model
+    got *closer* to the oracle on the other hardware, and a check that only
+    tolerated getting worse would have gone red on the better answer.
+    """
+    for moved in (9e-08, 1e-08):
+        current = minimal()
+        current["cells"][0][baseline.ORACLE_FIELD] = moved
+        assert baseline.compare(minimal(), current, {}) == [], moved
+
+
+def test_a_moved_oracle_distance_is_reported_even_though_it_is_not_drift(
+    empty_goldens: Path,
+) -> None:
+    """A check that was switched off has to say so in its own output.
+
+    This project's rule is that silence and success must not look the same. The
+    field stopped being compared for equality, so the movement is printed with
+    its magnitude and its direction, and a reader who disagrees with the
+    decision can see the number it was made about.
+    """
+    current = minimal()
+    current["cells"][0][baseline.ORACLE_FIELD] = 9e-08
+    notes = baseline.oracle_notes(minimal(), current)
+    assert len(notes) == 1
+    assert "lenet-O0-default" in notes[0]
+    assert "further from" in notes[0]
+
+    closer = minimal()
+    closer["cells"][0][baseline.ORACLE_FIELD] = 1e-08
+    assert "closer to" in baseline.oracle_notes(minimal(), closer)[0]
+
+    assert baseline.oracle_notes(minimal(), minimal()) == []
+
+
+def test_an_oracle_distance_outside_the_band_is_drift(empty_goldens: Path) -> None:
+    """The half of the field that is still load bearing.
+
+    Dropping the equality does not drop the field. What it is checked against is
+    Section 17.4's end to end band, which is the only thing the number ever
+    meant, and a value out there is the answer having genuinely left the
+    tolerance rather than a runner picking different vectorisation.
+    """
+    current = minimal()
+    current["cells"][0][baseline.ORACLE_FIELD] = baseline.oracle_bound() * 2
+    drift = baseline.compare(minimal(), current, {})
+    assert len(drift) == 1
+    assert "outside the end to end band" in drift[0]
+    assert "lenet-O0-default" in drift[0]
+    # And it is not reported as a note as well, because it is a failure.
+    assert baseline.oracle_notes(minimal(), current) == []
+
+
+def test_the_oracle_band_is_the_matrix_band_and_not_a_second_copy() -> None:
+    """One tolerance, one place, which is D-0032's rule applied to a number.
+
+    A tolerance is the worst thing in a project to have two of: the copies agree
+    until somebody widens one, and then the looser wins wherever it is read.
+    """
+    from npu_frontend.tolerances import ABSOLUTE_TOLERANCE
+
+    assert baseline.oracle_bound() == ABSOLUTE_TOLERANCE
+
+
 def test_a_deleted_test_is_drift(empty_goldens: Path) -> None:
     """The failure mode a suite count alone does not catch.
 

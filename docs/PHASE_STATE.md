@@ -41,13 +41,17 @@ four, the model suite change, moves numbers that P10 is going to report.
 | `ff6991d` | `ci: regression-baseline --check, with the tolerance left at zero on purpose` | 4 |
 | `ed63b0f` | `fix(coverage): clear the previous run's counters, so the number is about this run` | D-0037 |
 | `e4759f5` | `docs: hand off the interphase P9b debt branch` | all |
-| tip | `fix(lint): parenthesise the except clauses, and target the floor CI has` | D-0038 |
+| `a54bfa2` | `fix(lint): parenthesise the except clauses, and target the floor CI has` | D-0038 |
+| `4f2f1fd` | `fix(baseline): bound the oracle distance instead of fixing it` | D-0039 |
+| tip | `chore(baseline): re-record the four tests D-0039's fix added` | D-0039 |
 
-**The tip is the first CI run's finding, folded back in.** Run 33454083280 is the
-branch's first push. Three jobs green, the `ndebug` job green on its debut at 1
-minute 5 seconds, and the `--check` step red on D-0038. The handoff commit above
-it describes the branch as it stood before that run; this section, item 4 and the
-defects section describe it as it stands now.
+**The last three commits are CI's findings, folded back in.** The branch has been
+pushed once, run 33454083280, and two activation proof pull requests have run,
+33461200759 and 33461203436. Between them: three jobs green, the `ndebug` job
+green on its debut at 1 minute 5 seconds, both intended faults red exactly where
+predicted, and two defects nobody predicted. The handoff commit `e4759f5`
+describes the branch as it stood before any of that; this section, item 4, the
+rehearsal recipes and the defects section describe it as it stands now.
 
 **The first four commits are ground rule 7's ordering and they are the part a
 reviewer should check first.** The declaration at `cb74831` is strictly before
@@ -220,26 +224,50 @@ handoff asked for:
 
 ### 4. `regression-baseline --check` cross host
 
-**ANSWERED on the step's first run, and the answer is yes.** Run 33454083280.
+**ANSWERED, and the answer has two halves that had to be separated.** Run
+33454083280 gave the first, and runs 33461200759 and 33461203436, the two
+activation proof pull requests, gave the second.
 
-**A baseline recorded under gcc on WSL2 reproduces bit for bit under clang in
-the container.** All 42 cells, all 21 golden tensors and the 4.470e-08 largest
-movement against `-O0`, with zero drift on every numeric field. Two compilers,
-two libcs, two hosts, and not one bit moved. That is the question P8 raised and
-P9 sharpened, and it is closed.
+**Half one: this compiler and this simulator are bit stable across hosts.** A
+baseline recorded under gcc on WSL2 reproduces bit for bit under clang in the
+container. Every cell's instruction, cycle, DMA and MAC field, all 21 golden
+tensors, the 4.470e-08 largest movement against `-O0`, and every suite count.
+Four CI runs across at least two runner hardware generations and not one of
+those bits moved. **So `GOLDEN_TOLERANCE` stays at zero on evidence, and so does
+equality on every other cell field.** The question P8 raised and P9 sharpened is
+closed in the affirmative.
 
-**So `GOLDEN_TOLERANCE` stays at zero on evidence rather than on principle.** Be
-precise about what has been shown: the golden comparison is a bound between two
-runs, and it now has one measurement across two hosts rather than none. A
-different host, compiler or libc could still move it, and this step is the thing
-that would say so.
+**Half two: one field in the file was never about this project, and it moves per
+host.** `max_abs_error_vs_onnxruntime` is the distance between this compiler's
+answer and `onnxruntime`'s. Both proof runs reported the same eighteen cells
+moving, three models at every level and both budgets, between 1e-8 and 1e-7 and
+**in both directions**, with no golden and no cycle count moving at all. The
+goldens are what make the diagnosis certain rather than plausible: this
+compiler's end is pinned bit for bit, so the end that moved is the oracle's, and
+`onnxruntime` dispatches its CPU kernels on what the host supports. That is
+D-0039.
 
-**The same run turned the step red on something else entirely**, which is the
-third category of the watch plan below and is D-0038. The recorded suite table
-says `dash-lint 2 passed 0 failed` and the container reported `0 passed 2
+**The first run looked like a complete answer and was not.** Both pushes
+happened to land on hardware matching the recording host. **Two green cross host
+runs are one sample and not a proof**: a step that runs on a fleet of
+heterogeneous machines has a distribution rather than an answer, and the
+activation proofs were the third and fourth samples. They turned a clean verdict
+into a correct one, which is the best argument for the proof discipline this
+branch has produced.
+
+**So the field is bounded rather than fixed now**, against Section 17.4's
+absolute end to end band, which is the only thing it ever meant, imported from
+`npu_frontend.tolerances` rather than restated. The recorded value stays in the
+baseline as documentation of the recording host, which is the status
+`tool_versions` already had. **Nothing else about the comparison moved**, and
+that is deliberate: the parts that proved themselves keep their zero.
+
+**The first run also turned the step red on something else entirely**, which is
+the third category of the watch plan below and is D-0038. The recorded suite
+table says `dash-lint 2 passed 0 failed` and the container reported `0 passed 2
 failed`, while the `lint` job's own dash lint steps were green in the same run.
-The mechanism, the fix and why the baseline was **not** re-recorded are under
-"Defects" below.
+The mechanism, the fix and why the baseline was **not** re-recorded for it are
+under "Defects" below.
 
 - **What changed.** A step at the end of `build-and-test`, with
   `NPU_BASELINE_JOBS: "4"`, and `GOLDEN_TOLERANCE` left at **zero**.
@@ -507,9 +535,67 @@ After the fix, both are clean at the new configured target.
 the next push runs it, and the shape of a green run is the `dash-lint 2 passed`
 row in the step's own suite table.
 
+### 8. D-0039, three rehearsals of the changed comparison
+
+Added after the two activation proof runs. All three run the `--check` step
+under its own script.
+
+**A. Unperturbed.** The numeric half unchanged, the oracle field reporting
+nothing at all, since this host measures what it recorded.
+
+**B. A synthetic per host oracle shift, inside the band.** The *recorded* values
+are perturbed by the magnitudes CI reported, in both directions, on exactly the
+three models CI named: `conv_bn_relu_stack` by 1.0e-07, `inception_block` by
+minus 8.0e-08, `resnet_block` by 2.5e-08. That is the CI situation with the two
+hosts swapped.
+
+**Prediction.** Eighteen cells reported as notes, zero drift from them, and the
+step's verdict decided by the rest of the comparison.
+
+**Result.** Exactly that.
+
+```
+18 oracle distances moved and are inside the band. Not drift, and not silence
+either:
+  cell resnet_block-O0-default: max_abs_error_vs_onnxruntime 2.485174e-07 ->
+    2.235174e-07 (closer to the oracle by 2.500e-08), inside the band of
+    5.000000e-05
+  cell inception_block-O0-default: max_abs_error_vs_onnxruntime 5.160464e-07 ->
+    5.960464e-07 (further from the oracle by 8.000e-08), inside the band of
+    5.000000e-05
+```
+
+**Restore:** `git checkout -- test/baseline/baseline.json`.
+
+**C. The band tightened to 1e-9, so the real measured values fall outside it.**
+The proof that the field is bounded rather than ignored.
+
+**Prediction.** Every affected cell produces a drift line and the step goes red.
+
+**Result.** Exactly that, and the line carries the value, the band, the recorded
+figure and why equality is not what is being asked:
+
+```
+cell conv_bn_relu_stack-O0-default: max_abs_error_vs_onnxruntime 8.940697e-08 is
+outside the end to end band of 1.000000e-09. The baseline recorded 8.940697e-08
+on the recording host. This field is not compared for equality, because its
+other end is onnxruntime and that moves per host, so a value out here is the
+answer having genuinely left Section 17.4's tolerance rather than a runner
+difference
+```
+
+**Restore:** put `ABSOLUTE_TOLERANCE` back to `5e-5`. **Note for the next
+person:** `git checkout --` does not restore this file if it is still untracked,
+which cost one confusing rerun here. Check the constant by eye after restoring.
+
+**Which trigger this needs:** none of its own. The step is on and every push
+exercises the new path; the shape of a green run is the absence of an oracle
+note on a host that matches the recording one, and the presence of notes without
+a red on a host that does not.
+
 ## Defects
 
-Three, all found by this branch and all fixed in it.
+Four, all found by this branch and all fixed in it.
 
 - **D-0036**, the NDEBUG build CI named and did not have. Found while writing the
   job that replaces the claim. Not by a test, and no test could have found it:
@@ -521,6 +607,9 @@ Three, all found by this branch and all fixed in it.
 - **D-0038**, the dash linter written in a Python the CI container does not
   have. **Found by CI**, on the first run of the `--check` step, run
   33454083280, job 99704772026.
+- **D-0039**, the baseline comparing a field with one end outside this project.
+  **Found by CI**, by the two `pull_request` activation proof runs, 33461200759
+  and 33461203436, beside the two faults they were opened to prove.
 
 ### D-0038, because it is the one the first CI run found
 
@@ -570,13 +659,40 @@ the one suite that had been missed.
 would have written a broken environment into the file as if it were correct,
 which is exactly what `regression-baseline.sh` warns about in its own words.
 
-**The four are worth reading as a set.** D-0030 and D-0032 were results that
+### D-0039, because the activation proofs found it
+
+**The mechanism.** `max_abs_error_vs_onnxruntime` has two ends and the baseline
+compared it for equality. This compiler's end is pinned bit for bit by the
+goldens at a tolerance of zero, so with green goldens the field cannot move
+because of anything the compiler did; the other end is `onnxruntime`, which
+dispatches its CPU kernels on what the host supports, and GitHub's runners are
+not homogeneous. Eighteen cells, three models times three levels times two
+budgets, 1e-8 to 1e-7, both directions, in both proof runs.
+
+**The knowledge was already in the repository.** `test_end_to_end.py` set its
+tolerances at ten times the observed maxima at P8 and said why in exactly these
+terms, that `onnxruntime` chooses its own vectorisation per host and a tight
+bound goes red on another machine for a reason that is not a defect. The
+baseline then recorded the same quantity and compared it at a bound of zero. One
+file argued for a wide band and another asserted equality, two phases apart,
+with nothing connecting them. **The fix connects them**: the constants moved to
+`npu_frontend.tolerances` and both importers now read one object.
+
+**What did not change**, because it matters as much: `GOLDEN_TOLERANCE` is still
+zero and every other cell field is still compared for equality. Those proved
+themselves on the same runs.
+
+**The five are worth reading as a set.** D-0030 and D-0032 were results that
 depended on what else was lying around in CI and were invisible locally. D-0037
 is the mirror, a result that depends on what is lying around locally and is
-invisible in CI. D-0038 is a third position: code that was correct in every
-environment anybody had run it in, and wrong in the one nobody had. D-0036 is
-the fourth, a claim never measured in any environment at all. **In none of the
-four was the code under test the thing that was wrong.**
+invisible in CI. D-0038 is a third position: code correct in every environment
+anybody had run it in and wrong in the one nobody had. D-0036 is a claim never
+measured in any environment at all. D-0039 is the fifth and the subtlest: a
+check that was correct on the environments it had been run on and was **asking a
+question with two subjects**, only one of which this project controls. **In none
+of the five was the code under test the thing that was wrong**, and in all five
+the fix was to make an environment or a claim checkable by a tool rather than by
+a habit.
 
 ## The orchestrator's runbook
 
@@ -596,10 +712,17 @@ the six to ten minutes estimated here; and the `regression-baseline --check` ste
 red, job 99704772026, on D-0038 rather than on anything it was switched on to
 find. The cross host answer arrived in the same run and is recorded under item 4.
 
-**Push again with the D-0038 fix at the tip.** What to expect this time: the
-step's suite table reading `suite dash-lint 2 passed 0 failed 0 skipped` and
-`regression-baseline: no drift`, exit 0. That row is the whole of the green
-condition; nothing else about that step changed.
+**Then the two activation proof pull requests, PRs 15 and 16, runs 33461200759
+and 33461203436.** Both intended faults fired exactly as predicted, and both runs
+also reported eighteen unpredicted differences in one field, which is D-0039 and
+is the second half of item 4's answer.
+
+**Push again with both fixes at the tip.** What to expect: the step's suite table
+reading `suite dash-lint 2 passed 0 failed 0 skipped`, `suite pytest 871 passed`,
+and `regression-baseline: no drift`, exit 0. **Expect eighteen oracle notes and
+no drift from them if the runner hardware differs from this machine's, and none
+at all if it matches**; either is green, and the notes are printed rather than
+suppressed so the log says which happened.
 
 **Both runs happen against the old image**, which has no `libomp`. That is
 correct and it is the useful order: it separates "the new job and the new step
@@ -688,12 +811,22 @@ The step prints all three readings in its own failure output, so the log says
 this too. **What the log did not say was why dash-lint failed**, and that is
 fixed on this branch: the runner prints the child's output now.
 
-**The lesson this run teaches about the plan itself.** The three categories were
-written as alternatives and two of them fired together, which meant the red
-masked the green: the interesting answer was on stdout, above the failure, and
-the exit code was about something else. When reading a red `--check`, read the
-whole report and not the last line. The cells and goldens are reported before the
-verdict for exactly this reason.
+**The lesson this run teaches about the plan itself, and it got taught twice.**
+The three categories were written as alternatives. On the first run two fired
+together, which meant the red masked the green: the interesting answer was on
+stdout, above the failure, and the exit code was about something else. On the two
+proof runs it happened again and worse, because the compounding difference was
+*within* the numeric half: the cells and goldens were green and eighteen cells of
+one field were not, in runs whose stated purpose was to prove two unrelated
+faults red. **Categories compound, and a red `--check` is a report to read rather
+than a verdict to act on.** The cells and the goldens are printed before the
+verdict for exactly this reason, and the oracle notes are printed there too now.
+
+**And the deeper one.** A green cross host run is a sample from a fleet, not a
+property of the fleet. Nothing in the watch plan said how many runs an answer
+needs, and the honest number is more than two: this one took four, and it took
+runs whose hardware happened to differ. When the next such question comes up,
+read the *distribution* rather than the first green.
 
 ## Open questions
 

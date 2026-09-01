@@ -48,15 +48,28 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   same build and CI is a different compiler and a different libc; neither phase
   could answer whether that matters without a run. The step is the run. If the
   container reproduces the developer machine bit for bit, that is a property
-  worth having proven. **It does.** On the step's first run, all 42 cells, all
-  21 golden tensors and the 4.470e-08 largest movement reproduced bit for bit
-  under clang in the container against a baseline recorded under gcc on WSL2,
-  with zero drift on every numeric field. The tolerance stays at zero, now on
-  evidence rather than on principle. Had it not, the drift report is the
-  measurement, and
-  the report was rewritten to carry it: a golden difference now names how many
-  elements moved, at which index, from what to what, and how many units in the
-  last place that is.
+  worth having proven. **It does.** Every cell's instruction, cycle, DMA and MAC
+  field, all 21 golden tensors, the 4.470e-08 largest movement and every suite
+  count reproduce bit for bit under clang in the container against a baseline
+  recorded under gcc on WSL2, over four CI runs and at least two runner hardware
+  generations. The tolerance stays at zero, now on evidence rather than on
+  principle. Had it not, the drift report is the measurement, and the report was
+  rewritten to carry it: a golden difference now names how many elements moved,
+  at which index, from what to what, and how many units in the last place that
+  is.
+- **One baseline field is bounded rather than fixed, and it is the only one.**
+  `max_abs_error_vs_onnxruntime` has two ends and only one is this project's:
+  the goldens pin the compiler's end bit for bit, so a movement with green
+  goldens is the *oracle* moving, and `onnxruntime` dispatches its CPU kernels on
+  what the host supports. Two activation proof runs on different runner hardware
+  moved eighteen cells by 1e-8 to 1e-7 **in both directions** with no golden and
+  no cycle count moving at all. The field is checked against Section 17.4's end
+  to end band now, imported from the new `npu_frontend.tolerances` module that
+  `test_end_to_end.py` also reads rather than keeping its own copy; the recorded
+  value stays as documentation of the recording host, the way `tool_versions`
+  does; and a movement inside the band is printed with its magnitude and
+  direction rather than passed over. `GOLDEN_TOLERANCE` and every other field
+  keep their equality, which the same runs earned. D-0039.
 - **The dash linter runs on the interpreter CI actually has.** Two
   unparenthesised `except A, B:` clauses were PEP 758 syntax, legal on Python
   3.14 and a `SyntaxError` on the 3.12 the CI image ships, so the linter failed
