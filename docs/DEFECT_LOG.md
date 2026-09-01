@@ -1211,6 +1211,30 @@ None.
   blocked by it: Section 9.3's four runs are the simulator's, and the simulator
   is one of the two targets these directories build correctly.
 
+- **2026-09-01, interphase P9b: the second LLVM tree is declined, and this entry
+  stays open as a limit.** The decision and its argument are
+  `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md`. In short:
+  Section 9.3's contract lives entirely in `NPUSimulatorTests` and
+  `NPUEncodingTests`, which are exactly the two targets this directory builds
+  soundly, so a non-assertions LLVM would buy coverage of MLIR linking tools
+  that no clause asks about, at an hour of runner time per build, a second
+  published image to keep in step with the first, and a second `LLVM_IMAGE`
+  reference for every future phase that moves the LLVM tag to move.
+
+  **What changed in CI instead** is the `ndebug` job of
+  `.github/workflows/ci.yml`, which configures `-DNPU_FORCE_NDEBUG=ON`, asserts
+  in its own configure log that the option took, and builds and runs those two
+  binaries and nothing else. The two release side runs of Section 9.3's four now
+  happen on every push rather than on whichever developer remembered the second
+  directory.
+
+  **This entry is not resolved by that** and the status line above is unchanged.
+  The MLIR linking tools still cannot be built here without assertions, and a
+  later phase that writes a clause about those binaries in a non-assertions build
+  should reopen ADR 0009 rather than work around this. The difference P9b makes
+  is that the cost is now declined against a stated requirement instead of
+  deferred against an unstated one.
+
 ### D-0032 three tool discoveries disagreed, and only one of them said so
 
 - **Found:** 2026-08-31, phase P8, **by CI**, on the first run of the coverage
@@ -1518,3 +1542,70 @@ None.
   the lowering would have been re measuring every tight budget against `-O2`,
   which would have moved every tight budget cell in the project's history to
   accommodate a placement artefact.
+
+---
+
+### D-0036 CI named an NDEBUG build it did not have, in a comment, for two phases
+
+- **Found:** 2026-09-01, interphase P9b, while writing the `ndebug` job that
+  replaces the claim. Not by a test, and no test could have found it: the fault
+  was a sentence.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** configure this project the way the sanitizers job of
+  `.github/workflows/ci.yml` does, against an assertions LLVM, and read the
+  compile line rather than the result.
+
+  ```bash
+  cmake -G Ninja -S . -B /tmp/relwithdebinfo \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DMLIR_DIR=... -DLLVM_DIR=... \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+  ninja -C /tmp/relwithdebinfo -t commands \
+        lib/Simulator/CMakeFiles/obj.NPUSimulator.dir/Memory.cpp.o \
+    | tr ' ' '\n' | grep -E '^-(D|U)(NDEBUG|_DEBUG|_GLIBCXX_ASSERTIONS)'
+  ```
+
+  Measured on 2026-09-01, the flags end
+  `-DNDEBUG -D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG`, and the last `-D` or `-U`
+  wins. The configure also prints `NDEBUG: not forced` in so many words, which is
+  the line this project added at P7 and which nobody read against this job.
+
+- **What was wrong.** Two comments in `ci.yml`, written at P7, said the
+  sanitizers job was the NDEBUG half of Section 9.3's "every build mode" clause,
+  "which configures RelWithDebInfo and therefore compiles with `-DNDEBUG`". The
+  therefore does not hold against an assertions LLVM. It is exactly D-0028, which
+  this project found, fixed and documented **in the same phase**, and which then
+  survived in a workflow comment because a comment is not a mechanism and nothing
+  checks one.
+
+  So CI had no NDEBUG coverage at all. The trap tests ran three times in three
+  jobs, all with assertions on, and an accessor that had quietly become
+  assert-only would have been green in every one of them.
+
+- **Why it is worth an entry.** The failure class is this project's most
+  frequent one and this is its purest instance: a claim that reads as a
+  measurement and is an assumption. D-0028 was a proof that proved nothing
+  because it was made in the wrong build; this is the same wrong build,
+  described in prose, sitting in the file that decides what CI does. The
+  distance between the two is one phase and one comment.
+
+  It also says something about where to look. The reasoning in the comment was
+  sound for a project whose LLVM has no assertions, and it was written by
+  somebody who had just fixed the defect that makes it unsound here. Correct
+  general knowledge applied to a specific configuration is not a mistake anybody
+  reviews out.
+
+- **Resolution.** The `ndebug` job, which forces the option and greps its own
+  configure log for the line beginning `NDEBUG:`, so the claim is now made by a
+  build that either has assertions compiled out or fails. Both comments are
+  rewritten to say what their jobs actually cover and to name this entry.
+  `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md` is the decision
+  behind the job, including why a second LLVM tree is declined.
+
+- **Proven red before it was believed.** The product side rehearsal compiled the
+  range trap's diagnostic out behind `#ifdef NDEBUG` in `readBytes`, leaving the
+  check and the null return in place so every caller still behaves. The
+  assertions build reported 55 tests, 54 passed, 1 skipped, exit 0, and the
+  NDEBUG build reported one failure,
+  `Trap.AnOutOfRangeOperandAddressTrapsGracefully`, exit 1. One fault, one net,
+  and the net is the one that did not exist before this entry.

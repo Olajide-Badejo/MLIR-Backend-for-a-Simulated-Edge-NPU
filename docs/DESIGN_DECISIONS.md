@@ -43,3 +43,4 @@ parsed and frequently edited, and a generated index is none of those.
 | 0006 | [The lowering produces memrefs directly, and One-Shot Bufferize was measured before that was decided](adr/0006-lowering-mechanism-and-the-bufferization-attempt.md) | Accepted | 2026-08-20 |
 | 0007 | [The dataflow is weight stationary, and it is pinned](adr/0007-dataflow.md) | Accepted | 2026-08-31 |
 | 0008 | [The per model tight scratchpad budgets, measured at P8](adr/0008-per-model-tight-scratchpad-budgets.md) | Accepted | 2026-08-31, re-measured unchanged 2026-09-01 |
+| 0009 | [The NDEBUG contract is carried by the two non MLIR binaries, and the second LLVM tree is declined](adr/0009-ndebug-coverage-without-a-second-llvm-tree.md) | Accepted | 2026-09-01 |

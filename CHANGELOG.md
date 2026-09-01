@@ -32,6 +32,16 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   runs an OpenMP program rather than testing for a header, which is the failure
   class D-0025 was. **This takes effect only once the image is republished**,
   which is a dispatch of `llvm-image.yml` and an hour of runner time.
+- **CI has an NDEBUG build for the first time**, which is the release half of
+  Section 9.3's "every build mode" clause. The new `ndebug` job configures
+  `-DNPU_FORCE_NDEBUG=ON`, asserts in its own configure log that the option
+  took, and builds and runs `NPUSimulatorTests` and `NPUEncodingTests`, which
+  are the two binaries that link no MLIR and are therefore the two D-0031 allows
+  that directory to build. **CI previously claimed this coverage and did not
+  have it**, in a comment that said the sanitizers job's `RelWithDebInfo`
+  implied `-DNDEBUG`; against an assertions LLVM it does not, which is D-0028
+  and now D-0036. A second LLVM tree built without assertions is deliberately
+  declined, in `docs/adr/0009`.
 - **`-sccp`'s ablation row stays zero, and the distinction is written down.**
   Constant propagation needs a call graph to cross and an imported model is one
   function, so no model change alters that row. Two zero rows, one a gap in the

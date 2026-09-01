@@ -22,6 +22,9 @@
 # existing GoogleTest step.
 # Added at P8: check-reachability in full, with the model IR built in the same
 # step, and the coverage thresholds set from what P8 measured.
+# Added at P9b: the ndebug job, which is the release half of Section 9.3's
+# "every build mode", and regression-baseline --check at the end of
+# build-and-test.
 # Everything else prints its off line.
 
 name: ci
@@ -370,9 +373,18 @@ jobs:
       # interpreter beside it.
       #
       # This build is an assertions build. The NDEBUG half of Section 9.3's
-      # "every build mode" is the sanitizers job below, which configures
-      # RelWithDebInfo and therefore compiles with -DNDEBUG, and which runs this
-      # same binary.
+      # "every build mode" is the ndebug job below, which is new at P9b.
+      #
+      # It used to say the sanitizers job was that half, "which configures
+      # RelWithDebInfo and therefore compiles with -DNDEBUG". That was wrong
+      # from the day it was written and it is D-0036. D-0028 is the reason:
+      # against an assertions LLVM, `HandleLLVMOptions` appends `-UNDEBUG`
+      # **after** whatever the build type supplied, and the last `-D` or `-U`
+      # on a command line wins. Measured on 2026-09-01, a RelWithDebInfo
+      # configure of this project against the assertions LLVM ends its flags
+      # with `-D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG`. So CI has been naming a
+      # build mode it did not have since P7, in a comment rather than in a
+      # test, which is why nothing went red.
       - name: "NPUSimulatorTests (activation table: P7, on)"
         run: |
           set -euo pipefail
@@ -653,12 +665,16 @@ jobs:
       #
       # NPUSimulatorTests joins this step at P7 rather than getting one of its
       # own, and the reason is that it needs no new activation: this step is
-      # already on and already proven red. It also does double duty. Section 9.3
-      # requires the bounds checked accessors to refuse gracefully in **every**
-      # build mode, and this configuration is RelWithDebInfo, so it is the NDEBUG
-      # half of that claim as well as the memory safety one. The trap tests run
-      # here with assertions compiled out, which is where an accessor that had
-      # quietly become assert-only would show.
+      # already on and already proven red.
+      #
+      # **It does not do double duty, whatever this comment used to say.** It
+      # claimed that RelWithDebInfo made this the NDEBUG half of Section 9.3's
+      # "every build mode" as well as the memory safety half. It is not, and
+      # that is D-0036: against an assertions LLVM `HandleLLVMOptions` appends
+      # `-UNDEBUG` after the build type's `-DNDEBUG`, so this job runs the trap
+      # tests with assertions **on**, exactly like build-and-test. The NDEBUG
+      # half is the ndebug job, added at P9b, which forces the option and
+      # asserts in its own configure log that it took.
       - name: "GoogleTests under ASan and UBSan (activation table: P6, on)"
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
@@ -705,6 +721,117 @@ jobs:
           path: build-san/fuzz-artifacts/
           if-no-files-found: ignore
           retention-days: 30
+
+  # -------------------------------------------------------------------------
+  # ndebug. ON at P9b, and it is the release half of Section 9.3's "every build
+  # mode" clause, made by a build that has actually had its assertions taken
+  # out.
+  #
+  # **Why this is a job and not a step in build-and-test.** It is a third build
+  # configuration in a third directory, which is what the sanitizers job is and
+  # is why that is a job too. Folding a second configuration into
+  # build-and-test would mean one job name covering two builds, so a red run
+  # would say "build-and-test failed" for a fault that lives in exactly one of
+  # them. It also runs in parallel, where a step would be serial inside a job
+  # that already carries the longest budget in this file.
+  #
+  # **Why it builds two targets by name and not everything**, which is the same
+  # rule the sanitizers job follows and here it is not an optimization but a
+  # correctness requirement. D-0031: turning `_GLIBCXX_ASSERTIONS` off in this
+  # project's translation units while the LLVM they link keeps it on is an ODR
+  # violation across the link, benign for targets that link no MLIR and heap
+  # corruption for anything that does. `NPUSimulatorTests` and
+  # `NPUEncodingTests` link the format library and LLVM's Support and no MLIR
+  # at all, which is exactly the set this directory may build. An `npu-opt`
+  # built here aborts inside MLIR's own context construction on an empty
+  # module.
+  #
+  # **Why not a second LLVM tree**, which is the fix D-0031 named. Because the
+  # contract Section 9.3 states lives entirely in these two binaries, so a
+  # non-assertions LLVM would buy coverage of MLIR linking tools that no clause
+  # asks for, at an hour of build time per republish and a second image to keep
+  # in step. `docs/adr/0009` is the record and the argument.
+  #
+  # **The configure log assertion is the whole point of the job.** D-0028 is
+  # what happens without it: a Release build against an assertions LLVM keeps
+  # its assertions, passes the four runs the gate asks for, and proves nothing.
+  # `-DNPU_FORCE_NDEBUG=ON` makes the option mean what its name says and the
+  # top level CMakeLists prints a line beginning `NDEBUG:` saying which way it
+  # went. Grepping for it is the same shape as the sanitizers job's
+  # `Fuzzers: ON` check and it exists for the same reason: an option that
+  # silently failed to take would leave this job building what build-and-test
+  # already built, and passing.
+  # -------------------------------------------------------------------------
+  ndebug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: "Configure with NDEBUG forced (activation table: P9b, on)"
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja -S . -B build-ndebug \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNPU_FORCE_NDEBUG=ON \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core \
+            2>&1 | tee build-ndebug-configure.log
+          # The configure log says which way the option went, and this asserts
+          # it rather than trusting the flag. Without this line the job is
+          # D-0028 with more steps.
+          grep -q '^-- NDEBUG: forced on' build-ndebug-configure.log
+
+      # The two targets this directory may build, named rather than swept, per
+      # D-0031 and the warning the configure above prints.
+      - name: Build the two non MLIR binaries
+        run: |
+          set -euxo pipefail
+          ninja -C build-ndebug -j4 NPUSimulatorTests NPUEncodingTests
+
+      # Both binaries in full rather than a filtered subset. Section 9.3's
+      # clause is about the bounds checked accessors, and `TrapTest` is where
+      # those live, but a build without assertions changes what every test in
+      # both binaries is running against, and running only the trap tests would
+      # be asserting that the interesting half survived while leaving the rest
+      # untested in this mode.
+      - name: "NDEBUG GoogleTests (activation table: P9b, on)"
+        run: |
+          set -euo pipefail
+          for binary in NPUSimulatorTests NPUEncodingTests; do
+            if [ ! -x "build-ndebug/bin/$binary" ]; then
+              echo "::error::$binary did not build under NDEBUG."
+              echo "ndebug: this step is ON from P9b, so a missing binary is a"
+              echo "ndebug: build failure rather than a phase that has not"
+              echo "ndebug: arrived. Check the configure log for the line"
+              echo "ndebug: beginning 'NDEBUG:', which says which way the"
+              echo "ndebug: option went, and see D-0031 for what this"
+              echo "ndebug: directory may and may not build."
+              exit 1
+            fi
+            "./build-ndebug/bin/$binary"
+          done
 
   # -------------------------------------------------------------------------
   # coverage. Off until P2. The table is precise about the two dates: the job
