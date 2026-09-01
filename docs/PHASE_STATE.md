@@ -43,13 +43,12 @@ four, the model suite change, moves numbers that P10 is going to report.
 | `e4759f5` | `docs: hand off the interphase P9b debt branch` | all |
 | `a54bfa2` | `fix(lint): parenthesise the except clauses, and target the floor CI has` | D-0038 |
 | `5651963` | `fix(baseline): bound the oracle distance instead of fixing it` | D-0039 |
-| tip | `chore(baseline): re-record the four tests D-0039's fix added` | D-0039 |
+| `a0ade18` | `chore(baseline): re-record the four tests D-0039's fix added` | D-0039 |
+| tip | `docs: correct the verification matrix at the tip` | all |
 
-**The tip carries this table's own last two rows**, so it is named by subject
-rather than by a sha it cannot know, which is what P9's handoff did for the same
-reason. It also carries the correction of one row above it: `5651963` was written
-into this table by the commit it names, which could not know its own sha either
-and guessed.
+**The tip carries this table's own last row**, so it is named by subject rather
+than by a sha it cannot know, which is what P9's handoff did for the same
+reason.
 
 **The last three commits are CI's findings, folded back in.** The branch has been
 pushed once, run 33454083280, and two activation proof pull requests have run,
@@ -311,14 +310,14 @@ Every command below was run at the tip of this branch, from
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
 | `build-fuzz/bin/NPUSimulatorTests` under ASan and UBSan | 54 passed, 1 skipped, exit 0 |
 | `build-fuzz/bin/NPUEncodingTests` under ASan and UBSan | 75 passed, 2 skipped, exit 0 |
-| `python -m pytest test/Python -q` | 860 passed, 18 skipped, 7 deselected, exit 0 |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | 867 passed, 18 skipped, exit 0. 864 at P9, plus this branch's three |
-| `mypy` | no issues found in 19 source files |
-| `black --check .` | 42 files unchanged |
+| `python -m pytest test/Python -q` | 864 passed, 18 skipped, 7 deselected, exit 0 |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | 871 passed, 18 skipped, exit 0. 864 at P9, plus this branch's seven: three for the suite change and four for D-0039 |
+| `mypy` | no issues found in 20 source files |
+| `black --check .` | 43 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 270 of 270 files. 269 at P9, plus ADR 0009 |
+| `reuse lint` | compliant, 271 of 271 files. 269 at P9, plus ADR 0009 and `npu_frontend/tolerances.py` |
 | `pre-commit run --all-files` | all twelve hooks passed |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
@@ -326,11 +325,13 @@ Every command below was run at the tip of this branch, from
 | `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `bash scripts/regression-baseline.sh --check` | no drift, exit 0, 1 minute 42 seconds |
-| `bash scripts/coverage.sh 85 90` | C++ 86.5 PASS, Python 90.50 PASS, exit 0 |
+| `bash scripts/coverage.sh 85 90` | C++ 86.5 PASS, Python 90.54 PASS, exit 0 |
 | `git status --short` | empty |
 
-**The suite grew by three pytest tests**, which is one deleted and four added.
-No lit file changed and no C++ test changed.
+**The suite grew by seven pytest tests.** Three from the model suite change, one
+deleted and four added; and four more from D-0039, which pin the one field that
+is bounded rather than fixed. No lit file changed and no C++ test changed on
+this branch at all.
 
 ### The baseline, recorded and checked
 
@@ -863,7 +864,7 @@ a non-assertions build reopens the decision rather than working around it.
 and still worth stating in P10's report rather than leaving a reader to infer
 that `-O1` does nothing.
 
-**The Python coverage headroom is 0.50 points**, measured 90.50 against a
+**The Python coverage headroom is 0.54 points**, measured 90.54 against a
 threshold of 90. It was 0.49 at P9 and 0.61 at P8. The threshold stays at 90.
 Still worth watching on the CI host, which has measured a tenth of a point above
 this machine both times it has been compared.
