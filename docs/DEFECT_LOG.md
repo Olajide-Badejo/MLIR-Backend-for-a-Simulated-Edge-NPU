@@ -1609,3 +1609,79 @@ None.
   NDEBUG build reported one failure,
   `Trap.AnOutOfRangeOperandAddressTrapsGracefully`, exit 1. One fault, one net,
   and the net is the one that did not exist before this entry.
+
+---
+
+### D-0037 the local coverage number was the union of every run the directory had ever seen
+
+- **Found:** 2026-09-01, interphase P9b, by `scripts/coverage.sh` aborting in the
+  middle of the closing verification matrix. Not by CI, and CI could not have
+  found it.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run `bash scripts/coverage.sh 85 90` three or four times in the
+  same checkout without deleting anything in between. Somewhere after the third
+  the collection dies:
+
+  ```
+  gcovr.formats.gcov.parser.common.SuspiciousHits:
+    lib/Simulator/Kernels.cpp:87 Got suspicious hit value in:
+      for (size_t axis = 0; axis < strides.size(); ++axis)
+  (ERROR) Error occurred while reading reports: Worker thread raised exception
+  ```
+
+  and the script exits 64 with no percentage. Asking gcov directly for that line
+  gives the reason:
+
+  ```
+  Kernels.cpp:87 count = 5896524226
+  ```
+
+  which is past gcovr's suspicious hits threshold of 2^32.
+
+- **What was wrong.** gcov **accumulates**. A `.gcda` left in the build directory
+  is added to by the next run rather than replaced, and this script had never
+  deleted them, so `build-coverage/` held the sum of every run since P8: the
+  lit suite, five GoogleTest binaries and the whole pytest matrix, several times
+  over, in one set of counters. `Kernels.cpp:87` is the stride loop inside the
+  odometer, which is the hottest line in the project, and it got there first.
+
+- **The crash is the harmless half.** The half worth the entry is that a
+  percentage collected from accumulated counters is a percentage about the union
+  of every suite the directory has ever run. **A line covered by a test that was
+  later deleted stays covered**, because the count that covered it is still in
+  the file. This phase deleted a test, which is what makes the point concrete
+  rather than theoretical, and the counter for whatever it exercised would have
+  gone on being counted for as long as the object was not recompiled. The
+  measured evidence for that is small and real: 42 `.gcda` files before the
+  deletion and 41 after a clean run, so one object had counters and no longer
+  runs at all.
+
+  Measured either way, the number did not actually move on this tree: C++ 86.5
+  and Python 90.50 against a clean run, which are the P9 figures. So this is a
+  defect in what the number **means** rather than in what it currently **says**,
+  and that is exactly the kind that survives until it is looked for.
+
+- **The mirror of D-0030 and D-0032, and worth naming as such.** Those were
+  results that depended on what else was lying around in CI, invisible on a
+  developer machine. This is a result that depends on what is lying around on a
+  developer machine, invisible in CI: the coverage job checks out a fresh tree
+  and has no previous run to inherit, so several phases of green CI said nothing
+  about it and could not have. The class is the same and the direction is
+  reversed, which is a useful thing to know about a class this project keeps
+  meeting.
+
+- **Resolution.** `scripts/coverage.sh` deletes every `.gcda` under its build
+  directory after the build and before the suites run, so the number describes
+  the run that produced it. **Not** a wider
+  `--gcov-suspicious-hits-threshold`, which would have silenced the crash and
+  left the meaning wrong; the existing
+  `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` stays, because
+  D-0011 is a genuine tool artifact and this was not.
+
+  The deletion is after the build rather than before it because ninja may
+  recompile a source and the tree has to be final first.
+
+- **Verified:** with 42 accumulated `.gcda` present, exit 64 and no percentage.
+  After the deletion, `coverage: PASS. C++ 86.5 percent`, `coverage: PASS.
+  Python 90.50425671250818 percent`, exit 0, and the run leaves 41 files behind
+  that the next run will clear.

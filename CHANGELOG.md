@@ -52,6 +52,13 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   the report was rewritten to carry it: a golden difference now names how many
   elements moved, at which index, from what to what, and how many units in the
   last place that is.
+- **`scripts/coverage.sh` clears the previous run's execution counters**, so the
+  number it reports describes the suite that just ran rather than the union of
+  every suite the build directory has ever run. gcov accumulates, and nothing
+  had ever deleted a `.gcda`; the visible symptom is a collection that aborts
+  once a hot line's counter passes 2^32, and the quiet one is that a line
+  covered by a deleted test stays covered. D-0037. The measured percentages do
+  not move: C++ 86.5 and Python 90.50 either way.
 - **`-sccp`'s ablation row stays zero, and the distinction is written down.**
   Constant propagation needs a call graph to cross and an imported model is one
   function, so no model change alters that row. Two zero rows, one a gap in the
