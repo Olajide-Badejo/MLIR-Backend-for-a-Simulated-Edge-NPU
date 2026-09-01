@@ -19,6 +19,18 @@ Semantic Versioning once a release is tagged.
   16.2 states as a correction of an earlier draft: `--print-op-stats` prints one
   summary for one invocation and cannot produce a before and after pair per pass
   inside a running pipeline.
+- **Predictions are registered before the measurements they predict, and git
+  proves the ordering.** `experiments/predictions/` carries one entry per
+  prediction, each naming its hypothesis, its predicted direction, a magnitude
+  bracket, the exact result field it concerns and what observation would falsify
+  it. Result files carry `prediction_id` and `prediction_sha`, and a test asserts
+  `git merge-base --is-ancestor` holds between the commit the prediction landed
+  in and the commit the result was measured at. Section 17.8 calls this the
+  software analogue of a registered report, and it lands here rather than at P11,
+  where its first user is, because a mechanism that arrives with its first
+  consumer has never been tested when it matters. Two entries land with it: P10's
+  own ablation prediction, taken through the whole path, and P11's SCALE-Sim
+  divergence prediction, written before any exporter exists to produce a number.
 - **`npu-compile --ablate PASS` runs Section 16.2's leave one out ablation**
   through the level's own pipeline, with the pass left out by the pipeline's own
   `ablate` option rather than by a pass list assembled in Python. The ablatable
