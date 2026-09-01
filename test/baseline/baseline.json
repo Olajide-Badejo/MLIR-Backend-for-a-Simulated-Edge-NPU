@@ -677,7 +677,7 @@
     }
   ],
   "generator_version": "1.1.0",
-  "git_sha": "34cd1639bc90b2fb106223134fe883f2a47c0dbf",
+  "git_sha": "56519635aabdf6fee5c943e5ef7787c2dcbf3532",
   "levels": [
     0,
     1,
@@ -959,7 +959,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 867,
+      "passed": 871,
       "skipped": 18,
       "tests": [
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
@@ -1785,7 +1785,10 @@
         "test.Python.test_regression_baseline::test_a_level_set_change_is_drift_and_says_why",
         "test.Python.test_regression_baseline::test_a_moved_golden_is_drift_with_no_tolerance",
         "test.Python.test_regression_baseline::test_a_moved_metric_is_reported_with_both_values",
+        "test.Python.test_regression_baseline::test_a_moved_oracle_distance_inside_the_band_is_not_drift",
+        "test.Python.test_regression_baseline::test_a_moved_oracle_distance_is_reported_even_though_it_is_not_drift",
         "test.Python.test_regression_baseline::test_a_suite_that_stopped_running_is_drift",
+        "test.Python.test_regression_baseline::test_an_oracle_distance_outside_the_band_is_drift",
         "test.Python.test_regression_baseline::test_an_unchanged_baseline_reports_no_drift",
         "test.Python.test_regression_baseline::test_an_unknown_schema_version_is_refused_rather_than_guessed",
         "test.Python.test_regression_baseline::test_every_committed_golden_has_a_cell",
@@ -1795,6 +1798,7 @@
         "test.Python.test_regression_baseline::test_the_committed_baseline_names_its_absent_fields",
         "test.Python.test_regression_baseline::test_the_committed_baseline_records_every_level_the_compiler_builds",
         "test.Python.test_regression_baseline::test_the_committed_baseline_records_this_phases_numerics_movement",
+        "test.Python.test_regression_baseline::test_the_oracle_band_is_the_matrix_band_and_not_a_second_copy",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[conv_bn_relu_stack]",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[depthwise_separable]",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[dilated_stack]",

@@ -42,8 +42,14 @@ four, the model suite change, moves numbers that P10 is going to report.
 | `ed63b0f` | `fix(coverage): clear the previous run's counters, so the number is about this run` | D-0037 |
 | `e4759f5` | `docs: hand off the interphase P9b debt branch` | all |
 | `a54bfa2` | `fix(lint): parenthesise the except clauses, and target the floor CI has` | D-0038 |
-| `4f2f1fd` | `fix(baseline): bound the oracle distance instead of fixing it` | D-0039 |
+| `5651963` | `fix(baseline): bound the oracle distance instead of fixing it` | D-0039 |
 | tip | `chore(baseline): re-record the four tests D-0039's fix added` | D-0039 |
+
+**The tip carries this table's own last two rows**, so it is named by subject
+rather than by a sha it cannot know, which is what P9's handoff did for the same
+reason. It also carries the correction of one row above it: `5651963` was written
+into this table by the commit it names, which could not know its own sha either
+and guessed.
 
 **The last three commits are CI's findings, folded back in.** The branch has been
 pushed once, run 33454083280, and two activation proof pull requests have run,
