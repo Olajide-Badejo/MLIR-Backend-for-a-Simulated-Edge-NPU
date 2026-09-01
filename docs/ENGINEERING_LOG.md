@@ -4021,3 +4021,125 @@ minute budget of Section 2. The worst gap between the instrumentation's clock an
 second planning number.** The spec file lives outside this repository and is not
 edited from here; `docs/PHASE_STATE.md` carries the replacement text for the
 owner.
+
+## 2026-09-01 Phase P10 closing: the number Section 2 asks for, and where it is
+
+**This entry exists because a gate clause cannot be met from inside this
+repository, and recording that plainly is better than a phase that quietly
+reports itself complete.**
+
+P10's gate says "the measured per cell cost replaces the 15 second planning
+figure in Section 2 in the same commit". Section 2 is in the build specification,
+which lives outside this repository on the Windows side, and the standing rule is
+that it is not edited from here. So the measurement is recorded and the
+replacement text is written out, and applying it needs the owner.
+
+**The number.**
+
+```
+175 cells, 105.699 seconds, serially
+0.60 seconds per cell
+against a budget of 90 minutes, which is a factor of 51 in hand
+```
+
+Measured on the 14700K under WSL2, at commit `d4210f3`, and reproduced to two
+decimal places on a second run at a different commit. The figure lives in
+`experiments/results-runtime.json` rather than only in this entry, because a
+number that exists in a log and nowhere machine readable is a number the next
+phase retypes.
+
+**Two more corrections Section 2 needs, and they are about the cell count rather
+than the cost.** Both are already recorded where the work happened, and are
+gathered here because whoever edits Section 2 needs all three at once.
+
+1. **Eleven ablatable passes becomes eight.** Section 12's table has eleven, but
+   `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
+   arrive at P13 and no `-O` level names them yet, because a level that named a
+   pass nothing implements would give the ablation table a row it could not fill.
+   154 ablation cells becomes 112.
+2. **Budget and batch are not independent axes**, which is `docs/adr/0010`. 84
+   benchmark cells becomes 63.
+
+238 becomes 175.
+
+**The replacement text is in `docs/PHASE_STATE.md`** under "The Section 2 carve
+out, for the owner", written as a paragraph that can be dropped in rather than as
+a list of edits to reconstruct.
+
+### Why the suite is serial, since the budget is what pays for it
+
+Every cell carries a `compile_ms` object with ten trials, a median and a
+percentile interval, and each pass in it carries the same. Cells competing for
+cores measure the contention rather than the compiler, so parallelising this
+suite would corrupt the one group of fields it exists to produce. That is a
+deliberate departure from `scripts/regression-baseline.sh`, which parallelises
+freely at `NPU_BASELINE_JOBS` because it records no timing at all.
+
+The decision was affordable because of the measurement rather than in spite of
+it: at 0.60 seconds per cell the whole suite is under two minutes, and there is
+no version of this trade that is close. Had the suite come out at forty minutes
+serial and ten parallel, the right answer would have been to keep it serial and
+say so, because the alternative is timing objects that describe a machine's load
+rather than a compiler's cost.
+
+### What the phase found, in one place
+
+Three findings, and none of them is in the compiler.
+
+**`-canonicalize`'s ablation row is zero and the pass is not idle.** It removes
+fourteen operations on `conv_bn_relu_stack`, and `-cse` reaches the same program
+without it because MLIR's CSE erases trivially dead operations as it walks. A
+leave one out ablation cannot see a pass whose work another pass would have done.
+This is the clearest thing the Section 16.2 instrumentation has bought: without a
+before and after count per pass, this row is a zero indistinguishable from
+`-sccp`'s structural zero, and `docs/PASSES.md` would have recorded them the same
+way.
+
+**The tight budget does not cross the batch axis**, `docs/adr/0010`. Six of the
+seven models do not allocate at batch 4 under their recorded tight budget, and
+`lenet` shows why no formula would have worked: its peak barely moves with the
+batch, from 194592 to 200800, because a 400 by 120 weight matrix sets it, and it
+still fails by six kilobytes.
+
+**Seven tests were marked slow at P3 and CI has never run one**, D-0040, found by
+a prediction that was wrong about how many tests carry the marker.
+
+### The prediction, and what being wrong bought
+
+Two of `p10-ablation-deltas`'s four claims are wrong. The full adjudication is in
+the previous entry and in `docs/PHASE_STATE.md`; what belongs here is what the
+mechanism was worth.
+
+**A prediction that had been written after the measurement would have named two
+nonzero rows and looked prescient.** The registered one named three, and the
+third being wrong is what sent me to the per pass operation counts, which is
+where the `-cse` redundancy is visible. The finding is a consequence of the
+prediction being wrong and committed beforehand, which is the entire argument for
+Section 17.8's protocol arriving as a mechanism rather than as an intention.
+
+The same for claim 3. Predicting the budgets would agree, and finding sixteen
+rows where they do not, produced the spill table now in `docs/PASSES.md` under
+`-npu-allocate-scratchpad`. Section 16.2 already said to run ablations at every
+budget because passes can behave oppositely at a tight one; this project now has
+its own evidence for that rule rather than taking the specification's word.
+
+**One wording defect in the prediction, recorded because the next prediction
+should not repeat it.** Claim 2 ended "and no other ablation moves that field at
+all". Fourteen rows carry 4.470e-08 in it. They are not moving it, they are
+leaving it where the unablated cell has it, so the claim holds under one reading
+and fails under the other. A prediction that can be read two ways has one reading
+too many, and the fix belongs to the next prediction rather than to this one.
+
+### Verification, and the thing the re-record proves
+
+The closing matrix is in `docs/PHASE_STATE.md`. One line of it is worth calling
+out. `regression-baseline` was re-recorded at `5401d39`, and the diff is four
+kinds of line: `git_sha`, `check-npu` 25 to 26, `pytest` 871 to 954, and 84 test
+names. **Not one cell field moved and all 21 golden tensors are byte identical.**
+
+A phase that put a `PassInstrumentation` on the pass manager, unrolled
+`npu-opt`'s entry point to reach it, added a pipeline option, a result schema, a
+benchmark harness and ninety tests, and moved no recorded number, is a phase
+whose changes are provably confined to the measuring apparatus. That is the
+strongest single statement available about a measurement phase, and it is the
+reason the re-record is its own commit with nothing else in it.
