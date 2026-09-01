@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 # 8. The per model tight scratchpad budgets, measured at P8
 
 - **Status:** Accepted
-- **Date:** 2026-08-31
+- **Date:** 2026-08-31, re-measured unchanged 2026-09-01
 - **Diataxis type:** explanation
 
 ## Context
@@ -147,3 +147,38 @@ constant, and the answer after P13 is tiling.
 **The anchor model's tight budget is fixed.** Section 15 requires it, so that
 LeNet's numbers stay comparable across the project's history. 194624 is that
 number and it does not move without a `BREAKING_CHANGES.md` entry first.
+
+## Re-measured on 2026-09-01, and nothing moved
+
+*Recorded here rather than amended, because the decision did not change. This is
+the second measurement of a frozen constant and the constant came out the same,
+which is a fact worth having written down: the alternative is a later reader
+finding a suite change in the history and having to wonder.*
+
+Interphase P9b gave `dilated_stack`'s `conv1` a separate channel shaped bias
+`Add`, so that `-npu-fuse-bias` has a target in Section 15's suite. Adding a node
+to a model adds buffers, and the P9 handoff named that model's tight budget as
+the thing the change might move. It was measured by this record's own sweep, at
+64 byte granularity, at every level the compiler now builds rather than at `-O0`
+alone:
+
+| Model | Level | Allocated peak | Smallest allocatable | Frozen constant |
+|---|---|---|---|---|
+| `dilated_stack` | `-O0` | 8036 | 8064 | 8064 |
+| `dilated_stack` | `-O1` | 8036 | 8064 | 8064 |
+| `dilated_stack` | `-O2` | 8036 | 8064 | 8064 |
+
+**Both numbers are the P8 ones**, so the constant stands and no
+`BREAKING_CHANGES.md` entry moves it.
+
+**The mechanism, because a measurement that came out unchanged still had a
+reason.** The two buffers the new node adds are a twenty byte bias constant and a
+360 byte destination, and both are live near the end of the program, where the
+working set is a little over five kilobytes. This model's peak is set by `conv0`,
+whose input, filter and result are resident together, and that instruction is
+untouched. A sweep line peak is the maximum over time and not a sum over the
+program, so a model can gain buffers and keep its peak, and this one did.
+
+The six other constants were not re-measured and did not need to be: no other
+model's graph changed, and the generator draws the new initializer after
+`conv1.weight`, so every other tensor in the suite is bit identical.
