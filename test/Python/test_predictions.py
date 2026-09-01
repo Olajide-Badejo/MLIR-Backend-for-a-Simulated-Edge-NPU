@@ -304,27 +304,39 @@ def test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout(
         landing_sha("p10-ablation-deltas", repository=shallow)
     assert "shallow" in str(landing.value)
 
-    # The same clone, deepened, answering the same questions. This is the
-    # contrast that makes the refusal meaningful: the guard is about the depth of
-    # the checkout rather than about the questions being asked.
+    # Everything above is this test's subject and is asserted wherever the suite
+    # runs. What follows is the contrast that makes a refusal mean something,
+    # because a function that refused every question would satisfy the three
+    # assertions above and be useless.
     #
-    # Deepening this clone rather than asserting anything about the repository
-    # the suite is running in, because that repository is shallow in exactly the
-    # situation this test is about, and a test that asserted otherwise would fail
-    # in the environment it exists to describe. It did, once, before this comment.
-    deepened = subprocess.run(
+    # **The contrast needs a source that has history, and sometimes there is
+    # not one.** `git fetch --unshallow` cannot deepen past a shallow origin: it
+    # exits 0 and the clone stays shallow, which is what happens when the suite
+    # is itself running in a shallow checkout. That is not a failure of anything
+    # under test, so it is a skip with the reason, and the three refusals above
+    # have already been asserted by the time it is reached.
+    subprocess.run(
         ["git", "fetch", "--unshallow"],
         cwd=shallow,
         capture_output=True,
         text=True,
         check=False,
     )
-    if deepened.returncode != 0:  # pragma: no cover
-        pytest.skip(f"could not unshallow the fixture: {deepened.stderr}")
+    if repository_is_shallow(repository=shallow):
+        pytest.skip(
+            "the fixture could not be deepened, because the repository this "
+            "suite is running in is itself shallow and a clone cannot fetch "
+            "history its origin does not have. The three refusals above were "
+            "asserted; only the contrast is skipped."
+        )
 
-    assert not repository_is_shallow(repository=shallow)
     require_full_history("the same question, now answerable", repository=shallow)
     assert landing_sha("p10-ablation-deltas", repository=shallow) is not None
+    assert is_ancestor(
+        "f92de427d1f315d9d6621c44516e54f886f18a9c",
+        "d4210f352957b95e69185003bb1b960a2a3286be",
+        repository=shallow,
+    ), "the same ancestry question the shallow clone refused, now answered yes"
 
 
 def test_at_least_one_committed_result_names_a_prediction() -> None:
