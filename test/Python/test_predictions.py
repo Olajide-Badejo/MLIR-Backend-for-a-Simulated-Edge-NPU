@@ -21,6 +21,17 @@ for CI and which applies just as well to a test: a check that has only ever
 passed is a check nobody has seen work. So the ancestor relation is asserted for
 every result that names a prediction, and separately shown to *refuse* a sha that
 is not an ancestor.
+
+**In a shallow checkout these tests fail rather than skip, and that is
+deliberate.** D-0041 made them refuse with a readable reason instead of reporting
+every historical sha as missing, and the obvious next step, turning the refusal
+into `pytest.skip`, is the wrong one. Law 3 and law 4 are two of the four binding
+laws of Section 0.2. A checkout that cannot check them has not satisfied them,
+and a green run that quietly skipped both would be the two strongest honesty
+claims in the project switching themselves off in the environment where nobody is
+watching. Section 19.0's rule that silence and success must not look alike is the
+same rule; a skip here is silence. The fix is to fetch the history, which is one
+line in the workflow and is already there.
 """
 
 from __future__ import annotations
@@ -293,10 +304,27 @@ def test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout(
         landing_sha("p10-ablation-deltas", repository=shallow)
     assert "shallow" in str(landing.value)
 
-    # The same three questions against the full checkout, so the guard is shown
-    # to be about the checkout rather than about the questions.
-    assert not repository_is_shallow()
-    assert landing_sha("p10-ablation-deltas") is not None
+    # The same clone, deepened, answering the same questions. This is the
+    # contrast that makes the refusal meaningful: the guard is about the depth of
+    # the checkout rather than about the questions being asked.
+    #
+    # Deepening this clone rather than asserting anything about the repository
+    # the suite is running in, because that repository is shallow in exactly the
+    # situation this test is about, and a test that asserted otherwise would fail
+    # in the environment it exists to describe. It did, once, before this comment.
+    deepened = subprocess.run(
+        ["git", "fetch", "--unshallow"],
+        cwd=shallow,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if deepened.returncode != 0:  # pragma: no cover
+        pytest.skip(f"could not unshallow the fixture: {deepened.stderr}")
+
+    assert not repository_is_shallow(repository=shallow)
+    require_full_history("the same question, now answerable", repository=shallow)
+    assert landing_sha("p10-ablation-deltas", repository=shallow) is not None
 
 
 def test_at_least_one_committed_result_names_a_prediction() -> None:
