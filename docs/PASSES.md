@@ -264,10 +264,24 @@ Folds `add(conv2d(x, w), b)` into the convolution's bias operand. Implemented in
 
 **Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
 **Measured at P9:** it removes one instruction and one scratchpad buffer per
-fused add, and it fires on **no model in Section 15's suite**, because every
-convolution there carries its bias inline as a third `Conv` input. It fires on
-an imported model built for it in `test/Python/test_transform_passes.py`, which
-is the gate's clause, and the suite gap is recorded there as a finding.
+fused add, and it fired on **no model in Section 15's suite**, because every
+convolution there carried its bias inline as a third `Conv` input.
+
+**Measured again at P9b, after the suite gained a target.** `dilated_stack`'s
+`conv1` was already biasless and already followed by a `Relu`, and it now carries
+a separate channel shaped bias `Add` between them. So this pass fires on one
+model of the suite, its Section 16.2 ablation row at P10 is a row of numbers
+rather than a row of zeros, and the number is one instruction: `dilated_stack` is
+thirteen instructions at `-O0` and twelve at `-O2`, with the answer bit identical
+at both. `test_the_suite_gives_the_bias_fusion_exactly_one_target` names the
+model and `test_the_bias_fusion_is_a_saving_and_not_a_rearrangement` measures the
+saving, both in `test/Python/test_transform_passes.py`.
+
+**`-sccp`'s row stays zero and that is a different fact**, recorded here so the
+two are not read as one story. A suite change closed this pass's zero row because
+the zero was a property of the models; nothing closes `-sccp`'s, because
+constant propagation needs a call graph and an imported model is one function.
+See its section below.
 
 **This is the pass Section 11's broadcast carve out exists for.** A rank 1
 initializer of length C broadcasting against a rank 4 activation over the channel
@@ -489,6 +503,20 @@ which is D-0033. It computed the right lattice and had nowhere to put the
 answer, so it reported no change on every input and its ablation row would have
 been a row of zeros for a reason that was four missing lines rather than a
 property of the pass.
+
+**Its row is still a row of zeros on this suite, and now for the honest reason.**
+`-sccp` propagates constants across a call graph and an imported model is one
+`func.func`, so there is nothing for it to cross. That is a property of the
+programs this compiler compiles rather than a gap in the model suite, and no
+model change alters it: this compiler has no calls. It is worth stating beside
+`-npu-fuse-bias`, whose row was also zero at P9 and whose zero **was** a suite
+gap and was closed at P9b by giving `dilated_stack` a separate bias add. Two zero
+rows, one closed and one permanent, and the difference between them is the thing
+a results table cannot show on its own.
+`test/Python/test_transform_passes.py::test_sccp_has_nothing_to_do_on_a_single_function`
+holds the claim, asserting the one function property rather than only the
+outcome, so a compiler that grew calls would make it red instead of quietly
+leaving a stale sentence here.
 
 ---
 

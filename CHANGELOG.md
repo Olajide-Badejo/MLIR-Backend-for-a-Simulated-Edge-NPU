@@ -6,6 +6,95 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Interphase P9b: the open questions P9 handed on, decided
+
+Four items the P9 handoff carried as open questions, taken deliberately between
+P9 and P10 rather than folded into either. No new pass, no new phase gate.
+
+- **`-npu-fuse-bias` fires on a model of the suite now.** `dilated_stack`'s
+  `conv1` was biasless and followed directly by a `Relu`, and it now carries a
+  separate channel shaped bias `Add` between them, which is the shape Section
+  11's broadcast carve out exists for and which no exported graph produces. So
+  the pass's Section 16.2 ablation row at P10 is a measurement rather than a row
+  of zeros: `dilated_stack` is thirteen instructions at `-O0` and twelve at
+  `-O2`, with the answer bit identical and the cycle count back to exactly what
+  it was before the node existed. `GENERATOR_VERSION` moves from `1.0.0` to
+  `1.1.0`, every `dilated_stack` cell of the baseline moves, and
+  `docs/BREAKING_CHANGES.md` declared all of it before the commit that caused it.
+- **The CI image carries `libomp-18-dev`, so two of its three jobs stop making
+  a weaker claim than the third.** `build-and-test` and `sanitizers` configure
+  with clang, which needs `libomp` and `omp.h`; the coverage job passes no
+  compiler, gets gcc, and finds `libgomp` because `g++` brings it. So one image
+  printed `OpenMP: not found` in two jobs and `found 4.5` in the third, and
+  Section 10.3's determinism assertion, that one thread and the maximum produce
+  bitwise equal buffers, was comparing a single threaded run against itself
+  wherever OpenMP was absent. The image's own smoke test now compiles, links and
+  runs an OpenMP program rather than testing for a header, which is the failure
+  class D-0025 was. **This takes effect only once the image is republished**,
+  which is a dispatch of `llvm-image.yml` and an hour of runner time.
+- **CI has an NDEBUG build for the first time**, which is the release half of
+  Section 9.3's "every build mode" clause. The new `ndebug` job configures
+  `-DNPU_FORCE_NDEBUG=ON`, asserts in its own configure log that the option
+  took, and builds and runs `NPUSimulatorTests` and `NPUEncodingTests`, which
+  are the two binaries that link no MLIR and are therefore the two D-0031 allows
+  that directory to build. **CI previously claimed this coverage and did not
+  have it**, in a comment that said the sanitizers job's `RelWithDebInfo`
+  implied `-DNDEBUG`; against an assertions LLVM it does not, which is D-0028
+  and now D-0036. A second LLVM tree built without assertions is deliberately
+  declined, in `docs/adr/0009`.
+- **`scripts/regression-baseline.sh --check` is a CI step**, at the end of
+  `build-and-test`, with the golden tolerance left at **zero**. P8 and P9 both
+  left it out because a byte identical golden comparison bounds two runs of the
+  same build and CI is a different compiler and a different libc; neither phase
+  could answer whether that matters without a run. The step is the run. If the
+  container reproduces the developer machine bit for bit, that is a property
+  worth having proven. **It does.** Every cell's instruction, cycle, DMA and MAC
+  field, all 21 golden tensors, the 4.470e-08 largest movement and every suite
+  count reproduce bit for bit under clang in the container against a baseline
+  recorded under gcc on WSL2, over four CI runs and at least two runner hardware
+  generations. The tolerance stays at zero, now on evidence rather than on
+  principle. Had it not, the drift report is the measurement, and the report was
+  rewritten to carry it: a golden difference now names how many elements moved,
+  at which index, from what to what, and how many units in the last place that
+  is.
+- **One baseline field is bounded rather than fixed, and it is the only one.**
+  `max_abs_error_vs_onnxruntime` has two ends and only one is this project's:
+  the goldens pin the compiler's end bit for bit, so a movement with green
+  goldens is the *oracle* moving, and `onnxruntime` dispatches its CPU kernels on
+  what the host supports. Two activation proof runs on different runner hardware
+  moved eighteen cells by 1e-8 to 1e-7 **in both directions** with no golden and
+  no cycle count moving at all. The field is checked against Section 17.4's end
+  to end band now, imported from the new `npu_frontend.tolerances` module that
+  `test_end_to_end.py` also reads rather than keeping its own copy; the recorded
+  value stays as documentation of the recording host, the way `tool_versions`
+  does; and a movement inside the band is printed with its magnitude and
+  direction rather than passed over. `GOLDEN_TOLERANCE` and every other field
+  keep their equality, which the same runs earned. D-0039.
+- **The dash linter runs on the interpreter CI actually has.** Two
+  unparenthesised `except A, B:` clauses were PEP 758 syntax, legal on Python
+  3.14 and a `SyntaxError` on the 3.12 the CI image ships, so the linter failed
+  to parse the first time anything ran it inside the container. The grammar
+  target of black and ruff is `py311` now, which is what `requires-python`
+  declares, so the floor is enforced by a tool rather than promised in a field
+  nothing reads; mypy is at `3.12`, the lowest it can go while numpy's own
+  shipped stubs need 3.12. And the baseline runner prints the child's output
+  when a dash lint invocation fails, because that suite has no machine readable
+  file and a count of zero says nothing a reader can act on. D-0038, found by
+  the first CI run of the step above.
+- **`scripts/coverage.sh` clears the previous run's execution counters**, so the
+  number it reports describes the suite that just ran rather than the union of
+  every suite the build directory has ever run. gcov accumulates, and nothing
+  had ever deleted a `.gcda`; the visible symptom is a collection that aborts
+  once a hot line's counter passes 2^32, and the quiet one is that a line
+  covered by a deleted test stays covered. D-0037. The measured percentages do
+  not move: C++ 86.5 and Python 90.50 either way.
+- **`-sccp`'s ablation row stays zero, and the distinction is written down.**
+  Constant propagation needs a call graph to cross and an imported model is one
+  function, so no model change alters that row. Two zero rows, one a gap in the
+  suite and closed, one a true property of the programs this compiler compiles
+  and kept. `docs/PASSES.md` says which is which and
+  `test_sccp_has_nothing_to_do_on_a_single_function` holds the second.
+
 ### Phase P9: optimization passes and optimization levels
 
 Every user visible movement of this phase is named here, and the one that moves a

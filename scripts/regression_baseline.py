@@ -122,9 +122,53 @@ GTEST_BINARIES: Final[tuple[str, ...]] = (
 #: between two runs of the *same* build. A different compiler or a different
 #: host may contract a multiply and an add differently, so a baseline recorded
 #: on one machine and checked on another can differ in the last bits without
-#: anything being wrong. `--check` is a developer and orchestrator command for
-#: that reason and is not a CI step at this phase.
+#: anything being wrong.
+#:
+#: **P8 and P9 made that caveat the reason `--check` was not a CI step**, and
+#: P9b takes the other route: the step is switched on with the tolerance left at
+#: zero, and if the container disagrees with the developer machine then the
+#: disagreement is the measurement this project did not have. Widening the band
+#: first and measuring afterwards would have thrown away the only number the
+#: question is about. What the first red run has to be able to say is *how far*,
+#: on how many elements, and in what unit, which is what the drift line for a
+#: golden was rewritten to carry.
+#:
+#: **And it held.** On the step's first CI runs the whole numeric half of the
+#: file reproduced bit for bit under clang in the container against a baseline
+#: recorded under gcc on WSL2: every cell, every golden tensor, every suite
+#: count. This constant stays at zero on evidence. The one field that did move
+#: is below, and it is not this compiler's.
 GOLDEN_TOLERANCE: Final[float] = 0.0
+
+#: The one cell field that is **not** compared for equality, and why it is the
+#: only one.
+#:
+#: `max_abs_error_vs_onnxruntime` is the distance between this compiler's answer
+#: and `onnxruntime`'s for the same graph and the same input. It has two ends,
+#: and only one of them belongs to this project.
+#:
+#: **This compiler's end is pinned bit for bit already.** The golden tensors do
+#: it at `GOLDEN_TOLERANCE` of zero for every default budget cell, and
+#: `test/Python/test_tight_budgets.py` does it for the rest by asserting that a
+#: tight budget answer is bit identical to the default budget one. So given a
+#: green golden comparison, **this field cannot move because of anything this
+#: compiler did**. Everything it can still report is a change at the other end.
+#:
+#: **And the other end moves per host.** P9b measured it. Two CI runs that
+#: landed on different GitHub runner hardware reported eighteen cells with a
+#: different distance, three models at every level and both budgets, moving
+#: between 1e-8 and 1e-7 **in both directions**, with no golden tensor and no
+#: cycle count moving at all. `onnxruntime` dispatches its CPU kernels on what
+#: the host supports. `npu_frontend.tolerances` has said so in prose since P8;
+#: this is the measurement behind the prose. D-0039.
+#:
+#: So equality here was asserting that two machines choose the same
+#: vectorisation, and buying no coverage of this project in exchange. What is
+#: asserted instead is the field's one load bearing meaning, Section 17.4's end
+#: to end band: the answer is still inside the tolerance the matrix enforces.
+#: The recorded value stays in the file as what the recording host measured,
+#: which is the status `tool_versions` already has and for the same reason.
+ORACLE_FIELD: Final[str] = "max_abs_error_vs_onnxruntime"
 
 
 class BaselineError(Exception):
@@ -322,6 +366,16 @@ def run_dash_lint() -> SuiteResult:
     It has no machine readable output and needs none: it is two commands and
     each either succeeds or does not. The names are the invocations, so a
     baseline reader sees which two ran.
+
+    **A failure prints the child's output, and that is D-0038.** Every other
+    suite here writes a machine readable file, so a failing test reaches the
+    drift report by name and the reader knows what broke. This one has no such
+    file, so its whole contribution is a count, and the first CI run of the
+    `--check` step reported `suite dash-lint: passed 2 -> 0` with nothing about
+    why. The why was a `SyntaxError`: the linter did not parse under the
+    container's interpreter, and it had been printing that to a pipe nobody
+    read. Two lines of stderr turn a diagnosis into a glance, which is the
+    standard the golden drift lines were rewritten to meet in the same phase.
     """
     result = SuiteResult()
     for arguments, name in (
@@ -340,6 +394,15 @@ def run_dash_lint() -> SuiteResult:
             result.passed += 1
         else:
             result.failed += 1
+            print(
+                f"regression-baseline: {name} exited {completed.returncode}. "
+                f"Its output follows, because a count of zero says nothing a "
+                f"reader can act on:",
+                file=sys.stderr,
+            )
+            for stream in (completed.stdout, completed.stderr):
+                for line in stream.rstrip().splitlines():
+                    print(f"  {line}", file=sys.stderr)
     return result
 
 
@@ -613,6 +676,46 @@ def cell_key(cell: dict[str, Any]) -> str:
     return f"{cell['model']}-O{cell['level']}-{cell['budget']}"
 
 
+def oracle_bound() -> float:
+    """Section 17.4's absolute end to end band, imported and never restated.
+
+    It lives in `npu_frontend.tolerances` with the measurement it was set from
+    and the argument for its size, and `test/Python/test_end_to_end.py` imports
+    the same constant. Two copies of a tolerance is the duplication D-0032's fix
+    made a test hunt for, and a tolerance is the worst thing to have two of:
+    the copies agree until somebody widens one.
+    """
+    return float(_frontend().ABSOLUTE_TOLERANCE)
+
+
+def oracle_notes(recorded: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    """The oracle distances that moved and stayed inside the band.
+
+    Reported rather than ignored. A field this script has stopped comparing for
+    equality is a check that was switched off, and this project's rule is that a
+    step which is off says so in its own output. Silence and a green run must
+    not look the same, so the movement is printed with its magnitude and the
+    reader gets to disagree with the decision.
+    """
+    bound = oracle_bound()
+    recorded_cells = {cell_key(cell): cell for cell in recorded["cells"]}
+    notes: list[str] = []
+    for cell in current["cells"]:
+        key = cell_key(cell)
+        old = recorded_cells.get(key)
+        if old is None or ORACLE_FIELD not in old or ORACLE_FIELD not in cell:
+            continue
+        was, now = float(old[ORACLE_FIELD]), float(cell[ORACLE_FIELD])
+        if was == now or now > bound:
+            continue
+        notes.append(
+            f"cell {key}: {ORACLE_FIELD} {was:.6e} -> {now:.6e} "
+            f"({'further from' if now > was else 'closer to'} the oracle by "
+            f"{abs(now - was):.3e}), inside the band of {bound:.6e}"
+        )
+    return notes
+
+
 def compare(
     recorded: dict[str, Any], current: dict[str, Any], goldens: dict[str, Any]
 ) -> list[str]:
@@ -620,6 +723,7 @@ def compare(
     import numpy as np
 
     drift: list[str] = []
+    bound = oracle_bound()
 
     # Section 17.6: fail loudly on a schema_version this script does not
     # recognise rather than guessing what a field meant.
@@ -687,6 +791,22 @@ def compare(
         for field_name in sorted(set(old) & set(new)):
             if field_name in ("model", "level", "budget"):
                 continue
+            # The distance to onnxruntime is bounded rather than fixed, for the
+            # reason ORACLE_FIELD carries. A value outside the band is drift; a
+            # value inside it that moved is a note, reported by oracle_notes.
+            if field_name == ORACLE_FIELD:
+                if float(new[field_name]) > bound:
+                    drift.append(
+                        f"cell {key}: {field_name} {new[field_name]:.6e} is "
+                        f"outside the end to end band of {bound:.6e}. The "
+                        f"baseline recorded {float(old[field_name]):.6e} on the "
+                        f"recording host. This field is not compared for "
+                        f"equality, because its other end is onnxruntime and "
+                        f"that moves per host, so a value out here is the "
+                        f"answer having genuinely left Section 17.4's "
+                        f"tolerance rather than a runner difference"
+                    )
+                continue
             if old[field_name] != new[field_name]:
                 drift.append(
                     f"cell {key}: {field_name} {old[field_name]} -> "
@@ -707,11 +827,33 @@ def compare(
         if expected.shape != produced.shape:
             drift.append(f"golden {name}: shape {expected.shape} -> {produced.shape}")
             continue
-        worst = float(np.abs(produced - expected).max())
+        difference = np.abs(produced.astype(np.float64) - expected.astype(np.float64))
+        worst = float(difference.max())
         if worst > GOLDEN_TOLERANCE:
+            # **This line is written for a reader who has only the log.** Since
+            # P9b `--check` is a CI step, and the run that matters most is the
+            # first one in the container, where the question is whether a
+            # baseline recorded under gcc on a developer machine reproduces bit
+            # for bit under clang on a hosted runner. "largest movement 4.7e-08"
+            # does not answer it: one element moved in the last bit and every
+            # element moved by the same amount are the same sentence and
+            # opposite findings. So the line carries how many elements moved,
+            # where the worst one is, both values at that index, and the
+            # movement in units in the last place at that scale, which is the
+            # unit that separates an arithmetic difference from a bug.
+            differing = int(np.count_nonzero(difference))
+            index = np.unravel_index(int(difference.argmax()), difference.shape)
+            was = float(expected[index])
+            now = float(produced[index])
+            ulp = float(np.spacing(np.float32(max(abs(was), abs(now)))))
+            in_ulps = f"{worst / ulp:.1f} ulps" if ulp > 0.0 else "unmeasurable ulps"
             drift.append(
-                f"golden {name}: largest movement {worst:.6e}, above the "
-                f"tolerance of {GOLDEN_TOLERANCE:.6e}"
+                f"golden {name}: {differing} of {difference.size} elements "
+                f"differ, largest movement {worst:.6e} at index "
+                f"{tuple(int(value) for value in index)}, where the baseline "
+                f"records {was!r} and this run produced {now!r}, which is "
+                f"{in_ulps} at that scale, against a tolerance of "
+                f"{GOLDEN_TOLERANCE:.6e}"
             )
 
     return drift
@@ -729,6 +871,7 @@ def check() -> int:
     recorded = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     current, goldens = measure()
     drift = compare(recorded, current, goldens)
+    notes = oracle_notes(recorded, current)
 
     print("regression-baseline --check")
     print()
@@ -748,6 +891,25 @@ def check() -> int:
             f"{result['failed']:>3} failed  {result['skipped']:>3} skipped"
         )
     print()
+
+    if notes:
+        print(
+            f"  {len(notes)} oracle distances moved and are inside the band. "
+            f"Not drift, and not silence either:"
+        )
+        print()
+        for line in notes:
+            print(f"    {line}")
+        print()
+        print(
+            "  max_abs_error_vs_onnxruntime is bounded rather than fixed, "
+            "because its other end is onnxruntime and onnxruntime dispatches "
+            "its CPU kernels on what the host supports. This compiler's end is "
+            "pinned bit for bit by the golden tensors above, at a tolerance of "
+            "zero, so a moved distance with green goldens is the oracle "
+            "moving. See D-0039."
+        )
+        print()
 
     if not drift:
         print("regression-baseline: no drift.")

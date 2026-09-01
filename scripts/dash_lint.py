@@ -15,6 +15,21 @@ needs one.
 
 Encoding the exemption here rather than remembering it is the point. A linter
 that everyone has to remember to override is a linter that gets overridden.
+
+**This module runs on whatever `python3` is nearest and it may not be a recent
+one.** ``dash-lint.sh`` prefers the project venv and falls back to `python3` on
+`PATH`, deliberately, because CI calls this before any venv exists and the
+linter has no third party dependencies to need one. So the interpreter here is
+the *lowest* in the project, not the highest: it is Ubuntu 24.04's 3.12 inside
+the CI container and 3.14 in the venv. `requires-python` in `pyproject.toml`
+says 3.11 and this file is held to it.
+
+That is not a style preference, it is D-0038: two unparenthesised `except A, B:`
+clauses, which PEP 758 made legal in 3.14 and which are a `SyntaxError`
+everywhere below it, made the whole linter fail to parse in the container the
+first time anything ran it there. `[tool.ruff] target-version` is now `py311`
+rather than `py314`, so the tool catches the next one instead of a CI run three
+phases later.
 """
 
 from __future__ import annotations
@@ -232,7 +247,7 @@ def iter_repo_files(root: Path, explicit: list[str]) -> list[Path]:
         ).stdout.decode()
         names = [n for n in out.split("\0") if n]
         return [root / n for n in names]
-    except subprocess.CalledProcessError, FileNotFoundError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         found: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -252,7 +267,7 @@ def lint_paths(root: Path, explicit: list[str]) -> list[Violation]:
             continue
         try:
             text = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError, OSError:
+        except (UnicodeDecodeError, OSError):
             continue
         rel = os.path.relpath(p, root)
         violations.extend(check_text(rel, text))

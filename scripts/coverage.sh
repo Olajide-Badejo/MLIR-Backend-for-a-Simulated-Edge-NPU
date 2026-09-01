@@ -163,6 +163,34 @@ jobs="${NPU_COVERAGE_JOBS:-4}"
 echo "coverage: building with -j${jobs}"
 ninja -C "${build_dir}" "-j${jobs}"
 
+# **The execution counters of any previous run are deleted here**, and that is
+# D-0037 rather than tidiness. gcov accumulates: a `.gcda` left in place is
+# added to by the next run rather than replaced, so a second run of this script
+# in the same directory reports the union of both. Two consequences, and the
+# second is the one that matters.
+#
+# The visible one is that a hot inner loop's counter grows without bound and
+# eventually passes gcovr's suspicious hits threshold, which is 2^32, at which
+# point the collection below aborts with a stack trace about a gcov defect. On
+# this machine `lib/Simulator/Kernels.cpp:87` reached 5896524226 across the runs
+# of P8, P9 and P9b and did exactly that.
+#
+# The quiet one is worse, and it is why this is a deletion rather than a wider
+# `--gcov-suspicious-hits-threshold`. A line executed by a test that has since
+# been deleted keeps the count the run that executed it gave it, so the
+# percentage describes the union of every suite this directory has ever run
+# rather than the suite that just ran. That is the failure class of D-0030 and
+# D-0032 seen from the other side: those were results that depended on what else
+# was lying around in CI, and this is one that depends on what is lying around
+# locally. **CI never sees it**, because the coverage job checks out a fresh
+# tree and has no previous run to inherit, which is why several phases of green
+# CI said nothing about it.
+#
+# Deleting after the build rather than before it is deliberate: ninja may
+# recompile a source, and the deletion has to happen once the tree is final.
+echo "coverage: clearing the execution counters of any previous run"
+find "${build_dir}" -name '*.gcda' -delete
+
 # The suites. Every one of them has to pass, and the absence of `|| true` here is
 # the whole of rule 2 above. `check-npu` is the lit suite; the GoogleTest
 # binaries are run when they exist, which is how this script keeps working as

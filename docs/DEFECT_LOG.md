@@ -1211,6 +1211,30 @@ None.
   blocked by it: Section 9.3's four runs are the simulator's, and the simulator
   is one of the two targets these directories build correctly.
 
+- **2026-09-01, interphase P9b: the second LLVM tree is declined, and this entry
+  stays open as a limit.** The decision and its argument are
+  `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md`. In short:
+  Section 9.3's contract lives entirely in `NPUSimulatorTests` and
+  `NPUEncodingTests`, which are exactly the two targets this directory builds
+  soundly, so a non-assertions LLVM would buy coverage of MLIR linking tools
+  that no clause asks about, at an hour of runner time per build, a second
+  published image to keep in step with the first, and a second `LLVM_IMAGE`
+  reference for every future phase that moves the LLVM tag to move.
+
+  **What changed in CI instead** is the `ndebug` job of
+  `.github/workflows/ci.yml`, which configures `-DNPU_FORCE_NDEBUG=ON`, asserts
+  in its own configure log that the option took, and builds and runs those two
+  binaries and nothing else. The two release side runs of Section 9.3's four now
+  happen on every push rather than on whichever developer remembered the second
+  directory.
+
+  **This entry is not resolved by that** and the status line above is unchanged.
+  The MLIR linking tools still cannot be built here without assertions, and a
+  later phase that writes a clause about those binaries in a non-assertions build
+  should reopen ADR 0009 rather than work around this. The difference P9b makes
+  is that the cost is now declined against a stated requirement instead of
+  deferred against an unstated one.
+
 ### D-0032 three tool discoveries disagreed, and only one of them said so
 
 - **Found:** 2026-08-31, phase P8, **by CI**, on the first run of the coverage
@@ -1518,3 +1542,369 @@ None.
   the lowering would have been re measuring every tight budget against `-O2`,
   which would have moved every tight budget cell in the project's history to
   accommodate a placement artefact.
+
+---
+
+### D-0036 CI named an NDEBUG build it did not have, in a comment, for two phases
+
+- **Found:** 2026-09-01, interphase P9b, while writing the `ndebug` job that
+  replaces the claim. Not by a test, and no test could have found it: the fault
+  was a sentence.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** configure this project the way the sanitizers job of
+  `.github/workflows/ci.yml` does, against an assertions LLVM, and read the
+  compile line rather than the result.
+
+  ```bash
+  cmake -G Ninja -S . -B /tmp/relwithdebinfo \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DMLIR_DIR=... -DLLVM_DIR=... \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+  ninja -C /tmp/relwithdebinfo -t commands \
+        lib/Simulator/CMakeFiles/obj.NPUSimulator.dir/Memory.cpp.o \
+    | tr ' ' '\n' | grep -E '^-(D|U)(NDEBUG|_DEBUG|_GLIBCXX_ASSERTIONS)'
+  ```
+
+  Measured on 2026-09-01, the flags end
+  `-DNDEBUG -D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG`, and the last `-D` or `-U`
+  wins. The configure also prints `NDEBUG: not forced` in so many words, which is
+  the line this project added at P7 and which nobody read against this job.
+
+- **What was wrong.** Two comments in `ci.yml`, written at P7, said the
+  sanitizers job was the NDEBUG half of Section 9.3's "every build mode" clause,
+  "which configures RelWithDebInfo and therefore compiles with `-DNDEBUG`". The
+  therefore does not hold against an assertions LLVM. It is exactly D-0028, which
+  this project found, fixed and documented **in the same phase**, and which then
+  survived in a workflow comment because a comment is not a mechanism and nothing
+  checks one.
+
+  So CI had no NDEBUG coverage at all. The trap tests ran three times in three
+  jobs, all with assertions on, and an accessor that had quietly become
+  assert-only would have been green in every one of them.
+
+- **Why it is worth an entry.** The failure class is this project's most
+  frequent one and this is its purest instance: a claim that reads as a
+  measurement and is an assumption. D-0028 was a proof that proved nothing
+  because it was made in the wrong build; this is the same wrong build,
+  described in prose, sitting in the file that decides what CI does. The
+  distance between the two is one phase and one comment.
+
+  It also says something about where to look. The reasoning in the comment was
+  sound for a project whose LLVM has no assertions, and it was written by
+  somebody who had just fixed the defect that makes it unsound here. Correct
+  general knowledge applied to a specific configuration is not a mistake anybody
+  reviews out.
+
+- **Resolution.** The `ndebug` job, which forces the option and greps its own
+  configure log for the line beginning `NDEBUG:`, so the claim is now made by a
+  build that either has assertions compiled out or fails. Both comments are
+  rewritten to say what their jobs actually cover and to name this entry.
+  `docs/adr/0009-ndebug-coverage-without-a-second-llvm-tree.md` is the decision
+  behind the job, including why a second LLVM tree is declined.
+
+- **Proven red before it was believed.** The product side rehearsal compiled the
+  range trap's diagnostic out behind `#ifdef NDEBUG` in `readBytes`, leaving the
+  check and the null return in place so every caller still behaves. The
+  assertions build reported 55 tests, 54 passed, 1 skipped, exit 0, and the
+  NDEBUG build reported one failure,
+  `Trap.AnOutOfRangeOperandAddressTrapsGracefully`, exit 1. One fault, one net,
+  and the net is the one that did not exist before this entry.
+
+---
+
+### D-0037 the local coverage number was the union of every run the directory had ever seen
+
+- **Found:** 2026-09-01, interphase P9b, by `scripts/coverage.sh` aborting in the
+  middle of the closing verification matrix. Not by CI, and CI could not have
+  found it.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run `bash scripts/coverage.sh 85 90` three or four times in the
+  same checkout without deleting anything in between. Somewhere after the third
+  the collection dies:
+
+  ```
+  gcovr.formats.gcov.parser.common.SuspiciousHits:
+    lib/Simulator/Kernels.cpp:87 Got suspicious hit value in:
+      for (size_t axis = 0; axis < strides.size(); ++axis)
+  (ERROR) Error occurred while reading reports: Worker thread raised exception
+  ```
+
+  and the script exits 64 with no percentage. Asking gcov directly for that line
+  gives the reason:
+
+  ```
+  Kernels.cpp:87 count = 5896524226
+  ```
+
+  which is past gcovr's suspicious hits threshold of 2^32.
+
+- **What was wrong.** gcov **accumulates**. A `.gcda` left in the build directory
+  is added to by the next run rather than replaced, and this script had never
+  deleted them, so `build-coverage/` held the sum of every run since P8: the
+  lit suite, five GoogleTest binaries and the whole pytest matrix, several times
+  over, in one set of counters. `Kernels.cpp:87` is the stride loop inside the
+  odometer, which is the hottest line in the project, and it got there first.
+
+- **The crash is the harmless half.** The half worth the entry is that a
+  percentage collected from accumulated counters is a percentage about the union
+  of every suite the directory has ever run. **A line covered by a test that was
+  later deleted stays covered**, because the count that covered it is still in
+  the file. This phase deleted a test, which is what makes the point concrete
+  rather than theoretical, and the counter for whatever it exercised would have
+  gone on being counted for as long as the object was not recompiled. The
+  measured evidence for that is small and real: 42 `.gcda` files before the
+  deletion and 41 after a clean run, so one object had counters and no longer
+  runs at all.
+
+  Measured either way, the number did not actually move on this tree: C++ 86.5
+  and Python 90.50 against a clean run, which are the P9 figures. So this is a
+  defect in what the number **means** rather than in what it currently **says**,
+  and that is exactly the kind that survives until it is looked for.
+
+- **The mirror of D-0030 and D-0032, and worth naming as such.** Those were
+  results that depended on what else was lying around in CI, invisible on a
+  developer machine. This is a result that depends on what is lying around on a
+  developer machine, invisible in CI: the coverage job checks out a fresh tree
+  and has no previous run to inherit, so several phases of green CI said nothing
+  about it and could not have. The class is the same and the direction is
+  reversed, which is a useful thing to know about a class this project keeps
+  meeting.
+
+- **Resolution.** `scripts/coverage.sh` deletes every `.gcda` under its build
+  directory after the build and before the suites run, so the number describes
+  the run that produced it. **Not** a wider
+  `--gcov-suspicious-hits-threshold`, which would have silenced the crash and
+  left the meaning wrong; the existing
+  `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` stays, because
+  D-0011 is a genuine tool artifact and this was not.
+
+  The deletion is after the build rather than before it because ninja may
+  recompile a source and the tree has to be final first.
+
+- **Verified:** with 42 accumulated `.gcda` present, exit 64 and no percentage.
+  After the deletion, `coverage: PASS. C++ 86.5 percent`, `coverage: PASS.
+  Python 90.50425671250818 percent`, exit 0, and the run leaves 41 files behind
+  that the next run will clear.
+
+---
+
+### D-0038 the dash linter was written in a Python the CI container does not have
+
+- **Found:** 2026-09-01, interphase P9b, **by CI**, on the first run of the
+  `regression-baseline --check` step. Run 33458934438, job 99704772026. Every
+  local run had been green, every `lint` job had been green, and the pre-commit
+  hook had been green on every commit since P0.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run the linter under the interpreter the CI image ships, which
+  is Ubuntu 24.04's, on a box with no project venv:
+
+  ```bash
+  docker run --rm -v "$PWD:/work:ro" -w /work \
+    ubuntu:24.04@sha256:1e0a86e5... bash -c \
+    'apt-get update -qq && apt-get install -qq --yes python3 git &&
+     bash scripts/dash-lint.sh'
+  ```
+
+  ```
+  File "/work/scripts/dash_lint.py", line 235
+      except subprocess.CalledProcessError, FileNotFoundError:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  SyntaxError: multiple exception types must be parenthesized
+  ```
+
+  Exit 1 for both `dash-lint.sh` and `dash-lint.sh --self-test`, which is
+  exactly the `0 passed 2 failed` the drift report named.
+
+- **What was wrong.** Two `except A, B:` clauses without parentheses, at
+  `dash_lint.py:235` and `:255`. PEP 758 made that spelling legal in **Python
+  3.14**; it is a `SyntaxError` in every earlier version. The module did not
+  parse, so the linter never ran, and both invocations failed for one reason.
+
+- **What it is not**, because four plausible mechanisms were checked and
+  discarded before the fifth was found. Not the locale: `LANG` is unset in the
+  container and Python still reports `utf-8` for both the filesystem encoding
+  and the preferred encoding, so the unicode scanning was never at risk. Not
+  `PATH`, not the working directory, and not a GNU `grep -P` dependence, because
+  the linter shells out to `git ls-files` and does its scanning in Python. There
+  is no `grep` in it at all.
+
+- **Why several phases of green said nothing.** Four places run this linter and
+  the fault is invisible in three of them.
+
+  | Where | Interpreter | Why |
+  |---|---|---|
+  | developer machine | 3.14 | `dash-lint.sh` prefers `$HOME/npu-venv/bin/python` |
+  | pre-commit | 3.14 | the same venv |
+  | the `lint` job | 3.14 | `actions/setup-python` at `3.14`, on a plain runner |
+  | the `build-and-test` container | **3.12** | the image's `python3`, and the script falls back to it because there is no venv |
+
+  **The container had never run the linter.** The `lint` job does not run in a
+  container and nothing else in `build-and-test` invoked it, so the
+  `regression-baseline --check` step is the first thing in this project's
+  history to run `dash-lint.sh` inside the image. It found this on its first
+  attempt.
+
+- **Why no tool caught it, which is the half worth fixing.** `pyproject.toml`
+  declared `requires-python = ">=3.11"` and then configured black, ruff and mypy
+  alike at `py314`. The promise was in a field nothing reads and every checker
+  was pointed at the developer's interpreter rather than at the floor. The
+  comment beside `target-version` argued for py314 **deliberately**, against the
+  v1 tree's py312, on the grounds that an older grammar target applied to code
+  running on 3.14 shows up as a formatting argument rather than as an actionable
+  error. That reasoning is sound and it looks in one direction only. **The
+  interpreter that matters is the lowest one that runs the code, not the
+  highest.**
+
+- **Resolution, in three parts because there are three faults.**
+
+  The **syntax**: both clauses are parenthesised, which is what
+  `requires-python` already promised.
+
+  The **mechanism**: `[tool.ruff]` and `[tool.black]` are at `py311`, so the
+  declared floor is enforced by a tool instead of promised in a field. Measured
+  before the fix, at py311 ruff reports exactly these two errors over the whole
+  tree and nothing else, and `black --check --target-version py311` leaves all
+  forty two files unchanged, so the formatting argument the old comment feared
+  does not arise here. mypy goes to `3.12` and not `3.11`, because at 3.11 it
+  stops inside **numpy's own shipped stubs**, `numpy/__init__.pyi:737: Type
+  statement is only supported in Python 3.12 and greater`, and checks nothing
+  further. 3.12 is clean and is exactly the interpreter the CI image ships.
+
+  The **diagnosability**: `run_dash_lint` in `scripts/regression_baseline.py`
+  prints the child's output when it fails. Every other suite the baseline runs
+  writes a machine readable file, so a failing test reaches the drift report by
+  name; this one contributes a count, and the CI log said `suite dash-lint:
+  passed 2 -> 0` while the `SyntaxError` explaining it went to a pipe nobody
+  read. That is the standard the golden drift lines were rewritten to meet
+  earlier on this branch, applied to the one suite that had been missed.
+
+- **The baseline is unchanged and deliberately not re-recorded.** The recorded
+  `2 passed 0 failed` was always right and the container was wrong. Re-recording
+  here would have written a broken environment into the file as if it were
+  correct, which is the thing `regression-baseline.sh` warns about in its own
+  words.
+
+- **What it says about the step that found it.** The `--check` step was switched
+  on to answer a question about floating point reproducibility across hosts. It
+  answered that question, in the affirmative, on the same run, and then caught a
+  defect with nothing to do with it in a script five phases old, because it is
+  the first thing that ever ran that script in that environment. **A step that
+  runs the whole suite somewhere new is worth more than the reason it was added
+  for.** That is the third time on this branch that the environment rather than
+  the code turned out to be the thing under test.
+
+- **Verified** under the conditions that reproduced it: a container from the
+  pinned base digest, Python 3.12.3, no venv. `dash-lint: clean` exit 0,
+  `self-test: all 8 expectations met` exit 0, and the baseline runner's own
+  invocation reporting `suite dash-lint  2 passed  0 failed`, which is the line
+  the recorded baseline expects. Unchanged on 3.14 in the venv.
+
+---
+
+### D-0039 the baseline compared a field with one end outside this project
+
+- **Found:** 2026-09-01, interphase P9b, **by CI**, by the two `pull_request`
+  activation proof runs for the step that carries the field. Runs 33461200759
+  (PR 15, the NDEBUG fault) and 33461203436 (PR 16, the golden ulp fault). Both
+  intended faults fired exactly as predicted; this arrived beside them, in both
+  runs, unpredicted.
+- **Status:** resolved 2026-09-01.
+- **Reproduce:** run `scripts/regression-baseline.sh --check` against a baseline
+  recorded on different CPU hardware. Eighteen cells report a moved
+  `max_abs_error_vs_onnxruntime`:
+
+  ```
+  cell conv_bn_relu_stack-O0-default: max_abs_error_vs_onnxruntime
+      1.894070e-07 -> 8.940697e-08
+  cell inception_block-O2-tight: max_abs_error_vs_onnxruntime
+      5.160464e-07 -> 5.960464e-07
+  ```
+
+  Three models, `conv_bn_relu_stack`, `inception_block` and `resnet_block`, at
+  every level and both budgets, which is three times three times two. The
+  movement is between 1e-8 and 1e-7 and it goes in **both directions**:
+  `inception_block` came out *closer* to the oracle on the other hardware.
+  **No golden tensor drifted and no cycle count moved.**
+
+- **What was wrong, and it is the step's design rather than a line of code.**
+  `max_abs_error_vs_onnxruntime` is the distance between this compiler's answer
+  and `onnxruntime`'s. It has two ends and only one of them belongs to this
+  project. Comparing it for **equality** asserted that both ends hold still.
+
+  **This compiler's end does hold still, and the same file proves it.** The
+  golden tensors pin every default budget cell's output bit for bit at a
+  tolerance of zero, and `test/Python/test_tight_budgets.py` pins each tight
+  budget answer to its default budget one. So with green goldens this field
+  **cannot** move because of anything the compiler did. Every difference it can
+  still report is a change at the other end.
+
+  **The other end is `onnxruntime`, which dispatches its CPU kernels on what the
+  host supports**, and GitHub's hosted runners are not homogeneous. The two
+  earlier push runs of this step happened to land on hardware matching the
+  recording host, which is why the first CI run reported zero drift on every
+  numeric field and the cross host question looked answered in full.
+
+- **The knowledge already existed in this repository and the baseline did not
+  inherit it.** `test/Python/test_end_to_end.py` set its tolerances at ten and
+  six times the observed maxima and said why, at P8, in these words: "this suite
+  runs on at least two hosts ... and `onnxruntime` chooses its own vectorisation
+  per host. A bound two times the observed value on one machine is a bound that
+  goes red on another for a reason that is not a defect." The regression
+  baseline then recorded the same quantity and compared it at a bound of
+  **zero**. One file argued for a wide band on a number and another asserted
+  equality on it, two phases apart, and nothing connected them.
+
+- **Why the activation proofs found it and the ordinary runs did not.** The
+  first two runs were pushes and both landed on matching hardware. The proof
+  runs are two more pull requests, so these were the third and fourth samples of
+  a population nobody had noticed was a population. **Two green cross host runs
+  are one sample and not a proof**, and a step that runs on a fleet of
+  heterogeneous machines has a distribution rather than an answer.
+
+- **Resolution, and what is deliberately not changed.**
+
+  `GOLDEN_TOLERANCE` stays at **zero** and every other cell field stays compared
+  for **equality**. Those proved themselves on the same runs and nothing here
+  touches them.
+
+  `ORACLE_FIELD` names the one exception. It is checked against Section 17.4's
+  absolute end to end band instead, which is the only thing the number ever
+  meant, and the band is `npu_frontend.tolerances.ABSOLUTE_TOLERANCE`,
+  **imported** rather than restated. The constants moved out of
+  `test/Python/test_end_to_end.py` into the package for exactly that reason: a
+  script cannot import a test module, and a second copy of a tolerance is the
+  duplication D-0032's fix built `test_tool_discovery.py` to hunt for. A
+  tolerance is the worst thing in a project to have two of, because the copies
+  agree until somebody widens one.
+
+  The recorded value **stays in the baseline**, as documentation of what the
+  recording host measured. That is the status `tool_versions` already has in
+  this file and it is the same argument: recorded because a reader wants it, not
+  compared because it describes the machine rather than the project.
+
+  A movement inside the band is **printed** rather than passed over, with its
+  magnitude and its direction. A check that was switched off has to say so in
+  its own output, which is Section 19.0's rule about silence and success not
+  looking alike, applied to a field rather than to a step.
+
+- **What is lost, stated rather than glossed.** The field can no longer catch an
+  `onnxruntime` upgrade that moved the oracle. Two things still can: the version
+  is recorded in `tool_versions`, and an upgrade is a diff in
+  `requirements-lock.txt`, which is reviewed and which the pip cache key hashes.
+  Neither is as loud, and that is the price of the fix.
+
+- **Verified**, three ways, under the step's own script.
+
+  1. Unperturbed: the numeric half is unchanged and the field reports nothing.
+  2. With the recorded values perturbed by the magnitudes CI reported, in both
+     directions, on exactly the three models CI named: **eighteen notes and no
+     drift**, each naming the direction and the magnitude.
+  3. With the band tightened to 1e-9 so the real measured values fall outside
+     it: every affected cell produces a drift line naming the value, the band
+     and the recorded figure, and the step goes red. The field is bounded, not
+     ignored.
+
+  And in `test/Python/test_regression_baseline.py`, four tests: a move inside
+  the band in **both** directions is not drift, a move is reported as a note, a
+  value outside the band is drift and is not also a note, and the band is the
+  same object the end to end matrix imports.

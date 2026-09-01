@@ -22,6 +22,9 @@
 # existing GoogleTest step.
 # Added at P8: check-reachability in full, with the model IR built in the same
 # step, and the coverage thresholds set from what P8 measured.
+# Added at P9b: the ndebug job, which is the release half of Section 9.3's
+# "every build mode", and regression-baseline --check at the end of
+# build-and-test.
 # Everything else prints its off line.
 
 name: ci
@@ -370,9 +373,18 @@ jobs:
       # interpreter beside it.
       #
       # This build is an assertions build. The NDEBUG half of Section 9.3's
-      # "every build mode" is the sanitizers job below, which configures
-      # RelWithDebInfo and therefore compiles with -DNDEBUG, and which runs this
-      # same binary.
+      # "every build mode" is the ndebug job below, which is new at P9b.
+      #
+      # It used to say the sanitizers job was that half, "which configures
+      # RelWithDebInfo and therefore compiles with -DNDEBUG". That was wrong
+      # from the day it was written and it is D-0036. D-0028 is the reason:
+      # against an assertions LLVM, `HandleLLVMOptions` appends `-UNDEBUG`
+      # **after** whatever the build type supplied, and the last `-D` or `-U`
+      # on a command line wins. Measured on 2026-09-01, a RelWithDebInfo
+      # configure of this project against the assertions LLVM ends its flags
+      # with `-D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG`. So CI has been naming a
+      # build mode it did not have since P7, in a comment rather than in a
+      # test, which is why nothing went red.
       - name: "NPUSimulatorTests (activation table: P7, on)"
         run: |
           set -euo pipefail
@@ -566,6 +578,94 @@ jobs:
           python3 scripts/build-model-ir.py
           python3 scripts/check-reachability.py
 
+      # ---- regression-baseline --check. ON at P9b. -------------------------
+      #
+      # **Why it was not a step until now, and what changed.** P8 and P9 both
+      # left it out for the same stated reason: its golden comparison is byte
+      # identical, which is a bound between two runs of the *same* build, and a
+      # baseline recorded under gcc on a developer machine being checked under
+      # clang in a container is not that. The two phases sharpened the question
+      # and neither answered it, because answering it needs a run.
+      #
+      # So the step is switched on with `GOLDEN_TOLERANCE` left at **zero**.
+      # Widening the band first would have discarded the only measurement the
+      # question is about: if this reproduces bit for bit across two compilers
+      # and two libcs, that is a property worth having proven, and if it does
+      # not, the drift report is the number to record. What must not happen is a
+      # tolerance chosen in advance to make the first run green.
+      #
+      # It runs last in this job because it needs everything the job has: the
+      # built binaries, the Python environment the pytest step installed, lit,
+      # and a git that will read this checkout, which the DIALECT_REFERENCE step
+      # above marked safe. It re-runs the lit suite, the five GoogleTest
+      # binaries, pytest at `slow or not slow`, dash lint and the forty two
+      # cells, which is duplicated work by design: Section 17.6's baseline is a
+      # record of what one build measured, and a check that reused this job's
+      # earlier results would be comparing the baseline against itself.
+      #
+      # Measured on the developer machine at 1 minute 42 seconds. On four vCPUs
+      # expect several times that; it is the one step in this file whose cost is
+      # a whole second pass over the suite.
+      - name: "regression-baseline --check (activation table: P9b, on)"
+        env:
+          # Section 3.3's -j6 is the memory capped WSL2 guest's number. A hosted
+          # runner is 4 vCPU, which is what every other build in this file uses.
+          NPU_BASELINE_JOBS: "4"
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+        run: |
+          set -uo pipefail
+          if [ ! -f test/baseline/baseline.json ]; then
+            echo "::error::test/baseline/baseline.json is missing."
+            echo "regression-baseline: this step is ON from P9b, so a missing"
+            echo "regression-baseline: baseline is a file that moved rather than"
+            echo "regression-baseline: a phase that has not arrived. Record one"
+            echo "regression-baseline: with scripts/regression-baseline.sh."
+            exit 1
+          fi
+          bash scripts/regression-baseline.sh --check
+          status=$?
+          # The script has already printed every difference, one per line, above
+          # this point. What is added here is what a reader of a red run needs
+          # next, because the right response depends on which of two things
+          # happened and the log cannot tell them apart on its own.
+          if [ "$status" -eq 1 ]; then
+            echo "::error::the regression baseline drifted in the container."
+            echo ""
+            echo "regression-baseline: every difference is listed above. Two"
+            echo "regression-baseline: readings, and they are not the same fault."
+            echo ""
+            echo "regression-baseline:   1. A cell or a suite count moved. That"
+            echo "regression-baseline:      is a change somebody made, and it is"
+            echo "regression-baseline:      declared in docs/BREAKING_CHANGES.md"
+            echo "regression-baseline:      and re-recorded in its own commit, or"
+            echo "regression-baseline:      it is a defect."
+            echo ""
+            echo "regression-baseline:   2. Only golden tensors moved, and by"
+            echo "regression-baseline:      a few units in the last place. That is"
+            echo "regression-baseline:      the cross host question this step was"
+            echo "regression-baseline:      switched on to answer: this container"
+            echo "regression-baseline:      builds with clang against a different"
+            echo "regression-baseline:      libc than the machine that recorded"
+            echo "regression-baseline:      the baseline. The golden lines above"
+            echo "regression-baseline:      carry the element count, the index and"
+            echo "regression-baseline:      the movement in ulps, which is what"
+            echo "regression-baseline:      that decision needs. Record the"
+            echo "regression-baseline:      measured delta before touching"
+            echo "regression-baseline:      GOLDEN_TOLERANCE, and never widen it"
+            echo "regression-baseline:      past what was measured."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::regression-baseline could not run, exit ${status}."
+            echo "regression-baseline: exit 2 is this script refusing to compare"
+            echo "regression-baseline: rather than a comparison that failed: an"
+            echo "regression-baseline: unconfigured build directory, a missing"
+            echo "regression-baseline: baseline, a schema_version it does not"
+            echo "regression-baseline: recognise, or a suite that wrote no"
+            echo "regression-baseline: machine readable output."
+            exit "$status"
+          fi
+
   # -------------------------------------------------------------------------
   # sanitizers. ON at P6, and this is the phase where it stops being a job that
   # prints an off line and becomes a job that runs.
@@ -653,12 +753,16 @@ jobs:
       #
       # NPUSimulatorTests joins this step at P7 rather than getting one of its
       # own, and the reason is that it needs no new activation: this step is
-      # already on and already proven red. It also does double duty. Section 9.3
-      # requires the bounds checked accessors to refuse gracefully in **every**
-      # build mode, and this configuration is RelWithDebInfo, so it is the NDEBUG
-      # half of that claim as well as the memory safety one. The trap tests run
-      # here with assertions compiled out, which is where an accessor that had
-      # quietly become assert-only would show.
+      # already on and already proven red.
+      #
+      # **It does not do double duty, whatever this comment used to say.** It
+      # claimed that RelWithDebInfo made this the NDEBUG half of Section 9.3's
+      # "every build mode" as well as the memory safety half. It is not, and
+      # that is D-0036: against an assertions LLVM `HandleLLVMOptions` appends
+      # `-UNDEBUG` after the build type's `-DNDEBUG`, so this job runs the trap
+      # tests with assertions **on**, exactly like build-and-test. The NDEBUG
+      # half is the ndebug job, added at P9b, which forces the option and
+      # asserts in its own configure log that it took.
       - name: "GoogleTests under ASan and UBSan (activation table: P6, on)"
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
@@ -705,6 +809,117 @@ jobs:
           path: build-san/fuzz-artifacts/
           if-no-files-found: ignore
           retention-days: 30
+
+  # -------------------------------------------------------------------------
+  # ndebug. ON at P9b, and it is the release half of Section 9.3's "every build
+  # mode" clause, made by a build that has actually had its assertions taken
+  # out.
+  #
+  # **Why this is a job and not a step in build-and-test.** It is a third build
+  # configuration in a third directory, which is what the sanitizers job is and
+  # is why that is a job too. Folding a second configuration into
+  # build-and-test would mean one job name covering two builds, so a red run
+  # would say "build-and-test failed" for a fault that lives in exactly one of
+  # them. It also runs in parallel, where a step would be serial inside a job
+  # that already carries the longest budget in this file.
+  #
+  # **Why it builds two targets by name and not everything**, which is the same
+  # rule the sanitizers job follows and here it is not an optimization but a
+  # correctness requirement. D-0031: turning `_GLIBCXX_ASSERTIONS` off in this
+  # project's translation units while the LLVM they link keeps it on is an ODR
+  # violation across the link, benign for targets that link no MLIR and heap
+  # corruption for anything that does. `NPUSimulatorTests` and
+  # `NPUEncodingTests` link the format library and LLVM's Support and no MLIR
+  # at all, which is exactly the set this directory may build. An `npu-opt`
+  # built here aborts inside MLIR's own context construction on an empty
+  # module.
+  #
+  # **Why not a second LLVM tree**, which is the fix D-0031 named. Because the
+  # contract Section 9.3 states lives entirely in these two binaries, so a
+  # non-assertions LLVM would buy coverage of MLIR linking tools that no clause
+  # asks for, at an hour of build time per republish and a second image to keep
+  # in step. `docs/adr/0009` is the record and the argument.
+  #
+  # **The configure log assertion is the whole point of the job.** D-0028 is
+  # what happens without it: a Release build against an assertions LLVM keeps
+  # its assertions, passes the four runs the gate asks for, and proves nothing.
+  # `-DNPU_FORCE_NDEBUG=ON` makes the option mean what its name says and the
+  # top level CMakeLists prints a line beginning `NDEBUG:` saying which way it
+  # went. Grepping for it is the same shape as the sanitizers job's
+  # `Fuzzers: ON` check and it exists for the same reason: an option that
+  # silently failed to take would leave this job building what build-and-test
+  # already built, and passing.
+  # -------------------------------------------------------------------------
+  ndebug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: "Configure with NDEBUG forced (activation table: P9b, on)"
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja -S . -B build-ndebug \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNPU_FORCE_NDEBUG=ON \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core \
+            2>&1 | tee build-ndebug-configure.log
+          # The configure log says which way the option went, and this asserts
+          # it rather than trusting the flag. Without this line the job is
+          # D-0028 with more steps.
+          grep -q '^-- NDEBUG: forced on' build-ndebug-configure.log
+
+      # The two targets this directory may build, named rather than swept, per
+      # D-0031 and the warning the configure above prints.
+      - name: Build the two non MLIR binaries
+        run: |
+          set -euxo pipefail
+          ninja -C build-ndebug -j4 NPUSimulatorTests NPUEncodingTests
+
+      # Both binaries in full rather than a filtered subset. Section 9.3's
+      # clause is about the bounds checked accessors, and `TrapTest` is where
+      # those live, but a build without assertions changes what every test in
+      # both binaries is running against, and running only the trap tests would
+      # be asserting that the interesting half survived while leaving the rest
+      # untested in this mode.
+      - name: "NDEBUG GoogleTests (activation table: P9b, on)"
+        run: |
+          set -euo pipefail
+          for binary in NPUSimulatorTests NPUEncodingTests; do
+            if [ ! -x "build-ndebug/bin/$binary" ]; then
+              echo "::error::$binary did not build under NDEBUG."
+              echo "ndebug: this step is ON from P9b, so a missing binary is a"
+              echo "ndebug: build failure rather than a phase that has not"
+              echo "ndebug: arrived. Check the configure log for the line"
+              echo "ndebug: beginning 'NDEBUG:', which says which way the"
+              echo "ndebug: option went, and see D-0031 for what this"
+              echo "ndebug: directory may and may not build."
+              exit 1
+            fi
+            "./build-ndebug/bin/$binary"
+          done
 
   # -------------------------------------------------------------------------
   # coverage. Off until P2. The table is precise about the two dates: the job

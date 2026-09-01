@@ -3305,3 +3305,438 @@ in `docs/PHASE_STATE.md`'s open questions with the fix and its cost:
 `docs/adr/0008` froze. That is a decision for the phase that owns the
 measurement, which is P10, and not one to take quietly inside the phase that
 wrote the pass.
+
+## 2026-09-01 Interphase P9b: four decisions, and three of the four rehearsals disagreed with me
+
+**What this branch is.** Four items the P9 handoff carried as open questions,
+taken between P9 and P10 rather than folded into either: a package in the CI
+image, an NDEBUG CI build, the model suite gap that made `-npu-fuse-bias`
+unfireable, and whether `regression-baseline --check` can be a CI step. None of
+them is a feature and none of them has a gate. What they have in common is that
+each had reached the point where leaving it open cost more than deciding it.
+
+**The entry's finding, and it goes first because it is the only general one.**
+Three of the six rehearsals on this branch came out differently from the
+prediction written before them, and in all three cases the disagreement was worth
+more than the confirmation would have been. One deleted a deliverable, one
+narrowed a claim, and one turned into a defect. P8 recorded that a local
+rehearsal proves a step's logic and cannot prove its surroundings. This branch
+adds the other half: **a rehearsal whose prediction holds tells you what you
+already believed, and the value of the practice is concentrated entirely in the
+runs that do not.** Writing the prediction down first is what makes that value
+collectable, because a prediction reconstructed afterwards is never wrong.
+
+### The cache key I did not commit
+
+The image change is one package, `libomp-18-dev`, so that the two CI jobs which
+configure with clang stop making a weaker determinism claim than the one that
+gets gcc. That part was straightforward and the rehearsal against the pinned base
+digest confirmed it: before, `clang -fopenmp` fails at `'omp.h' file not found`
+and cmake prints the CI line verbatim; after, `Found OpenMP: TRUE (found version
+"5.1")`.
+
+The part that was not straightforward was what the workflow needed beside it. I
+predicted that `build-and-test`'s restored build cache would keep reporting
+`OpenMP: not found` after the republish, because `find_package` writes
+`OpenMP_CXX_FLAGS:STRING=NOTFOUND` into `CMakeCache.txt`, the cache key is keyed
+on the LLVM tag, and the tag does not move on a republish. The planned
+deliverable included an image revision component in that key.
+
+Measured in a container rather than reasoned about: configure with no `libomp`,
+install it, re-run cmake on the **same** build directory. The answer is
+`OpenMP: found 5.1`. `FindOpenMP` re-runs its `try_compile` when the cached flag
+variable is falsy, so a `NOTFOUND` does not stick the way a `find_library` result
+does.
+
+So the deliverable was deleted rather than committed. A cache key bumped for a
+mechanism that does not exist would have invalidated every build cache in the
+project to fix nothing, and it would have been invisible: the runs after it would
+have been slower and green, and nobody would ever have gone looking for the
+reason. **The failure mode of an unnecessary fix is that it works.**
+
+### CI had been naming a build mode it did not have
+
+The NDEBUG item was supposed to be a decision about a second LLVM tree. It became
+that plus a defect, D-0036, and the defect is the more interesting half.
+
+`ci.yml` said, in two places since P7, that the sanitizers job was the NDEBUG half
+of Section 9.3's "every build mode" clause, "which configures RelWithDebInfo and
+therefore compiles with `-DNDEBUG`". The therefore does not hold here. D-0028,
+found and fixed **in that same phase**, is exactly the reason: against an
+assertions LLVM, `HandleLLVMOptions` appends `-UNDEBUG` after whatever the build
+type supplied, and the last `-D` or `-U` on the line wins. Measured:
+
+```
+-DNDEBUG -D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG
+```
+
+So three CI jobs ran the trap tests, all three with assertions on, and the file
+that decides what CI does asserted otherwise in prose. An accessor that had
+quietly become assert-only would have been green in every one of them.
+
+**Why it survived a phase is the part to remember.** The comment was written by
+somebody who had just fixed D-0028, and the reasoning in it is correct for a
+project whose LLVM has no assertions. Correct general knowledge applied to a
+specific configuration is not a thing review catches, because it reads as
+knowledge. What catches it is a mechanism, and the new `ndebug` job is one: it
+greps its own configure log for the line beginning `NDEBUG:`, so the claim is now
+made by a build that either has assertions compiled out or fails.
+
+The second LLVM tree D-0031 named is declined, in ADR 0009, on the grounds that
+Section 9.3's contract lives entirely in the two binaries that link no MLIR and
+those are exactly the two this directory builds soundly. D-0031 stays open as the
+limit it is.
+
+### One test caught the fault, and I had predicted three
+
+The product side activation fault for the new job compiles the range trap's
+diagnostic out behind `#ifdef NDEBUG` in `readBytes`, leaving the check and the
+null return in place so every caller still behaves. It is the shape a release
+build acquires when somebody decides a diagnostic is a debug convenience, and no
+assertions build can see it.
+
+Prediction: the assertions build green, the NDEBUG build red at three graceful
+trap tests. Result: the assertions build green, the NDEBUG build red at
+**one**, `Trap.AnOutOfRangeOperandAddressTrapsGracefully`.
+
+The arithmetic is the finding. The fault is in `readBytes` alone; the two result
+address tests go through `writeBytes`. So exactly the one test whose fault this
+was caught it, and a prediction of three would have been satisfied by a net
+firing for reasons other than the fault. This is the same lesson D-0029 taught
+from the other end, where a rehearsal reported 54 of 54 mismatches for a fault
+that should have produced three or four and the discrepancy was a second defect.
+**A rehearsal is not a pass or fail. The number is the measurement.**
+
+### The suite change was the easy half and the tight budget was the question
+
+`-npu-fuse-bias` fired on no model of Section 15's suite because every convolution
+in it carries its bias inline, which is what exporters emit. One `Add` between
+`dilated_stack`'s biasless `conv1` and its `Relu` closes that, and the governance
+around it is four commits in ground rule 7's order: declare, move, re-record,
+record the re-measurement.
+
+Two things came out of measuring rather than assuming.
+
+**The addend cannot be rank 1.** ONNX broadcasting aligns from the trailing axis,
+so a `(5,)` initializer broadcasts against the width of 6 and `onnx.checker`
+refuses the graph outright. It is written `(1, 5, 1, 1)`, which is what an
+exported graph carries anyway and which the importer normalises to the rank 1
+constant the pass guards on. The P9 handoff's sketch said "an `Add` of a rank 1
+initializer", and the pass does see rank 1; the generator cannot write it.
+
+**The tight budget did not move, and that was not obvious.** ADR 0008 froze
+`dilated_stack` at 8064 and the P9 handoff named the budget as the thing this
+change might break. Re-measured by that record's own 64 byte sweep at all three
+levels: peak 8036, floor 8064, which are the P8 numbers. The mechanism is that a
+sweep line peak is a maximum over time and not a sum over the program. The two
+new buffers are 20 bytes of bias and a 360 byte destination, both live near the
+end where the working set is a little over five kilobytes, and this model's peak
+is set by `conv0`, whose input, filter and result are resident together.
+
+The prettiest number on the branch is the `-O2` cycle count. `dilated_stack` gains
+an instruction at `-O0` and `-O1` and the fusion takes it back at `-O2`, where the
+cycle count and the compute cycle count return to **exactly** what they were
+before the node existed: 1234.0625 and 710.8125. The twenty extra DRAM bytes stay
+at every level, because the bias has to arrive whichever operation reads it.
+
+### The verification matrix found the last defect by dying
+
+`coverage.sh` aborted at collection with a `SuspiciousHits` stack trace naming
+`lib/Simulator/Kernels.cpp:87`, exit 64, no percentage. gcov says why: that line's
+counter had reached 5896524226, past gcovr's threshold of 2^32.
+
+gcov accumulates. A `.gcda` left in place is added to by the next run rather than
+replaced, and the script had never deleted one, so `build-coverage/` held the sum
+of every run since P8 in one set of counters. `Kernels.cpp:87` is the stride loop
+inside the odometer, the hottest line in the project, and it got there first.
+
+**The crash is the harmless half.** A percentage collected from accumulated
+counters is a percentage about the union of every suite the directory has ever
+run, so a line executed by a test that was later deleted keeps the count that
+executed it. This branch deletes a test, which is what makes the point concrete.
+The measurable evidence is small and real: 42 `.gcda` files before the deletion
+and 41 after a clean run, so one object had counters and no longer runs at all.
+
+Measured either way the number did not move on this tree, C++ 86.5 and Python
+90.50, so this is a defect in what the number **means** rather than in what it
+currently **says**. That is the kind that survives until somebody looks.
+
+**And it is D-0030 and D-0032 with the direction reversed.** Those were results
+that depended on what else was lying around in CI, invisible on a developer
+machine. This one depends on what is lying around on a developer machine and is
+invisible in CI, because the coverage job checks out a fresh tree and has nothing
+to inherit. The class is the same and the environments are swapped, which is
+worth knowing about a class this project has now met four times: the question to
+ask of any measurement is not "did it pass" but "what else could have produced
+this result".
+
+### What was deliberately left undecided
+
+`regression-baseline --check` is a CI step now and `GOLDEN_TOLERANCE` is still
+zero. P8 and P9 both left the step out for the same stated reason, that a byte
+identical golden comparison bounds two runs of the same build and CI is a
+different compiler against a different libc, and neither phase could answer
+whether that matters because answering it needs a run.
+
+Choosing a tolerance in advance would have thrown away the only measurement the
+question is about. So the step goes on with the band unwidened and the first
+container run is the experiment. What that required was making a red first run
+readable from the log alone, because a red run nobody can interpret is a step
+that gets disabled. The golden drift line said `largest movement 4.7e-08`, which
+is the same sentence for one element moving in its last bit and for every element
+moving, and those are opposite findings. It now names the count, the index, both
+values and the movement in ulps, proven by pushing one golden element to the next
+representable float and reading what came out.
+
+## 2026-09-01 Interphase P9b, first CI run: the answer and the defect arrived together
+
+Run 33458934438. `lint`, `sanitizers` and `coverage` green, the `ndebug` job
+**green on its debut** at 1 minute 5 seconds, and the
+`regression-baseline --check` step red, job 99704772026.
+
+**The answer first, because the red nearly buried it.** The step reported 42
+cells, 21 golden tensors and a largest movement against `-O0` of 4.470e-08, with
+**zero drift on every numeric field**. A baseline recorded under gcc on WSL2
+reproduces **bit for bit** under clang in the container, across two compilers,
+two libcs and two hosts. That is the question P8 raised, P9 sharpened and neither
+could answer, and it is answered in the affirmative. `GOLDEN_TOLERANCE` stays at
+zero on evidence rather than on principle.
+
+**Which is the first thing worth recording about the run.** The interesting
+result was on stdout, above the failure, and the exit code was about something
+else entirely. The handoff's watch plan listed three outcomes as alternatives;
+two fired in the same run and the plan had not imagined that. **When reading a
+red `--check`, read the whole report and not the verdict.** The cells and the
+goldens are printed before the verdict precisely so a run that fails for one
+reason still delivers the measurement it was asked for, and that design paid for
+itself on its first outing.
+
+### The defect, and the four mechanisms it was not
+
+The recorded suite table says `dash-lint 2 passed 0 failed`; the container
+reported `0 passed 2 failed`, while the `lint` job's own dash lint steps were
+green in the same run. Four mechanisms were plausible, and ruling each out was
+most of the work: the locale affecting the unicode scan, `PATH`, a GNU `grep -P`
+dependence, and the working directory.
+
+None of them. `LANG` is unset in the container and Python still reports `utf-8`
+for both the filesystem and the preferred encoding, so the unicode scan was never
+at risk, and there is no `grep` in the linter at all: it shells out to
+`git ls-files` and scans in Python. The mechanism is one line.
+
+```
+File "/work/scripts/dash_lint.py", line 235
+    except subprocess.CalledProcessError, FileNotFoundError:
+SyntaxError: multiple exception types must be parenthesized
+```
+
+Two unparenthesised `except A, B:` clauses. PEP 758 made that legal in **Python
+3.14** and it is a `SyntaxError` everywhere below it. The CI image is Ubuntu
+24.04 and ships **3.12**; `dash-lint.sh` falls back to `python3` on `PATH`
+because CI calls it before any venv exists. The module did not parse, so the
+linter never ran, and both invocations failed for the same reason, which is why
+the count was zero and two rather than one of each.
+
+**Why it had been green everywhere.** Three of the four places that run this
+linter use 3.14: the developer machine and pre-commit through the venv, the
+`lint` job through `actions/setup-python`. The `lint` job is not in a container,
+and nothing else in `build-and-test` invoked the linter. **Nothing had ever run
+it inside the image**, and the `--check` step is the first thing in this
+project's history that did.
+
+### The part that deserved the real fix
+
+`pyproject.toml` declared `requires-python = ">=3.11"` and then configured black,
+ruff and mypy alike at `py314`. The promise sat in a field nothing reads while
+every checker pointed at the developer's interpreter, so no tool could have
+objected.
+
+The comment beside `target-version` argued for py314 **deliberately**, against
+the v1 tree's py312, on the grounds that an older grammar target applied to code
+running on a 3.14 interpreter shows up as a formatting argument rather than as an
+actionable error. That reasoning is sound and it looks in one direction only.
+**The interpreter that matters is the lowest one that runs the code, not the
+highest**, and this project's lowest is a container nobody was thinking about
+when the comment was written.
+
+Both grammar targets are `py311` now, which is what `requires-python` says, so
+the floor is enforced by a tool rather than promised in a field. Measured before
+the fix: at py311 ruff finds exactly those two errors over the whole tree and
+nothing else, at py312 it finds them again, and
+`black --check --target-version py311` leaves all forty two files unchanged. The
+mechanism costs nothing, which is the argument for taking it rather than fixing
+two lines and moving on.
+
+mypy is `3.12` and not `3.11`, and the reason is worth keeping. At
+`--python-version 3.11` it stops inside **numpy's own shipped stubs**,
+`numpy/__init__.pyi:737: Type statement is only supported in Python 3.12 and
+greater`, and checks nothing further. So the floor this project can type check
+against is set by a dependency rather than by its own code, which leaves
+`requires-python` and the checkable floor a minor version apart. That is recorded
+as an open question rather than resolved by quietly moving a published contract.
+
+### The half that made it a hunt
+
+The CI log said `suite dash-lint: passed 2 -> 0` and nothing more. Every other
+suite the baseline runs writes a machine readable file, so a failing test arrives
+in the drift report by name; this one has none and contributes a count, and the
+`SyntaxError` that explained everything went to a pipe nobody read.
+
+`run_dash_lint` prints the child's output on failure now. That is the same
+standard the golden drift lines were rewritten to meet earlier in this branch,
+and the omission is instructive: the standard was applied to the failure mode
+that was being thought about and not to the one that was not. **A rule about
+diagnosability is worth applying to every output a step has, including the one
+that has never failed.**
+
+### What this says about the step, and about the branch
+
+The step was added to answer a floating point question. It answered that on its
+first run and then caught a defect with nothing to do with it, in a script five
+phases old, because it is the first thing that ever ran that script in that
+environment. **A step that runs the whole suite somewhere new is worth more than
+the reason it was added for.**
+
+That makes four defects on this branch and the set has a shape. D-0030 and
+D-0032 were results that depended on what else was lying around in CI, invisible
+locally. D-0037 is the mirror, invisible in CI. D-0038 is a third position: code
+correct in every environment anybody had run it in and wrong in the one nobody
+had. D-0036 is the fourth, a claim never measured anywhere at all. **In none of
+the four was the code under test the thing that was wrong**, and in all four the
+fix was to make an environment or a claim checkable by a tool rather than by a
+habit.
+
+## 2026-09-01 Interphase P9b, the activation proofs: two green runs were one sample
+
+Runs 33461200759 and 33461203436, the two `pull_request` proofs for the job and
+the step this branch switched on. **Both intended faults fired exactly as
+predicted**, which is the boring half: the NDEBUG fault took the `ndebug` job red
+at its GoogleTest step with `build-and-test`'s assertions half unbothered beside
+it, and the golden ulp fault produced the rewritten drift line with its element
+count, index, both values and the movement in ulps.
+
+**And both runs reported eighteen differences nobody predicted**, the same
+eighteen cells in both, in one field: `max_abs_error_vs_onnxruntime` on
+`conv_bn_relu_stack`, `inception_block` and `resnet_block`, at every level and
+both budgets, moving between 1e-8 and 1e-7 **in both directions**. No golden
+tensor drifted. No cycle count moved.
+
+### The diagnosis was free, and that is the design working
+
+**The goldens are what made it certain rather than plausible.** They pin this
+compiler's answer bit for bit at a tolerance of zero and they were green, so the
+end of that distance which belongs to this project did not move and the end that
+did is `onnxruntime`'s. `onnxruntime` dispatches its CPU kernels on what the host
+supports, and GitHub's hosted runners are not homogeneous.
+
+Two bands, two questions, one measurement each: that structure was argued into
+`regression_baseline.py` at P9 and it is what turned an eighteen line red into a
+one sentence diagnosis. **A comparison that keeps its subjects apart can tell you
+which subject moved.** Had the goldens been compared at the same loose band as
+the field, this would have been undiagnosable from the log.
+
+### The knowledge was already in the repository
+
+`test/Python/test_end_to_end.py` set its tolerances at ten and six times the
+observed maxima at P8, and the comment beside them says, in these words: "this
+suite runs on at least two hosts, the developer machine and the CI container, and
+`onnxruntime` chooses its own vectorisation per host. A bound two times the
+observed value on one machine is a bound that goes red on another for a reason
+that is not a defect."
+
+The regression baseline then recorded the same quantity and compared it at a
+bound of **zero**. One file argued for a wide band on a number and another
+asserted equality on it, two phases apart, and nothing connected them. That is
+the finding and it is not really about `onnxruntime`: **a project can hold the
+right answer in one file and the wrong assumption in another indefinitely,
+because nothing makes two files disagree out loud.**
+
+So the fix connects them rather than restating the conclusion. The constants
+moved into `npu_frontend.tolerances` and both the matrix and the baseline import
+one object, which is D-0032's rule applied to a number instead of to a function.
+A tolerance is the worst thing in a project to have two of, because the copies
+agree until somebody widens one and then the looser wins wherever it is read.
+
+### Two green runs were one sample
+
+**The first CI run reported zero drift on every numeric field** and the handoff
+recorded the cross host question as answered on that basis. It was not wrong
+about the numbers; it was wrong about how many samples it had. Both pushes
+happened to land on runner hardware matching the recording host. The proof runs
+were the third and fourth samples and their hardware differed.
+
+The answer is two part now and the second part took four runs to see. **The
+compiler and the simulator are bit stable across hosts**, which is a stronger
+property than this project had evidence for and which `GOLDEN_TOLERANCE` at zero
+now rests on. **The distance to the oracle is a property of the measuring host**,
+and asserting equality on it made the step flaky per runner.
+
+It generalises past this field. A green run on a fleet of heterogeneous machines
+is a sample from a distribution, and "it was green" is a statement about the
+sample. Nothing in the watch plan said how many runs an answer needs; the honest
+number here was four, and it needed runs whose hardware happened to differ.
+
+### What was deliberately not changed
+
+`GOLDEN_TOLERANCE` stays at zero and every other cell field stays compared for
+equality. Those proved themselves on the same runs, and widening anything else
+because one field turned out to be badly posed would have thrown away the result
+the runs actually delivered.
+
+The field is bounded against Section 17.4's absolute end to end band, which is
+the only thing it ever meant, and a movement inside the band is **printed** with
+its magnitude and its direction rather than passed over. A check that has been
+switched off has to say so in its own output: Section 19.0's rule about silence
+and success, applied to a field rather than to a step. Rehearsed three ways,
+including a synthetic per host shift built from the magnitudes CI reported and a
+band tightened to 1e-9 so the real values fall outside it and the field goes red.
+
+**What it costs, stated rather than glossed:** the field can no longer catch an
+`onnxruntime` upgrade that moved the oracle. `tool_versions` records the version
+and `requirements-lock.txt` is where an upgrade shows up in review. Neither is as
+loud, and that is the price of the fix.
+
+## 2026-09-01 The P9b closing runs: two proofs, one compound red, and a republished image
+
+The branch's first run put the new pieces through CI against the old image. The
+`ndebug` job was green on its debut in 1 minute 5 seconds, and the
+`regression-baseline --check` step went red at D-0038, whose story the previous
+entry carries:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33458934438>.
+The fix's run, green in every job with the dash lint suite back at 2 passed:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33460570488>.
+
+The two activation proofs ran as pull requests 15 and 16, drafts, closed
+unmerged with their branches deleted. **The first attempt at both was a
+compound red**: each intended fault fired exactly as predicted, and the
+`--check` step failed beside it with 18 unpredicted `max_abs_error_vs_onnxruntime`
+differences, both directions, three models, which is D-0039's finding: the
+proof runs landed on different runner hardware than the recording runs, and the
+oracle's own kernel dispatch moved. Those first runs, kept because a proof that
+found something is worth more than a proof that matched:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33461200759>
+and
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33461203436>.
+
+After D-0039's fix, both rebased and rerun, each red at exactly its own step
+and nowhere else. The NDEBUG product fault, red at the `ndebug` job's GoogleTest
+step with the assertions build unbothered:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464534276>.
+The one ulp golden fault, red at the `--check` step with its single drift line
+and no host noise behind it:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464534594>.
+The branch run beside them, green on whatever hardware it drew, which is the
+point of D-0039's fix:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33464530309>.
+
+The image republish ran from the branch by dispatch, ref
+`phase/p9b-debt`, and published digest
+`sha256:844aff90b5c422e133ec38527cf459a635b5f47cb580f3aebe445e4d94fc1e35`
+under the reused tag:
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33459558320>.
+Every run above started before the publish landed and pulled the old image, so
+their `OpenMP: not found` lines say nothing about the new one. The run that
+carries this very commit is the first to pull the new digest, and the reading
+that closes item 1 is its configure lines: `OpenMP: found` in build and test,
+sanitizers and ndebug, `NPUSimulatorTests` reporting its thread count, and
+coverage still on gcc's libgomp as before.
