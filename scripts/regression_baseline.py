@@ -31,12 +31,21 @@
 #
 # THE SCHEMA IS VERSIONED BECAUSE IT DOES NOT ARRIVE COMPLETE
 #
-# Section 17.6 is explicit. Per level fields arrive at P9, when levels above
-# `-O0` first exist, and energy fields arrive at P11, when Accelergy lands. A P8
-# baseline that claimed energy would be a baseline recording a number no phase
-# had computed. So `absent_fields` names them and the phase that adds them,
-# `--check` compares only the fields present in both, and an unrecognised
-# `schema_version` is a loud failure rather than a guess.
+# Section 17.6 is explicit. Per level fields arrived at P9, when levels above
+# `-O0` first existed, and energy fields arrive at P11, when Accelergy lands. A
+# baseline that claimed energy before then would be recording a number no phase
+# had computed. So `absent_fields` names what is still missing and the phase
+# that adds it, `--check` compares only the fields present in both, and an
+# unrecognised `schema_version` is a loud failure rather than a guess.
+#
+# THE TWO BANDS, BECAUSE P9 IS WHERE THEY BECOME DIFFERENT NUMBERS
+#
+# `GOLDEN_TOLERANCE` is zero and bounds a **re-run against the recorded run at
+# the same level**, which is a reproducibility question with no acceptable
+# slack. Section 17.6's 1e-6 for P9 bounds a different quantity, **how far a
+# level's answer sits from `-O0`'s**, which is recorded per cell as
+# `max_abs_movement_vs_o0`. Confusing the two would turn the safety net off in
+# the phase that most needs it.
 
 from __future__ import annotations
 
@@ -61,20 +70,25 @@ GOLDEN_DIR = BASELINE_DIR / "golden"
 
 #: Bumped whenever the recorded shape changes. `--check` refuses a version it
 #: does not know rather than guessing what a missing field meant.
-SCHEMA_VERSION: Final[int] = 1
+#:
+#: **2 at P9**, which is the bump Section 17.6 asks for when the per level
+#: fields arrive. What changed: `per_level` left `absent_fields`, the manifest
+#: gained a `levels` list, every cell gained `max_abs_movement_vs_o0`, and the
+#: cell and golden sets grew from one level to three. A P8 baseline is refused
+#: rather than read, which is the point of the version: at version 1 a reader
+#: would find fourteen cells where there are forty two and report twenty eight
+#: of them as regressions from nothing.
+SCHEMA_VERSION: Final[int] = 2
 
 #: The fields Section 17.6 names and this phase cannot compute, with the phase
-#: that adds each. Recorded in the file itself, so a reader of a P8 baseline at
+#: that adds each. Recorded in the file itself, so a reader of a P9 baseline at
 #: P14 is told why the field is missing rather than left to infer it.
+#:
+#: `per_level` was here at P8 and left at P9 with the levels themselves.
 ABSENT_FIELDS: Final[dict[str, str]] = {
     "energy": (
-        "P11, when Accelergy lands. A P8 baseline that claimed energy would be "
-        "recording a number no phase had computed."
-    ),
-    "per_level": (
-        "P9, when -O1 and -O2 first exist. At P8 the only level the compiler "
-        "can emit is -O0, and a baseline that claimed a level the compiler "
-        "cannot emit is a baseline nobody can re-record."
+        "P11, when Accelergy lands. A baseline that claimed energy before then "
+        "would be recording a number no phase had computed."
     ),
 }
 
@@ -87,15 +101,22 @@ GTEST_BINARIES: Final[tuple[str, ...]] = (
     "NPUSimulatorTests",
 )
 
-#: The golden tolerance at this phase, which is zero.
+#: The golden tolerance, which is zero, and stays zero at P9.
 #:
-#: Section 17.6 sets the tolerance per phase class and P8 is in neither list,
-#: because P8 is the phase that *creates* the golden set rather than one that
-#: moves it. Within one build the simulator is deterministic, which
+#: Section 17.6 puts P9 in the "within 1e-6, with the movement justified in
+#: writing" class, and this constant is **not** that number. The distinction is
+#: worth stating because getting it backwards would turn the safety net off in
+#: the phase that most needs it.
+#:
+#: `--check` compares a re-run against the recorded run **at the same level**.
+#: Within one build the simulator is deterministic, which
 #: `unittests/Simulator/DeterminismTest.cpp` asserts across thread counts, so a
-#: re-run that moved a bit moved it for a reason. The phases that intend to move
-#: numbers are P9, P13 and P14, and each carries the declare then re-record step
-#: of ground rule 7.
+#: re-run that moved a bit moved it for a reason and there is no band inside
+#: which that is acceptable. The 1e-6 of Section 17.6 bounds a different
+#: quantity: how far a level's answer may sit from `-O0`'s. That one is recorded
+#: per cell as `max_abs_movement_vs_o0`, declared in
+#: `docs/BREAKING_CHANGES.md`, and asserted by `test_regression_baseline.py`.
+#: Two bands, two questions, and this is the one about reproducibility.
 #:
 #: The one caveat, stated rather than left to be discovered: this is a bound
 #: between two runs of the *same* build. A different compiler or a different
@@ -361,8 +382,18 @@ def _frontend() -> Any:
 def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """One row per model, level and budget, plus the golden tensors.
 
-    The level axis holds one value at this phase and is written out anyway, so
-    that a P9 baseline differs from a P8 one by rows rather than by shape.
+    *Three levels since P9.* The axis was written out at P8 with one value in
+    it, which is why a P9 baseline differs from a P8 one by rows rather than by
+    shape: forty two cells where there were fourteen, twenty one golden tensors
+    where there were seven, and one new field per cell.
+
+    That field is `max_abs_movement_vs_o0`, and it is the per level number
+    Section 17.6 and P9's gate ask for. It is the largest absolute distance
+    between this cell's answer and the same model's answer at `-O0` under the
+    same budget, so it is zero by construction at `-O0` and is the phase's own
+    numerics claim everywhere else. Recording it per cell rather than as one
+    headline is what lets a later phase see *which* cell moved when the headline
+    changes.
     """
     frontend = _frontend()
 
@@ -374,6 +405,17 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     levels = frontend.implemented_levels()
     cells: list[dict[str, Any]] = []
     goldens: dict[str, Any] = {}
+    # The `-O0` answer per model and budget, kept so that every higher level's
+    # movement is measured against it. `implemented_levels()` is ordered and
+    # starts at zero, which the assertion below states rather than assumes,
+    # because a reordering would silently make every movement zero.
+    at_zero: dict[tuple[str, str], list[Any]] = {}
+    if levels and levels[0] != 0:
+        raise BaselineError(
+            "the compiler's implemented levels do not start at -O0, so there is "
+            "no unoptimized answer to measure this phase's movement against. "
+            f"They are {levels}."
+        )
 
     for name, spec in frontend.MODELS.items():
         batch = spec.input_shape[0]
@@ -413,6 +455,24 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                         ),
                     )
 
+                if level == 0:
+                    at_zero[(name, budget_name)] = [
+                        array.copy() for array in answer.outputs
+                    ]
+                    movement = 0.0
+                else:
+                    movement = max(
+                        float(
+                            np.abs(
+                                produced.astype(np.float64)
+                                - unoptimized.astype(np.float64)
+                            ).max()
+                        )
+                        for produced, unoptimized in zip(
+                            answer.outputs, at_zero[(name, budget_name)], strict=True
+                        )
+                    )
+
                 statistics = answer.stats
                 cells.append(
                     {
@@ -433,6 +493,10 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                         "dram_bytes_written": statistics["dram_bytes_written"],
                         "macs": statistics["macs"],
                         "max_abs_error_vs_onnxruntime": worst,
+                        # Section 17.6's per level field and P9's own gate
+                        # clause: how far this level's answer sits from the
+                        # unoptimized one. Zero at -O0 by construction.
+                        "max_abs_movement_vs_o0": movement,
                     }
                 )
 
@@ -501,6 +565,12 @@ def measure() -> tuple[dict[str, Any], dict[str, Any]]:
         "generator_version": frontend.GENERATOR_VERSION,
         "tool_versions": tool_versions(),
         "absent_fields": ABSENT_FIELDS,
+        # The levels this baseline covers, as a field rather than as something a
+        # reader infers by grouping the cells. *Added at P9.* It is what makes
+        # "the baseline records -O0 only" and "the baseline records all three"
+        # different statements a test can check, and the P8 form of that check
+        # was reading the cells to find out.
+        "levels": sorted({int(cell["level"]) for cell in cells}),
         "suites": suites,
         "cells": cells,
     }
@@ -561,6 +631,14 @@ def compare(
             f"does not recognise is refused rather than guessed at: a field "
             f"that appeared in a later version would otherwise be read as a "
             f"regression from zero."
+        )
+
+    if recorded.get("levels") != current.get("levels"):
+        drift.append(
+            f"levels: {recorded.get('levels')} -> {current.get('levels')}. The "
+            f"compiler builds a different set of optimization levels than the "
+            f"one this baseline was recorded from, so the cells below are not "
+            f"the same cells."
         )
 
     if recorded.get("generator_version") != current.get("generator_version"):
@@ -655,7 +733,15 @@ def check() -> int:
     print("regression-baseline --check")
     print()
     print(f"  recorded at {recorded['git_sha'][:12]}, checked at {git_sha()[:12]}")
-    print(f"  {len(current['cells'])} cells, {len(goldens)} golden tensors")
+    print(
+        f"  {len(current['cells'])} cells, {len(goldens)} golden tensors, "
+        f"levels {', '.join(f'-O{level}' for level in current['levels'])}"
+    )
+    worst = max(
+        (float(cell["max_abs_movement_vs_o0"]) for cell in current["cells"]),
+        default=0.0,
+    )
+    print(f"  largest movement against -O0: {worst:.3e}")
     for name, result in sorted(current["suites"].items()):
         print(
             f"  suite {name:20} {result['passed']:>4} passed  "

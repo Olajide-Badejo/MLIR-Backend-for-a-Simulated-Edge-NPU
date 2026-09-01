@@ -44,6 +44,13 @@ MODELS_DIR = REPO_ROOT / "experiments" / "models"
 #: directory should see what the matrix actually compiles.
 BATCHES = (1, 4)
 
+#: Section 17.5's step 3 asks that each operation appear in at least one
+#: generated benchmark model's IR, and since P9 that means every level rather
+#: than one: `npu.fused_op` and `npu.yield` exist only in a `-O2` pipeline's
+#: output, so a sweep at `-O0` alone would leave two operations of the dialect
+#: with no model to appear in and the reachability check red. The levels come
+#: from the compiler's own description; see `main` below.
+
 
 def _frontend() -> object:
     sys.path.insert(0, str(REPO_ROOT / "python"))
@@ -60,8 +67,9 @@ def _frontend() -> object:
     return npu_frontend
 
 
-def stem(name: str, batch: int, registry_batch: int) -> str:
-    return name if batch == registry_batch else f"{name}-n{batch}"
+def stem(name: str, batch: int, registry_batch: int, level: int) -> str:
+    base = name if batch == registry_batch else f"{name}-n{batch}"
+    return f"{base}-O{level}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,13 +110,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
+    # Every level the compiler can build, read from the compiler rather than
+    # written down here. *Changed at P9.* Until `-O1` and `-O2` existed the
+    # sweep was `-O0` only and the filenames carried no level; now an operation
+    # that only a `-O2` pipeline can create, which is `npu.fused_op` and its
+    # terminator, has a model IR file to appear in. That is what closed the two
+    # exemptions `docs/EXEMPTIONS.md` carried from P8.
+    levels = frontend.implemented_levels()  # type: ignore[attr-defined]
+
     if arguments.list:
         for name in names:
             registry = models[name].input_shape[0]
             for batch in BATCHES:
-                base = stem(name, batch, registry)
-                print(f"experiments/models/{base}.npu.mlir")
-                print(f"experiments/models/{base}.npuisa.mlir")
+                for level in levels:
+                    base = stem(name, batch, registry, level)
+                    print(f"experiments/models/{base}.npu.mlir")
+                    print(f"experiments/models/{base}.npuisa.mlir")
         return 0
 
     if MODELS_DIR.exists() and not arguments.keep and not arguments.model:
@@ -119,18 +136,19 @@ def main(argv: list[str] | None = None) -> int:
     for name in names:
         registry = models[name].input_shape[0]
         for batch in BATCHES:
-            base = stem(name, batch, registry)
             onnx_path = frontend.generate_model(  # type: ignore[attr-defined]
                 name, MODELS_DIR, batch=batch
             )
-            for emit, suffix in (("npu", "npu.mlir"), ("npuisa", "npuisa.mlir")):
-                result = frontend.compile_model(  # type: ignore[attr-defined]
-                    onnx_path, level=0, emit=emit
-                )
-                (MODELS_DIR / f"{base}.{suffix}").write_text(
-                    result.text, encoding="utf-8"
-                )
-                written += 1
+            for level in levels:
+                base = stem(name, batch, registry, level)
+                for emit, suffix in (("npu", "npu.mlir"), ("npuisa", "npuisa.mlir")):
+                    result = frontend.compile_model(  # type: ignore[attr-defined]
+                        onnx_path, level=level, emit=emit
+                    )
+                    (MODELS_DIR / f"{base}.{suffix}").write_text(
+                        result.text, encoding="utf-8"
+                    )
+                    written += 1
 
     print(f"build-model-ir: wrote {written} IR files to {MODELS_DIR}")
     return 0

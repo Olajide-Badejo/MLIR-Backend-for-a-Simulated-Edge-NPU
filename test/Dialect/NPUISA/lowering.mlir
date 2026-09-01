@@ -302,10 +302,15 @@ func.func @concat(%a: tensor<1x4x2x2xf32>, %b: tensor<1x6x2x2xf32>)
 // is the thing that could be wrong while the shapes stayed right.
 // =============================================================================
 
+// Each constant's transfer sits immediately above the instruction that reads
+// it rather than both sitting at the top, which is the constant sinking of
+// D-0035 acting on the two constants this decomposition creates: the addend is
+// not needed until the add, so fetching it while the multiply runs is free
+// under the two port model and fetching it first is not.
 // CHECK-LABEL: func.func @batch_norm_decomposes_into_a_multiply_and_an_add(
-// CHECK-DAG:     npuisa.const dense<[1.000000e+00, 2.000000e+00]> : tensor<2xf32>
-// CHECK-DAG:     npuisa.const dense<[1.000000e+00, -2.000000e+00]> : tensor<2xf32>
+// CHECK:         npuisa.const dense<[1.000000e+00, 2.000000e+00]> : tensor<2xf32>
 // CHECK:         npuisa.mul
+// CHECK:         npuisa.const dense<[1.000000e+00, -2.000000e+00]> : tensor<2xf32>
 // CHECK:         npuisa.add
 // CHECK-NOT:     npu.batch_norm
 // CHECK-NOT:     npuisa.batch_norm
@@ -508,4 +513,85 @@ func.func @a_constant_read_twice_is_loaded_once(%x: tensor<4x4xf32>)
   %r = npu.mul ins(%a, %c : tensor<4x4xf32>, tensor<4x4xf32>)
                outs(%d1 : tensor<4x4xf32>) -> tensor<4x4xf32>
   return %r : tensor<4x4xf32>
+}
+
+// **A destination two operations share becomes two buffers.** *Added at P9, as
+// the regression test for D-0034.*
+//
+// A `tensor.empty` is a value with no contents, so two operations using one as
+// a destination are two pure functions of the same meaningless input, and at
+// the tensor level that is correct. This pass is where it stops being correct:
+// one `tensor.empty` would become one `memref.alloc`, and the second
+// convolution below reads its own output buffer through a three by three
+// window. Nothing produced this shape until `-cse` joined `-O2` at P9 and
+// merged two identical `tensor.empty` operations in one step.
+// CHECK-LABEL: func.func @a_shared_destination_becomes_two_buffers(
+// CHECK:         npuisa.const
+// CHECK:         npuisa.dma_load
+// CHECK:         %[[FIRST:[a-z_0-9]+]] = memref.alloc() : memref<1x2x4x4xf32, #npu.scratchpad>
+// CHECK:         npuisa.conv2d
+// CHECK-SAME:      outs(%[[FIRST]] :
+// CHECK:         %[[SECOND:[a-z_0-9]+]] = memref.alloc() : memref<1x2x4x4xf32, #npu.scratchpad>
+// CHECK:         npuisa.conv2d ins(%[[FIRST]],
+// CHECK-SAME:      outs(%[[SECOND]] :
+// CHECK:         return
+func.func @a_shared_destination_becomes_two_buffers(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w = npu.constant dense<5.000000e-01> : tensor<2x2x3x3xf32>
+  %d = tensor.empty() : tensor<1x2x4x4xf32>
+  %c0 = npu.conv2d ins(%x, %w : tensor<1x2x4x4xf32>, tensor<2x2x3x3xf32>)
+                   outs(%d : tensor<1x2x4x4xf32>)
+                   {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                    dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x2x4x4xf32>
+  %c1 = npu.conv2d ins(%c0, %w : tensor<1x2x4x4xf32>, tensor<2x2x3x3xf32>)
+                   outs(%d : tensor<1x2x4x4xf32>)
+                   {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                    dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x2x4x4xf32>
+  return %c1 : tensor<1x2x4x4xf32>
+}
+
+// **A hoisted constant's transfer sinks to the instruction that reads it.**
+// *Added at P9, as the regression test for D-0035.*
+//
+// This pass emits one `npuisa.const` and one `npuisa.dma_load` where each
+// `npu.constant` sits, so the block position of a constant decides when its
+// bytes are fetched, and the two port cost model of Section 10.1 charges
+// exactly that. The importer emits every constant above its own first reader
+// and MLIR's canonicalizer hoists all of them to the top of the block, which is
+// right for an operation whose cost is zero and wrong for one that becomes a
+// DRAM transfer. Below is the hoisted shape, written out by hand because that
+// is what `-O1` and `-O2` hand this pass.
+//
+// The loads must interleave with the compute, so the second weight arrives
+// while the first convolution runs. Before the fix, LeNet at `-O1` fetched all
+// eleven of its constants before any compute and its overlap fraction fell from
+// 0.83 to 0.0005.
+// CHECK-LABEL: func.func @a_hoisted_constant_sinks_to_its_reader(
+// CHECK:         npuisa.dma_load %arg0
+// CHECK:         npuisa.const dense<5.000000e-01>
+// CHECK:         npuisa.dma_load
+// CHECK:         npuisa.conv2d
+// CHECK:         npuisa.const dense<2.500000e-01>
+// CHECK:         npuisa.dma_load
+// CHECK:         npuisa.conv2d
+// CHECK:         npuisa.dma_store
+func.func @a_hoisted_constant_sinks_to_its_reader(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w0 = npu.constant dense<5.000000e-01> : tensor<2x2x3x3xf32>
+  %w1 = npu.constant dense<2.500000e-01> : tensor<2x2x3x3xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %d1 = tensor.empty() : tensor<1x2x4x4xf32>
+  %c0 = npu.conv2d ins(%x, %w0 : tensor<1x2x4x4xf32>, tensor<2x2x3x3xf32>)
+                   outs(%d0 : tensor<1x2x4x4xf32>)
+                   {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                    dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x2x4x4xf32>
+  %c1 = npu.conv2d ins(%c0, %w1 : tensor<1x2x4x4xf32>, tensor<2x2x3x3xf32>)
+                   outs(%d1 : tensor<1x2x4x4xf32>)
+                   {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                    dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x2x4x4xf32>
+  return %c1 : tensor<1x2x4x4xf32>
 }

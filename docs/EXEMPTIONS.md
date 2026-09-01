@@ -36,18 +36,22 @@ whatever they lower to, and exercised by at least one model. Neither one needs
 an entry in this file, and adding one here would be recording as a temporary
 gap something that is a permanent and intended property.
 
-The P8 gate expects this block to be empty **or** every gap to be a dated entry
-naming its phase, and at P8 it is the second of those. Two entries are in force
-and both are the same fact seen twice: `npu.fused_op` and `npu.yield` are
-created by `-npu-fuse-ops`, which lands at P9, so no model's IR can contain one
-at P8. They are structural and therefore outside the importability clause, and
-they satisfy lowering, encoding and simulation; the model layer is the one they
-cannot satisfy until the pass that creates them exists.
+**The block is empty, and has been since P9.** The P8 gate allowed either an
+empty block or a dated entry per gap, and at P8 it was the second of those: two
+entries, both the same fact seen twice. `npu.fused_op` and `npu.yield` are
+created by `-npu-fuse-ops`, which Section 12 puts at `-O2`, and `-O2` did not
+exist, so no model's IR could hold one. Nothing about either operation was
+unfinished; what was missing was a producer.
+
+`-npu-fuse-ops` landed at P9 and `-O2` runs it, `scripts/build-model-ir.py`
+sweeps every level the compiler builds rather than `-O0` alone, and both
+operations now appear in the IR of five of the seven models. The two entries
+were deleted by the commit that wired the pass into a level, which is the commit
+that made them false; a commit earlier would have deleted an exemption for a gap
+that was still open and turned the check red.
 
 An entry is a thing to be justified at a gate, not a routine way to land an
-operator that is not finished. These two are justified by a phase boundary
-rather than by unfinished work, they name the phase that closes them, and the
-commit that lands `-npu-fuse-ops` deletes them.
+operator that is not finished.
 
 ## Entry form
 
@@ -69,25 +73,23 @@ recording history. The history lives in git.
 
 ```
 # op                layer      date         phase   reason
-npu.fused_op        model      2026-08-31   P9      created by -npu-fuse-ops, which lands at P9, so no model's IR holds one yet
-npu.yield           model      2026-08-31   P9      the terminator of an npu.fused_op region, absent for exactly as long as the region is
 ```
 
-Two, and they are one fact. Every **imported computation** operation of the
-`npu` dialect meets all five layers of law 2 at P8, with no exemption of any
-kind. The two structural operations meet lowering, encoding and simulation, and
-cannot meet the model layer until `-npu-fuse-ops` exists to create them.
+None. Every operation of the `npu` dialect meets every layer of law 2 it is held
+to: the twelve **imported computation** operations meet all five, and the two
+**structural** ones meet the four that are not importability.
 
-**The gap is a phase boundary rather than unfinished work**, and the distinction
-matters because it decides what closing it looks like. Nothing about
-`npu.fused_op` is missing: `-npu-lower-to-npuisa` flattens the region,
-`test/Dialect/NPUISA/lowering.mlir` has a case for it, the ISA description
-records both operations as reaching the encoder by elimination, and the
-simulator needs no kernel for either because neither survives to the instruction
-stream. What is missing is a **producer**. `-npu-fuse-ops` is the only thing
-that creates an `npu.fused_op`, Section 12 puts it at `-O2`, and `-O2` arrives
-at P9.
+**What closed the last two, and why the timing was the whole of it.** The gap
+was a phase boundary rather than unfinished work, and that decided what closing
+it looked like. Nothing about `npu.fused_op` was missing at P8:
+`-npu-lower-to-npuisa` flattened the region, `test/Dialect/NPUISA/lowering.mlir`
+had a case for it, the ISA description recorded both operations as reaching the
+encoder by elimination, and the simulator needed no kernel for either because
+neither survives to the instruction stream. What was missing was a producer, and
+`-npu-fuse-ops` is the only thing that creates one.
 
-So the commit that lands `-npu-fuse-ops` deletes both entries, and if it does
-not, the check goes red at the next run rather than the pass going quietly
-untested.
+So the entries could not be deleted by the commit that landed the pass, only by
+the commit that put it in a level and swept the model IR at that level. Those
+are one commit at P9 and the entries went with it. Deleting them a commit
+earlier would have been recording a gap as closed while it was open, and the
+check would have said so.

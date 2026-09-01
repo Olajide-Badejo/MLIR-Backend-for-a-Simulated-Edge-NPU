@@ -24,17 +24,26 @@ is added, and nothing goes red.
 **The stages.** ``--emit`` stops after one of four:
 
 ===========  ==========================================================
-``import``   the IR the importer produced, verified by `npu-opt`
-``npu``      the same IR after the level's `npu` level passes
+``import``   the IR the importer produced, as the importer printed it
+``npu``      the same IR through the level's tensor level passes
 ``npuisa``   after lowering and scratchpad allocation
 ``nbin``     the binary, from `npu-translate`
 ===========  ==========================================================
 
-At `-O0` ``import`` and ``npu`` are the same text, because `-O0` runs no `npu`
-level pass at all. That is a property rather than an accident and
-``test_compile_driver.py`` asserts it, so that the day `-O1` lands and the two
-stop being equal, the assertion moves with the change rather than being noticed
-later.
+**Each stage is the level's own pipeline stopped at a different point**, not a
+chain in which the stages feed each other. ``--emit`` names where to stop, and
+the two `npu-opt` stages both read the imported text.
+
+At `-O0` the tensor level half of the pipeline is empty, so ``--emit npu``
+parses, verifies and reprints and changes nothing else. It comes out byte for
+byte identical to ``--emit import``, which is a stronger property than it needs
+to be and is asserted as such: the importer already prints locations, so the
+round trip through `npu-opt` moves nothing. ``test_compile_driver.py`` asserts
+that, and asserts separately that at `-O1` and `-O2` the two stages differ.
+
+Until P9 this stage ran nothing at all, which made the sentence "the IR the
+importer produced, verified by `npu-opt`" describe a verification that did not
+happen.
 
 **Running the program is `npu-sim`'s job, not this one's.** ``run_program``
 below wraps it for the harnesses, which need the outputs and the statistics as
@@ -196,12 +205,17 @@ def ablatable_passes(level: int) -> list[str]:
     a pass the day one is added. This is that read. At `-O0` it is empty, and
     correctly so: both of the level's passes are marked not ablatable, since
     removing either produces no program at all.
+
+    Duplicates are collapsed. `-canonicalize` has two entries at `-O2`, which
+    Section 12's table marks as deliberate, and an ablation removes *the pass*
+    rather than one of its two positions, so the set is what an ablation sweeps
+    and the list is what the pipeline runs.
     """
-    return [
-        str(entry["pass"])
-        for entry in level_description(level)["passes"]
-        if entry["ablatable"]
-    ]
+    seen: list[str] = []
+    for entry in level_description(level)["passes"]:
+        if entry["ablatable"] and str(entry["pass"]) not in seen:
+            seen.append(str(entry["pass"]))
+    return seen
 
 
 def levels_that_eliminate_dead_code() -> list[int]:
@@ -210,13 +224,13 @@ def levels_that_eliminate_dead_code() -> list[int]:
     Section 17.3a's dead subgraph injection asserts that a subgraph feeding
     nothing leaves the instruction count unchanged, and that is a statement
     about a level with a pass that removes it. Which levels those are is read
-    out of the compiler's own description, so the day P9 adds `-canonicalize`
-    to `-O1` and `-O2` the check starts asserting without an edit, rather than
-    the day somebody remembers to update a list of pass names.
+    out of the compiler's own description, so when P9 added `-canonicalize` to
+    `-O1` and `-O2` the check started asserting without an edit to it, rather
+    than on the day somebody remembered to update a list of pass names.
 
-    Empty at P8. `-O0` runs lowering and allocation, neither of which removes
-    anything, which is why the P8 form of the same check asserts that the count
-    grew by exactly what the dead subgraph brought.
+    `[1, 2]` since P9. `-O0` runs lowering and allocation, neither of which
+    removes anything, which is why the `-O0` form of the same check asserts the
+    opposite: that the count grew by exactly what the dead subgraph brought.
     """
     return [
         int(row["level"])
@@ -333,14 +347,37 @@ def compile_model(
 
     npu_opt = find_tool("npu-opt")
 
+    pipeline = str(row["pipeline"])
+
     # ---- npu -------------------------------------------------------------
     #
-    # The `npu` level passes of the chosen level, which at `-O0` are none. The
-    # stage exists at `-O0` anyway and produces the imported text unchanged,
-    # because a stage that appeared at `-O1` would make `--emit npu` mean two
-    # different things at two levels.
+    # The level's own pipeline, stopped after its tensor level half. *Changed at
+    # P9.* Until `-O1` existed this stage returned the importer's text unchanged
+    # and ran nothing at all, which made the documented claim that `--emit
+    # import` is "the IR the importer produced, verified by npu-opt" false: no
+    # verification happened at either stage.
+    #
+    # It runs through the registered pipeline with `stop-after=npu` rather than
+    # through a pass list assembled here, which is the same rule Section 17.4
+    # states for the tests: a pass list matching no optimization level enforces
+    # nothing, and a driver that assembled one would make every such test vacuous
+    # at once.
+    #
+    # At `-O0` the tensor level half is empty, so this stage is a parse, a
+    # verification and a reprint. That is what "`-O0` is import and verify"
+    # means, and it is why the two stages no longer produce byte identical text:
+    # the printer here is `npu-opt`'s and it is asked for debug information,
+    # because the ONNX node names have to survive to the `.nbin`'s debug section.
+    #
+    # The budget is not passed. It belongs to the allocator, the allocator is in
+    # the other half of the pipeline, and an option that reached a stage no pass
+    # of which could consume it would be a silent no effect.
     started = time.perf_counter()
-    npu_level = imported
+    npu_level = _run(
+        [str(npu_opt), "-", f"--{pipeline}=stop-after=npu", "--mlir-print-debuginfo"],
+        "npu",
+        stdin=imported,
+    )
     record("npu", started, npu_level)
     if emit == "npu":
         result.text = npu_level
@@ -348,19 +385,20 @@ def compile_model(
 
     # ---- npuisa ----------------------------------------------------------
     #
-    # One npu-opt invocation running the registered pipeline, not a pass list
-    # assembled here. Section 17.4: a test that runs a hardcoded pass list
-    # matching no optimization level enforces nothing, and a driver that did so
-    # would make every such test vacuous at once.
+    # One npu-opt invocation running the whole registered pipeline, over the
+    # **imported** text rather than over the stage above. `--emit` names where to
+    # stop, so each stage is the same pipeline stopped at a different point
+    # rather than a chain in which the stages feed each other. Feeding the npu
+    # stage's output in here would run its passes twice, which is harmless
+    # because they are idempotent and wrong to rely on for exactly that reason.
     started = time.perf_counter()
-    pipeline = str(row["pipeline"])
     argument = f"--{pipeline}"
     if budget is not None:
         argument += f"=budget={budget}"
     lowered = _run(
         [str(npu_opt), "-", argument, "--mlir-print-debuginfo"],
         "npuisa",
-        stdin=npu_level,
+        stdin=imported,
     )
     record("npuisa", started, lowered)
     if emit == "npuisa":
@@ -516,8 +554,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="LEVEL",
         help=(
             "the optimization level. -O0 is import and verify, then lowering "
-            "and allocation. Higher levels arrive at P9 and are refused by "
-            "name until they do."
+            "and allocation; -O1 adds constant folding and canonicalization; "
+            "-O2 adds bias fusion, batch norm folding, operation fusion, CSE, "
+            "SCCP and symbol DCE. Layout assignment, tiling and double "
+            "buffering arrive at P13 and are not in any level yet."
         ),
     )
     parser.add_argument(
@@ -525,8 +565,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=EMIT_STAGES,
         default="nbin",
         help=(
-            "stop after this stage. At -O0 'import' and 'npu' are the same "
-            "text, because -O0 runs no npu level pass."
+            "stop after this stage. Each stage is the level's own pipeline "
+            "stopped at a different point; at -O0 the tensor level half is "
+            "empty, so 'npu' parses, verifies and reprints."
         ),
     )
     parser.add_argument(

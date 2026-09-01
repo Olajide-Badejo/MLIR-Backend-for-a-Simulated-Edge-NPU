@@ -507,6 +507,137 @@ LogicalResult expand(ModuleOp module) {
     if (failed(decomposeBatchNorm(op, rewriter)))
       return failure();
 
+  // **One destination, one buffer.** *Added at P9, as the fix for D-0034.*
+  //
+  // A `tensor.empty` is a value with no contents, so two operations that use
+  // the same one as a destination are two pure functions of the same
+  // meaningless input, and at the tensor level that is entirely correct. This
+  // pass is the layer at which it stops being correct: it converts one
+  // `tensor.empty` into one `memref.alloc`, so a shared destination becomes two
+  // instructions writing one buffer, and when the second of them also *reads*
+  // that buffer through a window the program is simply wrong.
+  //
+  // Nothing produced this shape before `-O2` existed, because the importer
+  // emits one `tensor.empty` per compute operation. `-cse` produces it in one
+  // step, because two `tensor.empty` operations of the same type are identical
+  // operations with no operands and merging them is exactly what a common
+  // subexpression eliminator is for. The fix belongs here rather than in `-cse`
+  // for the same reason the aliasing rule belongs here: this is where a value
+  // becomes a buffer.
+  //
+  // Every use after the first gets its own clone. The clone goes above the
+  // original, which is above every use of it, so dominance is preserved without
+  // a walk.
+  SmallVector<tensor::EmptyOp> destinations;
+  module.walk([&](tensor::EmptyOp op) { destinations.push_back(op); });
+  for (tensor::EmptyOp op : destinations) {
+    SmallVector<OpOperand *> uses;
+    for (OpOperand &use : op.getResult().getUses())
+      uses.push_back(&use);
+    if (uses.size() < 2)
+      continue;
+    rewriter.setInsertionPoint(op);
+    for (OpOperand *use : llvm::drop_begin(uses))
+      use->set(rewriter.clone(*op.getOperation())->getResult(0));
+  }
+
+  // **And each destination is moved down to the operation that writes it.**
+  // *Added at P9, beside the split above and for the allocator rather than for
+  // correctness.*
+  //
+  // A `memref.alloc` is live from where it is defined, and Section 13.1's
+  // liveness runs from the allocation to the last operation that touches the
+  // buffer. So a destination defined earlier than it is written is a buffer the
+  // allocator must keep out of everyone else's way for longer than the program
+  // needs it.
+  //
+  // `-npu-fuse-ops` produces exactly that. A region takes every value it reads
+  // as an operand, destinations included, so both of a fused chain's
+  // destinations are defined *above* the region and the flattening leaves them
+  // there. On LeNet at `-O2` that raised the sweep line peak from 194624 bytes
+  // to 195040 and the tight budget cell of Section 15, measured at P8 and
+  // frozen, stopped fitting: an optimization level that could not compile a
+  // program `-O0` compiled, from a pass that changed no instruction.
+  //
+  // The importer already emits each `tensor.empty` immediately above its
+  // writer, so this is a no operation at `-O0`. Every destination has exactly
+  // one use by the time this runs, because the split above gave it one.
+  // Recollected, because the split above created clones and they need moving
+  // for the same reason the originals do.
+  destinations.clear();
+  module.walk([&](tensor::EmptyOp op) { destinations.push_back(op); });
+  for (tensor::EmptyOp op : destinations) {
+    if (!op.getResult().hasOneUse())
+      continue;
+    Operation *user = *op.getResult().getUsers().begin();
+    if (user->getBlock() != op->getBlock())
+      continue;
+    if (user->getPrevNode() != op.getOperation())
+      op->moveBefore(user);
+  }
+
+  // **A constant is moved to just above its first reader.** *Added at P9, as
+  // the fix for D-0035.*
+  //
+  // This pass emits one `npuisa.const` and one `npuisa.dma_load` at the position
+  // of each `npu.constant`, so where a constant sits in the block decides when
+  // its bytes are fetched, and the two port cost model of Section 10.1 charges
+  // exactly that: a transfer overlaps a computation only when the computation
+  // does not depend on it. The importer emits every constant immediately above
+  // its first use, so at `-O0` the loads interleave with the compute and the
+  // overlap is high.
+  //
+  // MLIR's canonicalizer hoists every `ConstantLike` operation to the top of the
+  // block, which is right for an operation whose cost is zero and wrong for one
+  // that turns into a DRAM transfer. On LeNet at `-O1` it moved all eleven loads
+  // above all the compute, in an order that put the *last* layer's weights
+  // first, so the first convolution waited for essentially the whole 16441 cycle
+  // transfer budget and the overlap fraction fell from 0.83 to 0.0005: 37 percent
+  // more simulated cycles from an optimization level.
+  //
+  // The fix is here rather than in a scheduling pass because there is nothing to
+  // schedule: this pass chooses where to put a transfer it is about to create,
+  // and the answer is where the data is needed. It is a no operation at `-O0`,
+  // where the importer's placement is already this one, which is why the `-O0`
+  // baseline does not move.
+  // **It sinks past computation and nothing else.** The insertion point is not
+  // "immediately above the first user" but "above the run of constants and
+  // destinations that immediately precedes the first user", which is where the
+  // importer already puts one. Sinking to the tighter point would reorder the
+  // `memref.alloc` operations of a program nothing had hoisted, which changes no
+  // instruction and no number and would still have made every `-O0` lit test in
+  // this file disagree with the IR for no reason a reader could act on.
+  SmallVector<npu::ConstantOp> toSink;
+  module.walk([&](npu::ConstantOp op) { toSink.push_back(op); });
+  for (npu::ConstantOp op : toSink) {
+    Operation *earliest = nullptr;
+    for (Operation *user : op.getResult().getUsers()) {
+      if (user->getBlock() != op->getBlock())
+        continue;
+      if (!earliest || user->isBeforeInBlock(earliest))
+        earliest = user;
+    }
+    // No user in this block is either a dead constant, which the sweep below
+    // erases, or one read from somewhere this cannot reason about, and moving
+    // it would be moving it past nothing or into a place it does not dominate.
+    if (!earliest)
+      continue;
+
+    Operation *anchor = earliest;
+    bool alreadyPlaced = false;
+    while (Operation *previous = anchor->getPrevNode()) {
+      if (previous == op.getOperation()) {
+        alreadyPlaced = true;
+        break;
+      }
+      if (!isa<tensor::EmptyOp, npu::ConstantOp>(previous))
+        break;
+      anchor = previous;
+    }
+    if (!alreadyPlaced)
+      op->moveBefore(anchor);
+  }
+
   // A constant nothing reads is erased before the conversion sees it, and this
   // is load bearing rather than tidiness. The decomposition above consumes its
   // four parameters at rewrite time and leaves them behind with no uses; a

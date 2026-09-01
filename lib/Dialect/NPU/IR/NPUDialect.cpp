@@ -43,3 +43,24 @@ void NPUDialect::initialize() {
   declarePromisedInterface<TilingInterface, ConcatOp>();
   declarePromisedInterface<TilingInterface, BatchNormOp>();
 }
+
+/// The one operation of this dialect that can hold a value.
+///
+/// *Added at P9, as the fix for D-0033.* Without this hook `-sccp` computed the
+/// right lattice over this dialect's IR and then had nowhere to put the answer,
+/// so it reported no change on every input and its Section 16.2 ablation row
+/// would have been a row of zeros for a reason that was four missing lines
+/// rather than a property of the pass.
+///
+/// The guard is narrow on purpose. `npu.constant`'s verifier requires the
+/// attribute's own type to equal the result type, so an attribute that is not
+/// an `ElementsAttr`, or one whose type is not the requested type, has no
+/// operation in this dialect that could hold it, and returning null is how a
+/// materializer says so rather than building something that fails to verify.
+Operation *NPUDialect::materializeConstant(OpBuilder &builder, Attribute value,
+                                           Type type, Location loc) {
+  auto elements = dyn_cast<ElementsAttr>(value);
+  if (!elements || elements.getType() != type)
+    return nullptr;
+  return ConstantOp::create(builder, loc, type, elements);
+}

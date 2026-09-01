@@ -48,6 +48,7 @@ def minimal() -> dict[str, Any]:
                 "tests": ["a", "b"],
             }
         },
+        "levels": [0, 2],
         "cells": [
             {
                 "model": "lenet",
@@ -56,7 +57,17 @@ def minimal() -> dict[str, Any]:
                 "instructions": 25,
                 "cycles": 17766.25,
                 "max_abs_error_vs_onnxruntime": 3e-08,
-            }
+                "max_abs_movement_vs_o0": 0.0,
+            },
+            {
+                "model": "lenet",
+                "level": 2,
+                "budget": "default",
+                "instructions": 25,
+                "cycles": 17766.25,
+                "max_abs_error_vs_onnxruntime": 3e-08,
+                "max_abs_movement_vs_o0": 4.47e-08,
+            },
         ],
     }
 
@@ -156,6 +167,22 @@ def test_a_cell_that_stopped_being_produced_is_drift(empty_goldens: Path) -> Non
     assert any("no longer produced" in line for line in drift)
 
 
+def test_a_level_set_change_is_drift_and_says_why(empty_goldens: Path) -> None:
+    """*Added at P9 with the `levels` field.*
+
+    A compiler that stopped building a level would produce fewer cells, and the
+    per cell comparison would report each of them as "recorded and no longer
+    produced" without ever saying that the *set of levels* had changed. One line
+    that names the cause above forty that name its consequences is the readable
+    report Section 17.6 asks for.
+    """
+    current = minimal()
+    current["levels"] = [0]
+    current["cells"] = [cell for cell in current["cells"] if cell["level"] == 0]
+    drift = baseline.compare(minimal(), current, {})
+    assert any("levels: [0, 2] -> [0]" in line for line in drift)
+
+
 def test_a_generator_version_change_is_reported_first(empty_goldens: Path) -> None:
     """Because it makes every cell below it a measurement of a different suite."""
     current = minimal()
@@ -199,35 +226,75 @@ def test_the_committed_baseline_is_at_this_schema_version() -> None:
     assert committed()["schema_version"] == baseline.SCHEMA_VERSION
 
 
-def test_the_committed_baseline_records_minus_o_zero_only() -> None:
-    """Section 17.6: at P8 the only level that exists is -O0.
+def test_the_committed_baseline_records_every_level_the_compiler_builds() -> None:
+    """Section 17.6's per level fields, which arrived at P9 with the levels.
 
-    A baseline that claimed a level the compiler cannot emit is a baseline
-    nobody can re-record.
+    Until P9 this read `== {0}` and said that a baseline claiming a level the
+    compiler cannot emit is a baseline nobody can re-record. The claim is the
+    same and the answer moved: the set is read from the compiler on both sides,
+    so a level added without a re-record fails here rather than producing a
+    baseline that covers less than the compiler does.
     """
-    assert {cell["level"] for cell in committed()["cells"]} == {0}
+    from npu_frontend import implemented_levels
+
+    recorded = committed()
+    assert recorded["levels"] == implemented_levels()
+    assert {cell["level"] for cell in recorded["cells"]} == set(implemented_levels())
 
 
 def test_the_committed_baseline_names_its_absent_fields() -> None:
     """Explicitly absent, with the phase that adds each.
 
-    Not zero, and not missing without explanation. A P8 baseline that claimed
-    energy would be recording a number no phase had computed.
+    Not zero, and not missing without explanation. A baseline that claimed
+    energy before P11 would be recording a number no phase had computed.
+
+    `per_level` was here until P9 and left with the levels themselves, which is
+    the removal Section 17.6 asks for in the same commit that adds the fields.
     """
     absent = committed()["absent_fields"]
-    assert set(absent) == {"energy", "per_level"}
+    assert set(absent) == {"energy"}
     assert "P11" in absent["energy"]
-    assert "P9" in absent["per_level"]
     for cell in committed()["cells"]:
         assert not any("energy" in key for key in cell)
 
 
-def test_the_committed_baseline_covers_every_model_at_both_budgets() -> None:
-    from npu_frontend import MODELS
+def test_the_committed_baseline_records_this_phases_numerics_movement() -> None:
+    """P9's gate: numerics within 1e-6 at every level, with the largest observed
+    movement recorded.
+
+    This is the recording. Every cell carries how far its answer sits from the
+    same model's at `-O0` under the same budget, it is zero at `-O0` by
+    construction, and the largest of them is inside the band Section 17.6 sets
+    for this phase. `docs/BREAKING_CHANGES.md` names the pass it comes from.
+
+    The lower bound matters as much as the upper one: a phase in which every
+    cell moved by exactly zero would be a phase whose `-O2` did nothing to any
+    model's arithmetic, and the declaration in `BREAKING_CHANGES.md` would be
+    describing a movement that did not happen.
+    """
+    cells = committed()["cells"]
+    for cell in cells:
+        assert "max_abs_movement_vs_o0" in cell, cell
+        if cell["level"] == 0:
+            assert cell["max_abs_movement_vs_o0"] == 0.0, cell
+
+    worst = max(float(cell["max_abs_movement_vs_o0"]) for cell in cells)
+    assert 0.0 < worst <= 1e-6, (
+        f"the largest movement against -O0 is {worst:.3e}. Section 17.6 puts P9 "
+        f"in the within 1e-6 class, and a movement of exactly zero everywhere "
+        f"would mean no level changed any model's arithmetic."
+    )
+
+
+def test_the_committed_baseline_covers_every_model_at_every_level_and_budget() -> None:
+    from npu_frontend import MODELS, implemented_levels
 
     cells = committed()["cells"]
-    assert {(cell["model"], cell["budget"]) for cell in cells} == {
-        (name, budget) for name in MODELS for budget in ("default", "tight")
+    assert {(cell["model"], cell["level"], cell["budget"]) for cell in cells} == {
+        (name, level, budget)
+        for name in MODELS
+        for level in implemented_levels()
+        for budget in ("default", "tight")
     }
 
 
@@ -235,6 +302,10 @@ def test_every_committed_golden_has_a_cell() -> None:
     recorded = {path.stem for path in baseline.GOLDEN_DIR.glob("*.npy")}
     if not recorded:
         pytest.skip("no goldens have been recorded")
-    models = {cell["model"] for cell in committed()["cells"]}
+    cells = committed()["cells"]
+    models = {cell["model"] for cell in cells}
+    levels = {int(cell["level"]) for cell in cells}
     for name in recorded:
-        assert name.split("-O")[0] in models
+        model, _, rest = name.partition("-O")
+        assert model in models
+        assert int(rest.split("-")[0]) in levels

@@ -3149,3 +3149,159 @@ returned green:
 <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/33432842831>.
 The `pull_request` trigger's own green is shown by the phase's merge pull
 request in the ordinary course of merging.
+
+## 2026-09-01 Phase 9: the passes were the easy half, and every interesting thing was one level down
+
+**Where the time went.** Writing four passes and wiring eight into two levels
+took an afternoon and produced no surprises: each pass fired where its lit test
+said it would and declined where its negative case said it would, first try.
+Then the levels ran on real models and three defects fell out in ninety minutes,
+none of which any pass's own test could have found, because all three are
+properties of a **composition** rather than of a pass.
+
+That is the entry's whole point, so it goes first. A pass is testable in
+isolation and this phase tested every one of them that way. A pipeline is not
+the sum of its passes, and the only way to learn what it does is to run it and
+read the output.
+
+**D-0034, found by reading `-O2`'s output while writing CHECK lines.** Not by a
+test. `-cse` merges two identical `tensor.empty` operations, which is correct:
+they are identical operations with no operands, `npu` operations are `Pure` and
+take their destination by value, and a destination has no contents, so two
+operations sharing one are two pure functions of the same meaningless input.
+`-npu-lower-to-npuisa` turns one `tensor.empty` into one `memref.alloc`, which
+had been correct for four phases because the importer emits one per compute
+operation and nothing had ever merged them. Put together they made two
+instructions write one buffer, and when the second read that buffer through a
+three by three window the program was simply wrong.
+
+Every test still passed. The shape that reaches it in the model suite is a relu
+reading its own output, which is elementwise and gives the right answer, so the
+suite would have shipped it. The convolution chain that shows it was written by
+hand while looking at something else.
+
+**D-0035, found by measuring `-O1` against `-O0` before recording the
+baseline.** LeNet went from 17766.25 cycles to 24392.75, a 37 percent regression
+from an optimization level, with the same twenty five instructions, the same
+16441 cycles of transfer and the same 7955.75 of compute. Only the overlap
+moved: 0.8334 to 0.0005.
+
+The cause is one line of MLIR's canonicalizer doing exactly what it should.
+Constant hoisting moves every `ConstantLike` operation to the top of the block,
+which is right for an operation whose cost is zero. In this compiler an
+`npu.constant` becomes an `npuisa.const` and a `dma_load` at the position it
+sits in, so its position is when its bytes are fetched, and Section 10.1's two
+port model charges exactly that. Hoisting put all eleven of LeNet's transfers
+above all of its compute, in an order that happened to put the last layer's
+weights first, so the first convolution waited for the whole transfer budget.
+
+The second half arrived an hour later from the same measurement. `-npu-fuse-ops`
+takes every value its region reads as an operand, destinations included, so a
+fused chain's destinations sit above the region and the flattening leaves them
+there. Liveness runs from the allocation, so LeNet's `-O2` sweep line peak went
+from 194624 bytes to 195040 and **the tight budget cell stopped compiling**, at
+a budget `docs/adr/0008` froze at P8. An optimization level that could not
+compile a program `-O0` compiled.
+
+**Both halves are the same mistake and the fix is one rule.** A pass moved an
+operation whose position was free at the level it was reasoning about and
+expensive one level down. Neither pass is wrong; what was missing is that the
+layer which turns a position into a cost had no opinion about position. It has
+one now: in the pre conversion stage, a constant sinks back above its first
+reader and a destination down to the operation that writes it, both past
+computation and nothing else. Both are no operations at `-O0`, where the
+importer's placement is already this one, and the `-O0` half of the baseline is
+unchanged bit for bit, which was checked by reading the P8 file out of git and
+diffing it field by field rather than by argument.
+
+**The alternative was to re-measure the tight budgets and it would have been
+wrong.** It was available, it would have taken twenty minutes, and it would have
+moved every tight budget cell in the project's history to accommodate a
+placement artefact. Ground rule 7 would have been satisfied by declaring it
+first, which is exactly why declaring a movement is not the same as being
+allowed to cause one.
+
+**D-0033, found by looking for a positive test.** Section 12's rule is that
+every pass has a positive lit test and at least one negative one. `-sccp` is an
+upstream pass and I expected the positive case to be the easy half; instead
+`npu-opt --sccp` returned every module I gave it byte identical, including one
+built specifically to have a constant to propagate through a private function's
+only call site. The dialect implemented no `materializeConstant`. MLIR's
+constant propagation is a lattice plus a materialiser, the lattice worked, and
+the solver asked the dialect for an operation to hold the answer, got null, and
+left the value alone. No diagnostic, exit code zero.
+
+The hook has been missing since P1 and would have stayed missing. Nothing ran
+`-sccp` until this phase, and a gate that asked only for the negative case would
+have been met by a pass that never fires. That is the sharpest argument for the
+positive half of Section 12's rule I have run into, and it is worth recording
+because the negative half is the one that feels rigorous.
+
+**The ordering of the levels was a measurement too.** Section 5.1 lists the
+batch norm fold before the bias fusion. Written that way, `test/Pipeline/
+opt-levels.mlir` went red on a function with a convolution, a separate bias add
+and a batch norm: the fold matches on a convolution as the batch norm's
+producer, and until the bias has moved the producer is the add, so the fold
+declined, and then `-npu-fuse-ops` declined too because the activation's
+producer was a batch norm rather than a convolution. One ordering choice turning
+three passes off. Swapping them fixed it, and Section 12's own note asks for the
+fold "before fusion, so the convolution still has no fused **activation**",
+which `-npu-fuse-ops` still is.
+
+**The metamorphic tolerance question came out with a different mechanism than
+P8 predicted.** P8 said fusion changes accumulation order, so the four relations
+would stop being exactly equal and P9 owed the number. Measured over 84 cells,
+29 of which apply: at `-O0` and `-O1` every cell is still exactly zero, and at
+`-O2` exactly one cell moves, by 2.98e-08.
+
+Fusion in general is not the reason, and this took a few minutes to see. A
+relation compiles the original and the variant **at the same level**, so a
+reassociating pass runs on both sides and cancels. What does not cancel is a
+rewrite that changes which passes can **match**: `convolution_split` replaces
+one convolution with two over channel groups and a concatenation, the batch
+norm's producer becomes an `npu.concat`, and `-npu-fold-batchnorm` folds the
+original and declines on the variant. The 2.98e-08 is the fold's own movement
+showing up on one side of a comparison between two programs that still compute
+the same function.
+
+So the tolerance is real and it is narrow, and which levels it applies at is
+read out of the compiler rather than written down as a list of level numbers.
+`-O0` and `-O1` keep byte equality, and a level that stopped folding would get
+it back with no edit.
+
+**The declare then re-record procedure has a wrinkle nobody had met yet.** The
+baseline records the pass and fail count of every suite, and this phase's own
+schema commit makes five assertions about the committed baseline fail until the
+re-record lands. So the first `regression-baseline.sh` run recorded a red pytest
+suite and warned about it in its own words: "a baseline recorded from a red tree
+records what is broken as if it were correct". The fix is to record twice, the
+second run reading the file the first wrote. P13 and P14 carry the same step and
+will meet the same wrinkle; it is in `docs/PHASE_STATE.md` for them.
+
+**Three assertions were left to move and two of them moved.** The third,
+`test_import_and_npu_are_the_same_text_at_minus_o_zero`, was expected to go red
+because the driver's `npu` stage now runs `npu-opt` at every level rather than
+returning the importer's text. It did not: the importer already prints
+locations, so its output round trips through `npu-opt` byte for byte. That is a
+stronger property than the test was written to assert, and I kept the assertion
+and rewrote the docstring rather than weakening it to something about operation
+lists. A prediction that turns out unnecessary is a finding, and the reason it
+was unnecessary is worth more than the prediction was.
+
+**What this phase did not find is worth as much as what it did.** Two of the
+eight ablatable passes will produce ablation rows of exactly zero at P10.
+`-npu-fuse-bias` fires on no model of the suite, because every convolution in it
+carries its bias inline as a third `Conv` input, which is what both
+`torch.onnx.export` and this project's ONNX built models emit; the gate's clause
+is that it fires on a real imported model and it does, on one built for it. And
+`-sccp` cannot fire on a single function program at all, whatever the dialect
+can materialise.
+
+Neither is a defect and both would read as one in a results table, so both are
+in `docs/PHASE_STATE.md`'s open questions with the fix and its cost:
+`dilated_stack`'s `conv1` is already biasless and followed by a `Relu`, so one
+`Add` node would give the bias fusion a target in the suite, at the price of a
+`GENERATOR_VERSION` bump, every `dilated_stack` cell, and possibly a tight budget
+`docs/adr/0008` froze. That is a decision for the phase that owns the
+measurement, which is P10, and not one to take quietly inside the phase that
+wrote the pass.
