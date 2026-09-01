@@ -201,8 +201,32 @@ jobs:
       CCACHE_MAXSIZE: 2G
 
     steps:
+      # fetch-depth: 0, and this is D-0041 rather than a preference.
+      #
+      # actions/checkout defaults to fetch-depth 1, which is one commit and no
+      # history. P10 is the first phase whose tests ask questions about history:
+      # law 3 of Section 0.2 asserts that every published number traces to a
+      # commit that resolves, and law 4's mechanism is `git merge-base
+      # --is-ancestor` between a prediction's commit and the commit a result was
+      # measured at. Neither question has an answer in a checkout that fetched
+      # one commit, and the first CI run of this phase produced eight failures
+      # that were all this.
+      #
+      # Depth 0 rather than a narrower fetch. A narrow fetch would have to name
+      # the commits to deepen to, which are the shas recorded in result files and
+      # in prediction entries, so the fetch would need updating every time a
+      # result is re-recorded and would fail in exactly the situation it exists
+      # to serve. This repository is a few hundred commits and the full fetch
+      # costs seconds.
+      #
+      # The code no longer depends on this being right, which is the other half
+      # of D-0041: `npu_frontend.predictions.require_full_history` refuses with
+      # one readable message when the history is absent, rather than reporting
+      # every historical sha as a commit that does not exist.
       - name: Check out the repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Report the image this job is running in
         run: |
@@ -1022,8 +1046,13 @@ jobs:
       MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
 
     steps:
+      # fetch-depth: 0 for the same reason as `build-and-test`, D-0041. This job
+      # runs `scripts/coverage.sh`, which runs the whole pytest suite, so it asks
+      # the same questions about history and needs the same answer available.
       - name: Check out the repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # The Python half of Section 17.7 needs the suite's dependencies, which
       # this job did not install while its thresholds were 0 and the Python half

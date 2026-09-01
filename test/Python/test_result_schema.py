@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from npu_frontend.predictions import require_full_history
 from npu_frontend.results import (
     ACCURACY_KEYS,
     CELL_KEYS,
@@ -381,7 +382,15 @@ def test_the_deltas_are_the_subtraction_they_claim(
 
 def test_every_manifest_git_sha_resolves(results: list[dict[str, Any]]) -> None:
     """Section 16.1, line for line: a committed number tracing to a commit that
-    does not exist is the exact failure this test prevents."""
+    does not exist is the exact failure this test prevents.
+
+    **The history guard comes first, and it is D-0041.** In a shallow checkout
+    every one of these shas is absent, and without the guard this test reports
+    each of them as a commit that does not exist. That is a true statement about
+    the checkout and a false one about the repository, and the false reading is
+    the one somebody acts on.
+    """
+    require_full_history("resolving every recorded manifest.git_sha")
     for result in results:
         sha = result["manifest"]["git_sha"]
         completed = subprocess.run(
@@ -392,7 +401,8 @@ def test_every_manifest_git_sha_resolves(results: list[dict[str, Any]]) -> None:
         )
         assert completed.returncode == 0, (
             f"{result['cell']['name']} records git_sha {sha}, which is not a "
-            f"commit in this repository"
+            f"commit in this repository. The repository is not shallow, so the "
+            f"commit is genuinely absent rather than merely unfetched."
         )
 
 

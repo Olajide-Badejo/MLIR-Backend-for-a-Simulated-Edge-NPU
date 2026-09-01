@@ -267,7 +267,7 @@ that runs pytest.
 
 ## Defects
 
-One, found by this branch and fixed in it.
+Two, both found by this branch and fixed in it.
 
 - **D-0040**, seven tests marked `slow` at P3 that CI has never run. **Found by a
   prediction that was wrong**, while rehearsing the step that turns them on. It
@@ -275,6 +275,15 @@ One, found by this branch and fixed in it.
   around locally and is invisible in CI; this is a *test* that only ever ran
   locally, so any environment dependent failure in it had exactly one place to
   hide and that was the only place nobody looked.
+- **D-0041**, the first CI run of this phase's tests asked questions a shallow
+  checkout cannot answer. **Found by CI**, run 33559636835: eight failures, all
+  in P10 test files, all green locally. `actions/checkout` fetches one commit by
+  default and P10 is the first phase whose tests resolve historical shas. The fix
+  is `fetch-depth: 0` on the three jobs that run the suite **and** a refusal in
+  this project's own code, which is the half that mattered more: `landing_sha`
+  was returning the graft commit, a sha that looks like an answer and is not, and
+  a result naming it would have satisfied the ancestor test while recording the
+  wrong provenance. No checkout option prevents that one.
 
 **No defect was found in the compiler.** Every failure this phase produced was in
 the measuring apparatus or in a claim about it, which is what a measurement phase
@@ -337,6 +346,13 @@ Three things, in this order.
 git push -u origin phase/p10-measurement
 ```
 
+**This has happened once and it went red**, run 33559636835, on D-0041: eight
+failures, all in P10 test files, all of them the `actions/checkout` default of
+`fetch-depth: 1` meeting the first phase whose tests resolve historical shas.
+Fixed on this branch, in the three jobs that run the suite and in the code that
+was answering the question wrongly rather than refusing it. **The next push is
+the one that confirms it.**
+
 **What to expect.** `lint`, `sanitizers`, `coverage` and `ndebug` green.
 `build-and-test` green with two things to read: the new `pytest slow cells` step
 should report **nine** tests carrying the marker and then run 954 passed 18
@@ -358,9 +374,14 @@ this machine's, and none if it matches. Either is green.
 gh workflow run nightly.yml --ref phase/p10-measurement
 ```
 
-The `full-matrix` job is new and has never run. It configures, builds, runs the
-whole pytest suite including the slow cells, then runs the 175 cell benchmark
-suite against its 90 minute budget.
+The `full-matrix` job is new. **A dispatch of it was in flight against the tree
+before D-0041 was fixed and will have gone red the same way**, because its
+checkout was at the same default and the harness exits before the first cell
+without the prediction's landing commit. Re-dispatch after this branch is pushed;
+that run is the first meaningful one.
+
+It configures, builds, runs the whole pytest suite including the slow cells, then
+runs the 175 cell benchmark suite against its 90 minute budget.
 
 - **Read the per cell cost off it and record it in `docs/ENGINEERING_LOG.md`
   beside the local one.** A hosted runner is four vCPU and the suite is serial,

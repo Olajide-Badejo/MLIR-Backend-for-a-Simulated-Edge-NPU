@@ -4143,3 +4143,140 @@ benchmark harness and ninety tests, and moved no recorded number, is a phase
 whose changes are provably confined to the measuring apparatus. That is the
 strongest single statement available about a measurement phase, and it is the
 reason the re-record is its own commit with nothing else in it.
+
+## 2026-09-02 D-0041: the first CI run of P10's tests, and a wrong answer that looked right
+
+**Symptom.** The first push of `phase/p10-measurement`, run 33559636835, went red
+with eight unique failures across the `pytest` and `pytest slow cells` arms. Every
+one was in a file this phase added. Every one was green locally, at the same
+commit, on the same suite.
+
+```
+test_every_manifest_git_sha_resolves       git_sha d4210f3... is not a commit in this repository
+test_every_entry_landed_in_a_commit...     the prediction is not in any commit
+test_every_result_that_names_a_prediction  prediction_sha f92de42... not a commit
+test_a_prediction_landing_commit_is_an...  assert None is not None
+test_the_ancestor_check_refuses_a_sha...   a parent is an ancestor of its child
+test_the_macros_sha_resolves_to_a_real...  exit 128
+test_a_rerun_is_byte_identical...          assert 2 == 0
+test_the_run_fails_when_it_exceeds...      exit 2
+```
+
+**The fifth line is the one that gives it away.** "A parent is an ancestor of its
+child" is not a claim that can be false. A test asserting it and failing is a test
+whose environment is wrong, not whose logic is.
+
+**Root cause.** `actions/checkout` defaults to `fetch-depth: 1`. The checkout
+holds one commit and no history. P10 is the first phase whose tests ask questions
+about history at all: law 3 of Section 0.2 asserts that every published number
+traces to a commit that resolves, and law 4's mechanism is an ancestry relation
+between the commit a prediction landed in and the commit a result was measured at.
+Nine phases of green CI say nothing about this, because none of them asked.
+
+The last two failures are the same cause one step removed:
+`experiments/run_benchmarks.py` reads the prediction's landing commit before it
+measures anything and exits 2 when it cannot, so both slow tests failed on the
+harness refusing rather than on anything they were testing.
+
+### Reproduced before anything was changed
+
+```
+$ git clone --depth 1 file:///home/elijah/npu-mlir-v2 /tmp/p10-shallow
+$ git -C /tmp/p10-shallow rev-parse --is-shallow-repository
+true
+$ git -C /tmp/p10-shallow rev-list --count HEAD
+1
+```
+
+Four of the eight fall straight out. The other two did not reproduce, which is
+what sent me to the second shape: the `pull_request` trigger checks out a
+synthetic merge commit whose parents are the base and the branch, and that is a
+different graph from a `push`. Both shapes were built as real fetches from a bare
+mirror rather than as mocks, because what is under test is what git does rather
+than what this project believes git does.
+
+| Shape | depth | shallow | `landing_sha` returns | historical sha resolves |
+|---|---|---|---|---|
+| `push` | 1 | yes | the graft commit | no |
+| `push` | 0 | no | `f92de42`, correct | yes |
+| `pull_request` merge ref | 1 | yes | the merge commit | no |
+| `pull_request` merge ref | 0 | no | `f92de42`, correct | yes |
+
+The merge ref at full depth answers everything correctly, including `HEAD~1`,
+which on a merge commit is the base branch: a parent, and an ancestor, so the
+refusal test holds there too. That was worth checking rather than assuming,
+because the ancestor assertions are the ones a merge commit could plausibly have
+broken.
+
+### The second defect, which is the one worth the entry
+
+The checkout depth is a setting. What the table above exposed is not.
+
+**`landing_sha` did not fail in a shallow checkout. It returned an answer.**
+`git log --diff-filter=A -- <path>` attributes every file to the graft commit,
+because that commit has no parent to have differed from, so the function returned
+the checkout's own tip. On the merge ref it returned the merge commit for an entry
+that landed six commits earlier.
+
+That sha would have gone into a result's `prediction_sha`. It resolves, it is an
+ancestor of HEAD, and **the ancestor test would have passed on it**, while the
+provenance link pointed at the wrong commit. A green run recording a false link is
+worse than the red run that actually happened, and no `fetch-depth` prevents it,
+because the function was willing to answer a question it could not answer.
+
+The same fault in two milder forms sat beside it. `commit_exists` returned False,
+which reads as "this commit does not exist" when the truth is "this commit is not
+here". `is_ancestor` returned False, because `git merge-base --is-ancestor` exits
+nonzero both for "no" and for "I have never heard of that commit", so
+"unobservable" was reported as "the prediction does not predate its measurement",
+which is a serious finding invented out of a checkout option.
+
+**This is the fault this project forbids everywhere else**, an absent measurement
+that cannot be told apart from a real one, appearing in the one mechanism whose
+entire purpose is provenance. Section 16.1 spends a paragraph on it for result
+fields and `values_of` refuses to average a null; the same discipline had not been
+applied to a git query.
+
+### The fix, both halves, and why depth 0 rather than something narrower
+
+`fetch-depth: 0` on the three jobs that run the suite: `build-and-test` and
+`coverage` in `ci.yml`, `full-matrix` in `nightly.yml`. The other four checkouts
+stay at the default, because no step in them asks about history.
+
+A narrower fetch was considered and rejected. It would have to name the commits to
+deepen to, and those commits are the shas recorded in result files and prediction
+entries, so the fetch would need updating every time a result is re-recorded and
+would be wrong in exactly the situation it exists to serve. The repository is a
+few hundred commits and the full fetch costs seconds.
+
+`require_full_history` is the other half and is the part that does not depend on
+a workflow file being right. It refuses once, readably, naming the checkout and
+the fix, before any of the three functions answers. `is_ancestor` raises on an
+unresolvable reference instead of returning False. `landing_sha` refuses instead
+of returning the graft commit. A shallow checkout now produces one diagnosable
+message instead of eight assertions about shas, and the message says
+`fetch-depth: 0` and names the defect.
+
+### What the fix was verified against
+
+All four shapes, as real fetches. At depth 0, both `push` and `pull_request`:
+**43 passed, 0 failed**, and `run_benchmarks.py` completes and exits 0. At depth
+1, after the fix: the refusal by name rather than the eight failures.
+
+`test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout` makes a real
+`--depth 1` clone inside the test and asserts all three refusals, so this is
+exercised on every run of the suite rather than only in this entry. That test is
+the reason the entry can claim the guard works rather than that it was written.
+
+### The pattern, now four deep
+
+D-0030 and D-0032 depended on what was lying around in CI and were invisible
+locally. D-0037 was the reverse. D-0040 was a test that only ever ran locally.
+This is the fourth and the sharpest: code correct in every environment where the
+history is present, run for the first time in one where it is not.
+
+**In all four the code under test was fine and the environment differed.** That is
+the argument for CI existing, and it is also the argument for this project's habit
+of writing down what a red run actually measured rather than what it was expected
+to measure. The eight failures looked like eight problems and were one, and the
+one that mattered was not in the list at all.

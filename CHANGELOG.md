@@ -41,6 +41,17 @@ Semantic Versioning once a release is tagged.
   the activation table kept off until now. They ran on the developer machine and
   nowhere else. Switching the step on is the fix, and it carries a guard that
   fails when the marker selects nothing, so the situation cannot recur quietly.
+- **D-0041: the jobs that run this suite check out the full history now**, and
+  the code refuses rather than guessing when they do not. P10 is the first phase
+  whose tests ask questions about history, `actions/checkout` fetches one commit
+  by default, and the first CI run of these tests produced eight failures that
+  were all the same absent history. The more serious half was in this project's
+  own code: `is_ancestor` answered "not an ancestor" where the honest answer was
+  "cannot tell", and `landing_sha` returned the graft commit, a plausible looking
+  sha that is not the answer and that would have been recorded as a result's
+  `prediction_sha`. Both refuse now, naming the checkout and the fix, so a
+  truncated history is one readable message rather than eight assertions about
+  shas.
 - **The tight scratchpad budget does not cross the batch axis**, recorded in
   `docs/adr/0010`. Six of the seven models do not allocate at batch 4 under the
   tight budget measured for them at batch 1, because a tight budget is the

@@ -26,6 +26,7 @@ is not an ancestor.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,8 @@ from npu_frontend.predictions import (
     landing_sha,
     load_predictions,
     parse_prediction,
+    repository_is_shallow,
+    require_full_history,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -161,6 +164,7 @@ def test_every_entry_landed_in_a_commit_this_repository_has() -> None:
     an entry cannot state the sha of the commit that contains it, so a `sha`
     field would have to be filled in afterwards and would be a claim.
     """
+    require_full_history("resolving the commit each prediction landed in")
     for identifier in load_predictions():
         sha = landing_sha(identifier)
         assert sha, (
@@ -185,6 +189,7 @@ def test_every_result_that_names_a_prediction_predates_it() -> None:
     `test_at_least_one_committed_result_names_a_prediction` asserts the path has
     actually been walked.
     """
+    require_full_history("checking that every prediction predates its measurement")
     predictions = load_predictions()
     for path in committed_results():
         cell = json.loads(path.read_text(encoding="utf-8"))
@@ -230,6 +235,7 @@ def test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor() -> None:
     true unconditionally, every assertion in the test above would pass over any
     pair of shas at all, and the mechanism would be decorative.
     """
+    require_full_history("checking that the ancestor relation refuses as well as holds")
     head = head_sha()
     parent = f"{head}~1"
     assert is_ancestor(parent, head), "a parent is an ancestor of its child"
@@ -237,6 +243,60 @@ def test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor() -> None:
         "a child is not an ancestor of its parent, and if this passes the "
         "ancestor test above is asserting nothing"
     )
+
+
+def test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout(
+    tmp_path: Path,
+) -> None:
+    """D-0041, and it is the half of it that no checkout option fixes.
+
+    `git merge-base --is-ancestor` exits nonzero both for "no" and for "I have
+    never heard of that commit", and the first version of `is_ancestor` collapsed
+    the two into False. In a shallow checkout that turned "this cannot be
+    observed" into "the prediction does not predate its measurement", which is a
+    serious finding reported where there was none.
+
+    `landing_sha` was worse, because it did not fail at all. `git log
+    --diff-filter=A` against a truncated history attributes every file to the
+    graft commit, so it returned the checkout's own tip, which looks exactly like
+    a real answer and would have been recorded as a result's `prediction_sha`.
+
+    The reproduction is a real shallow clone rather than a mock, because what is
+    under test is what git does rather than what this project believes git does.
+    It is the shape `actions/checkout` produces at its default `fetch-depth: 1`,
+    which is how the defect was found.
+    """
+    shallow = tmp_path / "shallow"
+    completed = subprocess.run(
+        ["git", "clone", "--depth", "1", f"file://{REPO_ROOT}", str(shallow)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:  # pragma: no cover
+        pytest.skip(f"could not make a shallow clone here: {completed.stderr}")
+    assert repository_is_shallow(repository=shallow)
+
+    with pytest.raises(PredictionError) as guard:
+        require_full_history("anything at all", repository=shallow)
+    assert "fetch-depth: 0" in str(guard.value)
+    assert "D-0041" in str(guard.value)
+
+    with pytest.raises(PredictionError):
+        is_ancestor(
+            "f92de427d1f315d9d6621c44516e54f886f18a9c",
+            "d4210f352957b95e69185003bb1b960a2a3286be",
+            repository=shallow,
+        )
+
+    with pytest.raises(PredictionError) as landing:
+        landing_sha("p10-ablation-deltas", repository=shallow)
+    assert "shallow" in str(landing.value)
+
+    # The same three questions against the full checkout, so the guard is shown
+    # to be about the checkout rather than about the questions.
+    assert not repository_is_shallow()
+    assert landing_sha("p10-ablation-deltas") is not None
 
 
 def test_at_least_one_committed_result_names_a_prediction() -> None:
@@ -284,6 +344,7 @@ def test_a_prediction_landing_commit_is_an_ancestor_of_head() -> None:
     added on a branch that was never merged is caught here rather than at the
     moment a result names it.
     """
+    require_full_history("checking each prediction is an ancestor of HEAD")
     head = head_sha()
     for identifier in load_predictions():
         sha = landing_sha(identifier)

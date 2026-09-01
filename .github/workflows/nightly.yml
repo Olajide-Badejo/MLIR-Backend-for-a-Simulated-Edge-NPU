@@ -177,8 +177,17 @@ jobs:
         shell: bash
 
     steps:
+      # fetch-depth: 0, D-0041. This job runs the whole pytest suite and then
+      # experiments/run_benchmarks.py, and both ask questions about history: the
+      # traceability tests resolve recorded shas, the ancestor test compares a
+      # prediction's commit against the commit a result was measured at, and the
+      # harness reads the prediction's landing commit out of git log before it
+      # measures anything. At the actions/checkout default of one commit the
+      # harness exits 2 before the first cell.
       - name: Check out the repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: "Configure and build (activation table: P10, on)"
         run: |

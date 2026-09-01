@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from npu_frontend.predictions import require_full_history
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 RESULTS_DIR: Final[Path] = REPO_ROOT / "experiments" / "results"
@@ -263,9 +264,15 @@ def test_the_macros_sha_is_the_manifest_sha_of_the_committed_results() -> None:
 
 def test_the_macros_sha_resolves_to_a_real_commit() -> None:
     """A generated number tracing to a commit that does not exist is the failure
-    Section 16.1's own resolution test exists to prevent, applied to this file."""
+    Section 16.1's own resolution test exists to prevent, applied to this file.
+
+    The history guard is D-0041. In a shallow checkout this sha is absent like
+    every other historical one, and reporting it as a commit that does not exist
+    would blame the generated file for the checkout's depth.
+    """
     if not MACROS.is_file():
         pytest.skip("macros.tex not generated yet")
+    require_full_history("resolving the commit macros.tex names")
     found = re.search(
         r"\\newcommand\{\\" + results_to_tex.SHA_MACRO + r"\}\{([0-9a-f]{7,40})\}",
         MACROS.read_text(encoding="utf-8"),
@@ -277,7 +284,10 @@ def test_the_macros_sha_resolves_to_a_real_commit() -> None:
         capture_output=True,
         check=False,
     )
-    assert completed.returncode == 0
+    assert completed.returncode == 0, (
+        f"macros.tex names {found.group(1)}, which is not a commit in this "
+        f"repository, and the repository is not shallow"
+    )
 
 
 def test_the_macros_file_is_not_stale() -> None:

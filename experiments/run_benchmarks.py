@@ -452,13 +452,18 @@ class Runner:
         self._references: dict[tuple[str, str, int], Reference] = {}
         self._tool_versions = tool_versions()
         self._git_sha = git_sha()
+        # `landing_sha` refuses in a shallow checkout rather than returning the
+        # graft commit, which is D-0041. A truncated history therefore reaches
+        # the caller as one readable refusal naming the checkout, instead of as a
+        # `prediction_sha` that is wrong and looks right.
         self._prediction_sha = landing_sha(ABLATION_PREDICTION)
         if self._prediction_sha is None:
             raise BenchmarkError(
                 f"the prediction {ABLATION_PREDICTION!r} is not in any commit, "
                 f"so no cell can name a prediction_sha for it. Section 17.8: the "
                 f"prediction is committed before the measurement, and that "
-                f"ordering is the whole mechanism."
+                f"ordering is the whole mechanism. This checkout has its history, "
+                f"so the entry is genuinely uncommitted rather than unfetched."
             )
         #: The worst gap between the two clocks over the whole run, reported at
         #: the end so a run says how well its own cross check held rather than

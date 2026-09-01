@@ -156,11 +156,72 @@ def load_predictions(directory: str | Path | None = None) -> dict[str, Predictio
 # ---------------------------------------------------------------------------
 
 
+def repository_is_shallow(*, repository: str | Path | None = None) -> bool:
+    """Whether this checkout has had its history truncated.
+
+    *Added at P10 after D-0041.* `actions/checkout` defaults to `fetch-depth: 1`,
+    so a CI checkout holds exactly one commit and every question about history
+    has no answer available. Asking git directly is the only reliable test: a
+    commit count, the presence of `.git/shallow` and the resolvability of
+    `HEAD~1` each look normal in some shape of truncated checkout and not in
+    others, and the `pull_request` trigger's synthetic merge commit is one of the
+    shapes that confuses all three.
+    """
+    completed = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.stdout.strip() == "true"
+
+
+def require_full_history(what: str, *, repository: str | Path | None = None) -> None:
+    """Refuses, once and readably, when the answer needs history there is none of.
+
+    **This exists because the alternative was eight wrong answers**, which is
+    D-0041. Every function here can be asked something a shallow checkout cannot
+    answer, and each of them answered anyway: `commit_exists` returned False for
+    a commit that exists and is merely not present, `is_ancestor` returned False
+    for "cannot tell", and `landing_sha` returned the graft commit, which is a
+    plausible looking sha that is not the answer. Those are three spellings of
+    the fault this project forbids everywhere else, an absent measurement that
+    cannot be told apart from a measured one.
+
+    So the question is refused before it is asked, with the reason and the fix in
+    the message, because the reader of a red log needs to know that the checkout
+    is the problem rather than the sha.
+    """
+    if not repository_is_shallow(repository=repository):
+        return
+    raise PredictionError(
+        f"{what} needs this repository's history, and this checkout is shallow. "
+        f"git reports it as a shallow repository, so the commits the question is "
+        f"about are not here to be found.\n\n"
+        f"This is not a fault in the shas being asked about. In CI it means the "
+        f"job's checkout is at the `actions/checkout` default of "
+        f"`fetch-depth: 1`; the jobs that run this suite set `fetch-depth: 0` "
+        f"for exactly this reason, and `docs/DEFECT_LOG.md` D-0041 records why. "
+        f"Locally it means a `git clone --depth`, and `git fetch --unshallow` "
+        f"fixes it.\n\n"
+        f"Law 3 of Section 0.2 is traceability and law 4's mechanism is an "
+        f"ancestry relation. Neither can be checked against history that was "
+        f"never fetched, and reporting them as violated rather than as "
+        f"uncheckable would be this project asserting something it cannot see."
+    )
+
+
 def commit_exists(sha: str, *, repository: str | Path | None = None) -> bool:
-    """Whether the sha names a commit in this repository.
+    """Whether the sha names a commit **in this checkout**.
 
     Section 16.1's rule for `manifest.git_sha`: a committed number tracing to a
     commit that does not exist is the exact failure the check prevents.
+
+    **False means "not here", which is not the same as "does not exist".** In a
+    shallow checkout every historical sha is absent and this returns False for
+    all of them. A caller that means "does this commit exist at all" calls
+    `require_full_history` first, and every caller in this project does.
     """
     completed = subprocess.run(
         ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
@@ -182,7 +243,27 @@ def is_ancestor(
     nobody can rewrite without rewriting every sha downstream of it. That
     difference is the whole reason Section 17.8 specifies this test rather than
     a `written` field comparison.
+
+    **A reference that does not resolve raises rather than returning False**,
+    which is D-0041. `git merge-base --is-ancestor` exits nonzero both for "no"
+    and for "I have never heard of that commit", and collapsing the two made a
+    shallow checkout report the ancestor relation as violated when it was merely
+    unobservable. Those want opposite responses: one is a prediction written
+    after its measurement, which is a serious finding, and the other is a
+    checkout option.
     """
+    for reference in (earlier, later):
+        if not commit_exists(reference, repository=repository):
+            require_full_history(
+                f"deciding whether {earlier[:12]} precedes {later[:12]}",
+                repository=repository,
+            )
+            raise PredictionError(
+                f"{reference} is not a commit in this repository, and the "
+                f"repository is not shallow, so it is genuinely absent rather "
+                f"than merely unfetched. An ancestry relation cannot be decided "
+                f"against a commit that does not exist."
+            )
     completed = subprocess.run(
         ["git", "merge-base", "--is-ancestor", earlier, later],
         cwd=str(repository or PREDICTIONS_DIR.parents[1]),
@@ -212,7 +293,21 @@ def landing_sha(identifier: str, *, repository: str | Path | None = None) -> str
     an entry cannot state the sha of the commit that contains it, so a `sha`
     field in the header would have to be filled in by a later commit and would
     then be a claim rather than a fact.
+
+    **Refuses in a shallow checkout rather than answering wrongly**, which is the
+    half of D-0041 that no checkout option fixes. `git log --diff-filter=A`
+    against a truncated history attributes every file to the graft commit,
+    because that commit has no parent to have differed from, so this returned the
+    checkout's own tip and it looked exactly like a real answer. A result then
+    naming that sha as `prediction_sha` would satisfy the ancestor test while
+    recording a provenance link to the wrong commit, which is worse than the
+    failure it replaced. Measured on a `pull_request` merge ref at depth 1: this
+    returned the merge commit for an entry that landed six commits earlier.
     """
+    require_full_history(
+        f"finding the commit that added the prediction {identifier}",
+        repository=repository,
+    )
     root = Path(repository) if repository is not None else PREDICTIONS_DIR.parents[1]
     completed = subprocess.run(
         [
