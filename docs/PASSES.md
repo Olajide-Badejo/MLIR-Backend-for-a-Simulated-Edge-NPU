@@ -14,18 +14,25 @@ and after IR, what it refuses, whether it is ablatable, and its measured
 ablation delta.
 
 **On the ablation deltas.** Section 12 requires every entry here to cite a
-**measured** delta rather than a qualitative claim. **Since P7 there is a
-simulator to measure against**, and `Stats::cycles` is the number a delta would
-be taken from; the harness that runs a pipeline twice and subtracts is still
-Phase P10's, so no entry below quotes one yet. Each says so in its own row rather
-than leaving the field blank, because a blank field reads as "no effect" and an
-absent measurement is not a measurement of zero.
+**measured** delta rather than a qualitative claim. **Since P10 every entry does.**
+The numbers come from `experiments/results/`, one JSON per cell, produced by
+`experiments/run_benchmarks.py`, and every entry names the files its row comes
+from so a reader can check it rather than trust it.
 
-**What P9 could measure without that harness, it did**, and the numbers are in
-the entries: which passes fire on which models, whether forming a region changes
-the instruction count, and how far each pass moves the answer. Those are
-measurements of the same programs the ablation will run, taken one pass at a
-time in `test/Python/test_transform_passes.py`.
+**Read the zeros with the prose beside them.** Six of the eight ablatable passes
+have a delta of zero on every model at every budget, and the six zeros do not
+mean the same thing. Two are structural and would be zero on any program this
+compiler can currently emit; three are properties of this model suite; and one,
+`-canonicalize`, is a pass doing substantial work that the ablation cannot see
+because another pass would have done it. A table of deltas with no prose beside
+it would report those six identically, which is why each entry below carries its
+own reason and why `docs/NUMBERS.md` repeats them next to the table itself.
+
+**What P9 measured one pass at a time still stands beside the ablation**, and
+where both exist they agree: `-npu-fold-batchnorm`'s eight instructions and 212
+cycles were measured at P9 by running the pass alone and at P10 by removing it
+from the full pipeline, and the two arrived at the same numbers from opposite
+directions.
 
 **How an ablation is run, since P10.** `npu-compile --ablate <pass>` builds the
 level's own pipeline with that pass left out, through the pipeline's `ablate`
@@ -225,11 +232,21 @@ Evaluates `npu.add`, `npu.mul`, `npu.relu` and `npu.reshape` whose reads are all
 `lib/Dialect/NPU/Transforms/ConstantFold.cpp`, registered by
 `mlir::npu::registerNPUPasses()`.
 
-**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
-**Measured at P9:** it fires on no model in Section 15's suite, because an
-exported graph's constants feed convolutions rather than each other. Its value
-is to a graph a transform has already partly folded, and to the `-O1` and `-O2`
-pipelines as the thing that makes the canonicalization after it have work to do.
+**Ablatable: yes.** **Ablation delta, measured at P10: zero instructions and
+zero cycles on all seven models, at both budgets.**
+`experiments/results/*-ablate-npu-constant-fold.json`.
+
+**The zero has a reason and it is the same one that makes `-O1` equal `-O0`.**
+This pass evaluates elementwise `npu` operations over constant operands, and no
+model in Section 15's suite has an elementwise operation both of whose operands
+are constants: an exported graph's constants feed convolutions rather than each
+other. So there is nothing to fold, and with nothing folded the canonicalization
+after it has nothing dead to clean up, which is why the whole of `-O1` is inert
+on this suite.
+
+Its value is to a graph a transform has already partly folded, and that is a
+statement about inputs this suite does not contain rather than about the pass.
+`test/Python/test_transform_passes.py` exercises it on IR written for it.
 
 **Why a pass and not four `fold` methods.** MLIR's folder runs inside
 `-canonicalize` and would do the same arithmetic, but Section 12 asks for
@@ -286,7 +303,10 @@ Section 12's negative test rule, in `test/Transforms/constant-fold.mlir`.
 Folds `add(conv2d(x, w), b)` into the convolution's bias operand. Implemented in
 `lib/Dialect/NPU/Transforms/FuseBias.cpp`.
 
-**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
+**Ablatable: yes.** **Ablation delta, measured at P10: one instruction and
+9.625 cycles on `dilated_stack`, zero on the other six, at both budgets.**
+`experiments/results/dilated_stack-O2-*-ablate-npu-fuse-bias.json`.
+
 **Measured at P9:** it removes one instruction and one scratchpad buffer per
 fused add, and it fired on **no model in Section 15's suite**, because every
 convolution there carried its bias inline as a third `Conv` input.
@@ -372,14 +392,19 @@ matmul is a same shaped addend, and that is a residual rather than a bias.
 Folds an inference batch norm into the convolution that produced its input.
 Implemented in `lib/Dialect/NPU/Transforms/FoldBatchNorm.cpp`.
 
-**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
-**Measured at P9:** on `conv_bn_relu_stack`, the one model in the suite built to
-carry unfolded batch norms, it removes both of them, which is eight instructions
-and 212 simulated cycles at the default budget, and it moves the answer by
-4.47e-08.
+**Ablatable: yes.** **Ablation delta, measured at P10: eight instructions and
+212 cycles on `conv_bn_relu_stack`, zero on the other six, at both budgets.**
+`experiments/results/conv_bn_relu_stack-O2-*-ablate-npu-fold-batchnorm.json`.
+This is the largest row in the ablation table, and the P9 estimate of the same
+quantity, taken one pass at a time, was the same eight and the same 212.
 
-**This is the only pass at P9 that moves a number**, and
-`docs/BREAKING_CHANGES.md` declared that before the commit that turned it on.
+**This is the only pass that moves a number, and the ablation table proves it
+from the other side.** Removing this pass returns `max_abs_movement_vs_o0` to
+exactly 0.0 on `conv_bn_relu_stack`, while every other ablation leaves that field
+at the 4.470e-08 the unablated `-O2` cell has. A pass that changes an answer and
+a pass that changes a program are different claims, and this is the one cell in
+the suite where both are true at once. `docs/BREAKING_CHANGES.md` declared the
+movement before the commit that turned it on.
 
 ### The identity, and the order it is evaluated in
 
@@ -433,9 +458,19 @@ Moves a `npu.relu` and the `npu.conv2d` or `npu.matmul` that produced its input
 into one `npu.fused_op` region. Implemented in
 `lib/Dialect/NPU/Transforms/FuseOps.cpp`.
 
-**Ablatable: yes.** **Ablation delta: not measured**, the harness lands at P10.
-**Measured at P9:** it forms regions on five of the seven models and changes the
-instruction count on none of them, and it moves no bit.
+**Ablatable: yes.** **Ablation delta, measured at P10: zero instructions and
+zero cycles on all seven models, at both budgets.**
+`experiments/results/*-ablate-npu-fuse-ops.json`.
+
+**The zero is the claim being confirmed rather than a disappointment**, and it is
+the sharpest thing the ablation table checks. This pass is numerically and
+structurally inert by design: it forms regions, the lowering flattens them back
+into the same instructions, and P9 asserted that in prose. The instrumentation
+now measures both halves of it on `conv_bn_relu_stack` at `-O2`: the pass takes
+the function from 34 operations to 38, so it is demonstrably doing something, and
+the instruction count after lowering is identical with and without it. A nonzero
+row here would have meant the lowering treats a fused region differently from its
+unfused form, which would be a defect rather than a saving.
 
 **This is the pass that gave `npu.fused_op` and `npu.yield` a producer**, which
 is what closed the two dated exemptions `docs/EXEMPTIONS.md` carried from P8.
@@ -504,12 +539,50 @@ what they do to `npu` operations is what this project depends on, and Section
 the ones written in this repository. `test/Transforms/level-passes.mlir` carries
 a positive and a negative case for each.
 
-| Pass | What it does here | Negative case |
-|---|---|---|
-| `-canonicalize` | removes every `npu` operation nothing reads, because they all carry `Pure`, and merges duplicate constants. This is the whole mechanism behind `eliminatesDeadCode = true` and behind Section 17.3a's dead subgraph leaving the instruction count unchanged | the operations the result depends on are all still there |
-| `-cse` | merges identical operations over identical operands, including the `tensor.empty` destinations | a third operation differing in one operand is not merged |
-| `-sccp` | propagates a constant into a private function all of whose callers pass the same one | a function called with two different constants keeps its argument |
-| `-symbol-dce` | removes a private function nobody calls | a called private function, and every public one, is kept |
+| Pass | What it does here | Negative case | Ablation delta, P10 |
+|---|---|---|---|
+| `-canonicalize` | removes every `npu` operation nothing reads, because they all carry `Pure`, and merges duplicate constants. This is the whole mechanism behind `eliminatesDeadCode = true` and behind Section 17.3a's dead subgraph leaving the instruction count unchanged | the operations the result depends on are all still there | zero, and see below |
+| `-cse` | merges identical operations over identical operands, including the `tensor.empty` destinations | a third operation differing in one operand is not merged | zero |
+| `-sccp` | propagates a constant into a private function all of whose callers pass the same one | a function called with two different constants keeps its argument | zero, structurally |
+| `-symbol-dce` | removes a private function nobody calls | a called private function, and every public one, is kept | zero, structurally |
+
+All four are zero on all seven models at both budgets, measured at P10 from
+`experiments/results/*-ablate-{canonicalize,cse,sccp,symbol-dce}.json`. Three of
+the four zeros are uninteresting and are explained where each pass is described
+below. **The fourth, `-canonicalize`, is a finding**, and it is the reason this
+table has a column rather than a sentence.
+
+### `-canonicalize`'s zero row is a limit of leave one out ablation, not a fact about the pass
+
+The prediction registered at `experiments/predictions/p10-ablation-deltas.md`
+before the suite was first run expected this row to be one of three nonzero ones,
+and gave a mechanism: the second canonicalization exists to remove the dead
+parameter constants the batch norm fold leaves behind, and a dead constant
+becomes an `npuisa.const` and a `dma_load` in the instruction stream. The
+prediction was wrong and the instrumentation says exactly why. Measured on
+`conv_bn_relu_stack` at `-O2`, in operations under `func.func`:
+
+```
+with canonicalize            without canonicalize
+  npu-fuse-ops    34 -> 38     npu-fuse-ops    34 -> 38
+  canonicalize    38 -> 24
+  cse             24 -> 21     cse             38 -> 21
+```
+
+The canonicalization removes fourteen operations, so it is doing real work. It is
+simply not doing anything `-cse` cannot also do here: MLIR's CSE erases trivially
+dead operations as it walks, and with the canonicalization gone it reaches the
+same twenty one operations on its own.
+
+**A leave one out ablation cannot see a pass whose work another pass would have
+done.** That is a known limit of the design, and it is now a measured one in this
+project rather than a caveat borrowed from elsewhere. The honest reading of this
+row is "nothing in this suite needs both", not "canonicalization does nothing",
+and a table of deltas with no prose beside it would have said the second.
+
+This is also the clearest thing the Section 16.2 instrumentation has bought.
+Without a before and after operation count per pass, this row is a zero
+indistinguishable from `-sccp`'s, and the two have nothing in common.
 
 **`-canonicalize` hoists constants and that had a cost**, which is D-0035:
 hoisting is right for an operation whose cost is zero and wrong for one that
@@ -554,7 +627,21 @@ two memory spaces of Section 8. Implemented in
 **Ablatable: no.** Section 12's table marks it so. Removing it leaves a program
 with no instructions in it.
 
-**Ablation delta: not measured.** The harness lands at P10.
+**Ablation delta: none, and there never will be one.** This is not a measurement
+that has not been taken; it is a measurement that cannot exist. Section 16.2
+marks this pass and `-npu-allocate-scratchpad` as not ablatable because removing
+either produces no program at all, and the resulting failure would be attributed
+to the wrong thing. `npu-compile --ablate npu-lower-to-npuisa` is refused by
+name, quoting that reason, and the refusal is tested.
+
+**What P10 measured instead, from inside the pipeline**, is what this pass does
+to the program: on `conv_bn_relu_stack` at `-O2` it takes the module from 22
+operations to 35, because one tensor level operation becomes a transfer, a
+compute and a transfer back. That number is in
+`experiments/results/conv_bn_relu_stack-O2-default-n1-fp32-normal.json` under
+`passes`, with a before and after operation census and a wall clock, like every
+other pass in the pipeline. A pass that cannot have an ablation row still has a
+row in the per pass record.
 
 ### What it does
 
@@ -892,7 +979,32 @@ DRAM when the offsets do not fit. Section 13.1 in full. Implemented in
 **Ablatable: no.** Section 12's table marks it so. Removing it leaves a program
 whose buffers have no addresses, which is not a program.
 
-**Ablation delta: not measured.** The harness lands at P10.
+**Ablation delta: none, and there never will be one**, for the same reason as
+`-npu-lower-to-npuisa` above.
+
+**What the budget axis measures instead, and it is this pass being ablated in
+the only way it can be.** Every model is compiled at a default budget and at the
+tight budget of `docs/adr/0008`, and the difference between those two cells is
+this pass placing the same program under two amounts of pressure. Measured at
+P10, the two models that can go below their peak:
+
+| Model | Budget | Instructions | Cycles | Spills | DRAM bytes |
+|---|---|---|---|---|---|
+| `resnet_block` | default | 14 | 1626 | 0 | 8800 |
+| `resnet_block` | tight | 17 | 2018 | 1 | 14944 |
+| `inception_block` | default | 14 | 2398.5 | 0 | 8624 |
+| `inception_block` | tight | 22 | 3799 | 3 | 21936 |
+
+One spilled buffer costs three instructions, 392 cycles and 6144 DRAM bytes on
+`resnet_block`; three cost eight instructions, 1400.5 cycles and 13312 bytes on
+`inception_block`. The other five models cannot go below their peak at all, so
+their tight and default cells are identical, which ADR 0008 predicted and P10
+confirms.
+
+**This is why Section 16.2 requires ablation rows at every budget.** Every
+ablatable pass's delta is the same at both budgets on this suite, but the
+absolute numbers are not, and a table that reported only the generous budget
+would have shown `inception_block` at 14 instructions and never mentioned the 22.
 
 ### What it does
 
