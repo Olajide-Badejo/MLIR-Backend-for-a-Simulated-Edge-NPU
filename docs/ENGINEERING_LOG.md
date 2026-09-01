@@ -3305,3 +3305,185 @@ in `docs/PHASE_STATE.md`'s open questions with the fix and its cost:
 `docs/adr/0008` froze. That is a decision for the phase that owns the
 measurement, which is P10, and not one to take quietly inside the phase that
 wrote the pass.
+
+## 2026-09-01 Interphase P9b: four decisions, and three of the four rehearsals disagreed with me
+
+**What this branch is.** Four items the P9 handoff carried as open questions,
+taken between P9 and P10 rather than folded into either: a package in the CI
+image, an NDEBUG CI build, the model suite gap that made `-npu-fuse-bias`
+unfireable, and whether `regression-baseline --check` can be a CI step. None of
+them is a feature and none of them has a gate. What they have in common is that
+each had reached the point where leaving it open cost more than deciding it.
+
+**The entry's finding, and it goes first because it is the only general one.**
+Three of the six rehearsals on this branch came out differently from the
+prediction written before them, and in all three cases the disagreement was worth
+more than the confirmation would have been. One deleted a deliverable, one
+narrowed a claim, and one turned into a defect. P8 recorded that a local
+rehearsal proves a step's logic and cannot prove its surroundings. This branch
+adds the other half: **a rehearsal whose prediction holds tells you what you
+already believed, and the value of the practice is concentrated entirely in the
+runs that do not.** Writing the prediction down first is what makes that value
+collectable, because a prediction reconstructed afterwards is never wrong.
+
+### The cache key I did not commit
+
+The image change is one package, `libomp-18-dev`, so that the two CI jobs which
+configure with clang stop making a weaker determinism claim than the one that
+gets gcc. That part was straightforward and the rehearsal against the pinned base
+digest confirmed it: before, `clang -fopenmp` fails at `'omp.h' file not found`
+and cmake prints the CI line verbatim; after, `Found OpenMP: TRUE (found version
+"5.1")`.
+
+The part that was not straightforward was what the workflow needed beside it. I
+predicted that `build-and-test`'s restored build cache would keep reporting
+`OpenMP: not found` after the republish, because `find_package` writes
+`OpenMP_CXX_FLAGS:STRING=NOTFOUND` into `CMakeCache.txt`, the cache key is keyed
+on the LLVM tag, and the tag does not move on a republish. The planned
+deliverable included an image revision component in that key.
+
+Measured in a container rather than reasoned about: configure with no `libomp`,
+install it, re-run cmake on the **same** build directory. The answer is
+`OpenMP: found 5.1`. `FindOpenMP` re-runs its `try_compile` when the cached flag
+variable is falsy, so a `NOTFOUND` does not stick the way a `find_library` result
+does.
+
+So the deliverable was deleted rather than committed. A cache key bumped for a
+mechanism that does not exist would have invalidated every build cache in the
+project to fix nothing, and it would have been invisible: the runs after it would
+have been slower and green, and nobody would ever have gone looking for the
+reason. **The failure mode of an unnecessary fix is that it works.**
+
+### CI had been naming a build mode it did not have
+
+The NDEBUG item was supposed to be a decision about a second LLVM tree. It became
+that plus a defect, D-0036, and the defect is the more interesting half.
+
+`ci.yml` said, in two places since P7, that the sanitizers job was the NDEBUG half
+of Section 9.3's "every build mode" clause, "which configures RelWithDebInfo and
+therefore compiles with `-DNDEBUG`". The therefore does not hold here. D-0028,
+found and fixed **in that same phase**, is exactly the reason: against an
+assertions LLVM, `HandleLLVMOptions` appends `-UNDEBUG` after whatever the build
+type supplied, and the last `-D` or `-U` on the line wins. Measured:
+
+```
+-DNDEBUG -D_DEBUG -D_GLIBCXX_ASSERTIONS -UNDEBUG
+```
+
+So three CI jobs ran the trap tests, all three with assertions on, and the file
+that decides what CI does asserted otherwise in prose. An accessor that had
+quietly become assert-only would have been green in every one of them.
+
+**Why it survived a phase is the part to remember.** The comment was written by
+somebody who had just fixed D-0028, and the reasoning in it is correct for a
+project whose LLVM has no assertions. Correct general knowledge applied to a
+specific configuration is not a thing review catches, because it reads as
+knowledge. What catches it is a mechanism, and the new `ndebug` job is one: it
+greps its own configure log for the line beginning `NDEBUG:`, so the claim is now
+made by a build that either has assertions compiled out or fails.
+
+The second LLVM tree D-0031 named is declined, in ADR 0009, on the grounds that
+Section 9.3's contract lives entirely in the two binaries that link no MLIR and
+those are exactly the two this directory builds soundly. D-0031 stays open as the
+limit it is.
+
+### One test caught the fault, and I had predicted three
+
+The product side activation fault for the new job compiles the range trap's
+diagnostic out behind `#ifdef NDEBUG` in `readBytes`, leaving the check and the
+null return in place so every caller still behaves. It is the shape a release
+build acquires when somebody decides a diagnostic is a debug convenience, and no
+assertions build can see it.
+
+Prediction: the assertions build green, the NDEBUG build red at three graceful
+trap tests. Result: the assertions build green, the NDEBUG build red at
+**one**, `Trap.AnOutOfRangeOperandAddressTrapsGracefully`.
+
+The arithmetic is the finding. The fault is in `readBytes` alone; the two result
+address tests go through `writeBytes`. So exactly the one test whose fault this
+was caught it, and a prediction of three would have been satisfied by a net
+firing for reasons other than the fault. This is the same lesson D-0029 taught
+from the other end, where a rehearsal reported 54 of 54 mismatches for a fault
+that should have produced three or four and the discrepancy was a second defect.
+**A rehearsal is not a pass or fail. The number is the measurement.**
+
+### The suite change was the easy half and the tight budget was the question
+
+`-npu-fuse-bias` fired on no model of Section 15's suite because every convolution
+in it carries its bias inline, which is what exporters emit. One `Add` between
+`dilated_stack`'s biasless `conv1` and its `Relu` closes that, and the governance
+around it is four commits in ground rule 7's order: declare, move, re-record,
+record the re-measurement.
+
+Two things came out of measuring rather than assuming.
+
+**The addend cannot be rank 1.** ONNX broadcasting aligns from the trailing axis,
+so a `(5,)` initializer broadcasts against the width of 6 and `onnx.checker`
+refuses the graph outright. It is written `(1, 5, 1, 1)`, which is what an
+exported graph carries anyway and which the importer normalises to the rank 1
+constant the pass guards on. The P9 handoff's sketch said "an `Add` of a rank 1
+initializer", and the pass does see rank 1; the generator cannot write it.
+
+**The tight budget did not move, and that was not obvious.** ADR 0008 froze
+`dilated_stack` at 8064 and the P9 handoff named the budget as the thing this
+change might break. Re-measured by that record's own 64 byte sweep at all three
+levels: peak 8036, floor 8064, which are the P8 numbers. The mechanism is that a
+sweep line peak is a maximum over time and not a sum over the program. The two
+new buffers are 20 bytes of bias and a 360 byte destination, both live near the
+end where the working set is a little over five kilobytes, and this model's peak
+is set by `conv0`, whose input, filter and result are resident together.
+
+The prettiest number on the branch is the `-O2` cycle count. `dilated_stack` gains
+an instruction at `-O0` and `-O1` and the fusion takes it back at `-O2`, where the
+cycle count and the compute cycle count return to **exactly** what they were
+before the node existed: 1234.0625 and 710.8125. The twenty extra DRAM bytes stay
+at every level, because the bias has to arrive whichever operation reads it.
+
+### The verification matrix found the last defect by dying
+
+`coverage.sh` aborted at collection with a `SuspiciousHits` stack trace naming
+`lib/Simulator/Kernels.cpp:87`, exit 64, no percentage. gcov says why: that line's
+counter had reached 5896524226, past gcovr's threshold of 2^32.
+
+gcov accumulates. A `.gcda` left in place is added to by the next run rather than
+replaced, and the script had never deleted one, so `build-coverage/` held the sum
+of every run since P8 in one set of counters. `Kernels.cpp:87` is the stride loop
+inside the odometer, the hottest line in the project, and it got there first.
+
+**The crash is the harmless half.** A percentage collected from accumulated
+counters is a percentage about the union of every suite the directory has ever
+run, so a line executed by a test that was later deleted keeps the count that
+executed it. This branch deletes a test, which is what makes the point concrete.
+The measurable evidence is small and real: 42 `.gcda` files before the deletion
+and 41 after a clean run, so one object had counters and no longer runs at all.
+
+Measured either way the number did not move on this tree, C++ 86.5 and Python
+90.50, so this is a defect in what the number **means** rather than in what it
+currently **says**. That is the kind that survives until somebody looks.
+
+**And it is D-0030 and D-0032 with the direction reversed.** Those were results
+that depended on what else was lying around in CI, invisible on a developer
+machine. This one depends on what is lying around on a developer machine and is
+invisible in CI, because the coverage job checks out a fresh tree and has nothing
+to inherit. The class is the same and the environments are swapped, which is
+worth knowing about a class this project has now met four times: the question to
+ask of any measurement is not "did it pass" but "what else could have produced
+this result".
+
+### What was deliberately left undecided
+
+`regression-baseline --check` is a CI step now and `GOLDEN_TOLERANCE` is still
+zero. P8 and P9 both left the step out for the same stated reason, that a byte
+identical golden comparison bounds two runs of the same build and CI is a
+different compiler against a different libc, and neither phase could answer
+whether that matters because answering it needs a run.
+
+Choosing a tolerance in advance would have thrown away the only measurement the
+question is about. So the step goes on with the band unwidened and the first
+container run is the experiment. What that required was making a red first run
+readable from the log alone, because a red run nobody can interpret is a step
+that gets disabled. The golden drift line said `largest movement 4.7e-08`, which
+is the same sentence for one element moving in its last bit and for every element
+moving, and those are opposite findings. It now names the count, the index, both
+values and the movement in ulps, proven by pushing one golden element to the next
+representable float and reading what came out.
