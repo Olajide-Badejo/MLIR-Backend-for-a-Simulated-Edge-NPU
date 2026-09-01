@@ -463,11 +463,62 @@ jobs:
           fi
           exit "$status"
 
-      - name: "pytest slow cells (activation table: P10)"
+      # ON at P10. The step above runs pytest's default marker expression, which
+      # deselects `slow`; this one runs everything.
+      #
+      # **What is actually slow, and it is not what P9 expected.** The off line
+      # this step replaced said the full matrix runs here, on the assumption that
+      # P10's ablation cells would arrive beside the end to end cells and make
+      # the matrix expensive. They did not: Section 16.2's ablations are a
+      # benchmark suite rather than a test matrix, they write result files rather
+      # than assert, and they live in experiments/run_benchmarks.py. The end to
+      # end matrix is 426 tests in about 25 seconds and is still not marked slow.
+      #
+      # Nine tests carry the marker, and only two of them are P10's:
+      # test/Python/test_benchmarks.py drives a real run of the benchmark suite
+      # twice, once for Section 16.1's determinism test and once for the failure
+      # branch of the 90 minute budget gate.
+      #
+      # **The other seven predate this step by six phases and CI has never run
+      # one of them.** test_every_model_imports_at_a_second_seed has been marked
+      # slow, one case per model, since the model suite landed. It runs on the
+      # developer machine, where the verification matrix uses
+      # -m 'slow or not slow'; it has never run in CI, because the only step that
+      # would is this one and this one was off. That is D-0040 and it is the
+      # mirror of D-0037: a result that depends on what is lying around locally
+      # and is invisible in CI. Turning this step on is what closes it, and the
+      # first green run is the proof rather than this comment.
+      #
+      # The guard is on the collected count and not on the exit code. A run that
+      # deselected every slow test would exit 0 having done exactly what the step
+      # above already did, which is the shape of a step that is on and asserting
+      # nothing.
+      - name: "pytest slow cells (activation table: P10, on)"
+        env:
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+          NPU_BUILD_DIR: ${{ github.workspace }}/build
         run: |
-          set -euo pipefail
-          echo "pytest slow cells: OFF until P10 (activation table 19.0)."
-          echo "pytest slow cells: the full matrix runs with -m 'slow or not slow'."
+          set -uo pipefail
+          slow=$(python3 -m pytest test/Python -q --collect-only -p no:cacheprovider \
+                   -m slow 2>/dev/null | grep -c '::' || true)
+          echo "pytest slow cells: ${slow} tests carry the slow marker."
+          if [ "$slow" -eq 0 ]; then
+            echo "::error::no test carries the slow marker."
+            echo "pytest slow cells: this step is ON from P10 and its whole"
+            echo "pytest slow cells: purpose is the tests the step above"
+            echo "pytest slow cells: deselects. Zero of them means this step is"
+            echo "pytest slow cells: a second copy of the previous one, which is"
+            echo "pytest slow cells: a step that is on and asserting nothing."
+            exit 1
+          fi
+          python3 -m pytest test/Python -q -m 'slow or not slow'
+          status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::pytest collected no tests and exited 5."
+            echo "pytest slow cells: an empty collection is never read as a pass."
+            exit 1
+          fi
+          exit "$status"
 
       # ---- Staleness gates. -------------------------------------------------
       # DIALECT_REFERENCE.md staleness: ON at P1.

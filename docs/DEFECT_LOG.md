@@ -1908,3 +1908,70 @@ None.
   the band in **both** directions is not drift, a move is reported as a note, a
   value outside the band is drift and is not also a note, and the band is the
   same object the end to end matrix imports.
+
+### D-0040 seven tests were marked slow at P3 and CI has never run one of them
+
+- **Found:** 2026-09-01, phase P10, while rehearsing the `pytest slow cells` step
+  the activation table turns on at this phase. Found by a **prediction that was
+  wrong**: I predicted the step would report two slow tests, the two P10 adds,
+  and it reported nine.
+- **Status:** resolved 2026-09-01 by the step being switched on.
+- **Reproduce:** at any commit from P3 to P9b, ask which tests carry the marker
+  and then ask which step in CI would run them.
+
+  ```
+  $ python -m pytest test/Python -q --collect-only -m slow | grep ::
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[conv_bn_relu_stack]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[depthwise_separable]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[dilated_stack]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[inception_block]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[lenet]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[lenet_batched]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[resnet_block]
+  ```
+
+  `ci.yml`'s `pytest` step runs the default marker expression, which deselects
+  `slow`. The only step that runs `-m 'slow or not slow'` is `pytest slow cells`,
+  and the activation table of Section 19.0 has that step off until P10. So these
+  seven tests have existed since the model suite landed and no CI run has ever
+  executed one.
+
+- **What was wrong, and it is worth being precise about.** Nothing lied. The
+  activation table said the step was off, the step said in its own log that it
+  was off, and Section 19.0's rule that a step which is off says so was honoured
+  throughout. What nobody noticed is the **consequence**: marking a test `slow`
+  before the step that runs slow tests exists is the same as deleting it from
+  CI, and the marker gives no hint of that at the point of use.
+
+  These seven are not trivial. `test_every_model_imports_at_a_second_seed`
+  regenerates every model at a different seed and imports it, which is what
+  catches an importer that works on the committed weights and not on the shape of
+  the graph. They ran on the developer machine, where the closing verification
+  matrix of every phase uses `-m 'slow or not slow'`, so they were not
+  unexercised; they were unexercised **in the environment that differs**.
+
+- **Why this is D-0037's mirror, and the set is now six.** D-0030 and D-0032 were
+  results that depended on what else was lying around in CI and were invisible
+  locally. D-0037 was the reverse, a result that depends on what is lying around
+  locally and is invisible in CI. This one is the reverse of the reverse: a
+  *test* that only ever ran locally, so any environment dependent failure in it
+  had exactly one place to hide and that place was the only place nobody looked.
+
+- **The fix, and what it is not.** The step is on, so the seven run in the
+  container from this phase. That is the whole fix and it is one guard line more
+  than switching the step on: the step counts the collected slow tests first and
+  fails when the count is zero, because a step whose marker expression selected
+  nothing would exit 0 having repeated the step above it, which is how this
+  situation would recur silently after somebody removed the last marker.
+
+  What the fix is **not** is a rule against the `slow` marker. Section 17.4 asks
+  for it and P10 adds two more uses of it that are worth having. The lesson is
+  narrower and it is about ordering: **a marker that excludes a test from a
+  default run is only safe once something runs the excluded set**, and this
+  project introduced the marker six phases before it introduced that something.
+
+- **Verified.** Rehearsed under the step's own script. With the markers in place
+  the step reports nine and the suite runs green at 954 passed, 18 skipped. With
+  every `@pytest.mark.slow` removed, the count guard reports zero and the step
+  exits 1 with the message naming why a zero count is a failure rather than a
+  quiet pass. Restored, and `git status` clean.
