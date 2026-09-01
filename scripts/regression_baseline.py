@@ -122,8 +122,16 @@ GTEST_BINARIES: Final[tuple[str, ...]] = (
 #: between two runs of the *same* build. A different compiler or a different
 #: host may contract a multiply and an add differently, so a baseline recorded
 #: on one machine and checked on another can differ in the last bits without
-#: anything being wrong. `--check` is a developer and orchestrator command for
-#: that reason and is not a CI step at this phase.
+#: anything being wrong.
+#:
+#: **P8 and P9 made that caveat the reason `--check` was not a CI step**, and
+#: P9b takes the other route: the step is switched on with the tolerance left at
+#: zero, and if the container disagrees with the developer machine then the
+#: disagreement is the measurement this project did not have. Widening the band
+#: first and measuring afterwards would have thrown away the only number the
+#: question is about. What the first red run has to be able to say is *how far*,
+#: on how many elements, and in what unit, which is what the drift line for a
+#: golden was rewritten to carry.
 GOLDEN_TOLERANCE: Final[float] = 0.0
 
 
@@ -707,11 +715,33 @@ def compare(
         if expected.shape != produced.shape:
             drift.append(f"golden {name}: shape {expected.shape} -> {produced.shape}")
             continue
-        worst = float(np.abs(produced - expected).max())
+        difference = np.abs(produced.astype(np.float64) - expected.astype(np.float64))
+        worst = float(difference.max())
         if worst > GOLDEN_TOLERANCE:
+            # **This line is written for a reader who has only the log.** Since
+            # P9b `--check` is a CI step, and the run that matters most is the
+            # first one in the container, where the question is whether a
+            # baseline recorded under gcc on a developer machine reproduces bit
+            # for bit under clang on a hosted runner. "largest movement 4.7e-08"
+            # does not answer it: one element moved in the last bit and every
+            # element moved by the same amount are the same sentence and
+            # opposite findings. So the line carries how many elements moved,
+            # where the worst one is, both values at that index, and the
+            # movement in units in the last place at that scale, which is the
+            # unit that separates an arithmetic difference from a bug.
+            differing = int(np.count_nonzero(difference))
+            index = np.unravel_index(int(difference.argmax()), difference.shape)
+            was = float(expected[index])
+            now = float(produced[index])
+            ulp = float(np.spacing(np.float32(max(abs(was), abs(now)))))
+            in_ulps = f"{worst / ulp:.1f} ulps" if ulp > 0.0 else "unmeasurable ulps"
             drift.append(
-                f"golden {name}: largest movement {worst:.6e}, above the "
-                f"tolerance of {GOLDEN_TOLERANCE:.6e}"
+                f"golden {name}: {differing} of {difference.size} elements "
+                f"differ, largest movement {worst:.6e} at index "
+                f"{tuple(int(value) for value in index)}, where the baseline "
+                f"records {was!r} and this run produced {now!r}, which is "
+                f"{in_ulps} at that scale, against a tolerance of "
+                f"{GOLDEN_TOLERANCE:.6e}"
             )
 
     return drift

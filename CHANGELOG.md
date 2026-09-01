@@ -42,6 +42,16 @@ P9 and P10 rather than folded into either. No new pass, no new phase gate.
   implied `-DNDEBUG`; against an assertions LLVM it does not, which is D-0028
   and now D-0036. A second LLVM tree built without assertions is deliberately
   declined, in `docs/adr/0009`.
+- **`scripts/regression-baseline.sh --check` is a CI step**, at the end of
+  `build-and-test`, with the golden tolerance left at **zero**. P8 and P9 both
+  left it out because a byte identical golden comparison bounds two runs of the
+  same build and CI is a different compiler and a different libc; neither phase
+  could answer whether that matters without a run. The step is the run. If the
+  container reproduces the developer machine bit for bit, that is a property
+  worth having proven; if it does not, the drift report is the measurement, and
+  the report was rewritten to carry it: a golden difference now names how many
+  elements moved, at which index, from what to what, and how many units in the
+  last place that is.
 - **`-sccp`'s ablation row stays zero, and the distinction is written down.**
   Constant propagation needs a call graph to cross and an imported model is one
   function, so no model change alters that row. Two zero rows, one a gap in the
