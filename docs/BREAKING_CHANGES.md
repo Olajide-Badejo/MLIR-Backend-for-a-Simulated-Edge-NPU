@@ -42,6 +42,118 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-01, Interphase P9b: `dilated_stack` gains the separate bias add, and every one of its cells moves
+
+**Written before the commit that causes it.** The commit that changes the model
+suite is the next one; this entry is what makes it a decision rather than an
+explanation.
+
+**What moves, and it is a model change rather than a compiler change.** That
+distinction is the whole entry, so it goes first. Nothing about the compiler's
+arithmetic moves here. A model in Section 15's suite gains one node, so it
+computes a different function, so its outputs are different numbers. Every field
+below moves because the program moved, and the fields that measure the
+*compiler* against itself, `max_abs_movement_vs_o0` and
+`max_abs_error_vs_onnxruntime`, do not move at all.
+
+**Why the suite is changing.** P9 recorded the finding and left the decision:
+`-npu-fuse-bias` fires on no model of Section 15's suite, because every
+convolution in it carries its bias inline as a third `Conv` input, which is what
+`torch.onnx.export` and this project's ONNX built models both emit. Section
+16.2's ablation table at P10 would therefore have carried a row of zeros for that
+pass, and a reader would have concluded that folding a bias into a convolution is
+worth nothing on this workload. It is not worth nothing; there was nothing to
+fold. `dilated_stack`'s `conv1` was already biasless and already followed by a
+`Relu`, so one `Add` of a channel shaped initializer between them is the smallest
+change that turns that row into a measurement.
+
+**`GENERATOR_VERSION` moves from `1.0.0` to `1.1.0`**, which is what the manifest
+field is for: a version that could not distinguish two suites is a version that
+cannot be trusted. `--check` compares it before it compares a cell, and a moved
+suite version is reported as its own line rather than as forty two puzzling
+ones.
+
+**The cells that move are the six `dilated_stack` cells and no others.** Three
+levels times two budgets. Measured on 2026-09-01:
+
+| Field | `-O0` and `-O1`, both budgets | `-O2`, both budgets |
+|---|---|---|
+| `instructions` | 11 to **13** | 11 to **12** |
+| `cycles` | 1234.0625 to **1243.6875** | **1234.0625, unchanged** |
+| `dma_cycles` | 674 to **743.25** | 674 to **743.25** |
+| `compute_cycles` | 710.8125 to **720.4375** | **710.8125, unchanged** |
+| `dram_bytes_read` | 4984 to **5004** | 4984 to **5004** |
+| `dram_bytes_written` | 360, unchanged | 360, unchanged |
+| `macs` | 41706, unchanged | 41706, unchanged |
+| `max_abs_error_vs_onnxruntime` | 5.960464e-07, unchanged | 5.960464e-07, unchanged |
+| `max_abs_movement_vs_o0` | 0.0, unchanged | **0.0, unchanged** |
+
+**Read the `-O2` column, because it is the point of the change.** The twenty
+extra DRAM bytes are the bias itself and they are read at every level, since the
+bytes have to arrive whichever operation consumes them. Everything else the added
+node costs is gone at `-O2`: the separate add becomes an operand of the
+convolution, the instruction count is one lower than at `-O0`, and the cycle
+count and the compute cycle count come back to **exactly** the numbers this model
+had before the node existed. That is `-npu-fuse-bias` paying for itself on a
+model of the suite, which is the thing P9 could not show.
+
+**And `max_abs_movement_vs_o0` stays at 0.0 at `-O2`.** The fusion is bit exact,
+because the simulator's convolution kernel adds the bias to the same `f32`
+accumulator the unfused program stores and then adds to. P9 asserted that on a
+model built for the test; this is the first time it is measured on a model of the
+suite.
+
+**Three golden tensors move, by 4.597557e-02 each.** `dilated_stack-O0-out0`,
+`dilated_stack-O1-out0` and `dilated_stack-O2-out0`, all by the same amount and
+all for the same reason: the model now adds a bias, so its output is the old
+output plus a bias. **This is not a numerics movement and it is not inside any
+tolerance band**, and confusing the two would be the worst available reading of
+this entry. Section 17.6's 1e-6 band bounds how far a *level's* answer sits from
+`-O0`'s on the *same* program, and that quantity is still exactly zero on all six
+cells. A golden tensor is the answer of a particular program, and this is a
+different program.
+
+**The suite counts move too, and that is composition rather than regression.**
+pytest goes from 864 to 867. One test is deleted,
+`test_no_suite_model_gives_the_bias_fusion_anything_to_do`, which asserted the
+gap so the claim could not go stale and which has done its job. Four arrive:
+`test_the_suite_gives_the_bias_fusion_exactly_one_target`, which is its inverse
+and which names the model rather than counting;
+`test_the_bias_fusion_is_a_saving_and_not_a_rearrangement`, which measures the
+one instruction and the bit equality;
+`test_sccp_has_nothing_to_do_on_a_single_function`, which holds the other zero
+row apart from this one; and
+`test_the_dilated_stack_carries_a_separate_channel_shaped_bias_add`, which pins
+the model's new shape where the model is built.
+
+**What does not move, measured rather than assumed.**
+
+- **No other model's cells move.** The `Add` and its initializer are appended
+  after `conv1.weight` in the same generator draw order, so every other tensor in
+  `dilated_stack` is bit identical and no other model shares a draw with it.
+- **The tight budget of `dilated_stack` does not move.** Re-measured on
+  2026-09-01 by the sweep `docs/adr/0008` describes: the allocated peak at the
+  default budget is **8036 bytes** at all three levels, unchanged, and the
+  smallest budget that allocates is still **8064**. The added buffers are the
+  twenty byte bias constant and a 360 byte destination, both live late in the
+  program where the pressure is a little over five kilobytes; the peak is set by
+  `conv0`, which this change does not touch. So `docs/adr/0008`'s frozen constant
+  stands and the model still spills nothing at it, which
+  `test_the_tight_budget_spills_what_the_record_says` asserts.
+- **`-O1` is still exactly `-O0` on this model**, in every field including the
+  goldens.
+
+**Why the regression is worth taking.** Section 16.2 asks P10 for a leave one out
+ablation over the eight ablatable passes, and the value of that table is the
+reasons behind its numbers. A row of zeros caused by a suite that cannot reach a
+pass and a row of zeros caused by a pass that is worth nothing look identical in
+a table and are opposite findings. This change costs six cells and three goldens
+and buys a table whose rows mean what they say.
+
+**The causing commit** is `feat(models): dilated_stack carries the separate bias
+add -npu-fuse-bias exists for`. The baseline is re-recorded in the commit after
+it, touching `test/baseline/` and nothing else.
+
 ### 2026-09-01, Phase P9: `-O1` and `-O2` arrive, and `-O2` moves the last bits
 
 **Written before the commit that causes it.** The commit that registers the two
