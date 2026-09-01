@@ -19,15 +19,27 @@ might have stopped producing years ago. So the fixtures below go through
 imported model, which is what the Section 11 broadcast carve out exists to make
 possible", and `test_fuse_bias_fires_on_a_real_imported_model` is it.
 
-**And the finding beside it, recorded rather than left to be discovered.** None
-of the seven models in Section 15's suite contains a biasless `Conv` followed by
-a channel shaped `Add`: every convolution in the suite carries its bias inline as
-a third `Conv` input, which is what `torch.onnx.export` and this project's ONNX
-built models both emit. So the pass fires on an imported model and on no model
-*of the suite*, and its Section 16.2 ablation row at P10 will be a row of zeros
-until the suite gains one.
-`test_no_suite_model_gives_the_bias_fusion_anything_to_do` asserts that, so the
-day a model does gain the shape the claim above stops being true loudly.
+**The finding beside it, and what P9b did about it.** At P9 none of the seven
+models in Section 15's suite contained a biasless `Conv` followed by a channel
+shaped `Add`: every convolution in the suite carried its bias inline as a third
+`Conv` input, which is what `torch.onnx.export` and this project's ONNX built
+models both emit. The pass fired on an imported model and on no model *of the
+suite*, so its Section 16.2 ablation row would have been a row of zeros that read
+as a measurement of the pass rather than of the suite. P9b closed that:
+`dilated_stack`'s `conv1` was already biasless and already followed by a `Relu`,
+and it now carries a separate channel shaped bias `Add` between them.
+`test_the_suite_gives_the_bias_fusion_exactly_one_target` is the assertion, and
+it names the model rather than merely counting, so a second model quietly
+acquiring or losing the shape is as loud as the first one gaining it.
+
+**The `-sccp` row stays a row of zeros and that is a different kind of fact.**
+Constant propagation needs a call graph to propagate across, an imported model is
+one function, and no model change alters that: this compiler has no calls. So one
+of the two zero rows P9 predicted was a gap in the suite and has been closed, and
+the other is a true property of the programs this compiler compiles and is
+reported as a measurement. `test_sccp_has_nothing_to_do_on_a_single_function`
+holds that half, and the two are deliberately not written as one test: they would
+go red for entirely different reasons.
 """
 
 from __future__ import annotations
@@ -175,17 +187,20 @@ def test_fuse_bias_changes_no_answer_on_the_model_it_fires_on() -> None:
     assert fused.instructions < plain.instructions
 
 
-def test_no_suite_model_gives_the_bias_fusion_anything_to_do(
+def test_the_suite_gives_the_bias_fusion_exactly_one_target(
     suite_models: dict[str, Path],
 ) -> None:
-    """The finding, asserted so it cannot go stale.
+    """The inverse of the P9 assertion, and it names the model.
 
-    Every convolution in Section 15's suite carries its bias inline as a third
-    `Conv` input, so `add(conv(x, w), b)` appears in none of the seven models
-    and this pass's ablation row at P10 will be a row of zeros. That is a
-    property of the suite rather than of the pass, and the day a model gains the
-    shape this test fails and the claim in the module docstring gets rewritten
-    rather than quietly becoming false.
+    At P9 this test's predecessor asserted the empty list: no model of Section
+    15's suite held a biasless `Conv` followed by a channel shaped `Add`, so the
+    pass's Section 16.2 ablation row would have been zeros for want of a target.
+    `dilated_stack` carries the shape now and this asserts which model does.
+
+    **Naming the model rather than asserting a non empty list** is the point. A
+    count would stay green if `dilated_stack` lost the shape and some other model
+    gained it, and those are two separate suite changes each of which should be
+    read by somebody rather than absorbed.
     """
     fired_on = []
     for name in sorted(suite_models):
@@ -197,11 +212,84 @@ def test_no_suite_model_gives_the_bias_fusion_anything_to_do(
         ) != after.count("npu.add"):
             fired_on.append(name)
 
-    assert fired_on == [], (
-        f"-npu-fuse-bias now fires on {fired_on}, which it did not at P9. That "
-        f"is good news and it makes this test's claim, and the paragraph in "
-        f"this file's docstring, out of date."
+    assert fired_on == ["dilated_stack"], (
+        f"-npu-fuse-bias fires on {fired_on} and the suite is built for it to "
+        f"fire on ['dilated_stack']. A shorter list is the P9 gap reopening and "
+        f"a longer one is a model that gained the shape without anybody saying "
+        f"so; both make the paragraph in this file's docstring out of date."
     )
+
+
+def test_the_bias_fusion_is_a_saving_and_not_a_rearrangement(
+    suite_models: dict[str, Path],
+) -> None:
+    """A target the pass declines to act on would satisfy the test above.
+
+    So the saving is measured too, as a relation rather than as a constant: on
+    `dilated_stack` the `-O2` program is exactly one instruction shorter than the
+    `-O0` one, because the separate add became an operand of the convolution, and
+    the two programs agree bit for bit. Both halves matter. The first says the
+    ablation row P10 records will not be zero; the second says the row costs
+    nothing in accuracy, which is what `docs/BREAKING_CHANGES.md` attributes to
+    this pass and which was measured at P9 on a model built for the test rather
+    than on a model of the suite.
+    """
+    path = suite_models["dilated_stack"]
+    at_zero = compile_model(path, level=0, emit="nbin")
+    at_two = compile_model(path, level=2, emit="nbin")
+    assert at_zero.binary is not None and at_two.binary is not None
+
+    arrays = make_inputs("normal", at_zero.input_shapes, model="dilated_stack", batch=1)
+    plain = run_program(at_zero.binary, arrays, at_zero.output_shapes)
+    fused = run_program(at_two.binary, arrays, at_two.output_shapes)
+
+    assert fused.instructions == plain.instructions - 1, (
+        f"-O2 is {plain.instructions - fused.instructions} instructions shorter "
+        f"than -O0 on dilated_stack and the bias fusion accounts for exactly "
+        f"one. A different number means another pass started firing on this "
+        f"model, which is a measurement to take rather than a test to adjust."
+    )
+    np.testing.assert_array_equal(
+        fused.outputs[0],
+        plain.outputs[0],
+        err_msg=(
+            "-O2 moved dilated_stack's answer. The bias fusion is bit exact "
+            "because the convolution kernel adds the bias to the same f32 "
+            "accumulator the unfused program stores and then adds to."
+        ),
+    )
+
+
+def test_sccp_has_nothing_to_do_on_a_single_function(
+    suite_models: dict[str, Path],
+) -> None:
+    """The other zero row, which is a property rather than a gap.
+
+    `-sccp` propagates constants across a call graph and an imported model is one
+    function, so there is nothing for it to propagate across whatever the dialect
+    can materialise. D-0033 made the dialect able to write an answer down and the
+    pass still has nothing to write here, which is why Section 12 keeps it at
+    `-O2` and P10 reports a row of zeros as the measurement that section asked
+    for.
+
+    This is deliberately a separate test from the bias fusion's. The two rows
+    were both zero at P9 and only one of them was a gap; writing them as one
+    parametrized assertion would have made closing the first look like it closed
+    both.
+    """
+    for name in sorted(suite_models):
+        before = compile_model(suite_models[name], level=0, emit="npu").text
+        assert before is not None
+        assert before.count("func.func") == 1, (
+            f"{name} imports to more than one function, so the reason this row "
+            f"is zero has changed and the claim above needs re-measuring rather "
+            f"than repeating"
+        )
+        after = run_passes(before, "--sccp")
+        assert after.count("npu.constant") == before.count("npu.constant"), (
+            f"-sccp materialised a constant on {name}, which it cannot do "
+            f"across a call graph that does not exist"
+        )
 
 
 # ---------------------------------------------------------------------------

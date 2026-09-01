@@ -202,6 +202,40 @@ def test_exactly_one_transpose_closes_the_dilated_stack(
     assert list(perm.ints) == [0, 2, 3, 1]
 
 
+def test_the_dilated_stack_carries_a_separate_channel_shaped_bias_add(
+    suite: dict[str, onnx.ModelProto],
+) -> None:
+    """The shape `-npu-fuse-bias` exists for, held where the model is built.
+
+    Three properties, and the pass reads each one. `conv1` has two inputs, so it
+    is biasless and has somewhere to put a bias. An `Add` consumes its result and
+    its second input is an initializer, so the addend is a constant. And that
+    initializer is channel shaped rather than result shaped, which is what
+    separates a bias from a residual.
+
+    The `(1, C, 1, 1)` spelling is admitted alongside `(C,)` for the same reason
+    `test_the_resnet_scale_is_a_channel_shaped_initializer` admits both: ONNX
+    broadcasting aligns from the trailing axis, so the four dimensional form is
+    the only one `onnx.checker` accepts here, and `docs/adr/0005` is the record
+    of the importer normalising it to rank 1 on the way in.
+    """
+    model = suite["dilated_stack"]
+    initializers = {tensor.name: tensor for tensor in model.graph.initializer}
+
+    conv1 = next(node for node in model.graph.node if node.name == "conv1")
+    assert len(conv1.input) == 2, (
+        "conv1 gained a Conv bias input, which leaves -npu-fuse-bias nothing to "
+        "fuse into and reopens the suite gap P9 recorded"
+    )
+
+    add = next(node for node in model.graph.node if node.op_type == "Add")
+    assert add.input[0] == conv1.output[0]
+    addend = add.input[1]
+    assert addend in initializers, "the addend is not a constant, so it is not a bias"
+    dims = tuple(initializers[addend].dims)
+    assert dims in {(5,), (1, 5, 1, 1)}, dims
+
+
 def test_the_dilated_stack_really_dilates_and_really_pads_asymmetrically(
     suite: dict[str, onnx.ModelProto],
 ) -> None:

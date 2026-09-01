@@ -6,6 +6,28 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Interphase P9b: the open questions P9 handed on, decided
+
+Four items the P9 handoff carried as open questions, taken deliberately between
+P9 and P10 rather than folded into either. No new pass, no new phase gate.
+
+- **`-npu-fuse-bias` fires on a model of the suite now.** `dilated_stack`'s
+  `conv1` was biasless and followed directly by a `Relu`, and it now carries a
+  separate channel shaped bias `Add` between them, which is the shape Section
+  11's broadcast carve out exists for and which no exported graph produces. So
+  the pass's Section 16.2 ablation row at P10 is a measurement rather than a row
+  of zeros: `dilated_stack` is thirteen instructions at `-O0` and twelve at
+  `-O2`, with the answer bit identical and the cycle count back to exactly what
+  it was before the node existed. `GENERATOR_VERSION` moves from `1.0.0` to
+  `1.1.0`, every `dilated_stack` cell of the baseline moves, and
+  `docs/BREAKING_CHANGES.md` declared all of it before the commit that caused it.
+- **`-sccp`'s ablation row stays zero, and the distinction is written down.**
+  Constant propagation needs a call graph to cross and an imported model is one
+  function, so no model change alters that row. Two zero rows, one a gap in the
+  suite and closed, one a true property of the programs this compiler compiles
+  and kept. `docs/PASSES.md` says which is which and
+  `test_sccp_has_nothing_to_do_on_a_single_function` holds the second.
+
 ### Phase P9: optimization passes and optimization levels
 
 Every user visible movement of this phase is named here, and the one that moves a

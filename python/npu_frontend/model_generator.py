@@ -46,7 +46,7 @@ regression.
 | `resnet_block` | residual `Add`, identity shortcut, a per channel `Mul` on the residual branch |
 | `inception_block` | `Concat`, parallel branches, branching topology |
 | `conv_bn_relu_stack` | an unfolded `BatchNormalization`, plus `Identity`, `GlobalAveragePool`, `Flatten` and `MatMul` |
-| `dilated_stack` | `dilation > 1`, asymmetric padding, a closing NCHW to NHWC `Transpose`, plus `Clip` |
+| `dilated_stack` | `dilation > 1`, asymmetric padding, a closing NCHW to NHWC `Transpose`, plus `Clip` and a separate channel shaped bias `Add` |
 | `lenet_batched` | the batch path through the whole pipeline, at N = 4 |
 
 The four extra operators on the two hand built models are there because Section
@@ -57,6 +57,17 @@ the head of a graph is what a graph transform leaves behind, a global pool
 followed by a flatten and a matrix multiply is the head of any small classifier,
 and a `Clip` with a lower bound of zero and no upper bound is what a normaliser
 turns a relu into.
+
+**`dilated_stack` carries the separate bias add, and that is a shape rather than
+an operator.** Every convolution the dynamo exporter writes carries its bias
+inline as a third `Conv` input, so `add(conv(x, w), b)` appears nowhere in a
+suite built only from exported graphs, and `-npu-fuse-bias` had a Section 16.2
+ablation row of zeros for want of a target rather than for want of a saving.
+`conv1` was already biasless and already followed by a `Relu`, so one `Add`
+between them is the smallest change that gives the pass something to do on a
+real model. It is not a synthetic node bolted on: a convolution followed by a
+separate bias add is what a framework that keeps its bias as a parameter emits,
+and it is the exact shape Section 11's broadcast carve out was written for.
 """
 
 from __future__ import annotations
@@ -78,7 +89,7 @@ from .onnx_importer import PINNED_OPSET
 # Bumped whenever anything in this module changes what a model contains, so a
 # result manifest naming a version identifies one suite and not a family of
 # them.
-GENERATOR_VERSION: Final[str] = "1.0.0"
+GENERATOR_VERSION: Final[str] = "1.1.0"
 
 # One seed for the whole suite. Every model derives its randomness from it and
 # from nothing else, so no model's contents depend on the order the suite was
@@ -368,6 +379,27 @@ def _build_dilated_stack(seed: int, batch: int = 1) -> ModelProto:
 
     The `Clip` is a lower bound of zero with no upper bound, which is the only
     form this importer accepts and is what a graph normaliser turns a relu into.
+
+    **`conv1` has no `Conv` bias input and gains its bias from a separate `Add`,
+    and that is the whole reason this model is the one that changed.** Section
+    12's `-npu-fuse-bias` matches `add(conv(x, w), b)` with a channel shaped
+    constant addend, which is the shape Section 11 leaves unexpanded precisely so
+    the pass can match it. No exported graph in this suite produces it: the
+    exporter writes the bias inline as a third `Conv` input. So the pass fired on
+    a model built for it in the test suite and on nothing in Section 15's suite,
+    and its Section 16.2 ablation row would have been a row of zeros that read as
+    a measurement. One `Add` between `conv1` and the `Relu` fixes that, and the
+    two convolutions now differ in more than their dilation: `conv0` carries its
+    bias inline and `conv1` carries it separately, so this one model holds both
+    spellings.
+
+    **The addend is written as `(1, C, 1, 1)` rather than as `(C,)`**, for two
+    reasons that agree. ONNX broadcasting aligns from the trailing axis, so a
+    rank 1 initializer of length 5 would try to broadcast against the width of 6
+    and `onnx.checker` refuses the graph outright. And `(1, C, 1, 1)` is the
+    spelling `p.reshape(1, -1, 1, 1)` produces in an exported graph, which the
+    importer normalises to the rank 1 constant `docs/adr/0005` describes. The
+    pass therefore sees rank 1 without this file having to write rank 1.
     """
     rng = np.random.default_rng(seed)
     nodes = []
@@ -414,7 +446,18 @@ def _build_dilated_stack(seed: int, batch: int = 1) -> ModelProto:
             group=1,
         )
     )
-    nodes.append(helper.make_node("Relu", ["conv1"], ["activated"], name="activated"))
+    # The separate bias add. It is drawn *after* `conv1.weight` deliberately:
+    # every other tensor in this model is drawn from the same generator in the
+    # same order as before, so appending here leaves conv0 and conv1's weights
+    # bit identical and the only thing that moved is what this node adds.
+    initializers.append(
+        _initializer("conv1.bias", rng.standard_normal((1, 5, 1, 1)) * 0.1)
+    )
+    nodes.append(
+        helper.make_node("Add", ["conv1", "conv1.bias"], ["biased"], name="biased")
+    )
+
+    nodes.append(helper.make_node("Relu", ["biased"], ["activated"], name="activated"))
     nodes.append(
         helper.make_node(
             "Transpose", ["activated"], ["output"], name="to_nhwc", perm=[0, 2, 3, 1]
@@ -558,10 +601,11 @@ MODELS: Final[dict[str, ModelSpec]] = {
         tight_budget=8064,
         input_shape=(1, 4, 12, 14),
         summary=(
-            "Dilated convolution stack with asymmetric padding and a closing "
+            "Dilated convolution stack with asymmetric padding, a separate "
+            "channel shaped bias add on the second convolution, and a closing "
             "NCHW to NHWC Transpose, built with the ONNX construction API."
         ),
-        expected_nodes={"Conv": 2, "Clip": 1, "Relu": 1, "Transpose": 1},
+        expected_nodes={"Conv": 2, "Add": 1, "Clip": 1, "Relu": 1, "Transpose": 1},
         onnx_builder=_build_dilated_stack,
     ),
     "lenet_batched": ModelSpec(
