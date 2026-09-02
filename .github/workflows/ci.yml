@@ -228,6 +228,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # D-0042, and the position of this step is the whole of the fix.
+      #
+      # The workspace is owned by the runner user and this job runs as root
+      # inside a container, so git refuses the repository as dubiously owned
+      # until it is named here. Two later steps already did this, and that is
+      # exactly what made the defect hard to read: `regression-baseline --check`
+      # runs after them and its git worked, while `pytest` and `pytest slow
+      # cells` run before them and every git call the suite made exited 128.
+      #
+      # Once, immediately after the checkout, so that every step in the job has
+      # a repository it can read. The suite now refuses to read a fatal as an
+      # answer, so this being missing again would be a loud failure naming git's
+      # own message rather than a quiet wrong one, but the right fix for a step
+      # that cannot read the repository is to let it read the repository.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Report the image this job is running in
         run: |
           set -euxo pipefail
@@ -554,9 +571,13 @@ jobs:
       # that says only "stale" makes the reader run the command locally to find
       # out what moved, and printing it costs nothing.
       #
-      # git config safe.directory is needed because the checkout is owned by the
-      # runner user and the container runs as root, so git refuses to read the
-      # repository without being told it is trusted.
+      # The safe.directory line below is redundant since D-0042 moved it to a
+      # step immediately after the checkout, and it is kept rather than deleted
+      # because `git config --global --add` of a value already present is a no
+      # operation, and a step that can be read on its own is worth more than one
+      # fewer line. **It is no longer what makes this step work**, which matters:
+      # it used to be the first setting in the job, so every step above it had a
+      # repository git refused to read, and that is the defect.
       - name: "DIALECT_REFERENCE.md staleness (activation table: P1, on)"
         run: |
           set -euo pipefail
@@ -595,7 +616,7 @@ jobs:
       # The guard stays in place and its else branch fails, for the same reason
       # every other activated guard's does.
       #
-      # git config safe.directory is set by the DIALECT_REFERENCE step above
+      # git config safe.directory is set once after the checkout since D-0042
       # and is needed here for the same reason: the checkout is owned by the
       # runner user and the container runs as root, so git refuses to read the
       # repository without being told it is trusted. The script's own tracked
@@ -1053,6 +1074,13 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # D-0042. This job is a container running as root over a workspace the
+      # runner user owns, and it runs the whole pytest suite through
+      # scripts/coverage.sh, so it needs the repository readable by git for the
+      # same reason `build-and-test` does. This job had never set it at all.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # The Python half of Section 17.7 needs the suite's dependencies, which
       # this job did not install while its thresholds were 0 and the Python half

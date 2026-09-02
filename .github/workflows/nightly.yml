@@ -189,6 +189,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # D-0042. A container running as root over a workspace the runner user
+      # owns: git refuses the repository as dubiously owned until it is named
+      # here, and every git call the suite and the harness make then exits 128.
+      # This job runs both, so it needs this before either.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: "Configure and build (activation table: P10, on)"
         run: |
           set -euxo pipefail

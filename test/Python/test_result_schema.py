@@ -23,12 +23,11 @@ tell which numbers carry uncertainty has been misled by the file's shape.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
-from npu_frontend.predictions import require_full_history
+from npu_frontend.predictions import commit_exists, require_full_history
 from npu_frontend.results import (
     ACCURACY_KEYS,
     CELL_KEYS,
@@ -393,16 +392,11 @@ def test_every_manifest_git_sha_resolves(results: list[dict[str, Any]]) -> None:
     require_full_history("resolving every recorded manifest.git_sha")
     for result in results:
         sha = result["manifest"]["git_sha"]
-        completed = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            check=False,
-        )
-        assert completed.returncode == 0, (
+        assert commit_exists(sha), (
             f"{result['cell']['name']} records git_sha {sha}, which is not a "
-            f"commit in this repository. The repository is not shallow, so the "
-            f"commit is genuinely absent rather than merely unfetched."
+            f"commit in this repository. The repository is not shallow and git "
+            f"answered the question rather than refusing it, so the commit is "
+            f"genuinely absent."
         )
 
 

@@ -339,6 +339,57 @@ def test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout(
     ), "the same ancestry question the shallow clone refused, now answered yes"
 
 
+def test_a_git_fatal_is_never_read_as_an_answer(tmp_path: Path) -> None:
+    """D-0042, and it is the second time this project folded a nonzero exit.
+
+    git distinguishes "the answer is no" from "I could not look" and this module
+    did not. `git cat-file -e` exits 1 for a genuinely absent object and 128 when
+    it refuses the repository; `git merge-base --is-ancestor` does the same. In
+    CI the refusal was dubious ownership, a workspace owned by the runner user
+    with the job running as root in a container, and every one of these calls
+    exited 128. Read as answers they said: the commit does not exist, the
+    prediction does not predate its measurement, the repository is not shallow.
+    Three findings, none of them true, out of one unreadable repository.
+
+    A directory that is not a repository produces the same class of fatal and is
+    what this test uses, because it needs no ownership games and asks the same
+    question: git cannot look, so there is no answer to read.
+    """
+    not_a_repository = tmp_path / "not-a-repository"
+    not_a_repository.mkdir()
+
+    # Every entry point, because the fault was in each of them separately.
+    for call in (
+        lambda: repository_is_shallow(repository=not_a_repository),
+        lambda: commit_exists("f92de42", repository=not_a_repository),
+        lambda: is_ancestor("f92de42", "d4210f3", repository=not_a_repository),
+        lambda: head_sha(repository=not_a_repository),
+        lambda: landing_sha("p10-ablation-deltas", repository=not_a_repository),
+    ):
+        with pytest.raises(PredictionError) as failure:
+            call()
+        message = str(failure.value)
+        assert "not an answer to the question it was asked" in message, message
+        assert "git said:" in message, "git's own message is what carries the fix"
+
+    # The real repository still answers all of them, so the refusal is about a
+    # repository git cannot read rather than about the questions being asked.
+    repository_is_shallow()
+    head_sha()
+    assert commit_exists("f92de427d1f315d9d6621c44516e54f886f18a9c")
+
+    # **A well formed sha that is not an object must come back as absent, not as
+    # a refusal**, and this is the assertion that chose the probe. `git cat-file
+    # -e <sha>^{commit}` exits 128 here, the same code an unreadable repository
+    # gives, so it cannot tell absence from inability and the distinction is not
+    # available through it at all. `git rev-parse --verify --quiet` exits 1, and
+    # that is why this function uses it.
+    assert not commit_exists("0123456789abcdef0123456789abcdef01234567"), (
+        "a well formed sha that names no object must be absent rather than a "
+        "refusal, or the distinction this test exists for has been lost"
+    )
+
+
 def test_at_least_one_committed_result_names_a_prediction() -> None:
     """The path is known to have been walked, not merely to be available.
 

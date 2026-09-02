@@ -387,6 +387,15 @@ def planned_cells(models: list[str] | None = None) -> list[Cell]:
 
 
 def git_sha() -> str:
+    """The commit every cell of this run records as `manifest.git_sha`.
+
+    **Raises rather than recording the string `unknown`**, which is D-0042. That
+    fallback would put a manifest into every committed file naming no commit, and
+    law 3 of Section 0.2 is that every published number traces to one that
+    resolves. A run that cannot say which commit it measured has not produced
+    results worth keeping, and failing before the first cell costs nothing beside
+    discovering it after 175 of them.
+    """
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=REPO_ROOT,
@@ -394,7 +403,16 @@ def git_sha() -> str:
         text=True,
         check=False,
     )
-    return completed.stdout.strip() or "unknown"
+    sha = completed.stdout.strip()
+    if completed.returncode != 0 or not sha:
+        raise BenchmarkError(
+            f"`git rev-parse HEAD` exited {completed.returncode}, so this run "
+            f"cannot record which commit it measured. Recording `unknown` would "
+            f"write a file that traces to nothing, which is the one thing law 3 "
+            f"of Section 0.2 forbids.\n\n"
+            f"git said:\n{completed.stderr.strip() or '(nothing on stderr)'}"
+        )
+    return sha
 
 
 def llvm_tag() -> str:

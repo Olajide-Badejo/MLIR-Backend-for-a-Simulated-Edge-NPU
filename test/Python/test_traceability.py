@@ -32,13 +32,12 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from npu_frontend.predictions import require_full_history
+from npu_frontend.predictions import commit_exists, require_full_history
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 RESULTS_DIR: Final[Path] = REPO_ROOT / "experiments" / "results"
@@ -278,15 +277,10 @@ def test_the_macros_sha_resolves_to_a_real_commit() -> None:
         MACROS.read_text(encoding="utf-8"),
     )
     assert found
-    completed = subprocess.run(
-        ["git", "cat-file", "-e", f"{found.group(1)}^{{commit}}"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, (
+    assert commit_exists(found.group(1)), (
         f"macros.tex names {found.group(1)}, which is not a commit in this "
-        f"repository, and the repository is not shallow"
+        f"repository. The repository is not shallow and git answered the "
+        f"question rather than refusing it, so the commit is genuinely absent."
     )
 
 

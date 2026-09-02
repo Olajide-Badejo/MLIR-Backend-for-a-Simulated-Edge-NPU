@@ -156,6 +156,52 @@ def load_predictions(directory: str | Path | None = None) -> dict[str, Predictio
 # ---------------------------------------------------------------------------
 
 
+def _git(
+    arguments: list[str],
+    *,
+    repository: str | Path | None = None,
+    answers: tuple[int, ...] = (0,),
+) -> subprocess.CompletedProcess[str]:
+    """Runs one git command and refuses to read a fatal as an answer.
+
+    **This is D-0042, and it is the second time this project folded a nonzero
+    exit into a boolean.** git distinguishes the two cases and this module did
+    not. `git cat-file -e` exits **1** when the object is genuinely absent and
+    **128** when it could not look; `git merge-base --is-ancestor` exits 1 for
+    "no" and 128 for the same reason. Reading any nonzero as the answer turns "I
+    could not ask" into "the answer is no", which is the fault Section 16.1
+    forbids for result fields, appearing in a git query instead of in a field.
+
+    `answers` is the set of exit codes that are genuinely answers. Anything else
+    raises, with git's own stderr in the message, because git explains itself
+    better than a paraphrase and its message carries the fix.
+
+    The case that produced this: a workspace owned by one uid with a container
+    running as another, where git refuses the repository as dubiously owned until
+    `safe.directory` names it. Every call below then exits 128, and
+    `rev-parse --is-shallow-repository` additionally prints its fatal to stdout,
+    so a caller comparing stdout against `"true"` concluded the repository was
+    not shallow and carried on.
+    """
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode in answers:
+        return completed
+    raise PredictionError(
+        f"`git {' '.join(arguments)}` exited {completed.returncode}, which is "
+        f"not an answer to the question it was asked. Exit codes "
+        f"{list(answers)} are answers here; anything else means git could not "
+        f"look, and reading it as an answer would turn a question this project "
+        f"could not ask into a finding it did not make.\n\n"
+        f"git said:\n{completed.stderr.strip() or '(nothing on stderr)'}"
+    )
+
+
 def repository_is_shallow(*, repository: str | Path | None = None) -> bool:
     """Whether this checkout has had its history truncated.
 
@@ -166,15 +212,20 @@ def repository_is_shallow(*, repository: str | Path | None = None) -> bool:
     `HEAD~1` each look normal in some shape of truncated checkout and not in
     others, and the `pull_request` trigger's synthetic merge commit is one of the
     shapes that confuses all three.
+
+    **Goes through `_git`, which is D-0042.** This function used to compare
+    stdout against `"true"` and treat everything else as False. Under a dubious
+    ownership refusal git exits 128 and prints its fatal, so the comparison was
+    False and this reported a repository it could not read at all as one with
+    full history, which let `require_full_history` pass and produced a
+    downstream message blaming the shas.
     """
-    completed = subprocess.run(
-        ["git", "rev-parse", "--is-shallow-repository"],
-        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
-        capture_output=True,
-        text=True,
-        check=False,
+    return (
+        _git(
+            ["rev-parse", "--is-shallow-repository"], repository=repository
+        ).stdout.strip()
+        == "true"
     )
-    return completed.stdout.strip() == "true"
 
 
 def require_full_history(what: str, *, repository: str | Path | None = None) -> None:
@@ -222,15 +273,41 @@ def commit_exists(sha: str, *, repository: str | Path | None = None) -> bool:
     shallow checkout every historical sha is absent and this returns False for
     all of them. A caller that means "does this commit exist at all" calls
     `require_full_history` first, and every caller in this project does.
+
+    **Exit 1 is absence and exit 128 is a refusal to look**, which is D-0042.
+    Only the first is an answer; the second raises through `_git`.
+
+    **`rev-parse --verify --quiet` rather than `cat-file -e`, and the difference
+    is the whole point.** Measured on 2026-09-02:
+
+    ```
+    cat-file  -e <present>^{commit}   exit 0
+    cat-file  -e <absent>^{commit}    exit 128  fatal: Not a valid object name
+    cat-file  -e <present>^{commit}   exit 128  fatal: dubious ownership
+    rev-parse --verify -q <present>^{commit}   exit 0
+    rev-parse --verify -q <absent>^{commit}    exit 1
+    rev-parse --verify -q <present>^{commit}   exit 128  in an unreadable repository
+    ```
+
+    `cat-file -e` with a `^{commit}` peel returns **128 for an absent object as
+    well as for an unreadable repository**, so it cannot tell the two apart at
+    all and the distinction this function exists to make is not available through
+    it. That is why the first attempt at D-0042's fix still could not separate
+    them: the exit codes were being read correctly and the probe was wrong.
+
+    `rev-parse --verify --quiet` also returns 1 for a sha that resolves to
+    something that is not a commit, a blob for instance, which is the right
+    answer to "is this a commit" and one more thing `cat-file -e <sha>` would
+    have said yes to.
     """
-    completed = subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
-        capture_output=True,
-        text=True,
-        check=False,
+    return (
+        _git(
+            ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+            repository=repository,
+            answers=(0, 1),
+        ).returncode
+        == 0
     )
-    return completed.returncode == 0
 
 
 def is_ancestor(
@@ -264,26 +341,24 @@ def is_ancestor(
                 f"than merely unfetched. An ancestry relation cannot be decided "
                 f"against a commit that does not exist."
             )
-    completed = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", earlier, later],
-        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
-        capture_output=True,
-        text=True,
-        check=False,
+    return (
+        _git(
+            ["merge-base", "--is-ancestor", earlier, later],
+            repository=repository,
+            answers=(0, 1),
+        ).returncode
+        == 0
     )
-    return completed.returncode == 0
 
 
 def head_sha(*, repository: str | Path | None = None) -> str:
-    """The commit a result recorded now would carry in its manifest."""
-    completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(repository or PREDICTIONS_DIR.parents[1]),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return completed.stdout.strip()
+    """The commit a result recorded now would carry in its manifest.
+
+    Raises rather than returning an empty string when git cannot answer, D-0042.
+    An empty sha flowing into a comparison is a comparison that quietly means
+    something else.
+    """
+    return _git(["rev-parse", "HEAD"], repository=repository).stdout.strip()
 
 
 def landing_sha(identifier: str, *, repository: str | Path | None = None) -> str | None:
@@ -308,20 +383,15 @@ def landing_sha(identifier: str, *, repository: str | Path | None = None) -> str
         f"finding the commit that added the prediction {identifier}",
         repository=repository,
     )
-    root = Path(repository) if repository is not None else PREDICTIONS_DIR.parents[1]
-    completed = subprocess.run(
+    completed = _git(
         [
-            "git",
             "log",
             "--format=%H",
             "--diff-filter=A",
             "--",
             f"experiments/predictions/{identifier}.md",
         ],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        check=False,
+        repository=repository,
     )
     lines = [line for line in completed.stdout.splitlines() if line]
     return lines[-1] if lines else None

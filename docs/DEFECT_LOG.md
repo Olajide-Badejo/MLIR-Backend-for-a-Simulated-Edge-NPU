@@ -2105,3 +2105,122 @@ None.
   environment where it is not. **In all four the code under test was fine and the
   environment differed**, which is the argument for CI existing at all, and for
   this project's habit of writing down what a red run actually measured.
+
+### D-0042 a git fatal was read as an answer, and the probe could not have told anyway
+
+- **Found:** 2026-09-02, phase P10, by **the second CI run**, 33571635111, on the
+  commit that fixed D-0041. Same eight tests red, but the evidence had moved:
+  `fetch-depth: 0` had taken, the commits existed on the remote and were
+  ancestors of the pushed tip, and the tests were printing D-0041's **new**
+  message, "not a commit in this repository. The repository is not shallow, so
+  the commit is genuinely absent rather than merely unfetched." Every clause of
+  that sentence was false.
+- **Status:** resolved 2026-09-02.
+- **Reproduce:** the runner's shape is a workspace owned by the runner user and a
+  job running as root inside a container. In the pinned image
+  `ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8`:
+
+  ```
+  $ docker run --rm -v /tmp/ws:/__w -w /__w/repo -u 0:0 $IMG bash -c '
+      git cat-file -e f92de427d1f315d9d6621c44516e54f886f18a9c^{commit}; echo $?'
+  fatal: detected dubious ownership in repository at '/__w/repo'
+  128
+  ```
+
+  and every helper in `npu_frontend.predictions`, run against it:
+
+  ```
+  repository_is_shallow       -> False        (should have refused)
+  commit_exists(present)      -> False        (the commit is there)
+  is_ancestor(pred, harness)  -> "not a commit ... genuinely absent"
+  head_sha                    -> ""           (empty string)
+  landing_sha(p10)            -> None         (the assert None is not None)
+  require_full_history        -> passed       (it could not even see the shallow flag)
+  ```
+
+- **Two faults, and the second is the one that made the first unfixable.**
+
+  **git's exit code was read as an answer.** `git cat-file -e` and `git
+  merge-base --is-ancestor` both exit nonzero for "no" and for "I could not
+  look", and this module read any nonzero as "no". A repository git refused to
+  open therefore reported: the commit does not exist, the prediction does not
+  predate its measurement, the repository is not shallow. Three findings, none
+  true, out of one unreadable repository. `git rev-parse
+  --is-shallow-repository` was worse: it prints its fatal to **stdout**, so the
+  comparison against `"true"` was False and `require_full_history`, the guard
+  D-0041 had just added, passed and let everything downstream run.
+
+  **The probe could not have made the distinction at all.** Measured on
+  2026-09-02, in a readable repository and in an unreadable one:
+
+  | invocation | present | absent | unreadable |
+  |---|---|---|---|
+  | `cat-file -e <sha>^{commit}` | 0 | **128** | **128** |
+  | `cat-file -e <sha>` | 0 | 1 | 128 |
+  | `rev-parse --verify --quiet <sha>^{commit}` | 0 | **1** | **128** |
+
+  `cat-file -e` with a `^{commit}` peel returns 128 for a well formed but absent
+  object, the same code an unreadable repository gives. **So the first attempt at
+  this fix, which read exit 1 as absence and 128 as a refusal, still could not
+  separate them**: the exit codes were being read correctly and the probe was the
+  wrong tool. `git rev-parse --verify --quiet` separates them, and additionally
+  answers 1 for a sha that resolves to something that is not a commit, which is
+  the right answer to the question being asked and one more thing
+  `cat-file -e <sha>` would have said yes to.
+
+- **Why the log for the first run pointed away from this.** Two facts made it
+  look like anything but a git refusal. `regression-baseline --check` runs git in
+  the same job and printed shas happily, and the pytest failures named specific
+  shas as absent, which reads as a data problem. Both have the same explanation
+  and it is a step ordering: `git config --global --add safe.directory` was first
+  set by the `DIALECT_REFERENCE.md staleness` step at line 577, and `pytest` and
+  `pytest slow cells` are at 463 and 520. **Every step above line 577 had a
+  repository git would not read, and every step below it was fine.** The suite was
+  the only thing above that line that asked git anything.
+
+- **The fix, three parts.**
+
+  **`_git` refuses to read a fatal as an answer.** One runner for every git call
+  in the module, taking the set of exit codes that are genuinely answers. Anything
+  else raises with git's own stderr in the message, because git explains itself
+  better than a paraphrase and its message carries the fix.
+
+  **`commit_exists` uses `rev-parse --verify --quiet`**, per the table above.
+
+  **`safe.directory` is set immediately after the checkout**, in all three
+  container jobs that run the suite: `build-and-test` and `coverage` in `ci.yml`,
+  `full-matrix` in `nightly.yml`. The `coverage` job had never set it at all. The
+  two later settings are left in place, because `git config --global --add` of a
+  value already present is a no operation and a step that reads on its own is
+  worth more than one fewer line, but they are no longer what makes anything work.
+
+  **`run_benchmarks.git_sha` raises rather than recording `unknown`**, which is
+  the same fault in the harness: that string would have gone into the manifest of
+  every committed cell, and law 3 is that every published number traces to a
+  commit that resolves.
+
+- **This is the second time this project folded a nonzero exit into a boolean**,
+  and the first was two days ago. D-0041 fixed `is_ancestor` returning False for
+  "cannot tell" in a shallow checkout; this is the same sentence with a different
+  cause. The lesson is not about git: **a helper that returns a bool for a
+  question with three answers will eventually be asked the third one**, and this
+  project already knows that, because Section 16.1 spends a paragraph forbidding
+  exactly it for result fields and `values_of` refuses to average a null. The
+  discipline existed and had not been applied to a subprocess call.
+
+- **Verified**, in the pinned image with the workspace owned by uid 1001 and the
+  container running as root, which is the runner's actual shape.
+
+  | | before the fix | after |
+  |---|---|---|
+  | `repository_is_shallow` | `False` | refuses, naming git's fatal |
+  | `commit_exists(present)` | `False` | refuses, then `True` once trusted |
+  | `is_ancestor` | "genuinely absent" | refuses, then `True` once trusted |
+  | `head_sha` | `""` | refuses, then the sha |
+  | `landing_sha` | `None` | refuses, then `f92de427d1f3` |
+
+  `test_a_git_fatal_is_never_read_as_an_answer` exercises all five entry points
+  against a directory that is not a repository, which produces the same class of
+  fatal without needing ownership games, and asserts that a well formed absent
+  sha still comes back as absent rather than as a refusal. That last assertion is
+  what chose the probe.
