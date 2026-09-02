@@ -49,6 +49,7 @@ from npu_frontend.predictions import (
     head_sha,
     is_ancestor,
     landing_sha,
+    landing_sha_of_path,
     load_predictions,
     parse_prediction,
     repository_is_shallow,
@@ -451,26 +452,93 @@ def test_a_prediction_landing_commit_is_an_ancestor_of_head() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_p11_divergence_prediction_is_here_and_unanswered() -> None:
+EXPORTER = "experiments/scalesim_export.py"
+
+
+def test_the_p11_divergence_prediction_is_here_and_answerable() -> None:
     """Section 17.8's reason for landing the mechanism a phase early.
 
     P11's gate requires the SCALE-Sim divergence prediction to already exist and
     to already be an ancestor of the commit that records the first SCALE-Sim
-    number. It is here, at P10, before `experiments/scalesim_export.py` exists at
-    all, which is the strongest form of that claim available: no code in this
-    repository could have produced a number to write it from.
+    number.
     """
     predictions = load_predictions()
     assert "p11-scalesim-divergence" in predictions
     entry = predictions["p11-scalesim-divergence"]
     assert entry.answered_at == "P11"
     assert "scalesim_cycles" in entry.result_fields
-    assert not (REPO_ROOT / "experiments" / "scalesim_export.py").exists(), (
-        "the exporter exists, so this prediction is no longer provably written "
-        "before anything could produce the number it predicts. That is not a "
-        "reason to weaken this test; it is a reason to check that the entry "
-        "landed strictly before the exporter did."
+
+
+def test_the_divergence_prediction_landed_before_the_exporter() -> None:
+    """The ordering the gate asks `git log` to prove, proved.
+
+    **This test was written at P10 in a different form and converting it is the
+    point rather than an inconvenience.** It used to assert that
+    `experiments/scalesim_export.py` did not exist, because at P10 that was the
+    strongest available statement of the same claim: an entry committed before
+    any code that could produce the number it predicts is an entry nobody could
+    have written from the answer. That assertion was a prompt, not a rule. It
+    said in its own message that the day the exporter appears is the day to check
+    the ordering rather than to weaken the test, and this is that check.
+
+    The claim is now the exact one P11's gate names: the commit that added the
+    prediction is a **strict** ancestor of the commit that added the exporter.
+    Strict, because a prediction landing in the same commit as the code that
+    answers it would satisfy an ancestor test and would prove nothing at all.
+    """
+    require_full_history("proving the prediction predates the SCALE-Sim exporter")
+
+    prediction = landing_sha("p11-scalesim-divergence")
+    assert prediction is not None, (
+        "the divergence prediction is in no commit, so there is no ordering to "
+        "prove. Section 17.8 makes the commit order the whole mechanism."
     )
+
+    exporter = landing_sha_of_path(EXPORTER)
+    assert exporter is not None, (
+        f"{EXPORTER} is not in any commit yet. Until it is, this test has no "
+        f"second operand; it is expected to be red only between writing the "
+        f"exporter and committing it."
+    )
+
+    assert prediction != exporter, (
+        f"the prediction and the exporter landed in the same commit "
+        f"{prediction[:12]}. An ancestor test passes on that and proves nothing: "
+        f"a prediction written beside the code that answers it is a prediction "
+        f"nobody can show was written first."
+    )
+    assert is_ancestor(prediction, exporter), (
+        f"the divergence prediction landed in {prediction[:12]} and "
+        f"{EXPORTER} landed in {exporter[:12]}, and the first is not an ancestor "
+        f"of the second. P11's gate requires the prediction to predate the first "
+        f"SCALE-Sim number, and the exporter is the earliest commit that could "
+        f"have produced one."
+    )
+
+
+def test_every_cell_naming_the_divergence_prediction_postdates_it() -> None:
+    """And the same ordering against the cells, which is what a reader checks.
+
+    `test_every_recorded_prediction_predates_its_measurement` above holds this
+    for every cell naming any prediction. This one names the P11 entry
+    specifically, so that a wiring change which stopped tagging the SCALE-Sim
+    cells is a failure here rather than a silently smaller assertion there.
+    """
+    naming = [
+        cell
+        for cell in (
+            json.loads(path.read_text(encoding="utf-8")) for path in committed_results()
+        )
+        if cell["prediction_id"] == "p11-scalesim-divergence"
+    ]
+    if not naming:
+        pytest.skip(
+            "no committed cell names the divergence prediction yet, which is the "
+            "state between the exporter landing and the suite being re-recorded"
+        )
+    require_full_history("checking the divergence prediction predates its cells")
+    for cell in naming:
+        assert is_ancestor(cell["prediction_sha"], cell["manifest"]["git_sha"])
 
 
 def test_the_entries_are_where_section_6_puts_them() -> None:

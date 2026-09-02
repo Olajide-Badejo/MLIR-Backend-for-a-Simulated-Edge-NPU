@@ -42,3 +42,140 @@
   title        = {{tt-mlir}},
   howpublished = {\url{https://github.com/tenstorrent/tt-mlir}},
 }
+
+% ---------------------------------------------------------------------------
+% The external cross validation tools of Section 16, added at P11.
+%
+% Each tool is cited the way its own repository asks to be cited. Where a
+% repository specifies a form, the entry below is that form: `raj2025scalesimv3`,
+% `samajdar2020scalesim` and `samajdar2018scalesim` are the three bibtex entries
+% in SCALE-Sim's own "Citing this work" section, and `accelergy2019` and
+% `cimloop2024` are the two in Accelergy's own "Citation" section. Where a
+% repository specifies nothing, which is all four Accelergy plug ins, the entry
+% is constructed here from what the repository does state: the author its
+% packaging names, the project name, the URL, the version it declares, and the
+% sha this project actually installed.
+%
+% The shas are the ones recorded in `docs/adr/0003-resolved-tool-matrix.md` and
+% in every result manifest. A citation of a tool with no released version is a
+% citation of a commit, and saying which commit is the difference between a
+% reference and a gesture.
+% ---------------------------------------------------------------------------
+
+@inproceedings{raj2025scalesimv3,
+  title={SCALE-Sim v3: A modular cycle-accurate systolic accelerator simulator for end-to-end system analysis},
+  author={Raj, Ritik and Banerjee, Sarbartha and Chandra, Nikhil and Wan, Zishen and Tong, Jianming and Samajdhar, Ananda and Krishna, Tushar},
+  booktitle={2025 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS)},
+  pages={186--200},
+  year={2025},
+  organization={IEEE},
+}
+
+@inproceedings{samajdar2020scalesim,
+  title={A systematic methodology for characterizing scalability of DNN accelerators using SCALE-sim},
+  author={Samajdar, Ananda and Joseph, Jan Moritz and Zhu, Yuhao and Whatmough, Paul and Mattina, Matthew and Krishna, Tushar},
+  booktitle={2020 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS)},
+  pages={58--68},
+  year={2020},
+  organization={IEEE},
+}
+
+@article{samajdar2018scalesim,
+  title={SCALE-Sim: Systolic CNN Accelerator Simulator},
+  author={Samajdar, Ananda and Zhu, Yuhao and Whatmough, Paul and Mattina, Matthew and Krishna, Tushar},
+  journal={arXiv preprint arXiv:1811.02883},
+  year={2018},
+}
+
+@misc{scalesimsoftware,
+  author       = {{SCALE-Sim Project}},
+  title        = {{SCALE-Sim}: {S}ysto{C}i{C} {A}cce{LE}rator {S}imulator, version 3.0.0},
+  howpublished = {\url{https://github.com/scalesim-project/scale-sim-v2}, commit 9f98c4371055a54c75209c2e02b640b897550532, MIT licensed},
+  year         = {2025},
+  note         = {The version used here. Cite \citet{raj2025scalesimv3} for the tool itself, which is the form its repository asks for.},
+}
+
+@inproceedings{accelergy2019,
+  author      = {Wu, Yannan Nellie and Emer, Joel S and Sze, Vivienne},
+  booktitle   = {2019 IEEE/ACM International Conference on Computer-Aided Design (ICCAD)},
+  title       = {Accelergy: An architecture-level energy estimation methodology for accelerator designs},
+  year        = {2019},
+}
+
+@inproceedings{cimloop2024,
+  author      = {Andrulis, Tanner and Emer, Joel S. and Sze, Vivienne},
+  booktitle   = {2024 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS)},
+  title       = {{CiMLoop}: A Flexible, Accurate, and Fast Compute-In-Memory Modeling Tool},
+  year        = {2024},
+}
+
+@misc{accelergysoftware,
+  author       = {Wu, Yannan Nellie},
+  title        = {Accelergy, version 0.4},
+  howpublished = {\url{https://github.com/Accelergy-Project/accelergy}, commit 6911d15686ee7efdceba7d95605102df4472ae3a, MIT licensed},
+  year         = {2025},
+  note         = {The version used here. The repository asks for \citet{accelergy2019} and \citet{cimloop2024} to be cited for the tool itself.},
+}
+
+@misc{accelergylibraryplugin,
+  author       = {Andrulis, Tanner},
+  title        = {Library plug in for {Accelergy}, version 0.1},
+  howpublished = {\url{https://github.com/Accelergy-Project/accelergy-library-plug-in}, commit ba4e9dac1b2e7a3076fb8b7816a5228211623055, MIT licensed},
+  year         = {2026},
+  note         = {The repository states no citation form of its own; this entry is constructed from its packaging metadata. It carries the per component references its own library directory records, including \citet{aladdin2014} for the components used here, and it cites \citet{stillmaker2017} for its technology scaling.},
+}
+
+@misc{accelergyaladdinplugin,
+  author       = {Wu, Yannan Nellie},
+  title        = {Aladdin plug in for {Accelergy}, version 0.1},
+  howpublished = {\url{https://github.com/Accelergy-Project/accelergy-aladdin-plug-in}, commit 5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab, MIT licensed},
+  year         = {2026},
+  note         = {The repository states no citation form of its own; this entry is constructed from its packaging metadata. Its energy tables are the 40 nm data of \citet{aladdin2014}.},
+}
+
+@misc{accelergycactiplugin,
+  author       = {Wu, Yannan Nellie},
+  title        = {{CACTI} plug in for {Accelergy}, version 0.1},
+  howpublished = {\url{https://github.com/Accelergy-Project/accelergy-cacti-plug-in}, commit 7649b2c02a389f3c3d585d7ff4ececacfb01e6ea, MIT licensed},
+  year         = {2026},
+  note         = {The repository states no citation form of its own; this entry is constructed from its packaging metadata. It vendors {CACTI} at commit 1ffd8dfb10303d306ecd8d215320aea07651e878 and the model itself is \citet{wilton1996cacti}.},
+}
+
+@misc{accelergytableplugin,
+  author       = {Wu, Yannan Nellie},
+  title        = {Table based plug ins for {Accelergy}, version 0.1},
+  howpublished = {\url{https://github.com/Accelergy-Project/accelergy-table-based-plug-ins}, commit bad19e941043045e130ea999852331f203d8c3fe, MIT licensed},
+  year         = {2024},
+  note         = {The repository states no citation form of its own and marks itself deprecated in favour of the library plug in; this entry is constructed from its packaging metadata. Installed and registered here for completeness of the estimator list, and not the source of any figure this project reports.},
+}
+
+@inproceedings{aladdin2014,
+  author={Shao, Yakun Sophia and Reagen, Brandon and Wei, Gu-Yeon and Brooks, David},
+  booktitle={2014 ACM/IEEE 41st International Symposium on Computer Architecture (ISCA)},
+  title={Aladdin: A pre-RTL, power-performance accelerator simulator enabling large design space exploration of customized architectures},
+  year={2014},
+  pages={97--108},
+  doi={10.1109/ISCA.2014.6853196},
+}
+
+@article{wilton1996cacti,
+  author={Wilton, S. J. E. and Jouppi, N. P.},
+  title={{CACTI}: an enhanced cache access and cycle time model},
+  journal={IEEE Journal of Solid-State Circuits},
+  volume={31},
+  number={5},
+  pages={677--688},
+  year={1996},
+  doi={10.1109/4.509850},
+}
+
+@article{stillmaker2017,
+  author={Stillmaker, Aaron and Baas, Bevan},
+  title={Scaling equations for the accurate prediction of {CMOS} device performance from 180nm to 7nm},
+  journal={Integration},
+  volume={58},
+  pages={74--81},
+  year={2017},
+  issn={0167-9260},
+  doi={10.1016/j.vlsi.2017.02.002},
+}

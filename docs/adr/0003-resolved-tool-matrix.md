@@ -144,6 +144,44 @@ distinction is stated here so no later document overclaims it.
 
 Tools that install from source rather than from a package index, which is
 Accelergy and its plug ins, are recorded by git sha rather than by package
-metadata when the phase that needs them arrives. They are not in this matrix
-because they are not installed yet, and a matrix listing a tool this machine
-does not have would be exactly the fabrication ground rule 1 forbids.
+metadata when the phase that needs them arrives.
+
+### The external cross validation tools, installed at P11
+
+*Added 2026-09-02.* Section 16.1 records these by git sha rather than by
+installed metadata, because Accelergy is not on PyPI and its version string has
+not moved in a long time, and because SCALE-Sim has no tagged GitHub releases.
+Every one below was installed from source into `~/npu-venv` from a clone of its
+upstream repository at the sha given.
+
+| Tool | Version it declares | Git sha | Installed |
+|---|---|---|---|
+| SCALE-Sim | 3.0.0 | `9f98c4371055a54c75209c2e02b640b897550532` | 2026-09-02 |
+| Accelergy | 0.4 | `6911d15686ee7efdceba7d95605102df4472ae3a` | 2026-09-02 |
+| `accelergy-library-plug-in` | 0.1 | `ba4e9dac1b2e7a3076fb8b7816a5228211623055` | 2026-09-02 |
+| `accelergy-aladdin-plug-in` | 0.1 | `5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab` | 2026-09-02 |
+| `accelergy-cacti-plug-in` | 0.1 | `7649b2c02a389f3c3d585d7ff4ececacfb01e6ea` | 2026-09-02 |
+| `accelergy-table-based-plug-ins` | 0.1 | `bad19e941043045e130ea999852331f203d8c3fe` | 2026-09-02 |
+| CACTI, vendored by the plug in above | none | `1ffd8dfb10303d306ecd8d215320aea07651e878` | 2026-09-02 |
+
+**The clones live outside this repository, in `~/npu-external/`.** Vendoring
+another project's source into this tree would put code this project does not
+maintain under this project's licence header rules and its dash linter, for no
+benefit a recorded sha does not already give.
+
+**Two of the six needed something beyond `pip install .`, and both are recorded
+rather than smoothed over.** `accelergy-table-based-plug-ins` imports `yaml` in
+its `setup.py`, which pip's isolated build environment does not have, so it
+installs with `--no-build-isolation`. `accelergy-cacti-plug-in` copies a built
+CACTI binary its clone does not contain, so its submodule is initialised and
+`make` is run before the install.
+
+**SCALE-Sim's installed tree is not byte identical to its sha.** It does not run
+under numpy 2 and `scripts/patch-scalesim.py` changes three expressions to make
+it. D-0044 carries the account. Every result manifest therefore records
+`scalesim_installed_tree_sha256` beside the sha, so the record says the tool was
+modified rather than showing a sha that does not describe the code that ran.
+
+**Every install used a constraints file built from `requirements-lock.txt`**, so
+that no external tool could move a pin the 175 committed results were measured
+under. Nothing in the lock file moved.

@@ -2317,3 +2317,131 @@ None.
 - **Verified.** 27 tests in `test_pass_instrumentation.py`, including the two new
   ones; ten runs against `build-coverage` with no failure and the numbers above;
   the full suite at 957 passed, 18 skipped.
+
+### D-0044 SCALE-Sim v3 does not run under numpy 2, and says so by exiting zero
+
+- **Found:** 2026-09-02, phase P11, on the first attempt to run the pinned tool,
+  before any export existed to blame.
+- **Status:** worked around, upstream unfixed. The workaround is
+  `scripts/patch-scalesim.py` and it is applied by hand rather than by anything
+  automatic.
+- **Reproduce.** The tool's own shipped example, at the pinned sha, in
+  `~/npu-venv`:
+
+  ```
+  python -m scalesim.scale \
+      -c configs/scale.cfg \
+      -t topologies/conv_nets/Resnet_test.csv \
+      -l layouts/conv_nets/test.csv -p /tmp/out
+
+  File ".../scalesim/memory/double_buffered_scratchpad_mem.py", line 307,
+      in service_memory_requests
+    self.total_cycles = int(max(ofmap_serviced_cycles))
+  TypeError: only 0-dimensional arrays can be converted to Python scalars
+  ```
+
+- **What is wrong.** Three expressions convert a numpy array to a Python integer
+  with the builtin `int`. numpy 2.0 removed that conversion for arrays of rank
+  one or more, and `~/npu-venv` has numpy 2.5.1. `read_buffer.py:423`,
+  `double_buffered_scratchpad_mem.py:279` and `:307`. Both code paths reach one
+  of them, so neither the estimate bandwidth mode nor the user bandwidth mode
+  runs. Checked against every upstream branch at the pinned sha, including
+  `origin/3.1`: none of them fixes it.
+
+- **The second half, and it is the one worth remembering.** While measuring the
+  above, the tool was also run with no layout file:
+
+  ```
+  ERROR: scalesim.scale.py: Layout file not found
+  Input file:./layouts/conv_nets/test.csv
+  Exiting
+  ```
+
+  Exit status **0**. `scale_sim.set_params` calls the builtin `exit()` on every
+  input validation failure, and `exit()` with no argument is status zero. So this
+  tool reports a hard input error the same way it reports a successful run. An
+  uncaught exception does exit 1, which makes the two failure modes report
+  differently from each other, which is worse than either.
+
+  **This is D-0040 through D-0043's shape, arriving from outside.** A channel
+  that loses information, read as though it had not. So
+  `experiments/scalesim_export.py` never treats the exit status as an answer: it
+  requires `COMPUTE_REPORT.csv` to exist, to carry the header the parser was
+  written against, and to hold exactly one row per exported layer, and it raises
+  with the tool's own stdout and stderr when any of the three fails.
+  `test_a_zero_exit_with_no_report_is_not_an_answer` proves the refusal.
+
+- **Why the environment was not changed instead.** numpy 2.5.1 is pinned in
+  `requirements-lock.txt` and is recorded in the manifest of all 175 committed
+  results. Moving it to satisfy an external tool would make every recorded number
+  describe an environment that no longer exists. A second interpreter with numpy
+  1.x was the other option and is not available: Ubuntu 26.04 ships CPython 3.14
+  only, and no numpy 1.x wheel exists for 3.14. Running the tool in a container
+  was possible and was rejected as a larger change than the two line one, for a
+  dependency this project runs by hand rather than in CI.
+
+- **How a reader knows what ran.** The upstream git sha alone would describe code
+  that is not the code that produced the numbers. So every result manifest
+  carries **both** `scalesim` at the upstream sha and
+  `scalesim_installed_tree_sha256`, a hash over the installed package as it was
+  when the run happened. A modified install is visible in the record rather than
+  hidden behind a sha that is very nearly true.
+
+- **Deviation from Section 16.3, recorded rather than absorbed.** That section
+  says to read the example topologies from the **installed path** of the pinned
+  version. The pinned version's wheel ships the package and not its
+  `topologies/` or `layouts/` directories, so the examples are read from the
+  pinned source clone instead. `test_the_column_order_is_the_pinned_versions_own`
+  reads the real file and asserts the exporter's header still matches it, so the
+  rule that matters, that the column order is copied and never remembered, is
+  enforced from the pinned source rather than dropped.
+
+### D-0045 the cost model charges the array's weight preload once per instruction, and SCALE-Sim charges it per fold
+
+- **Found:** 2026-09-02, phase P11, by the SCALE-Sim cross validation. This is
+  the defect that cross validation exists to find, and it was found by the tool
+  rather than by reading the code.
+- **Status:** open, deliberately. **Not fixed in P11**, for the reason Section
+  16.5 states for the same situation with ZigZag: do not silently retune a model
+  against an external tool, because it invalidates every ablation and every
+  number already recorded. P13 revisits the charge with tiling, and this entry is
+  the reproduction it starts from.
+- **Reproduce.** `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`:
+
+  ```
+  macs 36864   ideal cycles 144.0 (36864 / 256)
+  this project  478.0 cycles   utilization 0.47   delta 0.80
+  SCALE-Sim    1465   cycles   overall utilization 0.098
+  ```
+
+  Both tools are charged the same 36864 multiply accumulates;
+  `check_the_same_arithmetic` reconciles SCALE-Sim's own utilization figure
+  against that count before any of this is compared.
+
+- **What the difference is.** The convolution presents a `72 by 8` weight matrix
+  to a 16 by 16 array, which folds into five row tiles each occupying half the
+  columns. `gemmCharge` computes `delta = m / (m + kWeightPreloadCycles)` **once
+  per instruction** and applies it to every tile, so the sixteen cycle pipeline
+  fill is amortised across the whole layer no matter how many times the array is
+  actually refilled. SCALE-Sim refills the array per fold and charges each fill.
+  With five folds the two accounts differ by roughly a factor of three, and that
+  is the dominant term in the `array_fragmentation` column of the decomposition:
+  minus 435825 cycles summed over the suite.
+
+- **Which one is right.** SCALE-Sim's, on the mechanism: a weight stationary
+  array physically has to push a new tile in before it can stream against it, and
+  five tiles means five pushes. This project's `delta` is defensible as an
+  average over an instruction and is documented as an assumption in
+  `CostModel.h`, but the assumption is visibly optimistic for narrow deep GEMMs,
+  which is most of this suite.
+
+- **What it does not affect.** Nothing about correctness, and nothing about the
+  golden files: `delta` enters the cycle charge and never the arithmetic. It
+  affects `simulated_cycles`, `effective_macs` and `utilization`, and therefore
+  every performance claim taken from them, which is why the entry says so here
+  rather than in a report footnote.
+
+- **What was deliberately not done.** The charge was not changed, the band in
+  `experiments/predictions/p11-scalesim-divergence.md` was not widened, and no
+  cell was excluded from the comparison after the fact. The prediction is
+  answered as it was written, including where it is wrong.

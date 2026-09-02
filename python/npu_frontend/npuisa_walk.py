@@ -216,6 +216,18 @@ class Operation:
     #: them: `dma_cycles` adds a descriptor and a stride penalty on top of bytes
     #: over bandwidth, and both are part of what the layer cost.
     attributed_dma_cycles: float = 0.0
+    #: On a transfer, the position of the operation its bytes were charged to, or
+    #: its own position when nothing consumed or produced the buffer it moved.
+    #: `None` on everything that is not a transfer.
+    #:
+    #: It exists because "were this transfer's bytes counted somewhere else" and
+    #: "were they counted **inside a layer SCALE-Sim can see**" are different
+    #: questions, and the SCALE-Sim divergence needs the second one: a load
+    #: feeding a convolution is already inside that layer's charge, and one
+    #: feeding a pooling operation is genuinely outside the comparison and is a
+    #: named term of it. Deriving the answer from `attributed_dram_bytes` being
+    #: zero would answer the first question and quietly get the second wrong.
+    attributed_to: int | None = None
 
     @property
     def cycles(self) -> float:
@@ -548,6 +560,7 @@ def attribute_transfers(
 
     attributed = [0] * len(operations)
     charged = [0.0] * len(operations)
+    goes_to: list[int | None] = [None] * len(operations)
     for index, operation in enumerate(operations):
         if operation.op == "dma_load":
             readers = [
@@ -558,6 +571,7 @@ def attribute_transfers(
             target = readers[0] if readers else index
             attributed[target] += operation.dram_bytes_read
             charged[target] += operation.cycles
+            goes_to[index] = target
         elif operation.op == "dma_store":
             writer = produced.get(transfer_source[index])
             target = (
@@ -567,6 +581,7 @@ def attribute_transfers(
             )
             attributed[target] += operation.dram_bytes_written
             charged[target] += operation.cycles
+            goes_to[index] = target
 
     return [
         Operation(
@@ -574,6 +589,7 @@ def attribute_transfers(
                 **operation.__dict__,
                 "attributed_dram_bytes": attributed[index],
                 "attributed_dma_cycles": charged[index],
+                "attributed_to": goes_to[index],
             }
         )
         for index, operation in enumerate(operations)

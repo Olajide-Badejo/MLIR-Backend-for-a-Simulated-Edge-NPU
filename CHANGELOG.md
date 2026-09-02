@@ -29,6 +29,33 @@ Semantic Versioning once a release is tagged.
   the recorded `effective_macs`, `utilization` and `delta` of four real cells
   exactly, and the depthwise composition, which is the case a wrong mirror would
   get wrong, has its own assertion.
+- **SCALE-Sim v3 cross validation, with the gap decomposed into named terms.**
+  `experiments/scalesim_export.py` emits a topology and an architecture
+  configuration from the allocated IR and reports the divergence as a sum: the
+  pooling and elementwise work the topology cannot represent, the DMA outside the
+  covered layers, the dilation approximation measured by a second run at the true
+  tap extent, the array fragmentation difference, and the memory time neither
+  model hid. Coverage fractions are reported beside every agreement figure,
+  because an agreement over a topology that silently dropped pooling is an
+  agreement on an unstated subset.
+- **The divergence prediction is answered as written, and it is largely wrong.**
+  340 of 550 layers diverge by more than 25 percent, where the entry predicted
+  none would; the direction is mixed rather than systematic; and Kendall tau is
+  0.64 over cells against a predicted 0.8. The entry was not edited.
+  `docs/NUMBERS.md` answers it claim by claim.
+- **D-0044: the pinned SCALE-Sim does not run under numpy 2, and reports a
+  missing input file by exiting zero.** Both are measured rather than assumed.
+  `scripts/patch-scalesim.py` is the three expression compatibility fix, applied
+  by hand and never as a side effect of running a benchmark, and every result
+  manifest records the installed tree's sha256 beside the upstream git sha so a
+  reader is told the tool was modified. The exporter never reads an exit status
+  as an answer.
+- **D-0045, found by the cross validation and deliberately not fixed here.** This
+  project charges the array's weight preload once per instruction and SCALE-Sim
+  charges it per fold, which is the dominant term in the fragmentation column and
+  is worth roughly a factor of three on a narrow deep convolution. Retuning a
+  cost model against an external tool would invalidate every ablation already
+  recorded, so P13 gets a reproduction instead of P11 getting a silent change.
 
 ### Phase P10: measurement
 
