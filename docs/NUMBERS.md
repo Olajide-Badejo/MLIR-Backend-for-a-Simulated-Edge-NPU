@@ -193,3 +193,61 @@ what has been measured rather than a selection of what came out well.
 something, the field is null with a reason rather than a plausible figure, and
 `npu_frontend.results.values_of` refuses to average a null into a table rather
 than reading it as a zero.
+
+---
+
+## What the roofline check is worth
+
+*Added at P11 with `experiments/roofline.py`.* This section exists because the
+alternative was reporting that every cell passed its physical bound and letting a
+reader take that for 175 pieces of evidence.
+
+Section 16.6 defines the bound as
+`effective_macs / min(intensity * bw_peak, comp_peak)`, which is the same number
+as `max(dram_bytes / bw_peak, effective_macs / comp_peak)`. It warns that the
+compute branch is **partly** the cost model grading its own homework, and names
+the memory branch as the independently binding half. Measured against this
+project's cost model, both branches are worse placed than that:
+
+| Branch | The bound | What the machine charges | Can it bind? |
+|---|---|---|---|
+| compute | `effective_macs / peak` | `cycles`, and `effective_macs` is **defined** as `cycles * peak` in `gemm_charge` | No. The two are the same number up to the four cycle issue overhead. |
+| memory | `dram_bytes / bandwidth` | `dma_cycles`, which is `bytes / bandwidth` **plus** a descriptor and any stride penalty | No. The charge exceeds the bound by at least `DMA_DESCRIPTOR_CYCLES`. |
+
+**So the roofline cannot fail against this cost model as it stands.** That is a
+property of the model rather than evidence about the numbers, and it is stated
+here rather than left for a reader to derive from `CostModel.h`.
+
+What it is still worth is a **regression** bound. The check goes red the day a
+pass produces a cycle count that is no longer built from the traffic it moves,
+and P13 is the phase that could: double buffering and tiling both change the
+relationship between the bytes a layer moves and the cycles it is charged. Both
+halves of the tautology above are asserted in `test/Python/test_roofline.py`, so
+the day either stops holding a test fails rather than a paragraph going quietly
+out of date.
+
+Measured over the 175 committed cells:
+
+| Figure | Value |
+|---|---|
+| Cells checked | 175 |
+| MAC bearing layers checked | 550 |
+| Layers bound by the memory branch | 175 |
+| Layers bound by the compute branch | 375 |
+| Cells bound by the memory branch | 61 |
+| Cells below their bound | 0 |
+| Tightest layer | `lenet` `node_conv2d`, 0.000635 headroom over its compute bound |
+
+The tightest headroom being the issue overhead and nothing else is what the
+tautology predicts, which is the closest thing to a confirmation this check can
+produce.
+
+**One accounting decision is load bearing and is recorded rather than assumed.**
+A convolution on this machine touches no DRAM, because the allocator has already
+staged its operands into the scratchpad. So a layer's charge for the roofline is
+the later of two timelines, per Section 5.5: the array's charge for its
+arithmetic, and the DMA port's charge for the transfers that exist to feed it or
+to drain it. Comparing the compute charge alone against a bound with a memory
+branch in it compares a compute time against a memory time, and it puts every
+matmul in `lenet` three times below its bound for a reason that is arithmetic
+rather than physical. `docs/ENGINEERING_LOG.md` carries that run.

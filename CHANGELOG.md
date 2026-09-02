@@ -6,6 +6,30 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P11: external cross validation and the roofline
+
+- **The roofline check of Section 16.6 lands, and it lands first.**
+  `experiments/roofline.py` computes the bound per layer and per cell over the
+  committed results and **fails the run** on any cell whose charge falls below
+  it. The branch that bound each layer is recorded beside the verdict, because a
+  memory bound violation and a compute bound one are not the same finding.
+- **And the project says what the check is worth rather than only that it
+  passed.** Under the cost model of Section 5.5 `effective_macs` is defined as
+  `cycles * peak`, so the compute branch of the bound is identically the kernel's
+  own cycle count; and a transfer is charged bytes over bandwidth plus a
+  descriptor, so it always costs more than the memory branch its bytes produce.
+  The roofline therefore cannot fail against this cost model as it stands. It is
+  a regression bound against the phase that introduces a charge no longer built
+  from the traffic it moves, which is P13, and both halves of that statement are
+  asserted in `test/Python/test_roofline.py` so the day either stops holding a
+  test says so. `docs/NUMBERS.md` carries the measurement.
+- **`conv2d_charge` joins the Python mirror of `CostModel.h`.** The C++ has had
+  it since P7 and the mirror did not, so the convolution charge was the one part
+  of the cost model no test compared across the two languages. It now reproduces
+  the recorded `effective_macs`, `utilization` and `delta` of four real cells
+  exactly, and the depthwise composition, which is the case a wrong mirror would
+  get wrong, has its own assertion.
+
 ### Phase P10: measurement
 
 - **Every number this project publishes now comes from a recorded result file.**

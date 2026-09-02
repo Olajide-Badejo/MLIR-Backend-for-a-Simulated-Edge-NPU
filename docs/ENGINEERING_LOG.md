@@ -4520,3 +4520,84 @@ output: **whatever reads an external tool's numbers has to carry that tool's
 precision alongside them**, or every comparison downstream silently assumes an
 exactness that was never there. SCALE-Sim's cycle counts and Accelergy's energy
 figures will arrive through exactly this kind of channel.
+
+## 2026-09-02 Phase P11: the roofline first, and what it turned out to be worth
+
+Section 16.6 says to build the roofline before the other three tools, because it
+is the frame they are presented inside and building the frame after the pictures
+is how the pictures end up framing themselves. So it went first, before either
+external tool had finished installing, and it needed nothing from them.
+
+### The per layer number had to be reconstructed, and then checked
+
+`Stats` reports the program's totals. The roofline wants a bound per layer and
+the SCALE-Sim exporter wants the shape of every convolution, and neither is in a
+result file. So `python/npu_frontend/npuisa_walk.py` walks the allocated
+`npuisa` module and charges each operation through the Python mirror of
+`CostModel.h`, which is one walker for both consumers rather than two sets of
+shapes to keep in agreement.
+
+A reconstruction is worth nothing until it is checked against the thing it
+reconstructs, so `check_against_result` compares the walk with the cell: raw
+MACs, DRAM bytes read and written, and the instruction count exactly, because
+those are counts on both sides and a band on a count hides the disagreement it
+was added to tolerate. Then `effective_macs`, `utilization` and `delta` within a
+band derived from double accumulation, because those three are what actually
+exercise the convolution charge. `macs` would agree even if both occupancy terms
+had been dropped.
+
+`conv2d_charge` was missing from the Python mirror and had been since P7. The
+C++ has had it all along. That is not a defect, because nothing had needed it and
+the mirror never claimed to carry it, but it is the shape of gap that becomes one
+the moment a phase needs the number: the mirror test compared constants and one
+matmul, so a convolution charge could have drifted for four phases without a
+single test noticing. It now reproduces the recorded `effective_macs`,
+`utilization` and `delta` of four real cells exactly.
+
+### The first roofline run was red, and the roofline was wrong
+
+Every matmul in `lenet` came out below its bound, by a factor of three. The
+reading that would have been convenient is that the cost model charges too little
+for a matmul. The reading that is true is that the comparison had two different
+quantities in it: `node_linear` charges 3404 cycles for the arithmetic over a
+400 by 120 weight matrix, and the 192480 bytes of that matrix take 12030 cycles
+to move. The bytes were not moved faster than the interconnect. They were moved
+by a `dma_load` the comparison had left out.
+
+Section 5.5 accumulates cycles on two independent ports and reports the later of
+them at `HALT`, so the time one layer occupies is the later of the array's charge
+for its arithmetic and the DMA port's charge for its bytes. Comparing the compute
+charge alone against a bound with a memory branch in it is comparing a compute
+time against a memory time. The fix is one `max`, and the wrong version is
+recorded here because it produced 175 confident red rows that looked exactly
+like a finding.
+
+### What the check is actually worth, said plainly
+
+Under the cost model of Section 5.5, `effective_macs` is **defined** as
+`cycles * peak`. So the compute branch of the roofline, `effective_macs / peak`,
+is identically the kernel's own cycle count, and the comparison is a tautology up
+to the four cycle issue overhead. The memory branch is no better placed: a
+transfer is charged bytes over bandwidth **plus** a descriptor, so it always
+costs strictly more than the bound its own bytes produce.
+
+**The roofline as specified cannot fail against this cost model.** Section 16.6
+warns that the compute branch is partly the cost model grading its own homework;
+the measurement is that both branches are, entirely. Writing that down is
+preferable to reporting 175 green cells as though they were 175 pieces of
+evidence.
+
+It is not worth nothing. It is a **regression** bound, and the phase it is
+waiting for is P13: double buffering and tiling are exactly the changes that
+could produce a charge no longer built from the traffic it moves, and the day one
+does, this check goes red for a real reason. Both halves of the tautology are
+asserted in `test/Python/test_roofline.py` rather than only described, so the day
+either stops holding a test says so instead of a docstring going quietly out of
+date.
+
+### Numbers
+
+175 cells, 550 MAC bearing layers. 175 layers and 61 cells are bound by the
+memory branch and the rest by the compute branch. The tightest layer in the suite
+is `lenet`'s first convolution at 0.000635 headroom over its compute bound, which
+is the issue overhead and nothing else, which is what the tautology predicts.

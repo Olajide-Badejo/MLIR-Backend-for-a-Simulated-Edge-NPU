@@ -127,6 +127,99 @@ def test_the_mirrored_formulas_reproduce_the_headers() -> None:
     assert cost_model.overlap_fraction(0.0, 40.0, 40.0) == 0.0
 
 
+def test_the_convolution_charge_composes_from_the_gemm_charge() -> None:
+    """`conv2d_charge`, added to the mirror at P11, against the header's rule.
+
+    The header states the mapping in words and the C++ implements it: per group
+    the weight matrix is `(C / group) * kH * kW` by `O / group` and the streamed
+    row count is `N * oH * oW`, and the whole convolution is the group charge
+    multiplied by the group count with the occupancy terms left intensive. This
+    asserts the Python does the same composition rather than an equivalent
+    looking one.
+
+    The depthwise case is the one that matters: with `group == C` each group
+    presents a single column to a sixteen column array, and a mirror that had
+    quietly divided by the group count instead of multiplying would agree about
+    every dense convolution in the suite and be wrong about the one model that
+    exists to expose it.
+    """
+    peak = cost_model.PEAK_MACS_PER_CYCLE_F32
+
+    dense = cost_model.conv2d_charge(1, 6, 1, 28, 28, 5, 5, 1, peak)
+    equivalent = cost_model.gemm_charge(1 * 28 * 28, 1 * 5 * 5, 6, peak)
+    assert dense.macs == equivalent.macs
+    assert dense.cycles == equivalent.cycles
+    assert dense.utilization == equivalent.utilization
+    assert dense.delta == equivalent.delta
+
+    depthwise = cost_model.conv2d_charge(1, 8, 8, 8, 8, 3, 3, 8, peak)
+    per_group = cost_model.gemm_charge(1 * 8 * 8, 1 * 3 * 3, 1, peak)
+    assert depthwise.macs == per_group.macs * 8
+    assert depthwise.cycles == per_group.cycles * 8
+    # Intensive, and therefore not multiplied. A single column against a sixteen
+    # column array is 9/16 of one row's worth of the array occupied.
+    assert depthwise.utilization == per_group.utilization
+    assert depthwise.utilization == pytest.approx((9 / 16) * (1 / 16))
+
+    # A group count that does not divide the channels is refused with a zero
+    # charge rather than producing a plausible wrong one.
+    assert cost_model.conv2d_charge(1, 8, 8, 8, 8, 3, 3, 3, peak).macs == 0
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "lenet-O2-default-n1-fp32-normal",
+        "depthwise_separable-O2-default-n1-fp32-normal",
+        "inception_block-O2-default-n1-fp32-normal",
+        "dilated_stack-O2-default-n1-fp32-normal",
+    ],
+)
+def test_the_convolution_mirror_reproduces_a_recorded_cell(cell: str) -> None:
+    """And the same charge against the machine, on the programs the suite records.
+
+    `test_the_mirror_reproduces_the_machines_numbers` above covers `gemm_charge`
+    on one exported matmul. This covers `conv2d_charge` on every convolution of
+    four real models at once, by walking the allocated IR and comparing the
+    reconstructed totals with the ones the simulator recorded for the same cell.
+    `utilization` and `delta` are the fields that make it a test of the charge
+    rather than of the MAC count: `macs` would agree even if both occupancy terms
+    had been dropped.
+    """
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(REPO_ROOT / "experiments"))
+    import roofline
+    from npu_frontend import npuisa_walk
+    from npu_frontend.results import RESULTS_DIR, load_result
+
+    tool("npu-opt")
+    path = RESULTS_DIR / f"{cell}.json"
+    if not path.is_file():
+        pytest.skip(f"{cell} is not a committed cell in this checkout")
+    result = load_result(path)
+
+    with tempfile.TemporaryDirectory(prefix="npu-conv-mirror-") as directory:
+        text = roofline.Compiler(Path(directory)).allocated_ir(result)
+    operations = npuisa_walk.attribute_transfers(npuisa_walk.walk(text), text)
+
+    # Raises naming every field that disagreed, including effective_macs,
+    # utilization and delta.
+    npuisa_walk.check_against_result(operations, result)
+
+    walked = npuisa_walk.totals(operations)
+    simulation = result["simulation"]
+    assert walked.macs == int(simulation["macs"])
+    assert walked.effective_macs == pytest.approx(
+        float(simulation["effective_macs"]), rel=1e-12
+    )
+    assert walked.utilization == pytest.approx(
+        float(simulation["utilization"]), rel=1e-12
+    )
+    assert walked.delta == pytest.approx(float(simulation["delta"]), rel=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # The mirror against the machine, on a real program.
 #
