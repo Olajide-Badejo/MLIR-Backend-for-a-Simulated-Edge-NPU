@@ -677,7 +677,7 @@
     }
   ],
   "generator_version": "1.1.0",
-  "git_sha": "5d4ffa1f224c734396b6eb58565cbf01e098875e",
+  "git_sha": "f7cd5597901652d87d2d634ae9f04e3c537f578e",
   "levels": [
     0,
     1,
@@ -960,7 +960,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 955,
+      "passed": 956,
       "skipped": 18,
       "tests": [
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
@@ -1788,6 +1788,7 @@
         "test.Python.test_pass_instrumentation::test_the_timing_text_is_the_tree_display_and_is_parsed_as_one",
         "test.Python.test_pass_instrumentation::test_the_two_clocks_agree_on_the_same_run",
         "test.Python.test_pass_instrumentation::test_the_two_clocks_disagreeing_about_the_passes_raises",
+        "test.Python.test_predictions::test_a_git_fatal_is_never_read_as_an_answer",
         "test.Python.test_predictions::test_a_prediction_landing_commit_is_an_ancestor_of_head",
         "test.Python.test_predictions::test_an_empty_directory_is_refused_rather_than_read_as_no_predictions",
         "test.Python.test_predictions::test_an_entry_without_a_magnitude_bracket_is_refused",

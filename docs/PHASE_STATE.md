@@ -19,9 +19,11 @@ costs more than writing these lines did.
 ## Current phase
 
 **P10, measurement.** Branch `phase/p10-measurement`, cut from `main` at
-`fe43ee4`, which is the P9b merge. Thirteen commits. **Pushed once, run
-33559636835, which went red on D-0041; the four commits after the handoff are
-that finding and its fix, and the branch has not been pushed since.**
+`fe43ee4`, which is the P9b merge. Sixteen commits. **Pushed twice and red both
+times, on two different defects, neither of which could have been found on this
+machine.** Run 33559636835 was D-0041, the checkout depth; run 33571635111 was
+D-0042, a git fatal read as an answer. The commits after each handoff are that
+run's finding and its fix. The branch has not been pushed since the second.
 
 | Commit | Subject |
 |---|---|
@@ -38,16 +40,20 @@ that finding and its fix, and the branch has not been pushed since.**
 | `7acd6da` | `test(predictions): the shallow guard test asserted about the wrong repository` |
 | `5d4ffa1` | `test(predictions): the contrast half needs a source that has history` |
 | `2c58bb0` | `chore(baseline): re-record for the one test D-0041 added` |
-| tip | `docs: record what the first CI run found, at the tip that fixes it` |
+| `37949f1` | `docs: record what the first CI run found, at the tip that fixes it` |
+| `f7cd559` | `fix(git): a fatal is not an answer, and cat-file could not have told us anyway` |
+| tip | `docs: record what the second CI run found, and re-record for its test` |
 
 **The tip carries this table's own last row**, so it is named by subject rather
 than by a sha it cannot know, which is what P9 and P9b both did for the same
 reason.
 
-**The last five are the first CI run's finding and its fix**, D-0041. The three
-before them were written when the branch had never been pushed; the push
-happened, went red, and the difference between what that handoff predicted and
-what CI reported is recorded rather than edited away.
+**The last seven are two CI runs' findings and their fixes.** `79eff63` through
+`37949f1` are D-0041, from run 33559636835; `f7cd559` and the tip are D-0042,
+from run 33571635111 on the commit that fixed D-0041. Everything before `a89cc6b`
+was written when the branch had never been pushed, and the difference between
+what those handoffs predicted and what CI reported is recorded rather than edited
+away.
 
 **The ordering carries two of this project's rules and is the part to check
 first.** `f92de42` lands the prediction **before** `a203995` records the cells
@@ -188,8 +194,8 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `build/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q` | 946 passed, 18 skipped, 9 deselected |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **955 passed, 18 skipped**. 871 at P9b, plus 84 |
+| `python -m pytest test/Python -q` | 947 passed, 18 skipped, 9 deselected |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **956 passed, 18 skipped**. 871 at P9b, plus 85 |
 | the suite under a real `--depth 1` clone, both `push` and `pull_request` shapes | 6 failed with the shallow refusal by name, 1 skipped, and the harness refuses before measuring. D-0041's fix is that this is diagnosable rather than eight assertions about shas |
 | the same two shapes at `fetch-depth: 0` | **44 passed, 0 failed** in the affected files, and `run_benchmarks.py` exits 0 |
 | `mypy` | no issues found in 23 source files |
@@ -220,7 +226,7 @@ the same grep also reports four matches on this branch, all of them the substrin
 inside `wallMs`, which is why the recorded run is the case sensitive one with
 word boundaries.
 
-**The suite grew by 84 pytest tests and one lit test.** No existing test changed
+**The suite grew by 85 pytest tests and one lit test.** No existing test changed
 its result and no recorded number moved: both baseline re-records on this branch
 touch `git_sha`, the suite counts and the test names, and nothing else. All 21
 golden tensors are byte identical to P9b's.
@@ -242,7 +248,7 @@ run is green.
 seven `test_every_model_imports_at_a_second_seed` cases have been marked `slow`
 since the model suite landed, and CI has never run one of them, because the only
 step that runs slow tests is this one and this one was off. The suite runs green
-at 955 passed, 18 skipped.
+at 956 passed, 18 skipped.
 
 **Fault, and it is one only this step can catch.** Every `@pytest.mark.slow`
 removed. The step's count guard reports zero and exits 1 with the message saying
@@ -288,7 +294,33 @@ broken there and do not.
 in the checkout step of three jobs, so the next push exercises it, and a green
 `pytest` arm is the proof.
 
-### 4. The two traceability tests, both faults
+### 4. The dubious ownership refusal, D-0042, in the real image
+
+Also found by CI rather than by a rehearsal, for the same reason as D-0041: the
+variable was who owns the workspace, and nothing local varies it.
+
+Rehearsed now in the pinned image, workspace chowned to uid 1001 and the
+container running as root, which is the runner's shape. Every helper, before and
+after the `safe.directory` step:
+
+| | without `safe.directory` | with it |
+|---|---|---|
+| `repository_is_shallow` | refuses, quoting git's fatal | `False` |
+| `commit_exists(present)` | refuses | `True` |
+| `commit_exists(absent)` | refuses | `False` |
+| `is_ancestor` | refuses | `True` |
+| `head_sha` | refuses | the sha |
+| `landing_sha` | refuses | `f92de427d1f3` |
+
+**The left column is the point.** Before the fix those same six calls returned
+`False`, `False`, `False`, "genuinely absent", `""` and `None`, which is six
+wrong answers and is what CI reported. The code half of the fix stands on its
+own: even with the environment still broken, nothing is answered wrongly.
+
+**Which trigger this needs:** none. The `safe.directory` step runs in every job
+that has it, so the next push exercises it.
+
+### 5. The two traceability tests, both faults
 
 **Fault A**, a hand typed number: `resnet_block`'s cycle count changed from 1626
 to 1499 in the README table. Red, naming the number and the row it sits in.
@@ -302,7 +334,10 @@ that runs pytest.
 
 ## Defects
 
-Two, both found by this branch and fixed in it.
+Three, all found by this branch and fixed in it. **Two were found by CI, on the
+two pushes this branch has had, and neither could have been found locally**: one
+varied the checkout depth and the other varied who owns the workspace, and
+nothing on a developer machine varies either.
 
 - **D-0040**, seven tests marked `slow` at P3 that CI has never run. **Found by a
   prediction that was wrong**, while rehearsing the step that turns them on. It
@@ -319,10 +354,32 @@ Two, both found by this branch and fixed in it.
   was returning the graft commit, a sha that looks like an answer and is not, and
   a result naming it would have satisfied the ancestor test while recording the
   wrong provenance. No checkout option prevents that one.
+- **D-0042**, a git fatal read as an answer, and a probe that could not have told
+  either way. **Found by CI**, run 33571635111, on the commit that fixed D-0041:
+  same tests red, evidence moved, the history now fetched and the commits now
+  present, and the tests still calling them absent. The workspace is owned by the
+  runner user and the job runs as root in a container, so git refused the
+  repository as dubiously owned and exited 128, which this project read as "no".
+  `rev-parse --is-shallow-repository` prints its fatal to **stdout**, so D-0041's
+  day old guard passed and let everything downstream run. Two parts to the fix,
+  and the second is the one that made the first possible: every git call goes
+  through one runner that raises unless the exit code is genuinely an answer, and
+  `commit_exists` moved off `cat-file -e`, which returns 128 for an absent object
+  **and** for an unreadable repository and cannot separate them at all.
 
 **No defect was found in the compiler.** Every failure this phase produced was in
 the measuring apparatus or in a claim about it, which is what a measurement phase
 should expect and is worth saying rather than leaving as an absence.
+
+**The three are one lesson told three ways, and it is worth stating because the
+project already knew it.** D-0040 was a test that only ever ran in one
+environment. D-0041 was a helper that answered a question it could not observe.
+D-0042 was the same helper answering a different unobservable question, one day
+later, through a probe that could not have distinguished the cases even had the
+exit codes been read correctly. Section 16.1 spends a paragraph forbidding
+exactly this for result fields, and `values_of` refuses to average a `null`
+because of it. **The discipline existed and had not been applied to a subprocess
+call**, which is the only novel part.
 
 ## The prediction, adjudicated
 
@@ -381,18 +438,24 @@ Three things, in this order.
 git push -u origin phase/p10-measurement
 ```
 
-**This has happened once and it went red**, run 33559636835, on D-0041: eight
-failures, all in P10 test files, all of them the `actions/checkout` default of
-`fetch-depth: 1` meeting the first phase whose tests resolve historical shas.
-Fixed on this branch, in the three jobs that run the suite and in the code that
-was answering the question wrongly rather than refusing it. **The next push is
-the one that confirms it.**
+**This has happened twice and both were red, on two different defects.**
+
+Run 33559636835 was D-0041: `fetch-depth: 1` meeting the first phase whose tests
+resolve historical shas. Run 33571635111, on the commit that fixed it, was
+D-0042: the history was fetched and the commits were present, and git was
+refusing the repository as dubiously owned while this project read its exit 128
+as "the commit is absent".
+
+**Both are fixed and both were rehearsed in the pinned image with the workspace
+owned by uid 1001 and the container running as root**, which is the runner's
+actual shape and the thing no local run varies. The third push is the one that
+confirms it.
 
 **What to expect.** `lint`, `sanitizers`, `coverage` and `ndebug` green.
 `build-and-test` green with two things to read: the new `pytest slow cells` step
-should report **nine** tests carrying the marker and then run 955 passed 18
+should report **nine** tests carrying the marker and then run 956 passed 18
 skipped, and `regression-baseline --check` should report no drift with the suite
-table showing `check-npu 26` and `pytest 955`.
+table showing `check-npu 26` and `pytest 956`.
 
 **The one line that is genuinely new information** is the slow cells step's
 count. It is the first time in this project's history that CI has executed
@@ -505,14 +568,15 @@ gh workflow run nightly.yml --ref phase/p10-measurement
 ```
 
 **The green condition for the push** is the `pytest slow cells` step reporting
-nine tests and running 955 passed, followed by `regression-baseline: no drift.`
+nine tests and running 956 passed, followed by `regression-baseline: no drift.`
 
-**And one line to check before anything else**, because it is what the last run
-died on: the `pytest` arm must not report a sha as a commit that does not exist.
-If it does, the checkout is shallow again and `fetch-depth: 0` did not take,
-which would be a workflow edit that was reverted rather than a new fault. The
-message will say so itself now, in the terms of D-0041, rather than blaming the
-sha.
+**And one line to check before anything else**, because it is what both previous
+runs died on: the `pytest` arm must not report a sha as a commit that does not
+exist. Since D-0042 that message can only mean one thing, because the three other
+readings now refuse instead. A shallow checkout says so and names `fetch-depth`;
+a repository git cannot open says so and quotes git's own fatal; a sha that is
+absent because it really is absent is the only remaining case, and that would be
+a genuine provenance failure worth stopping for.
 
 **The green condition for the nightly** is the benchmark suite printing a per
 cell cost and `run-benchmarks: inside the budget`. Record that cost in the

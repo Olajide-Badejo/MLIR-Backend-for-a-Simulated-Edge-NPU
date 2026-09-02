@@ -52,6 +52,21 @@ Semantic Versioning once a release is tagged.
   `prediction_sha`. Both refuse now, naming the checkout and the fix, so a
   truncated history is one readable message rather than eight assertions about
   shas.
+- **D-0042: a git fatal is never read as an answer.** The second CI run was red
+  the same way with the evidence moved: the history was fetched, the commits
+  existed, and the tests still called them absent. The workspace is owned by the
+  runner user and the job runs as root in a container, so git refused the
+  repository as dubiously owned and exited 128, and this project read any nonzero
+  exit as "no". `git rev-parse --is-shallow-repository` prints its fatal to
+  **stdout**, so even the guard added the day before passed and let everything
+  downstream run. Every git call in `npu_frontend.predictions` now goes through
+  one runner that raises, quoting git, unless the exit code is genuinely an
+  answer. `commit_exists` moved to `rev-parse --verify --quiet`, because
+  `cat-file -e` returns 128 for an absent object **and** for an unreadable
+  repository and cannot tell them apart at all. `safe.directory` is set
+  immediately after the checkout in all three container jobs that run the suite,
+  one of which had never set it, and the two later settings that used to be the
+  first are no longer what makes anything work.
 - **The tight scratchpad budget does not cross the batch axis**, recorded in
   `docs/adr/0010`. Six of the seven models do not allocate at batch 4 under the
   tight budget measured for them at batch 1, because a tight budget is the
