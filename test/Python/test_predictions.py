@@ -419,14 +419,37 @@ def test_at_least_one_committed_result_names_a_prediction() -> None:
         "and never walked, which is the exact situation Section 17.8 landed the "
         "mechanism a phase early to avoid"
     )
-    assert {cell["prediction_id"] for cell in naming} == {"p10-ablation-deltas"}
-    assert len({cell["prediction_sha"] for cell in naming}) == 1
+    # **Two predictions from P11, where there was one.** Every cell now carries a
+    # SCALE-Sim number, so every cell that was not already evidence for the
+    # ablation deltas is evidence for the divergence prediction. A cell holds one
+    # `prediction_id`, and a cell that already names the ablation entry keeps it,
+    # because the deltas are the claim that cell was recorded to answer.
+    ablation = [
+        cell for cell in naming if cell["prediction_id"] == "p10-ablation-deltas"
+    ]
+    divergence = [
+        cell for cell in naming if cell["prediction_id"] == "p11-scalesim-divergence"
+    ]
+    assert {cell["prediction_id"] for cell in naming} == {
+        "p10-ablation-deltas",
+        "p11-scalesim-divergence",
+    }
+    for group in (ablation, divergence):
+        assert len({cell["prediction_sha"] for cell in group}) == 1
 
-    # Every ablation row is evidence for it, and so is each unablated `-O2` cell
-    # its deltas are taken against. Counted rather than asserted loosely, so that
-    # a wiring change which quietly stopped tagging the baselines is red.
-    assert len(naming) == 126
-    assert sum(1 for cell in naming if cell["cell"]["ablated_pass"] is not None) == 112
+    # Every ablation row is evidence for the deltas, and so is each unablated
+    # `-O2` cell they are taken against. Counted rather than asserted loosely, so
+    # that a wiring change which quietly stopped tagging the baselines is red.
+    assert len(ablation) == 126
+    assert (
+        sum(1 for cell in ablation if cell["cell"]["ablated_pass"] is not None) == 112
+    )
+
+    # And every remaining cell names the divergence prediction, which is what
+    # "every cell carries a SCALE-Sim number" means when it is checked rather
+    # than said.
+    assert len(divergence) == len(results) - 126
+    assert all(cell["cell"]["ablated_pass"] is None for cell in divergence)
 
 
 def test_a_prediction_landing_commit_is_an_ancestor_of_head() -> None:

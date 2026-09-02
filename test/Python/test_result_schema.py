@@ -261,9 +261,23 @@ def test_a_reason_cannot_be_invented_at_the_call_site() -> None:
 
 
 def test_every_declared_reason_names_a_phase_or_the_measurement() -> None:
-    """A reason that does not say when the field arrives is not usable."""
+    """A reason that does not say when the field arrives is not usable.
+
+    **There are three kinds of reason and the third arrived at P11.** A field a
+    later phase fills names that phase. A field whose null is the answer for this
+    cell says so. And a field a run was told not to measure names the flag it was
+    told with, which is Section 16.4's opt out: a different state from a tool
+    that could not be found, and one a reader has to be able to tell apart.
+    """
     for key, reason in NULL_REASONS.items():
         assert len(reason) > 20, key
+        if key.endswith(".opted_out"):
+            assert "--skip-external" in reason, (
+                f"{key} is an opt out reason and does not name the flag that "
+                f"caused it. A reader meeting this null has to be able to tell "
+                f"it from a tool that could not be found."
+            )
+            continue
         assert any(
             marker in reason for marker in ("P11", "P13", "P14", "this cell")
         ), f"{key} does not say which phase fills it or why it cannot be filled"
@@ -278,17 +292,31 @@ def test_a_null_never_aggregates_as_a_zero(results: list[dict[str, Any]]) -> Non
     """Section 16.1: a plotting script that treats a null as zero is a defect.
 
     A defect with its own regression test, in that section's words, and this is
-    it. The failure is invisible without a mechanism: a chart of
-    `energy_pj_per_inference` over cells that have not measured it draws a row of
-    zero height bars and reads as a finding rather than as an absence.
+    it. The failure is invisible without a mechanism: a chart of a field over
+    cells that have not measured it draws a row of zero height bars and reads as
+    a finding rather than as an absence.
+
+    **The fields this is checked on moved at P11 and the test moved with them.**
+    It used to name `energy_pj_per_inference` and `scalesim_cycles`, which were
+    null until P11 filled them. Keeping those would have made this test pass over
+    two fields that are no longer null, which is a check that has stopped
+    checking. `tiling_choices` arrives at P13 and `per_layer_sqnr_db` at P14, and
+    both are null in every committed cell today.
     """
     with pytest.raises(ResultSchemaError) as failure:
-        values_of(results, "normalized.energy_pj_per_inference")
+        values_of(results, "simulation.tiling_choices")
     assert "cannot go into an aggregate" in str(failure.value)
-    assert "P11" in str(failure.value), "the recorded reason is quoted in the refusal"
+    assert "P13" in str(failure.value), "the recorded reason is quoted in the refusal"
 
     with pytest.raises(ResultSchemaError):
-        aggregate(results, "external.scalesim_cycles")
+        aggregate(results, "accuracy.per_layer_sqnr_db")
+
+    # And the fields P11 filled do aggregate now, which is the other half of the
+    # same claim: this helper refuses a null and never a number.
+    energy = aggregate(results, "normalized.energy_pj_per_inference")
+    assert energy["n"] == len(results)
+    assert energy["min"] > 0.0
+    assert aggregate(results, "external.scalesim_cycles")["min"] > 0.0
 
     # And the same helper over a field that is measured returns the numbers.
     summary = aggregate(results, "simulation.macs")

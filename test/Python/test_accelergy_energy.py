@@ -97,15 +97,27 @@ def test_the_energy_path_never_sees_the_scaled_count() -> None:
     )
 
 
-def test_a_dram_byte_count_that_is_not_whole_accesses_raises() -> None:
-    """Rounding here would invent or discard a DRAM access.
+def test_a_partial_dram_access_is_paid_in_full() -> None:
+    """Rounded up, because a DRAM cannot fetch part of a word.
 
-    Section 16.4: an absent number must never be indistinguishable from a zero,
-    and a silently rounded one is worse, because it is indistinguishable from a
-    measurement.
+    **This test replaced one that asserted a refusal**, and the replacement is
+    the finding rather than a relaxation. The first version raised on a byte
+    count that was not a whole number of accesses, on the grounds that rounding
+    must never invent or discard one. Then `dilated_stack` moved 5004 bytes: its
+    buffers are f32 tensors with odd element counts and 1251 floats is 5004
+    bytes. The traffic is correct and the refusal was reading a remainder as a
+    bug. Rounding up is the physical answer and is the direction that does not
+    flatter the result.
     """
-    with pytest.raises(energy.AccelergyError, match="whole number"):
-        energy.counts_for(fake_cell(macs=1, effective_macs=1.0, dram_read=4095))
+    assert energy.dram_accesses(4096) == 512
+    assert energy.dram_accesses(4095) == 512
+    assert energy.dram_accesses(4089) == 512
+    assert energy.dram_accesses(5004) == 626
+    assert energy.dram_accesses(0) == 0
+    assert energy.dram_accesses(1) == 1
+
+    counts = energy.counts_for(fake_cell(macs=1, effective_macs=1.0, dram_read=5004))
+    assert counts["main_memory"]["read"] == 626
 
 
 def test_a_null_scratchpad_count_raises_rather_than_becoming_zero() -> None:

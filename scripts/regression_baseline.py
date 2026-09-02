@@ -706,22 +706,21 @@ def energy_of(cell: dict[str, Any], tables: dict[str, Any]) -> float:
     not merely unused here but unavailable.
     """
     table = tables[str(int(cell["budget_bytes"]))]
+    # A DRAM cannot fetch part of a word, so a partial access is paid in full.
+    # `accelergy_energy.dram_accesses` is the one home for that rounding and its
+    # docstring carries the reason; this restates the arithmetic rather than
+    # importing the module, because `--check` must not need it installed.
     dram_access_bytes = 8
-    for label in ("dram_bytes_read", "dram_bytes_written"):
-        if int(cell[label]) % dram_access_bytes:
-            raise SystemExit(
-                f"baseline cell {cell_key(cell)} moved {cell[label]} bytes, which "
-                f"is not a whole number of {dram_access_bytes} byte DRAM "
-                f"accesses. Rounding would invent or discard an access."
-            )
+
+    def accesses(byte_count: int) -> int:
+        return -(-byte_count // dram_access_bytes)
+
     return (
         table["mac_array"]["mac"] * int(cell["macs"])
         + table["scratchpad"]["read"] * int(cell["scratchpad_elements_read"])
         + table["scratchpad"]["write"] * int(cell["scratchpad_elements_written"])
-        + table["main_memory"]["read"]
-        * (int(cell["dram_bytes_read"]) // dram_access_bytes)
-        + table["main_memory"]["write"]
-        * (int(cell["dram_bytes_written"]) // dram_access_bytes)
+        + table["main_memory"]["read"] * accesses(int(cell["dram_bytes_read"]))
+        + table["main_memory"]["write"] * accesses(int(cell["dram_bytes_written"]))
     )
 
 

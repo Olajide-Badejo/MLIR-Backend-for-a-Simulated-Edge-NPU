@@ -318,19 +318,35 @@ def test_the_committed_baseline_records_every_level_the_compiler_builds() -> Non
 
 
 def test_the_committed_baseline_names_its_absent_fields() -> None:
-    """Explicitly absent, with the phase that adds each.
-
-    Not zero, and not missing without explanation. A baseline that claimed
-    energy before P11 would be recording a number no phase had computed.
+    """Explicitly absent, with the phase that adds each, and empty when none are.
 
     `per_level` was here until P9 and left with the levels themselves, which is
     the removal Section 17.6 asks for in the same commit that adds the fields.
+    `energy` was here from P8 saying "P11, when Accelergy lands", and left at P11
+    the same way.
+
+    **Empty is not the same as absent.** The key stays in the recorded file
+    carrying `{}`, which says "this baseline claims every field the schema has";
+    a missing key would say "nobody wrote this down". So the assertion is on the
+    value being empty rather than on the key being gone.
     """
-    absent = committed()["absent_fields"]
-    assert set(absent) == {"energy"}
-    assert "P11" in absent["energy"]
-    for cell in committed()["cells"]:
-        assert not any("energy" in key for key in cell)
+    baseline = committed()
+    assert "absent_fields" in baseline
+    assert baseline["absent_fields"] == {}
+
+    # And the fields that entry held a place for are here now, on every cell and
+    # in the manifest. A baseline that emptied `absent_fields` without adding
+    # them would have removed the explanation rather than the gap.
+    assert baseline["technology_node"] == "45nm"
+    assert baseline["registered_estimators"]
+    assert baseline["energy_per_action_pj"]
+    for cell in baseline["cells"]:
+        assert cell["energy_pj_per_inference"] > 0.0
+        assert cell["scratchpad_elements_read"] >= 0
+        assert cell["scratchpad_elements_written"] >= 0
+        # Section 5.5: the energy path never sees the utilization scaled count,
+        # and the cheapest way to keep it out is not to record it here at all.
+        assert "effective_macs" not in cell
 
 
 def test_the_committed_baseline_records_this_phases_numerics_movement() -> None:

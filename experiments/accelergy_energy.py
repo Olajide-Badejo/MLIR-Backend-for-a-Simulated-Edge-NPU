@@ -299,18 +299,6 @@ def counts_for(result: dict[str, Any]) -> dict[str, dict[str, int]]:
                 f"its own memory."
             )
 
-    read_bytes = int(simulation["dram_bytes_read"])
-    written_bytes = int(simulation["dram_bytes_written"])
-    for label, byte_count in (("read", read_bytes), ("written", written_bytes)):
-        if byte_count % DRAM_ACCESS_BYTES:
-            raise AccelergyError(
-                f"{result['cell']['name']} moved {byte_count} bytes {label} from "
-                f"DRAM, which is not a whole number of {DRAM_ACCESS_BYTES} byte "
-                f"accesses. Rounding here would invent or discard an access, so "
-                f"this raises instead and the architecture's access width is the "
-                f"thing to look at."
-            )
-
     return {
         "mac_array": {"mac": int(simulation["macs"])},
         "scratchpad": {
@@ -318,10 +306,29 @@ def counts_for(result: dict[str, Any]) -> dict[str, dict[str, int]]:
             "write": int(simulation["scratchpad_elements_written"]),
         },
         "main_memory": {
-            "read": read_bytes // DRAM_ACCESS_BYTES,
-            "write": written_bytes // DRAM_ACCESS_BYTES,
+            "read": dram_accesses(int(simulation["dram_bytes_read"])),
+            "write": dram_accesses(int(simulation["dram_bytes_written"])),
         },
     }
+
+
+def dram_accesses(byte_count: int) -> int:
+    """How many DRAM accesses a byte count is, rounded **up**.
+
+    **The first version of this raised on a byte count that was not a whole
+    number of accesses, and that was the wrong conclusion from the right
+    instinct.** The instinct was Section 16.4's, that rounding must never
+    silently invent or discard an access. The wrong part was reading a remainder
+    as a sign of a bug: `dilated_stack` moves 5004 bytes at one budget, because
+    its buffers are f32 tensors with odd element counts and 1251 floats is 5004
+    bytes. There is nothing wrong with that traffic.
+
+    A DRAM cannot fetch part of a word. A transfer of 5004 bytes is 626 accesses,
+    the last of which carries four useful bytes and four wasted ones, and the
+    energy of that last access is paid in full. So this rounds up, which is both
+    the physical answer and the direction that does not flatter the result.
+    """
+    return -(-byte_count // DRAM_ACCESS_BYTES)
 
 
 # ---------------------------------------------------------------------------
