@@ -1,7 +1,5 @@
 {
-  "absent_fields": {
-    "energy": "P11, when Accelergy lands. A baseline that claimed energy before then would be recording a number no phase had computed."
-  },
+  "absent_fields": {},
   "cells": [
     {
       "batch": 1,
@@ -12,12 +10,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 54405699.152,
       "instructions": 25,
       "level": 0,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -28,12 +29,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 44613352.8292,
       "instructions": 25,
       "level": 0,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -44,12 +48,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 54405699.152,
       "instructions": 25,
       "level": 1,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -60,12 +67,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 44613352.8292,
       "instructions": 25,
       "level": 1,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -76,12 +86,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 54405699.152,
       "instructions": 25,
       "level": 2,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -92,12 +105,15 @@
       "dma_cycles": 16441,
       "dram_bytes_read": 249960,
       "dram_bytes_written": 40,
+      "energy_pj_per_inference": 44613352.8292,
       "instructions": 25,
       "level": 2,
       "macs": 416520,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet"
+      "model": "lenet",
+      "scratchpad_elements_read": 77492,
+      "scratchpad_elements_written": 77492
     },
     {
       "batch": 1,
@@ -108,12 +124,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 1705554.304,
       "instructions": 12,
       "level": 0,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -124,12 +143,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 870400.3520000001,
       "instructions": 12,
       "level": 0,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -140,12 +162,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 1705554.304,
       "instructions": 12,
       "level": 1,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -156,12 +181,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 870400.3520000001,
       "instructions": 12,
       "level": 1,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -172,12 +200,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 1705554.304,
       "instructions": 12,
       "level": 2,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -188,12 +219,15 @@
       "dma_cycles": 596,
       "dram_bytes_read": 2944,
       "dram_bytes_written": 64,
+      "energy_pj_per_inference": 870400.3520000001,
       "instructions": 12,
       "level": 2,
       "macs": 12800,
       "max_abs_error_vs_onnxruntime": 1.4901161193847656e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "depthwise_separable"
+      "model": "depthwise_separable",
+      "scratchpad_elements_read": 3824,
+      "scratchpad_elements_written": 3824
     },
     {
       "batch": 1,
@@ -204,12 +238,15 @@
       "dma_cycles": 1026,
       "dram_bytes_read": 6752,
       "dram_bytes_written": 2048,
+      "energy_pj_per_inference": 5424776.776000001,
       "instructions": 14,
       "level": 0,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 5776,
+      "scratchpad_elements_written": 4760
     },
     {
       "batch": 1,
@@ -220,12 +257,15 @@
       "dma_cycles": 1614,
       "dram_bytes_read": 10848,
       "dram_bytes_written": 4096,
+      "energy_pj_per_inference": 4664544.8464,
       "instructions": 17,
       "level": 0,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 6288,
+      "scratchpad_elements_written": 5784
     },
     {
       "batch": 1,
@@ -236,12 +276,15 @@
       "dma_cycles": 1026,
       "dram_bytes_read": 6752,
       "dram_bytes_written": 2048,
+      "energy_pj_per_inference": 5424776.776000001,
       "instructions": 14,
       "level": 1,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 5776,
+      "scratchpad_elements_written": 4760
     },
     {
       "batch": 1,
@@ -252,12 +295,15 @@
       "dma_cycles": 1614,
       "dram_bytes_read": 10848,
       "dram_bytes_written": 4096,
+      "energy_pj_per_inference": 4664544.8464,
       "instructions": 17,
       "level": 1,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 6288,
+      "scratchpad_elements_written": 5784
     },
     {
       "batch": 1,
@@ -268,12 +314,15 @@
       "dma_cycles": 1026,
       "dram_bytes_read": 6752,
       "dram_bytes_written": 2048,
+      "energy_pj_per_inference": 5424776.776000001,
       "instructions": 14,
       "level": 2,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 5776,
+      "scratchpad_elements_written": 4760
     },
     {
       "batch": 1,
@@ -284,12 +333,15 @@
       "dma_cycles": 1614,
       "dram_bytes_read": 10848,
       "dram_bytes_written": 4096,
+      "energy_pj_per_inference": 4664544.8464,
       "instructions": 17,
       "level": 2,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "resnet_block"
+      "model": "resnet_block",
+      "scratchpad_elements_read": 6288,
+      "scratchpad_elements_written": 5784
     },
     {
       "batch": 1,
@@ -300,12 +352,15 @@
       "dma_cycles": 1083,
       "dram_bytes_read": 5552,
       "dram_bytes_written": 3072,
+      "energy_pj_per_inference": 4259711.2,
       "instructions": 14,
       "level": 0,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 4716,
+      "scratchpad_elements_written": 3692
     },
     {
       "batch": 1,
@@ -316,12 +371,15 @@
       "dma_cycles": 2459,
       "dram_bytes_read": 14256,
       "dram_bytes_written": 7680,
+      "energy_pj_per_inference": 4201387.32,
       "instructions": 22,
       "level": 0,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 5868,
+      "scratchpad_elements_written": 5868
     },
     {
       "batch": 1,
@@ -332,12 +390,15 @@
       "dma_cycles": 1083,
       "dram_bytes_read": 5552,
       "dram_bytes_written": 3072,
+      "energy_pj_per_inference": 4259711.2,
       "instructions": 14,
       "level": 1,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 4716,
+      "scratchpad_elements_written": 3692
     },
     {
       "batch": 1,
@@ -348,12 +409,15 @@
       "dma_cycles": 2459,
       "dram_bytes_read": 14256,
       "dram_bytes_written": 7680,
+      "energy_pj_per_inference": 4201387.32,
       "instructions": 22,
       "level": 1,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 5868,
+      "scratchpad_elements_written": 5868
     },
     {
       "batch": 1,
@@ -364,12 +428,15 @@
       "dma_cycles": 1083,
       "dram_bytes_read": 5552,
       "dram_bytes_written": 3072,
+      "energy_pj_per_inference": 4259711.2,
       "instructions": 14,
       "level": 2,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 4716,
+      "scratchpad_elements_written": 3692
     },
     {
       "batch": 1,
@@ -380,12 +447,15 @@
       "dma_cycles": 2459,
       "dram_bytes_read": 14256,
       "dram_bytes_written": 7680,
+      "energy_pj_per_inference": 4201387.32,
       "instructions": 22,
       "level": 2,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "inception_block"
+      "model": "inception_block",
+      "scratchpad_elements_read": 5868,
+      "scratchpad_elements_written": 5868
     },
     {
       "batch": 1,
@@ -396,12 +466,15 @@
       "dma_cycles": 1015,
       "dram_bytes_read": 4256,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 4225567.808,
       "instructions": 23,
       "level": 0,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 8.940696716308594e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 7196,
+      "scratchpad_elements_written": 5180
     },
     {
       "batch": 1,
@@ -412,12 +485,15 @@
       "dma_cycles": 1015,
       "dram_bytes_read": 4256,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 2849853.5856,
       "instructions": 23,
       "level": 0,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 8.940696716308594e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 7196,
+      "scratchpad_elements_written": 5180
     },
     {
       "batch": 1,
@@ -428,12 +504,15 @@
       "dma_cycles": 1015,
       "dram_bytes_read": 4256,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 4225567.808,
       "instructions": 23,
       "level": 1,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 8.940696716308594e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 7196,
+      "scratchpad_elements_written": 5180
     },
     {
       "batch": 1,
@@ -444,12 +523,15 @@
       "dma_cycles": 1015,
       "dram_bytes_read": 4256,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 2849853.5856,
       "instructions": 23,
       "level": 1,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 8.940696716308594e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 7196,
+      "scratchpad_elements_written": 5180
     },
     {
       "batch": 1,
@@ -460,12 +542,15 @@
       "dma_cycles": 735,
       "dram_bytes_read": 4128,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 3480159.5199999996,
       "instructions": 15,
       "level": 2,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 7.450580596923828e-08,
       "max_abs_movement_vs_o0": 4.470348358154297e-08,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 3100,
+      "scratchpad_elements_written": 3100
     },
     {
       "batch": 1,
@@ -476,12 +561,15 @@
       "dma_cycles": 735,
       "dram_bytes_read": 4128,
       "dram_bytes_written": 16,
+      "energy_pj_per_inference": 2803125.7199999997,
       "instructions": 15,
       "level": 2,
       "macs": 50720,
       "max_abs_error_vs_onnxruntime": 7.450580596923828e-08,
       "max_abs_movement_vs_o0": 4.470348358154297e-08,
-      "model": "conv_bn_relu_stack"
+      "model": "conv_bn_relu_stack",
+      "scratchpad_elements_read": 3100,
+      "scratchpad_elements_written": 3100
     },
     {
       "batch": 1,
@@ -492,12 +580,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 3243429.9189999998,
       "instructions": 13,
       "level": 0,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3698,
+      "scratchpad_elements_written": 3613
     },
     {
       "batch": 1,
@@ -508,12 +599,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 2444052.851,
       "instructions": 13,
       "level": 0,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3698,
+      "scratchpad_elements_written": 3613
     },
     {
       "batch": 1,
@@ -524,12 +618,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 3243429.9189999998,
       "instructions": 13,
       "level": 1,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3698,
+      "scratchpad_elements_written": 3613
     },
     {
       "batch": 1,
@@ -540,12 +637,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 2444052.851,
       "instructions": 13,
       "level": 1,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3698,
+      "scratchpad_elements_written": 3613
     },
     {
       "batch": 1,
@@ -556,12 +656,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 3211815.924,
       "instructions": 12,
       "level": 2,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3523,
+      "scratchpad_elements_written": 3523
     },
     {
       "batch": 1,
@@ -572,12 +675,15 @@
       "dma_cycles": 743.25,
       "dram_bytes_read": 5004,
       "dram_bytes_written": 360,
+      "energy_pj_per_inference": 2442399.77,
       "instructions": 12,
       "level": 2,
       "macs": 41706,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "dilated_stack"
+      "model": "dilated_stack",
+      "scratchpad_elements_read": 3523,
+      "scratchpad_elements_written": 3523
     },
     {
       "batch": 4,
@@ -588,12 +694,15 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 127526606.47999999,
       "instructions": 25,
       "level": 0,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     },
     {
       "batch": 4,
@@ -604,12 +713,15 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 111749823.865,
       "instructions": 25,
       "level": 0,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     },
     {
       "batch": 4,
@@ -620,12 +732,15 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 127526606.47999999,
       "instructions": 25,
       "level": 1,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     },
     {
       "batch": 4,
@@ -636,12 +751,15 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 111749823.865,
       "instructions": 25,
       "level": 1,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     },
     {
       "batch": 4,
@@ -652,12 +770,15 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 127526606.47999999,
       "instructions": 25,
       "level": 2,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     },
     {
       "batch": 4,
@@ -668,22 +789,127 @@
       "dma_cycles": 17036.5,
       "dram_bytes_read": 259368,
       "dram_bytes_written": 160,
+      "energy_pj_per_inference": 111749823.865,
       "instructions": 25,
       "level": 2,
       "macs": 1666080,
       "max_abs_error_vs_onnxruntime": 2.9802322387695312e-08,
       "max_abs_movement_vs_o0": 0.0,
-      "model": "lenet_batched"
+      "model": "lenet_batched",
+      "scratchpad_elements_read": 124850,
+      "scratchpad_elements_written": 124850
     }
   ],
+  "energy_per_action_pj": {
+    "1048576": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 127.663,
+        "write": 103.033
+      }
+    },
+    "194624": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 58.4766,
+        "write": 45.8535
+      }
+    },
+    "200832": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 58.4766,
+        "write": 45.8535
+      }
+    },
+    "6144": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 6.4266,
+        "write": 5.8714
+      }
+    },
+    "6464": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 6.4266,
+        "write": 5.8714
+      }
+    },
+    "8064": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 6.4266,
+        "write": 5.8714
+      }
+    },
+    "8192": {
+      "mac_array": {
+        "mac": 49.286
+      },
+      "main_memory": {
+        "read": 512.0,
+        "write": 512.0
+      },
+      "scratchpad": {
+        "read": 6.4266,
+        "write": 5.8714
+      }
+    }
+  },
   "generator_version": "1.1.0",
-  "git_sha": "c1e894010765ff84f5cb34bab97e3b013b925789",
+  "git_sha": "17d63ed9955fcd1132b7a0e1999d047a96a73d14",
   "levels": [
     0,
     1,
     2
   ],
-  "schema_version": 2,
+  "registered_estimators": [
+    "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
+    "dummy",
+    "Aladdin_table",
+    "Library",
+    "CactiCache",
+    "CactiDRAM",
+    "CactiSRAM"
+  ],
+  "schema_version": 3,
   "suites": {
     "NPUAllocatorTests": {
       "failed": 0,
@@ -960,9 +1186,21 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 957,
+      "passed": 1006,
       "skipped": 18,
       "tests": [
+        "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
+        "test.Python.test_accelergy_energy::test_a_partial_dram_access_is_paid_in_full",
+        "test.Python.test_accelergy_energy::test_a_run_that_writes_no_output_is_refused",
+        "test.Python.test_accelergy_energy::test_the_architecture_carries_the_pinned_node_and_clock",
+        "test.Python.test_accelergy_energy::test_the_array_area_is_scaled_by_this_project_and_the_energy_is_not",
+        "test.Python.test_accelergy_energy::test_the_cached_table_gives_the_same_answer_as_a_fresh_run",
+        "test.Python.test_accelergy_energy::test_the_energy_path_never_sees_the_scaled_count",
+        "test.Python.test_accelergy_energy::test_the_estimator_list_is_read_from_the_tool_and_not_written_here",
+        "test.Python.test_accelergy_energy::test_the_sanity_check_of_section_16_4_including_where_it_does_not_pass",
+        "test.Python.test_accelergy_energy::test_the_schema_block_carries_no_null_reason",
+        "test.Python.test_accelergy_energy::test_the_scratchpad_depth_is_rounded_up_and_never_down",
+        "test.Python.test_accelergy_energy::test_the_three_components_are_estimated_and_say_by_what",
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
         "test.Python.test_benchmarks::test_a_tight_cell_runs_at_the_models_declared_batch",
         "test.Python.test_benchmarks::test_an_ablation_outside_the_band_fails_the_run",
@@ -1008,6 +1246,11 @@
         "test.Python.test_compile_driver::test_verbose_timings_go_to_stderr",
         "test.Python.test_cost_model_mirror::test_every_header_constant_is_mirrored",
         "test.Python.test_cost_model_mirror::test_every_mirrored_constant_is_in_the_header",
+        "test.Python.test_cost_model_mirror::test_the_convolution_charge_composes_from_the_gemm_charge",
+        "test.Python.test_cost_model_mirror::test_the_convolution_mirror_reproduces_a_recorded_cell[depthwise_separable-O2-default-n1-fp32-normal]",
+        "test.Python.test_cost_model_mirror::test_the_convolution_mirror_reproduces_a_recorded_cell[dilated_stack-O2-default-n1-fp32-normal]",
+        "test.Python.test_cost_model_mirror::test_the_convolution_mirror_reproduces_a_recorded_cell[inception_block-O2-default-n1-fp32-normal]",
+        "test.Python.test_cost_model_mirror::test_the_convolution_mirror_reproduces_a_recorded_cell[lenet-O2-default-n1-fp32-normal]",
         "test.Python.test_cost_model_mirror::test_the_header_block_is_parseable",
         "test.Python.test_cost_model_mirror::test_the_mirror_reproduces_the_machines_own_numbers",
         "test.Python.test_cost_model_mirror::test_the_mirrored_formulas_reproduce_the_headers",
@@ -1795,14 +2038,16 @@
         "test.Python.test_predictions::test_an_entry_without_a_magnitude_bracket_is_refused",
         "test.Python.test_predictions::test_an_id_that_does_not_match_the_file_name_is_refused",
         "test.Python.test_predictions::test_at_least_one_committed_result_names_a_prediction",
+        "test.Python.test_predictions::test_every_cell_naming_the_divergence_prediction_postdates_it",
         "test.Python.test_predictions::test_every_entry_carries_the_five_things_section_17_8_names",
         "test.Python.test_predictions::test_every_entry_landed_in_a_commit_this_repository_has",
         "test.Python.test_predictions::test_every_result_that_names_a_prediction_predates_it",
         "test.Python.test_predictions::test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor",
         "test.Python.test_predictions::test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout",
         "test.Python.test_predictions::test_the_directory_holds_at_least_one_prediction",
+        "test.Python.test_predictions::test_the_divergence_prediction_landed_before_the_exporter",
         "test.Python.test_predictions::test_the_entries_are_where_section_6_puts_them",
-        "test.Python.test_predictions::test_the_p11_divergence_prediction_is_here_and_unanswered",
+        "test.Python.test_predictions::test_the_p11_divergence_prediction_is_here_and_answerable",
         "test.Python.test_refexec::test_avg_pool2d",
         "test.Python.test_refexec::test_avg_pool2d_divides_by_the_contributing_count",
         "test.Python.test_refexec::test_batch_norm_agrees_with_its_decomposition",
@@ -1879,6 +2124,36 @@
         "test.Python.test_result_schema::test_the_groups_are_the_ones_section_16_1_names",
         "test.Python.test_result_schema::test_the_interval_brackets_the_median",
         "test.Python.test_result_schema::test_two_cells_from_the_same_tree_share_a_content_hash",
+        "test.Python.test_roofline::test_a_charge_under_the_memory_branch_is_below_bound",
+        "test.Python.test_roofline::test_a_layer_that_moved_no_bytes_records_no_intensity",
+        "test.Python.test_roofline::test_a_memory_bound_layer_records_which_branch_bound_it",
+        "test.Python.test_roofline::test_an_empty_walk_is_refused",
+        "test.Python.test_roofline::test_every_layer_of_a_real_cell_is_at_or_above_its_bound",
+        "test.Python.test_roofline::test_the_bound_is_the_later_of_the_two_branches",
+        "test.Python.test_roofline::test_the_compute_branch_is_the_charge_itself[1-400-120]",
+        "test.Python.test_roofline::test_the_compute_branch_is_the_charge_itself[256-1-1]",
+        "test.Python.test_roofline::test_the_compute_branch_is_the_charge_itself[4-40-33]",
+        "test.Python.test_roofline::test_the_compute_branch_is_the_charge_itself[64-16-16]",
+        "test.Python.test_roofline::test_the_memory_branch_is_below_what_the_transfer_costs",
+        "test.Python.test_roofline::test_the_schema_block_carries_no_null_reason",
+        "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[depthwise_separable-O2-default-n1-fp32-normal]",
+        "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[dilated_stack-O2-default-n1-fp32-normal]",
+        "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[inception_block-O2-default-n1-fp32-normal]",
+        "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[lenet-O2-default-n1-fp32-normal]",
+        "test.Python.test_roofline::test_the_walker_refuses_an_operation_it_does_not_know",
+        "test.Python.test_scalesim_export::test_a_grouped_convolution_becomes_one_row_per_group",
+        "test.Python.test_scalesim_export::test_a_matmul_maps_to_one_gemm_shaped_row",
+        "test.Python.test_scalesim_export::test_a_report_with_a_moved_column_order_is_refused",
+        "test.Python.test_scalesim_export::test_a_topology_that_describes_other_arithmetic_is_refused",
+        "test.Python.test_scalesim_export::test_a_zero_exit_with_no_report_is_not_an_answer",
+        "test.Python.test_scalesim_export::test_dilation_is_an_approximation_and_says_so",
+        "test.Python.test_scalesim_export::test_everything_without_a_systolic_representation_is_skipped_with_its_cost",
+        "test.Python.test_scalesim_export::test_rank_fidelity_on_orderings_a_reader_can_check",
+        "test.Python.test_scalesim_export::test_scalesim_did_the_arithmetic_it_was_given",
+        "test.Python.test_scalesim_export::test_the_column_order_is_the_pinned_versions_own",
+        "test.Python.test_scalesim_export::test_the_configuration_restates_the_cost_model_constants",
+        "test.Python.test_scalesim_export::test_the_layout_file_changes_nothing",
+        "test.Python.test_scalesim_export::test_the_layout_header_is_the_pinned_versions_own",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[conv_bn_relu_stack]",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[depthwise_separable]",
         "test.Python.test_tight_budgets::test_a_budget_below_the_tight_one_is_refused_with_both_numbers[dilated_stack]",
@@ -1941,6 +2216,7 @@
       ]
     }
   },
+  "technology_node": "45nm",
   "tool_versions": {
     "llvm": "LLVM version 22.1.8",
     "numpy": "2.5.1",
