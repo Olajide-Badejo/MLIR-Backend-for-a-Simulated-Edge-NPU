@@ -56,6 +56,13 @@ from .model_generator import (
 )
 from .onnx_importer import PINNED_OPSET, import_model, import_model_file
 from .op_mapping import CONVERTERS, DEFERRED
+from .pass_stats import (
+    PassRecord,
+    PassStatisticsError,
+    cross_check_against_mlir_timing,
+    expected_passes,
+    load_pass_stats,
+)
 from .tolerances import ABSOLUTE_TOLERANCE, RELATIVE_TOLERANCE
 
 __all__ = [
@@ -70,13 +77,17 @@ __all__ = [
     "CompileResult",
     "ONNXImportError",
     "PINNED_OPSET",
+    "PassRecord",
+    "PassStatisticsError",
     "SimulationError",
     "SimulationResult",
     "VerificationError",
     "ablatable_passes",
     "attributes",
     "compile_model",
+    "cross_check_against_mlir_timing",
     "describe_pipeline",
+    "expected_passes",
     "find_npu_opt",
     "find_tool",
     "generate_all",
@@ -84,6 +95,7 @@ __all__ = [
     "implemented_levels",
     "import_model",
     "import_model_file",
+    "load_pass_stats",
     "run_program",
     "verify",
 ]

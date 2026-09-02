@@ -1908,3 +1908,412 @@ None.
   the band in **both** directions is not drift, a move is reported as a note, a
   value outside the band is drift and is not also a note, and the band is the
   same object the end to end matrix imports.
+
+### D-0040 seven tests were marked slow at P3 and CI has never run one of them
+
+- **Found:** 2026-09-01, phase P10, while rehearsing the `pytest slow cells` step
+  the activation table turns on at this phase. Found by a **prediction that was
+  wrong**: I predicted the step would report two slow tests, the two P10 adds,
+  and it reported nine.
+- **Status:** resolved 2026-09-01 by the step being switched on.
+- **Reproduce:** at any commit from P3 to P9b, ask which tests carry the marker
+  and then ask which step in CI would run them.
+
+  ```
+  $ python -m pytest test/Python -q --collect-only -m slow | grep ::
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[conv_bn_relu_stack]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[depthwise_separable]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[dilated_stack]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[inception_block]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[lenet]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[lenet_batched]
+  test/Python/test_model_generator.py::test_every_model_imports_at_a_second_seed[resnet_block]
+  ```
+
+  `ci.yml`'s `pytest` step runs the default marker expression, which deselects
+  `slow`. The only step that runs `-m 'slow or not slow'` is `pytest slow cells`,
+  and the activation table of Section 19.0 has that step off until P10. So these
+  seven tests have existed since the model suite landed and no CI run has ever
+  executed one.
+
+- **What was wrong, and it is worth being precise about.** Nothing lied. The
+  activation table said the step was off, the step said in its own log that it
+  was off, and Section 19.0's rule that a step which is off says so was honoured
+  throughout. What nobody noticed is the **consequence**: marking a test `slow`
+  before the step that runs slow tests exists is the same as deleting it from
+  CI, and the marker gives no hint of that at the point of use.
+
+  These seven are not trivial. `test_every_model_imports_at_a_second_seed`
+  regenerates every model at a different seed and imports it, which is what
+  catches an importer that works on the committed weights and not on the shape of
+  the graph. They ran on the developer machine, where the closing verification
+  matrix of every phase uses `-m 'slow or not slow'`, so they were not
+  unexercised; they were unexercised **in the environment that differs**.
+
+- **Why this is D-0037's mirror, and the set is now six.** D-0030 and D-0032 were
+  results that depended on what else was lying around in CI and were invisible
+  locally. D-0037 was the reverse, a result that depends on what is lying around
+  locally and is invisible in CI. This one is the reverse of the reverse: a
+  *test* that only ever ran locally, so any environment dependent failure in it
+  had exactly one place to hide and that place was the only place nobody looked.
+
+- **The fix, and what it is not.** The step is on, so the seven run in the
+  container from this phase. That is the whole fix and it is one guard line more
+  than switching the step on: the step counts the collected slow tests first and
+  fails when the count is zero, because a step whose marker expression selected
+  nothing would exit 0 having repeated the step above it, which is how this
+  situation would recur silently after somebody removed the last marker.
+
+  What the fix is **not** is a rule against the `slow` marker. Section 17.4 asks
+  for it and P10 adds two more uses of it that are worth having. The lesson is
+  narrower and it is about ordering: **a marker that excludes a test from a
+  default run is only safe once something runs the excluded set**, and this
+  project introduced the marker six phases before it introduced that something.
+
+- **Verified.** Rehearsed under the step's own script. With the markers in place
+  the step reports nine and the suite runs green at 954 passed, 18 skipped. With
+  every `@pytest.mark.slow` removed, the count guard reports zero and the step
+  exits 1 with the message naming why a zero count is a failure rather than a
+  quiet pass. Restored, and `git status` clean.
+
+### D-0041 the first CI run of P10's tests asked questions a shallow checkout cannot answer
+
+- **Found:** 2026-09-02, phase P10, by **the first CI run of this phase's tests**,
+  run 33559636835 on `phase/p10-measurement`. Eight unique failures across the
+  `pytest` and `pytest slow cells` arms, every one of them in a P10 test file,
+  every one of them green locally.
+- **Status:** resolved 2026-09-02.
+- **Reproduce:** a shallow clone is the whole of it. `actions/checkout` defaults
+  to `fetch-depth: 1`.
+
+  ```
+  $ git clone --depth 1 file:///home/elijah/npu-mlir-v2 /tmp/p10-shallow
+  $ cd /tmp/p10-shallow
+  $ git rev-parse --is-shallow-repository
+  true
+  $ git rev-list --count HEAD
+  1
+  $ git cat-file -e d4210f352957b95e69185003bb1b960a2a3286be^{commit}
+  fatal: Not a valid object name
+  ```
+
+  and the four failures fall straight out of it:
+
+  ```
+  FAILED test_predictions.py::test_every_result_that_names_a_prediction_predates_it
+  FAILED test_predictions.py::test_the_ancestor_check_refuses_a_sha_that_is_not_an_ancestor
+  FAILED test_traceability.py::test_the_macros_sha_resolves_to_a_real_commit
+  FAILED test_result_schema.py::test_every_manifest_git_sha_resolves
+  ```
+
+- **What was wrong, and it is two things rather than one.**
+
+  **The checkout.** P10 is the first phase whose artifacts and tests name
+  historical commits. Law 3 of Section 0.2 asserts that every published number
+  traces to a commit that resolves, and law 4's mechanism is `git merge-base
+  --is-ancestor` between the commit a prediction landed in and the commit a
+  result was measured at. Neither question has an answer in a checkout that
+  fetched one commit. Nothing before this phase asked, which is why nine phases
+  of green CI say nothing about it.
+
+  **The code, and this half is the more serious.** Three functions were asked
+  something the checkout could not answer and each answered anyway.
+
+  - `commit_exists` returned False, which reads as "this commit does not exist"
+    when the truth is "this commit is not here".
+  - `is_ancestor` returned False. `git merge-base --is-ancestor` exits nonzero
+    both for "no" and for "I have never heard of that commit", and collapsing
+    those turned "unobservable" into "the prediction does not predate its
+    measurement", which is a serious finding reported where there was none.
+  - `landing_sha` **did not fail at all.** `git log --diff-filter=A` against a
+    truncated history attributes every file to the graft commit, because that
+    commit has no parent to have differed from. So it returned the checkout's own
+    tip: a plausible looking sha that is not the answer. Measured on a
+    `pull_request` merge ref at depth 1, it returned the merge commit for an entry
+    that landed six commits earlier.
+
+  That third one is the reason this is a defect in the project rather than a
+  setting in a workflow file. **A `prediction_sha` of the graft commit would have
+  satisfied the ancestor test while recording a provenance link to the wrong
+  commit**, which is worse than the failure it replaced, and no checkout option
+  prevents it. It is the fault this project forbids everywhere else, an absent
+  measurement that cannot be told apart from a real one, in the one mechanism
+  whose entire purpose is provenance.
+
+- **Four checkout shapes were measured before the fix was chosen**, because the
+  `pull_request` trigger checks out a synthetic merge commit whose parents are
+  the base and the branch, and that is a different shape from a `push`.
+
+  | Shape | depth | shallow | `landing_sha` | historical sha resolves |
+  |---|---|---|---|---|
+  | `push` | 1 | yes | the graft commit | no |
+  | `push` | 0 | no | `f92de42`, correct | yes |
+  | `pull_request` merge ref | 1 | yes | the merge commit | no |
+  | `pull_request` merge ref | 0 | no | `f92de42`, correct | yes |
+
+  The merge ref at full depth answers every question correctly, including
+  `HEAD~1`, which on a merge commit is the base branch: a parent, and an
+  ancestor, so the refusal test holds there too.
+
+- **The fix, both halves.**
+
+  **`fetch-depth: 0` on the three jobs that run the suite**: `build-and-test` and
+  `coverage` in `ci.yml`, and `full-matrix` in `nightly.yml`. The other four
+  checkouts are left at the default because no step in them asks about history.
+
+  **Depth 0 rather than a narrower fetch**, and the reason is that a narrow fetch
+  would have to name the commits to deepen to. Those commits are the shas
+  recorded in result files and prediction entries, so the fetch would need
+  updating every time a result is re-recorded, and would be wrong in exactly the
+  situation it exists to serve. The repository is a few hundred commits.
+
+  **`require_full_history`**, which refuses once, readably, naming the checkout
+  and the fix, before any of the three functions answers. `is_ancestor` now
+  raises rather than returning False for an unresolvable reference, and
+  `landing_sha` refuses rather than returning the graft commit. A shallow
+  checkout now produces one diagnosable message instead of eight assertions about
+  shas, and the message says `fetch-depth: 0` and names this defect.
+
+- **Why the ancestor refusal test failed, since it looked like a test design
+  issue and partly was.** `test_the_ancestor_check_refuses_a_sha_that_is_not_an_
+  ancestor` asserts that a parent is an ancestor of its child, using `HEAD~1`.
+  In a one commit checkout `HEAD~1` does not resolve, so `is_ancestor` returned
+  False and the test failed claiming a parent is not an ancestor of its child,
+  which is nonsense on its face and was the clearest signal in the whole run that
+  the environment rather than the logic was wrong. The test was not wrong to use
+  `HEAD~1`; the function was wrong to conflate two answers. Both are fixed: the
+  function raises, and the test guards first.
+
+- **Verified**, under all four checkout shapes, built as real fetches from a bare
+  mirror rather than as mocks, because what is under test is what git does.
+
+  - At depth 0, `push` and `pull_request` alike: **43 passed, 0 failed**, and
+    `run_benchmarks.py` completes and exits 0.
+  - At depth 1, after the fix: the suite reports the shallow refusal by name
+    rather than eight failures about shas, and the harness refuses before
+    measuring anything instead of exiting 2 with a message about an uncommitted
+    prediction.
+  - `test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout` makes a real
+    `--depth 1` clone inside the test and asserts all three refusals, so the
+    guard is exercised by the suite on every run rather than only by this entry.
+
+- **The set is now seven, and this one sits with D-0037 and D-0040.** D-0030 and
+  D-0032 depended on what was lying around in CI and were invisible locally.
+  D-0037 was the reverse. D-0040 was a test that only ever ran locally. This is
+  the fourth in that family and the sharpest: code that is correct in every
+  environment where the history is present, run for the first time in an
+  environment where it is not. **In all four the code under test was fine and the
+  environment differed**, which is the argument for CI existing at all, and for
+  this project's habit of writing down what a red run actually measured.
+
+### D-0042 a git fatal was read as an answer, and the probe could not have told anyway
+
+- **Found:** 2026-09-02, phase P10, by **the second CI run**, 33571635111, on the
+  commit that fixed D-0041. Same eight tests red, but the evidence had moved:
+  `fetch-depth: 0` had taken, the commits existed on the remote and were
+  ancestors of the pushed tip, and the tests were printing D-0041's **new**
+  message, "not a commit in this repository. The repository is not shallow, so
+  the commit is genuinely absent rather than merely unfetched." Every clause of
+  that sentence was false.
+- **Status:** resolved 2026-09-02.
+- **Reproduce:** the runner's shape is a workspace owned by the runner user and a
+  job running as root inside a container. In the pinned image
+  `ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8`:
+
+  ```
+  $ docker run --rm -v /tmp/ws:/__w -w /__w/repo -u 0:0 $IMG bash -c '
+      git cat-file -e f92de427d1f315d9d6621c44516e54f886f18a9c^{commit}; echo $?'
+  fatal: detected dubious ownership in repository at '/__w/repo'
+  128
+  ```
+
+  and every helper in `npu_frontend.predictions`, run against it:
+
+  ```
+  repository_is_shallow       -> False        (should have refused)
+  commit_exists(present)      -> False        (the commit is there)
+  is_ancestor(pred, harness)  -> "not a commit ... genuinely absent"
+  head_sha                    -> ""           (empty string)
+  landing_sha(p10)            -> None         (the assert None is not None)
+  require_full_history        -> passed       (it could not even see the shallow flag)
+  ```
+
+- **Two faults, and the second is the one that made the first unfixable.**
+
+  **git's exit code was read as an answer.** `git cat-file -e` and `git
+  merge-base --is-ancestor` both exit nonzero for "no" and for "I could not
+  look", and this module read any nonzero as "no". A repository git refused to
+  open therefore reported: the commit does not exist, the prediction does not
+  predate its measurement, the repository is not shallow. Three findings, none
+  true, out of one unreadable repository. `git rev-parse
+  --is-shallow-repository` was worse: it prints its fatal to **stdout**, so the
+  comparison against `"true"` was False and `require_full_history`, the guard
+  D-0041 had just added, passed and let everything downstream run.
+
+  **The probe could not have made the distinction at all.** Measured on
+  2026-09-02, in a readable repository and in an unreadable one:
+
+  | invocation | present | absent | unreadable |
+  |---|---|---|---|
+  | `cat-file -e <sha>^{commit}` | 0 | **128** | **128** |
+  | `cat-file -e <sha>` | 0 | 1 | 128 |
+  | `rev-parse --verify --quiet <sha>^{commit}` | 0 | **1** | **128** |
+
+  `cat-file -e` with a `^{commit}` peel returns 128 for a well formed but absent
+  object, the same code an unreadable repository gives. **So the first attempt at
+  this fix, which read exit 1 as absence and 128 as a refusal, still could not
+  separate them**: the exit codes were being read correctly and the probe was the
+  wrong tool. `git rev-parse --verify --quiet` separates them, and additionally
+  answers 1 for a sha that resolves to something that is not a commit, which is
+  the right answer to the question being asked and one more thing
+  `cat-file -e <sha>` would have said yes to.
+
+- **Why the log for the first run pointed away from this.** Two facts made it
+  look like anything but a git refusal. `regression-baseline --check` runs git in
+  the same job and printed shas happily, and the pytest failures named specific
+  shas as absent, which reads as a data problem. Both have the same explanation
+  and it is a step ordering: `git config --global --add safe.directory` was first
+  set by the `DIALECT_REFERENCE.md staleness` step at line 577, and `pytest` and
+  `pytest slow cells` are at 463 and 520. **Every step above line 577 had a
+  repository git would not read, and every step below it was fine.** The suite was
+  the only thing above that line that asked git anything.
+
+- **The fix, three parts.**
+
+  **`_git` refuses to read a fatal as an answer.** One runner for every git call
+  in the module, taking the set of exit codes that are genuinely answers. Anything
+  else raises with git's own stderr in the message, because git explains itself
+  better than a paraphrase and its message carries the fix.
+
+  **`commit_exists` uses `rev-parse --verify --quiet`**, per the table above.
+
+  **`safe.directory` is set immediately after the checkout**, in all three
+  container jobs that run the suite: `build-and-test` and `coverage` in `ci.yml`,
+  `full-matrix` in `nightly.yml`. The `coverage` job had never set it at all. The
+  two later settings are left in place, because `git config --global --add` of a
+  value already present is a no operation and a step that reads on its own is
+  worth more than one fewer line, but they are no longer what makes anything work.
+
+  **`run_benchmarks.git_sha` raises rather than recording `unknown`**, which is
+  the same fault in the harness: that string would have gone into the manifest of
+  every committed cell, and law 3 is that every published number traces to a
+  commit that resolves.
+
+- **This is the second time this project folded a nonzero exit into a boolean**,
+  and the first was two days ago. D-0041 fixed `is_ancestor` returning False for
+  "cannot tell" in a shallow checkout; this is the same sentence with a different
+  cause. The lesson is not about git: **a helper that returns a bool for a
+  question with three answers will eventually be asked the third one**, and this
+  project already knows that, because Section 16.1 spends a paragraph forbidding
+  exactly it for result fields and `values_of` refuses to average a null. The
+  discipline existed and had not been applied to a subprocess call.
+
+- **Verified**, in the pinned image with the workspace owned by uid 1001 and the
+  container running as root, which is the runner's actual shape.
+
+  | | before the fix | after |
+  |---|---|---|
+  | `repository_is_shallow` | `False` | refuses, naming git's fatal |
+  | `commit_exists(present)` | `False` | refuses, then `True` once trusted |
+  | `is_ancestor` | "genuinely absent" | refuses, then `True` once trusted |
+  | `head_sha` | `""` | refuses, then the sha |
+  | `landing_sha` | `None` | refuses, then `f92de427d1f3` |
+
+  `test_a_git_fatal_is_never_read_as_an_answer` exercises all five entry points
+  against a directory that is not a repository, which produces the same class of
+  fatal without needing ownership games, and asserts that a well formed absent
+  sha still comes back as absent rather than as a refusal. That last assertion is
+  what chose the probe.
+
+### D-0043 a bound between two clocks that ignored the quantum of the coarser one
+
+- **Found:** 2026-09-02, phase P10, by **the third CI run**, 33575891610. That run
+  is the one where `build-and-test` went green including every D-0041 and D-0042
+  test, so those two are proven; the coverage job was red on one test.
+- **Status:** resolved 2026-09-02.
+- **Reproduce:**
+
+  ```
+  test_pass_instrumentation.py:273: AssertionError: assert 5.3 >= 5.301691
+  ```
+
+  Read the two numbers. `5.3` has one decimal; `5.301691` has six. They are not
+  two measurements that disagree, they are one measurement and one **rounding**
+  of another, compared as though both were exact.
+
+  Locally, against `build-coverage`, ten runs of the same cell:
+
+  ```
+  run 0: mlir  4.1000  instr 3.978771  shortfall -0.121229
+  run 2: mlir  5.5000  instr 5.297579  shortfall -0.202421
+  run 3: mlir  3.2000  instr 3.262634  shortfall +0.062634   <-- fails a strict >=
+  run 7: mlir  3.0000  instr 2.859018  shortfall -0.140982
+  ```
+
+  One run in ten. The gcov instrumented build is slower and jitterier, which does
+  not create the fault but moves the sum across the boundary often enough to be
+  seen.
+
+- **What was wrong.** `--mlir-timing` prints **seconds to four decimal places**,
+  so every figure this project parses out of it is a multiple of 0.1 ms and
+  stands within 0.05 ms of a number it cannot see. Measured, the eleven parsed
+  values of an `-O2` run: `0.1, 0.2, 0.1, 0.1, 0.4, 0.4, 0.2, 0.3, 0.2, 0.5, 0.2`.
+  Not one of them has a digit finer than the quantum.
+
+  The instrumentation's own figures are `steady_clock` differences at
+  microsecond resolution.
+
+  The direction the cross check asserts is sound and is not what changed: MLIR's
+  timer opens before this instrumentation is called and closes after it, so
+  `true_mlir >= instrumented`. What was wrong is that the comparison was made
+  against the **printed** figure as though it were the true one. For one pass the
+  error is at most half a unit in the last place; for a sum of `n` passes it is
+  at most `n` halves, which at `-O2` is 0.55 ms. The assertion allowed zero.
+
+  Two bounds beside it were **magic numbers that happened to work**, which is the
+  same fault in a milder form: `TIMING_RESOLUTION_MS = 0.15` and
+  `TIMING_FLOOR_MS = 0.15` were chosen loosely at three times a quantum nobody
+  had written down. They are gone.
+
+- **The fix, and the shape of it is the point.** The quantum is **derived from
+  the text that was parsed**, per report, rather than written into the module.
+  `parse_mlir_timing` now returns a `TimingReport` carrying the rows, the number
+  of decimals it actually read, and half a unit in the last place computed from
+  it. Every bound in the cross check is expressed in those terms:
+
+  | bound | before | after |
+  |---|---|---|
+  | per pass, MLIR below ours | `0.15` | `half_ulp` |
+  | per pass, MLIR above ours | `0.15 + 0.5 * mlir` | `half_ulp + 0.5 * mlir` |
+  | totals | strict `>=` | `>= instrumented - n * half_ulp` |
+
+  Measured against those: the worst per pass deficit over ten coverage build runs
+  is **0.039971 ms** against a bound of 0.05, and the worst total shortfall is
+  **+0.062634 ms** against an allowance of 0.55.
+
+  **Deriving it rather than fixing it at 0.05 is not ceremony.** A report printed
+  to two decimals of seconds has a quantum of 10 ms, and a constant would have
+  gone on asserting a precision the figures no longer had, which is this defect
+  again rather than a smaller version of it.
+  `test_the_print_precision_decides_the_bound_rather_than_a_constant` feeds the
+  parser a two decimal report and asserts the half unit comes back as 5 ms.
+
+- **What was deliberately not done.** The bound was not widened to a number that
+  makes the observed failure pass. 0.05 ms per pass is not a tolerance chosen
+  against data; it is the largest error a rounded figure can carry, and the
+  containment argument makes it exact: `printed >= true - half_ulp >=
+  instrumented - half_ulp`. A deficit larger than that still fails, and still
+  means the two clocks are not measuring the same run. **The cross check clause
+  of P10's gate is only worth having if its bound is principled**, and it is
+  tighter now than it was: the per pass bound went from 0.15 to 0.05.
+
+- **Why the coverage job and not `build-and-test`.** Nothing about gcov is
+  special here. The instrumented build makes each pass slower and noisier, which
+  moves the sum of eleven roundings across zero more often. `build-and-test` has
+  been running the same flawed assertion since P10 landed and passing it by luck,
+  which is the more uncomfortable half of this entry: **a bound that is wrong by
+  construction can be green for days.**
+
+- **Verified.** 27 tests in `test_pass_instrumentation.py`, including the two new
+  ones; ten runs against `build-coverage` with no failure and the numbers above;
+  the full suite at 957 passed, 18 skipped.

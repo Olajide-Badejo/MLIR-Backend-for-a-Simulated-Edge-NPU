@@ -136,18 +136,154 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ON at P10. The full end to end matrix including the slow cells, plus the
+  # full benchmark suite of Section 16.1 with the 90 minute budget of Section 2
+  # enforced as a gate.
+  #
+  # **Why the benchmark suite runs here and not in ci.yml.** Section 19 puts the
+  # full benchmark suite in this file by name, and the reason it belongs here is
+  # the reason its numbers exist at all: every cell carries a wall clock with a
+  # confidence interval, the suite runs serially so that cells do not measure
+  # each other's contention, and neither property survives sharing a runner with
+  # the rest of a pull request's work.
+  #
+  # **The gate is the harness's own.** experiments/run_benchmarks.py fails when
+  # the measured runtime exceeds --budget-minutes, which defaults to 90. This job
+  # neither re-implements that check nor passes a different budget: a second
+  # budget written into a workflow file is a second number to keep in step with
+  # Section 2, and they would diverge. The job timeout is 120 minutes so that the
+  # harness's own failure is what a reader sees rather than a cancelled job.
+  #
+  # **Measured on the developer machine at 1.76 minutes for 175 cells**, 0.60
+  # seconds per cell, on a 14700K under WSL2. A hosted runner is four vCPU and
+  # the suite is serial, so expect several times that and still far inside the
+  # budget. Read the actual figure off the first green run and record it in
+  # docs/ENGINEERING_LOG.md beside the local one.
   full-matrix:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 120
     permissions:
       contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/olajide-badejo/npu-mlir-llvm:llvmorg-22.1.8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - name: "nightly full matrix job is off (activation table: P10)"
+      # fetch-depth: 0, D-0041. This job runs the whole pytest suite and then
+      # experiments/run_benchmarks.py, and both ask questions about history: the
+      # traceability tests resolve recorded shas, the ancestor test compares a
+      # prediction's commit against the commit a result was measured at, and the
+      # harness reads the prediction's landing commit out of git log before it
+      # measures anything. At the actions/checkout default of one commit the
+      # harness exits 2 before the first cell.
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # D-0042. A container running as root over a workspace the runner user
+      # owns: git refuses the repository as dubiously owned until it is named
+      # here, and every git call the suite and the harness make then exits 128.
+      # This job runs both, so it needs this before either.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: "Configure and build (activation table: P10, on)"
         run: |
-          set -euo pipefail
-          echo "nightly full matrix: OFF until P10 (activation table 19.0)."
-          echo "nightly full matrix: at P10 this runs the full end to end matrix including the slow cells, with -m 'slow or not slow', plus the full benchmark suite."
-          echo "nightly full matrix: it is off now because test/Python collects nothing and an empty collection exits 5, which is not a pass."
+          set -euxo pipefail
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
+            -DLLVM_DIR=/opt/llvm/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT="$(command -v lit)" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_USE_LINKER=lld \
+            -DMLIR_PYTHON_PACKAGES_DIR=/opt/llvm/python_packages/mlir_core
+          ninja -C build -j4
+
+      - name: Install the Python dependencies
+        run: |
+          set -euxo pipefail
+          python3 -m pip install --break-system-packages -r requirements-lock.txt
+
+      - name: "The full end to end matrix, slow cells included (activation table: P10, on)"
+        env:
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+          NPU_BUILD_DIR: ${{ github.workspace }}/build
+        run: |
+          set -uo pipefail
+          python3 -m pytest test/Python -q -m 'slow or not slow'
+          status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::pytest collected no tests and exited 5."
+            echo "nightly full matrix: an empty collection is never read as a pass."
+            exit 1
+          fi
+          exit "$status"
+
+      # The suite is written to a scratch directory rather than over
+      # experiments/results/. A nightly that rewrote the committed results would
+      # be a nightly that can move a recorded number with no commit behind it,
+      # and every number this project publishes traces to those files. What this
+      # run checks is that the suite still passes and still fits its budget on
+      # another host; re-recording stays a deliberate act with a commit.
+      - name: "The full benchmark suite against its 90 minute budget (activation table: P10, on)"
+        env:
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+          NPU_BUILD_DIR: ${{ github.workspace }}/build
+        run: |
+          set -uo pipefail
+          python3 experiments/run_benchmarks.py --results "${RUNNER_TEMP}/results"
+          status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::error::the benchmark suite failed."
+            echo ""
+            echo "run-benchmarks: two readings, and they are not the same fault."
+            echo ""
+            echo "run-benchmarks:   1. The suite exceeded the 90 minute budget of"
+            echo "run-benchmarks:      Section 2. The measured runtime and the cost"
+            echo "run-benchmarks:      per cell are printed above. Do not raise the"
+            echo "run-benchmarks:      budget: the question is what got slower, and"
+            echo "run-benchmarks:      the per cell figure says whether it is the"
+            echo "run-benchmarks:      suite growing or each cell costing more."
+            echo ""
+            echo "run-benchmarks:   2. An ablation moved the numerics outside the"
+            echo "run-benchmarks:      end to end band. Section 16.2 makes that a"
+            echo "run-benchmarks:      finding rather than a table row: the removed"
+            echo "run-benchmarks:      pass is load bearing for correctness rather"
+            echo "run-benchmarks:      than for performance, and the cell is named"
+            echo "run-benchmarks:      in the output above."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::run_benchmarks could not run, exit ${status}."
+            echo "run-benchmarks: exit 2 is the harness refusing to measure rather"
+            echo "run-benchmarks: than a measurement that failed: a pass in the"
+            echo "run-benchmarks: pipeline missing from the instrumentation, a"
+            echo "run-benchmarks: schema field with no value and no reason, or a"
+            echo "run-benchmarks: prediction that is not in any commit."
+            exit "$status"
+          fi
+
+      - name: Upload the suite this run measured
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-benchmark-results
+          path: |
+            ${{ runner.temp }}/results
+            ${{ runner.temp }}/results-runtime.json
+          if-no-files-found: warn
+          retention-days: 14
 
   mutation:
     runs-on: ubuntu-24.04

@@ -3740,3 +3740,783 @@ carries this very commit is the first to pull the new digest, and the reading
 that closes item 1 is its configure lines: `OpenMP: found` in build and test,
 sanitizers and ndebug, `NPUSimulatorTests` reporting its thread count, and
 coverage still on gcc's libgomp as before.
+
+## 2026-09-01 Phase P10: instrumenting a pass manager an out of tree tool does not own
+
+**Symptom, before anything went wrong.** Section 16.2 requires the per pass
+operation counts to be computed by a `PassInstrumentation` in `runBeforePass` and
+`runAfterPass`, on the pass manager `npu-compile` actually runs. `npu-compile`
+runs `npu-opt`, and `npu-opt` was four lines around `MlirOptMain`, which builds
+its own `PassManager` inside `performActions` and never hands it to the caller.
+There is no `addInstrumentation` an out of tree tool can reach.
+
+**Four routes were considered and three were rejected for reasons worth keeping.**
+
+1. **Run one pass at a time from Python and subtract.** This is the arrangement
+   Section 16.2 rejects by name: quadratic in the pass count, and it measures a
+   pipeline that is not the one under test, which is the same fault Section 17.4
+   names from the test side.
+2. **Give `npu-opt` a second entry point that builds its own `PassManager` from
+   `pipeline::build()`.** It would work and the pipeline would be the same table,
+   but it would be a second path through which every future flag has to be
+   threaded twice, and the two would drift.
+3. **`--print-op-stats`.** Named in an earlier draft of the specification and
+   corrected there. It prints one summary for one invocation. There is no before
+   and after pair per pass in it, so a gate written against it is unmeetable.
+4. **`MlirOptMainConfig::setPassPipelineSetupFn`**, which is the hook
+   `performActions` calls with the real manager immediately before running it.
+   This is what was used.
+
+**The chosen fix.** `npu-opt` unrolls the four argument `MlirOptMain` into what it
+does, which is `registerAndParseCLIOptions` followed by the five argument form,
+and wraps the config's pipeline setup callback: the wrapper installs the
+instrumentation on the manager it is given and then calls the callback the
+command line had already installed. **The unrolled path runs only when
+`--npu-pass-stats-json` is given.** The unrolled form does not reproduce
+`--show-dialects` and `--list-passes`, which are answered inside the library by
+functions an out of tree tool cannot call, and losing two flags to gain one would
+be a bad trade. `test/Pipeline/pass-stats.mlir` diffs the tool's output with and
+without the flag, so the claim that the default path did not move is a check
+rather than a sentence.
+
+### Two decisions inside the instrumentation, both measured
+
+**Adaptors are filtered on the pass having no command line argument, not on a
+type test.** MLIR instruments the `OpToOpPassAdaptor` that wraps a nested
+pipeline exactly the way it instruments a real pass, so an unfiltered
+instrumentation records every nested run twice. MLIR's own `PassTiming` writes a
+type test against `OpToOpPassAdaptor`; that type is declared only in
+`mlir/lib/Pass/PassDetail.h`, which an out of tree build does not get. An adaptor
+is not registered and therefore has no command line argument, while every pass in
+`lib/Pipeline/Pipeline.cpp` has one and is keyed on it in that table, so filtering
+on the argument asks the same question through the field the pipeline description
+already uses, and the two agree by construction.
+
+**The operation walk is outside the timed span**, and this is the decision the
+cross check is built on. Counting is a full traversal, which on the larger models
+costs as much as a cheap pass. MLIR's timer opens before this instrumentation is
+called and closes after it, so MLIR's figure per pass **contains** this project's
+walk and this project's does not. That gives the comparison a direction: MLIR's
+number is always the larger, and the difference is this file's own cost. A per
+pass figure that came out larger than MLIR's, or smaller by more than the tree
+display's resolution, would mean the two were not measuring the same run.
+
+**Measured on 2026-09-01**, all seven models at all three levels, with both flags
+on one invocation so that the two clocks describe the same execution:
+
+```
+worst gap, MLIR minus the instrumentation   0.069 ms, on a pass MLIR timed at 1.1 ms
+worst case MLIR came out below              0.034 ms, inside the display resolution
+```
+
+The bound is a floor of 0.15 ms plus half of MLIR's figure, rather than one
+absolute number. The floor is the display's own resolution, since the tree prints
+seconds to four places. The fraction is the walk, which is work proportional to
+the module and therefore to the time the pass took. An absolute bound would have
+been a bound that held here and went red on a slower machine for a reason that is
+not a defect, which is the mistake `tolerances.py` already records having been
+made once about `onnxruntime`.
+
+### The ablation could not refuse in C++, so it is checked by measurement
+
+`PipelineOptions::ablatedPass` skips one ablatable entry when the pipeline is
+built. It cannot refuse a request to remove `-npu-lower-to-npuisa`, because
+MLIR's `PassPipelineRegistration` builder returns nothing and there is no path
+from inside it to a readable command line error, and a fatal error raised from a
+library is a worse answer than none.
+
+What closes the hole is on the other side and is better than a refusal would have
+been. The driver reads the ablatable set out of the compiler at run time and
+refuses by name before it runs anything, and **every ablation run is instrumented
+and its recorded pass list is compared against the level's list minus the named
+pass**. An ablation that quietly did nothing is a raise naming the pass, not a
+row of zeros that reads as a pass with no effect. The refusal is a claim; the
+comparison is a measurement, and this phase is about preferring the second.
+
+**Verification.** `ninja check-npu` 26 discovered, 26 passed, up from 25 with
+`test/Pipeline/pass-stats.mlir`. `test/Python/test_pass_instrumentation.py` 26
+passed, including the doctored file that drops one pass, the ten doctored files
+that each drop one field, and the sweep that ablates each of the eight and reads
+the removal back out of the instrumentation.
+
+## 2026-09-01 Phase P10: the matrix has a hole in it, and the hole is the tight budget
+
+**Symptom.** The first run of `experiments/run_benchmarks.py` died five cells in:
+
+```
+error: loc("clipped"): the scratchpad budget of 8064 bytes is too small: this
+buffer of 16016 bytes could not be placed below offset 0 in @main, and no buffer
+live across the pressure peak can be spilled. The sweep line peak is 32032
+bytes, which is a lower bound on any placement
+```
+
+`dilated_stack`, `-O0`, tight budget, batch 4.
+
+**Root cause, and it is a specification question rather than a defect.** Section
+17.4's matrix sweeps the scratchpad budget and the batch size as two independent
+axes. They are not independent. ADR 0008 defines a tight budget by measurement:
+the smallest budget in a 64 byte sweep at which the model still allocates. That
+is a property of **a program**, and `TIGHT_BUDGETS` is keyed by model, with every
+entry measured at that model's own declared batch. A model at batch 4 is a
+different program.
+
+Measured across the suite before deciding anything:
+
+| Model | Peak at declared batch | Peak at batch 4 | Allocates at batch 4 |
+|---|---|---|---|
+| `lenet` | 194592 | 200800 | no |
+| `depthwise_separable` | 8192 | 32768 | no |
+| `resnet_block` | 8480 | 26912 | no |
+| `inception_block` | 6848 | 24576 | no |
+| `conv_bn_relu_stack` | 6432 | 18720 | no |
+| `dilated_stack` | 8036 | 32080 | no |
+| `lenet_batched` | 200800 | 200800 | yes |
+
+**`lenet` is the case that settles the argument.** Its peak barely moves, from
+194592 to 200800, because a 400 by 120 weight matrix sets it and no batch size
+touches that. It still fails, by six kilobytes. So the scaling factor is not the
+batch, and any formula for a batch 4 tight budget would have been a constant
+derived from a relationship this project had just measured to be false.
+
+**Three options, and the reason each was taken or refused.**
+
+1. *Scale the batch 1 budget by the batch.* Refused on the `lenet` row above.
+2. *Extend ADR 0008's sweep to batch 4 and freeze seven more constants.* This
+   keeps the full cross product and moves nothing already recorded, and it was
+   the closest call. Refused because `docs/PHASE_STATE.md` hands re-measurement
+   of the tight budgets to P13, and P13 is the phase that makes a budget below
+   the peak reachable at all by tiling instead of spilling. Constants frozen here
+   would be constants P13 invalidates, and every tight budget cell measured
+   against them would have to be thrown away.
+3. *A cell that names the tight budget runs at the model's declared batch.*
+   Taken, and recorded as `docs/adr/0010`.
+
+**ADR 0008's own procedure was re-run before the decision, and it reproduces all
+seven of its constants to the byte** at each model's declared batch. That is
+worth as much as the decision: it says the batch 4 failures are the rule working
+rather than the rule having rotted, and it revalidates a P8 measurement against a
+model suite P9b changed.
+
+The suite is 175 cells rather than the 84 plus 112 a free cross product gives,
+and `docs/adr/0010` carries the arithmetic.
+
+## 2026-09-01 Phase P10: two of four predicted claims were wrong, and the instrumentation said why
+
+`experiments/predictions/p10-ablation-deltas.md` was committed at `f92de42`,
+before `run_benchmarks.py` had been run once. Two of its four claims are wrong.
+The file is not edited; this entry is the adjudication.
+
+### Claim 1 is wrong: two rows are not zero, not three
+
+Predicted `-npu-fuse-bias`, `-npu-fold-batchnorm` and `-canonicalize`. Measured,
+as instruction count deltas at both budgets:
+
+| Pass | Nonzero on | Delta |
+|---|---|---|
+| `-npu-fuse-bias` | `dilated_stack` | 1 |
+| `-npu-fold-batchnorm` | `conv_bn_relu_stack` | 8 |
+| every other ablatable pass | nothing | 0 |
+
+`-canonicalize` is **zero on all seven models at both budgets**, and the
+prediction said it would be the surest of the three.
+
+**The instrumentation gives the mechanism, which a delta alone could not.** The
+before and after counts on `conv_bn_relu_stack` at `-O2`:
+
+```
+with canonicalize            without canonicalize
+  npu-fuse-ops    34 -> 38     npu-fuse-ops    34 -> 38
+  canonicalize    38 -> 24
+  cse             24 -> 21     cse             38 -> 21
+```
+
+The second canonicalization is doing real work, fourteen operations of it. It is
+simply not doing anything `-cse` cannot also do: MLIR's CSE erases trivially dead
+operations as it walks, so with the canonicalization removed it arrives at the
+same twenty one operations on its own. **The two passes are redundant on this
+suite for this purpose, and a leave one out ablation cannot see a pass whose work
+another pass would have done.** That is a known limit of leave one out designs
+and it is now a measured one here rather than a caveat: the honest reading of
+`-canonicalize`'s zero row is not "canonicalization does nothing" but "nothing in
+this suite needs both".
+
+This is the clearest payment the Section 16.2 instrumentation has made so far.
+Without a before and after pair per pass, the row would have read as a pass with
+no effect, and the entry in `docs/PASSES.md` would have said so.
+
+### Claim 3 is wrong: sixteen of fifty six rows differ between the budgets
+
+Predicted that every ablation row is identical at both budgets because nothing
+spills at either. Measured: `resnet_block` and `inception_block` differ, on every
+one of the eight passes.
+
+```
+resnet_block     default  instr=14  cycles=1626.00  spills=0  dram=8800
+resnet_block     tight    instr=17  cycles=2018.00  spills=1  dram=14944
+inception_block  default  instr=14  cycles=2398.50  spills=0  dram=8624
+inception_block  tight    instr=22  cycles=3799.00  spills=3  dram=21936
+```
+
+**ADR 0008 contained the refutation and I misread my own table.** Those are
+exactly the two models it identifies as able to go below their peak, with one and
+three spills recorded there. The prediction asserted no spilling from the fact
+that five of seven cannot go below their peak, and forgot the two that can.
+
+The precise statement, which the prediction should have made: the ablation
+**deltas** are identical at both budgets, all zero for the six passes with zero
+rows and unchanged for the two with nonzero rows. The **absolutes** are not,
+because the tight budget adds spill DMA. This is Section 16.2's own reason for
+requiring ablation rows at every budget, arriving as evidence rather than as a
+rule: a table that reported only the generous budget would have shown
+`inception_block` at 14 instructions and never mentioned the 22.
+
+### Claim 2 is met, with one wording defect worth recording
+
+No ablation moved any cell outside the 5e-5 end to end band, so the run did not
+fail on numerics. Ablating `-npu-fold-batchnorm` returns
+`max_abs_movement_vs_o0` to exactly 0.0 on `conv_bn_relu_stack`, as predicted:
+the fold is the one pass in this pipeline that moves numbers, and removing it
+restores `-O0`'s answer bit for bit.
+
+The wording defect: the prediction added "and no other ablation moves that field
+at all". Fourteen ablation rows carry 4.470e-08 in it. They are not moving it;
+they are leaving it at the unablated `-O2` value, because they leave the fold in
+place. Read as "no other ablation changes the field relative to the unablated
+cell" the claim holds exactly. Read literally against zero it is false. **A
+prediction that can be read two ways has one reading too many**, and the fix is
+to the next prediction rather than to this one.
+
+### Claim 4 is met
+
+Suite total at `-O2`, default budget, declared batch: **117 instructions**,
+predicted between 100 and 130. No single ablation raises it by more than 8,
+predicted no more than 30.
+
+### The observation P9 asked P10's report to state out loud
+
+`-O1` is exactly `-O0` on every model in the suite, measured here at 25, 12, 14,
+14, 23, 13 and 25 instructions at both levels. `-O2` differs from `-O0` on
+exactly two models, `conv_bn_relu_stack` at 23 to 15 and `dilated_stack` at 13 to
+12, and those two savings are the two nonzero ablation rows seen from the other
+side.
+
+### Two numbers Section 16.1 predicted about itself
+
+`top1_agreement_vs_onnxruntime` is **1.0** and
+`cosine_similarity_vs_onnxruntime` is **0.99999999999996**. Section 16.1 forbids
+ranking configurations on either and gives the reason in advance: this suite's
+models are seeded and never trained, so argmax agreement saturates and cosine
+similarity parks at four nines with no resolution. Both numbers are recorded, the
+sentence forbidding their use is recorded in every file beside them, and SQNR,
+which is 136.87 dB on the same cell, is the metric that moves.
+
+### The suite's own cost
+
+175 cells in **1.76 minutes**, **0.60 seconds per cell**, serially, against the 90
+minute budget of Section 2. The worst gap between the instrumentation's clock and
+`--mlir-timing` over all 175 cells and all 10 trials each was **0.1881 ms**, on
+`NPUFuseOps`, inside the floor plus half bound.
+
+**0.60 seconds per cell is the measured figure that replaces Section 2's 15
+second planning number.** The spec file lives outside this repository and is not
+edited from here; `docs/PHASE_STATE.md` carries the replacement text for the
+owner.
+
+## 2026-09-01 Phase P10 closing: the number Section 2 asks for, and where it is
+
+**This entry exists because a gate clause cannot be met from inside this
+repository, and recording that plainly is better than a phase that quietly
+reports itself complete.**
+
+P10's gate says "the measured per cell cost replaces the 15 second planning
+figure in Section 2 in the same commit". Section 2 is in the build specification,
+which lives outside this repository on the Windows side, and the standing rule is
+that it is not edited from here. So the measurement is recorded and the
+replacement text is written out, and applying it needs the owner.
+
+**The number.**
+
+```
+175 cells, 105.699 seconds, serially
+0.60 seconds per cell
+against a budget of 90 minutes, which is a factor of 51 in hand
+```
+
+Measured on the 14700K under WSL2, at commit `d4210f3`, and reproduced to two
+decimal places on a second run at a different commit. The figure lives in
+`experiments/results-runtime.json` rather than only in this entry, because a
+number that exists in a log and nowhere machine readable is a number the next
+phase retypes.
+
+**Two more corrections Section 2 needs, and they are about the cell count rather
+than the cost.** Both are already recorded where the work happened, and are
+gathered here because whoever edits Section 2 needs all three at once.
+
+1. **Eleven ablatable passes becomes eight.** Section 12's table has eleven, but
+   `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
+   arrive at P13 and no `-O` level names them yet, because a level that named a
+   pass nothing implements would give the ablation table a row it could not fill.
+   154 ablation cells becomes 112.
+2. **Budget and batch are not independent axes**, which is `docs/adr/0010`. 84
+   benchmark cells becomes 63.
+
+238 becomes 175.
+
+**The replacement text is in `docs/PHASE_STATE.md`** under "The Section 2 carve
+out, for the owner", written as a paragraph that can be dropped in rather than as
+a list of edits to reconstruct.
+
+### Why the suite is serial, since the budget is what pays for it
+
+Every cell carries a `compile_ms` object with ten trials, a median and a
+percentile interval, and each pass in it carries the same. Cells competing for
+cores measure the contention rather than the compiler, so parallelising this
+suite would corrupt the one group of fields it exists to produce. That is a
+deliberate departure from `scripts/regression-baseline.sh`, which parallelises
+freely at `NPU_BASELINE_JOBS` because it records no timing at all.
+
+The decision was affordable because of the measurement rather than in spite of
+it: at 0.60 seconds per cell the whole suite is under two minutes, and there is
+no version of this trade that is close. Had the suite come out at forty minutes
+serial and ten parallel, the right answer would have been to keep it serial and
+say so, because the alternative is timing objects that describe a machine's load
+rather than a compiler's cost.
+
+### What the phase found, in one place
+
+Three findings, and none of them is in the compiler.
+
+**`-canonicalize`'s ablation row is zero and the pass is not idle.** It removes
+fourteen operations on `conv_bn_relu_stack`, and `-cse` reaches the same program
+without it because MLIR's CSE erases trivially dead operations as it walks. A
+leave one out ablation cannot see a pass whose work another pass would have done.
+This is the clearest thing the Section 16.2 instrumentation has bought: without a
+before and after count per pass, this row is a zero indistinguishable from
+`-sccp`'s structural zero, and `docs/PASSES.md` would have recorded them the same
+way.
+
+**The tight budget does not cross the batch axis**, `docs/adr/0010`. Six of the
+seven models do not allocate at batch 4 under their recorded tight budget, and
+`lenet` shows why no formula would have worked: its peak barely moves with the
+batch, from 194592 to 200800, because a 400 by 120 weight matrix sets it, and it
+still fails by six kilobytes.
+
+**Seven tests were marked slow at P3 and CI has never run one**, D-0040, found by
+a prediction that was wrong about how many tests carry the marker.
+
+### The prediction, and what being wrong bought
+
+Two of `p10-ablation-deltas`'s four claims are wrong. The full adjudication is in
+the previous entry and in `docs/PHASE_STATE.md`; what belongs here is what the
+mechanism was worth.
+
+**A prediction that had been written after the measurement would have named two
+nonzero rows and looked prescient.** The registered one named three, and the
+third being wrong is what sent me to the per pass operation counts, which is
+where the `-cse` redundancy is visible. The finding is a consequence of the
+prediction being wrong and committed beforehand, which is the entire argument for
+Section 17.8's protocol arriving as a mechanism rather than as an intention.
+
+The same for claim 3. Predicting the budgets would agree, and finding sixteen
+rows where they do not, produced the spill table now in `docs/PASSES.md` under
+`-npu-allocate-scratchpad`. Section 16.2 already said to run ablations at every
+budget because passes can behave oppositely at a tight one; this project now has
+its own evidence for that rule rather than taking the specification's word.
+
+**One wording defect in the prediction, recorded because the next prediction
+should not repeat it.** Claim 2 ended "and no other ablation moves that field at
+all". Fourteen rows carry 4.470e-08 in it. They are not moving it, they are
+leaving it where the unablated cell has it, so the claim holds under one reading
+and fails under the other. A prediction that can be read two ways has one reading
+too many, and the fix belongs to the next prediction rather than to this one.
+
+### Verification, and the thing the re-record proves
+
+The closing matrix is in `docs/PHASE_STATE.md`. One line of it is worth calling
+out. `regression-baseline` was re-recorded at `5401d39`, and the diff is four
+kinds of line: `git_sha`, `check-npu` 25 to 26, `pytest` 871 to 954, and 84 test
+names. **Not one cell field moved and all 21 golden tensors are byte identical.**
+
+A phase that put a `PassInstrumentation` on the pass manager, unrolled
+`npu-opt`'s entry point to reach it, added a pipeline option, a result schema, a
+benchmark harness and ninety tests, and moved no recorded number, is a phase
+whose changes are provably confined to the measuring apparatus. That is the
+strongest single statement available about a measurement phase, and it is the
+reason the re-record is its own commit with nothing else in it.
+
+## 2026-09-02 D-0041: the first CI run of P10's tests, and a wrong answer that looked right
+
+**Symptom.** The first push of `phase/p10-measurement`, run 33559636835, went red
+with eight unique failures across the `pytest` and `pytest slow cells` arms. Every
+one was in a file this phase added. Every one was green locally, at the same
+commit, on the same suite.
+
+```
+test_every_manifest_git_sha_resolves       git_sha d4210f3... is not a commit in this repository
+test_every_entry_landed_in_a_commit...     the prediction is not in any commit
+test_every_result_that_names_a_prediction  prediction_sha f92de42... not a commit
+test_a_prediction_landing_commit_is_an...  assert None is not None
+test_the_ancestor_check_refuses_a_sha...   a parent is an ancestor of its child
+test_the_macros_sha_resolves_to_a_real...  exit 128
+test_a_rerun_is_byte_identical...          assert 2 == 0
+test_the_run_fails_when_it_exceeds...      exit 2
+```
+
+**The fifth line is the one that gives it away.** "A parent is an ancestor of its
+child" is not a claim that can be false. A test asserting it and failing is a test
+whose environment is wrong, not whose logic is.
+
+**Root cause.** `actions/checkout` defaults to `fetch-depth: 1`. The checkout
+holds one commit and no history. P10 is the first phase whose tests ask questions
+about history at all: law 3 of Section 0.2 asserts that every published number
+traces to a commit that resolves, and law 4's mechanism is an ancestry relation
+between the commit a prediction landed in and the commit a result was measured at.
+Nine phases of green CI say nothing about this, because none of them asked.
+
+The last two failures are the same cause one step removed:
+`experiments/run_benchmarks.py` reads the prediction's landing commit before it
+measures anything and exits 2 when it cannot, so both slow tests failed on the
+harness refusing rather than on anything they were testing.
+
+### Reproduced before anything was changed
+
+```
+$ git clone --depth 1 file:///home/elijah/npu-mlir-v2 /tmp/p10-shallow
+$ git -C /tmp/p10-shallow rev-parse --is-shallow-repository
+true
+$ git -C /tmp/p10-shallow rev-list --count HEAD
+1
+```
+
+Four of the eight fall straight out. The other two did not reproduce, which is
+what sent me to the second shape: the `pull_request` trigger checks out a
+synthetic merge commit whose parents are the base and the branch, and that is a
+different graph from a `push`. Both shapes were built as real fetches from a bare
+mirror rather than as mocks, because what is under test is what git does rather
+than what this project believes git does.
+
+| Shape | depth | shallow | `landing_sha` returns | historical sha resolves |
+|---|---|---|---|---|
+| `push` | 1 | yes | the graft commit | no |
+| `push` | 0 | no | `f92de42`, correct | yes |
+| `pull_request` merge ref | 1 | yes | the merge commit | no |
+| `pull_request` merge ref | 0 | no | `f92de42`, correct | yes |
+
+The merge ref at full depth answers everything correctly, including `HEAD~1`,
+which on a merge commit is the base branch: a parent, and an ancestor, so the
+refusal test holds there too. That was worth checking rather than assuming,
+because the ancestor assertions are the ones a merge commit could plausibly have
+broken.
+
+### The second defect, which is the one worth the entry
+
+The checkout depth is a setting. What the table above exposed is not.
+
+**`landing_sha` did not fail in a shallow checkout. It returned an answer.**
+`git log --diff-filter=A -- <path>` attributes every file to the graft commit,
+because that commit has no parent to have differed from, so the function returned
+the checkout's own tip. On the merge ref it returned the merge commit for an entry
+that landed six commits earlier.
+
+That sha would have gone into a result's `prediction_sha`. It resolves, it is an
+ancestor of HEAD, and **the ancestor test would have passed on it**, while the
+provenance link pointed at the wrong commit. A green run recording a false link is
+worse than the red run that actually happened, and no `fetch-depth` prevents it,
+because the function was willing to answer a question it could not answer.
+
+The same fault in two milder forms sat beside it. `commit_exists` returned False,
+which reads as "this commit does not exist" when the truth is "this commit is not
+here". `is_ancestor` returned False, because `git merge-base --is-ancestor` exits
+nonzero both for "no" and for "I have never heard of that commit", so
+"unobservable" was reported as "the prediction does not predate its measurement",
+which is a serious finding invented out of a checkout option.
+
+**This is the fault this project forbids everywhere else**, an absent measurement
+that cannot be told apart from a real one, appearing in the one mechanism whose
+entire purpose is provenance. Section 16.1 spends a paragraph on it for result
+fields and `values_of` refuses to average a null; the same discipline had not been
+applied to a git query.
+
+### The fix, both halves, and why depth 0 rather than something narrower
+
+`fetch-depth: 0` on the three jobs that run the suite: `build-and-test` and
+`coverage` in `ci.yml`, `full-matrix` in `nightly.yml`. The other four checkouts
+stay at the default, because no step in them asks about history.
+
+A narrower fetch was considered and rejected. It would have to name the commits to
+deepen to, and those commits are the shas recorded in result files and prediction
+entries, so the fetch would need updating every time a result is re-recorded and
+would be wrong in exactly the situation it exists to serve. The repository is a
+few hundred commits and the full fetch costs seconds.
+
+`require_full_history` is the other half and is the part that does not depend on
+a workflow file being right. It refuses once, readably, naming the checkout and
+the fix, before any of the three functions answers. `is_ancestor` raises on an
+unresolvable reference instead of returning False. `landing_sha` refuses instead
+of returning the graft commit. A shallow checkout now produces one diagnosable
+message instead of eight assertions about shas, and the message says
+`fetch-depth: 0` and names the defect.
+
+### What the fix was verified against
+
+All four shapes, as real fetches. At depth 0, both `push` and `pull_request`:
+**43 passed, 0 failed**, and `run_benchmarks.py` completes and exits 0. At depth
+1, after the fix: the refusal by name rather than the eight failures.
+
+`test_the_ancestor_check_refuses_to_guess_in_a_shallow_checkout` makes a real
+`--depth 1` clone inside the test and asserts all three refusals, so this is
+exercised on every run of the suite rather than only in this entry. That test is
+the reason the entry can claim the guard works rather than that it was written.
+
+### The pattern, now four deep
+
+D-0030 and D-0032 depended on what was lying around in CI and were invisible
+locally. D-0037 was the reverse. D-0040 was a test that only ever ran locally.
+This is the fourth and the sharpest: code correct in every environment where the
+history is present, run for the first time in one where it is not.
+
+**In all four the code under test was fine and the environment differed.** That is
+the argument for CI existing, and it is also the argument for this project's habit
+of writing down what a red run actually measured rather than what it was expected
+to measure. The eight failures looked like eight problems and were one, and the
+one that mattered was not in the list at all.
+
+## 2026-09-02 D-0042: the same mistake one day later, and a probe that could not have told
+
+**Symptom.** The second CI run, 33571635111, on the commit that fixed D-0041. The
+same eight tests red. But every fact had moved: `fetch-depth: 0` had taken and the
+checkout log showed a full fetch of `+refs/heads/*` with no `--depth`, the commits
+existed on the remote, and they were ancestors of the pushed tip. And the tests
+were printing D-0041's **new** message:
+
+```
+not a commit in this repository. The repository is not shallow, so the
+commit is genuinely absent rather than merely unfetched.
+```
+
+Every clause of that sentence was false. The repository was not shallow because
+git could not tell us whether it was shallow; the commit was not absent; and the
+one thing the message ruled out, "merely unfetched", was the only thing that had
+actually been fixed.
+
+**The datum that cracked it.** `test_the_macros_sha_resolves_to_a_real_commit`
+failed with `assert 128 == 0`. Exit **128** is git's fatal, not its "no". A
+genuinely missing object gives 1. Every other failure was a boolean, so this was
+the only place in eight failures where the raw exit code survived to the log.
+
+**Root cause, and it is two things again.**
+
+The runner's shape is a workspace owned by the runner user with the job running as
+root inside a container. git refuses a repository whose owner is not the caller
+and exits 128 with `detected dubious ownership`. This project read any nonzero
+exit as the answer "no".
+
+Reproduced in the pinned image with the workspace chowned to uid 1001 and the
+container as root, running the helpers exactly as the pytest step does:
+
+```
+repository_is_shallow       -> False        should have refused
+commit_exists(present)      -> False        the commit is there
+is_ancestor(pred, harness)  -> "genuinely absent"
+head_sha                    -> ""           empty string
+landing_sha(p10)            -> None         the assert None is not None
+require_full_history        -> passed       it could not see the shallow flag either
+```
+
+Six wrong answers out of one unreadable repository, and they are exactly the eight
+CI failures. `rev-parse --is-shallow-repository` is the worst of them: it prints
+its fatal to **stdout**, so a caller comparing stdout against `"true"` gets False,
+which is why D-0041's guard, one day old, passed and let everything downstream
+run.
+
+### Why the first run's log pointed away from git
+
+Two things made this look like anything but a git refusal, and both have the same
+explanation.
+
+`regression-baseline --check` runs git in the same job and printed shas happily,
+which reads as ruling out a git problem in that job. And the failures named
+specific shas as absent, which reads as a data problem.
+
+It is a step ordering. `git config --global --add safe.directory` was first set by
+the `DIALECT_REFERENCE.md staleness` step at line 577. `pytest` is at 463 and
+`pytest slow cells` at 520. **Every step above line 577 had a repository git would
+not read, and every step below it was fine.** The suite was the only thing above
+that line that asked git anything, and `--check` is at 684.
+
+### The probe could not have made the distinction anyway
+
+The first attempt at this fix read exit 1 as absence and 128 as a refusal, which
+is correct and was still not enough. Measured on 2026-09-02:
+
+| invocation | present | absent | unreadable |
+|---|---|---|---|
+| `cat-file -e <sha>^{commit}` | 0 | **128** | **128** |
+| `cat-file -e <sha>` | 0 | 1 | 128 |
+| `rev-parse --verify --quiet <sha>^{commit}` | 0 | **1** | **128** |
+
+`cat-file -e` with a `^{commit}` peel returns 128 for a well formed but absent
+object, the same code an unreadable repository gives. **The exit codes were being
+read correctly and the tool was wrong.** The test that caught this asserted that a
+well formed absent sha comes back as absent rather than as a refusal, and it went
+red against `cat-file`; that assertion is what chose the probe.
+
+`rev-parse --verify --quiet` separates the three cases and, as a bonus, answers 1
+for a sha that resolves to a blob rather than a commit, which is the right answer
+to "is this a commit" and one more thing `cat-file -e <sha>` would have said yes
+to.
+
+### The fix
+
+`_git` is one runner for every git call in the module, taking the set of exit
+codes that are genuinely answers and raising with git's own stderr otherwise. git
+explains itself better than a paraphrase and its message carries the fix, which is
+the same argument the golden drift lines and `run_dash_lint` were rewritten under
+at P9b.
+
+`commit_exists` uses `rev-parse --verify --quiet`.
+
+`safe.directory` is set immediately after the checkout in all three container jobs
+that run the suite. The `coverage` job had never set it at all, and would have
+failed the same way the moment anyone read its log past the percentage.
+
+`run_benchmarks.git_sha` raises rather than returning `"unknown"`. That string
+would have gone into the manifest of every committed cell, and law 3 is that every
+published number traces to a commit that resolves.
+
+**Verified in the pinned image, workspace uid 1001, container as root**, which is
+the runner's shape:
+
+| | before | after |
+|---|---|---|
+| `repository_is_shallow` | `False` | refuses, quoting git |
+| `commit_exists(present)` | `False` | refuses; `True` once trusted |
+| `is_ancestor` | "genuinely absent" | refuses; `True` once trusted |
+| `head_sha` | `""` | refuses; the sha |
+| `landing_sha` | `None` | refuses; `f92de427d1f3` |
+
+**The left column is the result worth having.** With the environment fault still
+present, nothing is answered wrongly any more. The two halves of the fix are
+independent, which is what makes the code half worth writing at all.
+
+### The lesson, and this project already knew it
+
+This is the second time in two days that a nonzero exit was folded into a boolean.
+D-0041 was `is_ancestor` returning False for "cannot tell" in a shallow checkout;
+D-0042 is the same sentence with a different cause, plus a probe that could not
+have told either way.
+
+The lesson is not about git. **A helper that returns a bool for a question with
+three answers will eventually be asked the third one.** Section 16.1 spends a
+paragraph forbidding exactly this for result fields, `values_of` refuses to
+average a `null` because of it, and `docs/NUMBERS.md` says no number on the page
+is an estimate. The discipline existed, was written down, was enforced by a test,
+and had not been applied to a subprocess call.
+
+There is a narrower lesson too, and it is the one worth carrying into P11, which
+adds two external tools that are both shelled out to. **When a subprocess can
+fail for a reason that is not the question, the return type has to have somewhere
+to put that.** Neither Accelergy nor SCALE-Sim will be more reliable than git.
+
+## 2026-09-02 D-0043: comparing a rounded sum against an exact one
+
+**Symptom.** Third CI run, 33575891610. `build-and-test` green, including every
+D-0041 and D-0042 test, so those two are proven in CI. The coverage job red on
+one test:
+
+```
+test_pass_instrumentation.py:273: AssertionError: assert 5.3 >= 5.301691
+```
+
+**The two numbers are the diagnosis.** `5.3` carries one decimal. `5.301691`
+carries six. The margin is 1.7 microseconds. Those are not two measurements that
+disagree; they are one measurement and one rounding of another, compared as
+though both were exact.
+
+**Root cause.** `--mlir-timing` prints seconds to four decimal places. Every
+figure this project parses out of it is therefore a multiple of 0.1 ms and stands
+within 0.05 ms of a number it cannot see. Measured, the eleven values of an `-O2`
+run: `0.1, 0.2, 0.1, 0.1, 0.4, 0.4, 0.2, 0.3, 0.2, 0.5, 0.2`. Not one has a digit
+finer than the quantum. The instrumentation's own figures are `steady_clock`
+differences at microsecond resolution.
+
+The direction the check asserts is sound and is not what changed. MLIR's timer
+opens before this instrumentation is called and closes after it, so
+`true_mlir >= instrumented`. The error was comparing against the **printed**
+figure as though it were the true one. Per pass that is worth half a unit in the
+last place; over a sum of eleven it is worth eleven halves, which is 0.55 ms. The
+assertion allowed nothing at all.
+
+**Reproduced under the build CI failed on**, ten runs of one cell against
+`build-coverage`:
+
+```
+run 0: mlir  4.1000  instr 3.978771  shortfall -0.121229
+run 2: mlir  5.5000  instr 5.297579  shortfall -0.202421
+run 3: mlir  3.2000  instr 3.262634  shortfall +0.062634   <-- fails a strict >=
+run 7: mlir  3.0000  instr 2.859018  shortfall -0.140982
+```
+
+One in ten. gcov is not special: it makes each pass slower and noisier, which
+moves the sum of eleven roundings across zero often enough to be seen.
+`build-and-test` has been running the same flawed assertion since P10 landed and
+passing it by luck, which is the more uncomfortable half of this. **A bound that
+is wrong by construction can be green for days.**
+
+### Two magic numbers beside it, which were the same fault milder
+
+`TIMING_RESOLUTION_MS = 0.15` and `TIMING_FLOOR_MS = 0.15` were the per pass
+bounds. Both were chosen loosely, at three times a quantum nobody had written
+down, and their docstring called 0.15 "the display's own resolution", which is
+wrong: the resolution is 0.1 ms and half of it is what a rounding can cost. They
+were generous enough never to have fired, which is why nothing pointed at them.
+
+### The fix, and why it is derived rather than set
+
+The quantum is read off the text that was parsed, per report.
+`parse_mlir_timing` returns a `TimingReport` carrying the rows, the decimals it
+actually saw, and half a unit in the last place computed from them.
+
+| bound | before | after |
+|---|---|---|
+| per pass, MLIR below ours | `0.15` | `half_ulp` |
+| per pass, MLIR above ours | `0.15 + 0.5 * mlir` | `half_ulp + 0.5 * mlir` |
+| totals | strict `>=` | `>= instrumented - n * half_ulp` |
+
+Against those, over the ten coverage runs: worst per pass deficit **0.039971 ms**
+against 0.05, worst total shortfall **+0.062634 ms** against 0.55.
+
+**Deriving it is not ceremony.** A report printed to two decimals of seconds has
+a quantum of 10 ms, and a constant of 0.05 would go on asserting a precision the
+figures no longer had, which is this defect again rather than a smaller version
+of it. A test feeds the parser a two decimal report and asserts the half unit
+comes back as 5 ms.
+
+**And the bound got tighter, not looser.** Per pass it went from 0.15 to 0.05.
+The containment argument makes 0.05 exact rather than cautious:
+`printed >= true - half_ulp >= instrumented - half_ulp`. Anything beyond it still
+fails and still means the two clocks are not measuring the same run. The cross
+check clause of P10's gate is only worth having if its bound is principled, and
+widening to whatever made the observed failure pass would have thrown that away
+to save one red run.
+
+### The pattern, and this is the fourth
+
+D-0040 was a test that only ever ran in one environment. D-0041 was a helper
+answering a question it could not observe. D-0042 was the same helper answering a
+different unobservable question through a probe that could not have told either
+way. This one is a comparison that ignored the precision of one of its two
+operands.
+
+They are all the same shape: **a value arrived through a channel that loses
+information, and the code treated it as though it had not.** An exit code that
+collapses three answers into two. A figure printed to four decimals. Section 16.1
+forbids exactly this for result fields, which is why `instruction_count` is an
+integer and every wall clock is an object with an interval saying how uncertain
+it is. The schema had the discipline; the code around it kept not having it.
+
+The narrow lesson for P11, which shells out to two more tools and parses their
+output: **whatever reads an external tool's numbers has to carry that tool's
+precision alongside them**, or every comparison downstream silently assumes an
+exactness that was never there. SCALE-Sim's cycle counts and Accelergy's energy
+figures will arrive through exactly this kind of channel.

@@ -10,6 +10,7 @@
 
 add_mlir_library(MLIRNPUPipeline
         Pipeline.cpp
+        PassStats.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include/NPU/Pipeline

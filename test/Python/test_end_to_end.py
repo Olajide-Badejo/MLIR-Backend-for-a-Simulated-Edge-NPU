@@ -15,12 +15,32 @@ that is a diagnosis rather than the beginning of a search. Section 17.3a calls
 the reference interpreter the load bearing part and Section 17.4 asks for the
 external comparison; this file does both over the same cells.
 
-**The matrix.** Seven models, three levels, two batch sizes, five input classes.
-The level axis arrived at P9 with the levels themselves. Section 17.4's full
-matrix also sweeps the budget; that axis is the regression baseline's, which
-records every model at every level at both budgets, and it is absent here rather
-than duplicated: a tight budget changes where the buffers go and not what the
-arithmetic is, and `test_tight_budgets.py` asserts that rather than assuming it.
+**The matrix.** Seven models, three levels, two batch sizes, five input classes,
+against two oracles. Two hundred and ten cells each and four hundred and twenty
+in total. The level axis arrived at P9 with the levels themselves.
+
+**Section 17.4's own matrix also sweeps the budget, and at P10 that axis turned
+out not to be one.** Its pseudocode reads as seven models times three levels
+times two budgets times two batches times five classes, which is also four
+hundred and twenty, and the coincidence of the two numbers is worth naming so
+that nobody reads one as evidence for the other. That cross product **cannot be
+built**: six of the seven models do not allocate at batch 4 under the tight
+budget measured for them at batch 1, because a tight budget is the smallest
+budget at which *that program* allocates and a model at batch 4 is a different
+program with a peak three to four times larger. `docs/adr/0010` carries the
+measurement and the decision.
+
+So the budget axis stays out of this file, now for two reasons rather than one.
+The original one still holds: a tight budget changes where the buffers go and not
+what the arithmetic is, and `test_tight_budgets.py` asserts that rather than
+assuming it. The new one is that a quarter of the cells the axis would add do not
+exist to be run.
+
+**The delegation is checked rather than asserted.** "Another file covers that
+axis" is exactly the kind of claim that stays in a docstring after it stops being
+true, so `test_the_budget_axis_is_covered_where_this_file_delegates_it` reads the
+committed cells of `experiments/results/` and fails if a model, level and budget
+this file skips is missing an accuracy figure inside the band.
 
 **Both bounds are asserted separately**, which is Section 17.4's rule and not a
 style preference. `np.testing.assert_allclose` tests
@@ -49,6 +69,7 @@ simulated answer is exactly zero too, with no tolerance at all.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -373,6 +394,60 @@ def test_pytest_collects_every_cell_of_both_matrices() -> None:
         assert cells == set(CELL_IDS), sorted(set(CELL_IDS) ^ cells)
 
 
+def test_the_budget_axis_is_covered_where_this_file_delegates_it() -> None:
+    """The delegation, as a mechanism rather than as a sentence in a docstring.
+
+    This file drops Section 17.4's budget axis and says another part of the
+    project covers it. That claim needs a check, because the failure mode of a
+    delegation is silent: the other part stops covering the axis, this file keeps
+    passing, and the docstring keeps saying it is covered.
+
+    So the committed cells are read and every model, level and budget combination
+    is required to be there with an accuracy figure inside the same band this
+    file enforces. `docs/adr/0010` is why the combinations are not a free cross
+    product: a tight budget cell exists only at the model's declared batch.
+    """
+    results_dir = Path(__file__).resolve().parents[2] / "experiments" / "results"
+    cells = sorted(results_dir.glob("*.json"))
+    if not cells:
+        pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
+
+    covered: dict[tuple[str, int, str], float] = {}
+    for path in cells:
+        cell = json.loads(path.read_text(encoding="utf-8"))
+        if cell["cell"]["ablated_pass"] is not None:
+            continue
+        key = (
+            cell["cell"]["model"],
+            int(cell["cell"]["opt_level"]),
+            cell["cell"]["scratchpad_budget"],
+        )
+        covered[key] = max(
+            covered.get(key, 0.0),
+            float(cell["accuracy"]["max_abs_error_vs_onnxruntime"]),
+        )
+
+    missing = [
+        (model, level, budget)
+        for model in MODELS
+        for level in LEVELS
+        for budget in ("default", "tight")
+        if (model, level, budget) not in covered
+    ]
+    assert not missing, (
+        f"this file drops the budget axis on the understanding that the "
+        f"recorded results carry it, and these combinations are not there: "
+        f"{missing}"
+    )
+
+    worst = max(covered.values())
+    assert worst <= ABSOLUTE_TOLERANCE, (
+        f"a recorded cell sits {worst:.3e} from onnxruntime, outside the band "
+        f"of {ABSOLUTE_TOLERANCE:.3e} this file enforces. The two have to be the "
+        f"same band or the delegation is to a weaker check."
+    )
+
+
 def test_the_fast_subset_is_not_empty() -> None:
     """Section 17.4's second collection rule.
 
@@ -381,12 +456,20 @@ def test_the_fast_subset_is_not_empty() -> None:
     for an edit and rerun loop still has a subset that is not. P9 multiplied
     this matrix by three, to four hundred and twenty cells across the two
     oracles, and it takes about half a minute including the exports and the
-    compilations. That is inside an edit and rerun loop, so there is still
-    nothing to carve out and no cell here is marked `slow`.
+    compilations. Measured again at P10: **24.7 seconds for 425 tests.** That is
+    inside an edit and rerun loop, so there is still nothing to carve out and no
+    cell here is marked `slow`.
 
-    The marker and the CI step that runs it stay in place. They start doing work
-    at P10, when the ablation cells arrive beside these and the 90 minute budget
-    of Section 2 becomes a gate rather than a note.
+    **The marker started doing work at P10, and not in this file.** The P9 note
+    here expected the ablation cells to arrive beside these ones and make the
+    matrix slow. They did not: Section 16.2's ablations are a benchmark suite
+    rather than a test matrix, they write result files rather than assert, and
+    they live in `experiments/run_benchmarks.py`. What carries the marker instead
+    is `test/Python/test_benchmarks.py`, whose two slow cases each drive a real
+    run of that suite: one for Section 16.1's determinism test and one for the
+    failure branch of the 90 minute budget gate. Both cost about twenty five
+    seconds, which is exactly the cost the marker exists to keep out of an edit
+    and rerun loop.
     """
     marks = {
         mark.name

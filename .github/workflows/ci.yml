@@ -201,8 +201,49 @@ jobs:
       CCACHE_MAXSIZE: 2G
 
     steps:
+      # fetch-depth: 0, and this is D-0041 rather than a preference.
+      #
+      # actions/checkout defaults to fetch-depth 1, which is one commit and no
+      # history. P10 is the first phase whose tests ask questions about history:
+      # law 3 of Section 0.2 asserts that every published number traces to a
+      # commit that resolves, and law 4's mechanism is `git merge-base
+      # --is-ancestor` between a prediction's commit and the commit a result was
+      # measured at. Neither question has an answer in a checkout that fetched
+      # one commit, and the first CI run of this phase produced eight failures
+      # that were all this.
+      #
+      # Depth 0 rather than a narrower fetch. A narrow fetch would have to name
+      # the commits to deepen to, which are the shas recorded in result files and
+      # in prediction entries, so the fetch would need updating every time a
+      # result is re-recorded and would fail in exactly the situation it exists
+      # to serve. This repository is a few hundred commits and the full fetch
+      # costs seconds.
+      #
+      # The code no longer depends on this being right, which is the other half
+      # of D-0041: `npu_frontend.predictions.require_full_history` refuses with
+      # one readable message when the history is absent, rather than reporting
+      # every historical sha as a commit that does not exist.
       - name: Check out the repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # D-0042, and the position of this step is the whole of the fix.
+      #
+      # The workspace is owned by the runner user and this job runs as root
+      # inside a container, so git refuses the repository as dubiously owned
+      # until it is named here. Two later steps already did this, and that is
+      # exactly what made the defect hard to read: `regression-baseline --check`
+      # runs after them and its git worked, while `pytest` and `pytest slow
+      # cells` run before them and every git call the suite made exited 128.
+      #
+      # Once, immediately after the checkout, so that every step in the job has
+      # a repository it can read. The suite now refuses to read a fatal as an
+      # answer, so this being missing again would be a loud failure naming git's
+      # own message rather than a quiet wrong one, but the right fix for a step
+      # that cannot read the repository is to let it read the repository.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Report the image this job is running in
         run: |
@@ -463,11 +504,62 @@ jobs:
           fi
           exit "$status"
 
-      - name: "pytest slow cells (activation table: P10)"
+      # ON at P10. The step above runs pytest's default marker expression, which
+      # deselects `slow`; this one runs everything.
+      #
+      # **What is actually slow, and it is not what P9 expected.** The off line
+      # this step replaced said the full matrix runs here, on the assumption that
+      # P10's ablation cells would arrive beside the end to end cells and make
+      # the matrix expensive. They did not: Section 16.2's ablations are a
+      # benchmark suite rather than a test matrix, they write result files rather
+      # than assert, and they live in experiments/run_benchmarks.py. The end to
+      # end matrix is 426 tests in about 25 seconds and is still not marked slow.
+      #
+      # Nine tests carry the marker, and only two of them are P10's:
+      # test/Python/test_benchmarks.py drives a real run of the benchmark suite
+      # twice, once for Section 16.1's determinism test and once for the failure
+      # branch of the 90 minute budget gate.
+      #
+      # **The other seven predate this step by six phases and CI has never run
+      # one of them.** test_every_model_imports_at_a_second_seed has been marked
+      # slow, one case per model, since the model suite landed. It runs on the
+      # developer machine, where the verification matrix uses
+      # -m 'slow or not slow'; it has never run in CI, because the only step that
+      # would is this one and this one was off. That is D-0040 and it is the
+      # mirror of D-0037: a result that depends on what is lying around locally
+      # and is invisible in CI. Turning this step on is what closes it, and the
+      # first green run is the proof rather than this comment.
+      #
+      # The guard is on the collected count and not on the exit code. A run that
+      # deselected every slow test would exit 0 having done exactly what the step
+      # above already did, which is the shape of a step that is on and asserting
+      # nothing.
+      - name: "pytest slow cells (activation table: P10, on)"
+        env:
+          MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
+          NPU_BUILD_DIR: ${{ github.workspace }}/build
         run: |
-          set -euo pipefail
-          echo "pytest slow cells: OFF until P10 (activation table 19.0)."
-          echo "pytest slow cells: the full matrix runs with -m 'slow or not slow'."
+          set -uo pipefail
+          slow=$(python3 -m pytest test/Python -q --collect-only -p no:cacheprovider \
+                   -m slow 2>/dev/null | grep -c '::' || true)
+          echo "pytest slow cells: ${slow} tests carry the slow marker."
+          if [ "$slow" -eq 0 ]; then
+            echo "::error::no test carries the slow marker."
+            echo "pytest slow cells: this step is ON from P10 and its whole"
+            echo "pytest slow cells: purpose is the tests the step above"
+            echo "pytest slow cells: deselects. Zero of them means this step is"
+            echo "pytest slow cells: a second copy of the previous one, which is"
+            echo "pytest slow cells: a step that is on and asserting nothing."
+            exit 1
+          fi
+          python3 -m pytest test/Python -q -m 'slow or not slow'
+          status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::pytest collected no tests and exited 5."
+            echo "pytest slow cells: an empty collection is never read as a pass."
+            exit 1
+          fi
+          exit "$status"
 
       # ---- Staleness gates. -------------------------------------------------
       # DIALECT_REFERENCE.md staleness: ON at P1.
@@ -479,9 +571,13 @@ jobs:
       # that says only "stale" makes the reader run the command locally to find
       # out what moved, and printing it costs nothing.
       #
-      # git config safe.directory is needed because the checkout is owned by the
-      # runner user and the container runs as root, so git refuses to read the
-      # repository without being told it is trusted.
+      # The safe.directory line below is redundant since D-0042 moved it to a
+      # step immediately after the checkout, and it is kept rather than deleted
+      # because `git config --global --add` of a value already present is a no
+      # operation, and a step that can be read on its own is worth more than one
+      # fewer line. **It is no longer what makes this step work**, which matters:
+      # it used to be the first setting in the job, so every step above it had a
+      # repository git refused to read, and that is the defect.
       - name: "DIALECT_REFERENCE.md staleness (activation table: P1, on)"
         run: |
           set -euo pipefail
@@ -520,7 +616,7 @@ jobs:
       # The guard stays in place and its else branch fails, for the same reason
       # every other activated guard's does.
       #
-      # git config safe.directory is set by the DIALECT_REFERENCE step above
+      # git config safe.directory is set once after the checkout since D-0042
       # and is needed here for the same reason: the checkout is owned by the
       # runner user and the container runs as root, so git refuses to read the
       # repository without being told it is trusted. The script's own tracked
@@ -971,8 +1067,20 @@ jobs:
       MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
 
     steps:
+      # fetch-depth: 0 for the same reason as `build-and-test`, D-0041. This job
+      # runs `scripts/coverage.sh`, which runs the whole pytest suite, so it asks
+      # the same questions about history and needs the same answer available.
       - name: Check out the repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # D-0042. This job is a container running as root over a workspace the
+      # runner user owns, and it runs the whole pytest suite through
+      # scripts/coverage.sh, so it needs the repository readable by git for the
+      # same reason `build-and-test` does. This job had never set it at all.
+      - name: "Trust the workspace, so every later step's git can read it"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # The Python half of Section 17.7 needs the suite's dependencies, which
       # this job did not install while its thresholds were 0 and the Python half

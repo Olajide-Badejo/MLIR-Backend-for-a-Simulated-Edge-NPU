@@ -124,6 +124,13 @@ class CompileResult:
     input_shapes: tuple[tuple[int, ...], ...] = ()
     #: Likewise for the outputs.
     output_shapes: tuple[tuple[int, ...], ...] = ()
+    #: What `--mlir-timing` printed, when it was asked for. Empty otherwise.
+    #:
+    #: Held rather than printed, because its only consumer is the cross check in
+    #: `npu_frontend.pass_stats`, which compares it against the instrumentation's
+    #: own clock. Letting it out on `stderr` as well would put a timing report in
+    #: the middle of every harness run for the sake of a reader nobody has.
+    mlir_timing_text: str = ""
 
     def write(self, path: str | os.PathLike[str]) -> Path:
         """Writes whichever of the two forms this stage produced."""
@@ -274,7 +281,35 @@ def _boundary_shapes(
     return inputs, outputs
 
 
-def _run(command: Sequence[str], stage: str, stdin: str | None = None) -> str:
+def _instrumentation_arguments(
+    pass_stats_json: str | os.PathLike[str] | None, mlir_timing: bool
+) -> list[str]:
+    """The two flags Section 16.2 says the driver surfaces, and nothing else.
+
+    `--mlir-timing-display=tree` rather than the default list, and that is not a
+    presentation choice. The list display collapses a nested pipeline into one
+    `Pipeline Collection` row and reports the passes inside it out of order, by
+    descending time; the tree keeps the pipeline's own order, which is what the
+    instrumentation's `position` field is compared against.
+    """
+    arguments: list[str] = []
+    if pass_stats_json is not None:
+        arguments.append(f"--npu-pass-stats-json={pass_stats_json}")
+    if mlir_timing:
+        arguments += ["--mlir-timing", "--mlir-timing-display=tree"]
+    return arguments
+
+
+def _run(
+    command: Sequence[str], stage: str, stdin: str | None = None
+) -> tuple[str, str]:
+    """Runs one stage and returns its stdout and its stderr.
+
+    *`stderr` joined the return value at P10.* `--mlir-timing` writes there, and
+    it is the independent half of Section 16.2's cross check, so throwing it away
+    on a successful run would mean the check could only ever be made by running
+    the compiler a second time.
+    """
     completed = subprocess.run(
         [str(part) for part in command],
         input=stdin,
@@ -287,7 +322,7 @@ def _run(command: Sequence[str], stage: str, stdin: str | None = None) -> str:
             f"the {stage} stage failed: {command[0]} exited "
             f"{completed.returncode}.\n\n{completed.stderr.strip()}"
         )
-    return completed.stdout
+    return completed.stdout, completed.stderr
 
 
 def compile_model(
@@ -299,16 +334,50 @@ def compile_model(
     strip_debug: bool = False,
     function_name: str = "main",
     verbose: bool = False,
+    ablate: str | None = None,
+    pass_stats_json: str | os.PathLike[str] | None = None,
+    mlir_timing: bool = False,
 ) -> CompileResult:
     """Compiles one ONNX model and stops after `emit`.
 
     `budget` of None means the allocator's own default, which is what leaving
     the flag off does on the command line as well.
+
+    `ablate` names one pass to leave out, for Section 16.2's leave one out
+    ablation. It is checked against the ablatable set the compiler reports at
+    run time, because Section 16.2 forbids that set being written down twice and
+    the refusal below is the one place a caller could have written it down again.
+
+    `pass_stats_json` is where the Section 16.2 instrumentation writes its per
+    pass operation counts and wall clock, and `mlir_timing` turns on MLIR's own
+    timing output, which comes back on `stderr` in `mlir_timing_text` and is the
+    independent cross check that the two clocks agree.
     """
     if emit not in EMIT_STAGES:
         raise CompileError(
             f"{emit!r} is not a stage. The stages are " + ", ".join(EMIT_STAGES) + "."
         )
+
+    if pass_stats_json is not None and emit == "import":
+        raise CompileError(
+            "--pass-stats-json was given with --emit import, and the import "
+            "stage runs no pass manager at all, so there would be nothing to "
+            "instrument. An empty statistics file would be indistinguishable "
+            "from a pipeline whose passes all vanished, which is exactly the "
+            "fault the reader in npu_frontend.pass_stats exists to catch."
+        )
+
+    if ablate is not None:
+        allowed = ablatable_passes(level)
+        if ablate not in allowed:
+            raise CompileError(
+                f"{ablate!r} is not an ablatable pass at -O{level}. The "
+                f"ablatable set is read from the compiler at run time and is "
+                f"{allowed}. Section 12 marks -npu-lower-to-npuisa and "
+                f"-npu-allocate-scratchpad as not ablatable because removing "
+                f"either produces no program at all, so the resulting failure "
+                f"would be attributed to the wrong thing."
+            )
 
     row = level_description(level)
     if not row["implemented"]:
@@ -372,15 +441,31 @@ def compile_model(
     # The budget is not passed. It belongs to the allocator, the allocator is in
     # the other half of the pipeline, and an option that reached a stage no pass
     # of which could consume it would be a silent no effect.
+    #
+    # The instrumentation and the timing are attached to *the stage `--emit`
+    # names*, not to every stage. Each stage is the same level's pipeline stopped
+    # at a different point, so instrumenting both would write one file twice and
+    # the second write would describe the shorter pipeline. A caller asking for
+    # `--emit npu` is asking about the tensor level half and gets the statistics
+    # for the tensor level half; `npu_frontend.pass_stats.expected_passes` takes
+    # the same `stage` argument for the same reason.
     started = time.perf_counter()
-    npu_level = _run(
-        [str(npu_opt), "-", f"--{pipeline}=stop-after=npu", "--mlir-print-debuginfo"],
-        "npu",
-        stdin=imported,
-    )
+    npu_options = ["stop-after=npu"]
+    if ablate is not None:
+        npu_options.append(f"ablate={ablate}")
+    command = [
+        str(npu_opt),
+        "-",
+        f"--{pipeline}=" + " ".join(npu_options),
+        "--mlir-print-debuginfo",
+    ]
+    if emit == "npu":
+        command += _instrumentation_arguments(pass_stats_json, mlir_timing)
+    npu_level, npu_errors = _run(command, "npu", stdin=imported)
     record("npu", started, npu_level)
     if emit == "npu":
         result.text = npu_level
+        result.mlir_timing_text = npu_errors
         return _finish(result, verbose)
 
     # ---- npuisa ----------------------------------------------------------
@@ -393,14 +478,18 @@ def compile_model(
     # because they are idempotent and wrong to rely on for exactly that reason.
     started = time.perf_counter()
     argument = f"--{pipeline}"
+    options: list[str] = []
     if budget is not None:
-        argument += f"=budget={budget}"
-    lowered = _run(
-        [str(npu_opt), "-", argument, "--mlir-print-debuginfo"],
-        "npuisa",
-        stdin=imported,
-    )
+        options.append(f"budget={budget}")
+    if ablate is not None:
+        options.append(f"ablate={ablate}")
+    if options:
+        argument += "=" + " ".join(options)
+    command = [str(npu_opt), "-", argument, "--mlir-print-debuginfo"]
+    command += _instrumentation_arguments(pass_stats_json, mlir_timing)
+    lowered, lowering_errors = _run(command, "npuisa", stdin=imported)
     record("npuisa", started, lowered)
+    result.mlir_timing_text = lowering_errors
     if emit == "npuisa":
         result.text = lowered
         return _finish(result, verbose)
@@ -415,10 +504,10 @@ def compile_model(
     translate = find_tool("npu-translate")
     with tempfile.TemporaryDirectory(prefix="npu-compile-") as directory:
         target = Path(directory) / "out.nbin"
-        command = [str(translate), "-", "-o", str(target)]
+        translation = [str(translate), "-", "-o", str(target)]
         if strip_debug:
-            command.append("--strip-debug")
-        _run(command, "nbin", stdin=lowered)
+            translation.append("--strip-debug")
+        _run(translation, "nbin", stdin=lowered)
         result.binary = target.read_bytes()
     result.timings.append(StageTiming("nbin", time.perf_counter() - started))
     return _finish(result, verbose)
@@ -596,6 +685,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="print the pipeline stages with their timings, on stderr",
     )
     parser.add_argument(
+        "--ablate",
+        default=None,
+        metavar="PASS",
+        help=(
+            "leave this pass out, for Section 16.2's leave one out ablation. "
+            "The ablatable set is read from the compiler at run time; naming a "
+            "pass outside it is refused rather than ignored."
+        ),
+    )
+    parser.add_argument(
+        "--pass-stats-json",
+        default=None,
+        metavar="PATH",
+        help=(
+            "write the per pass operation counts and wall clock here, as JSON. "
+            "They are computed by the PassInstrumentation of Section 16.2 on "
+            "the pass manager that runs the pipeline, not by any flag."
+        ),
+    )
+    parser.add_argument(
+        "--mlir-timing",
+        action="store_true",
+        help=(
+            "pass MLIR's own timing output through, on stderr. It is the "
+            "independent cross check that the instrumentation's clock agrees "
+            "with the pass manager's."
+        ),
+    )
+    parser.add_argument(
         "--describe-pipeline",
         action="store_true",
         help=(
@@ -626,10 +744,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             budget=args.budget,
             strip_debug=args.strip_debug,
             verbose=args.verbose,
+            ablate=args.ablate,
+            pass_stats_json=args.pass_stats_json,
+            mlir_timing=args.mlir_timing,
         )
     except (CompileError, ONNXImportError) as failure:
         print(f"npu-compile: {failure}", file=sys.stderr)
         return 1
+
+    # `--mlir-timing` asked for a report and a report the caller cannot see is
+    # not one. The library holds it rather than printing it, because its only
+    # programmatic consumer is the cross check; on the command line there is a
+    # person, and this is where they are.
+    if args.mlir_timing and result.mlir_timing_text:
+        sys.stderr.write(result.mlir_timing_text)
 
     if args.output:
         written = result.write(args.output)
