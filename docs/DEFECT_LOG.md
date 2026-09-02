@@ -2224,3 +2224,96 @@ None.
   fatal without needing ownership games, and asserts that a well formed absent
   sha still comes back as absent rather than as a refusal. That last assertion is
   what chose the probe.
+
+### D-0043 a bound between two clocks that ignored the quantum of the coarser one
+
+- **Found:** 2026-09-02, phase P10, by **the third CI run**, 33575891610. That run
+  is the one where `build-and-test` went green including every D-0041 and D-0042
+  test, so those two are proven; the coverage job was red on one test.
+- **Status:** resolved 2026-09-02.
+- **Reproduce:**
+
+  ```
+  test_pass_instrumentation.py:273: AssertionError: assert 5.3 >= 5.301691
+  ```
+
+  Read the two numbers. `5.3` has one decimal; `5.301691` has six. They are not
+  two measurements that disagree, they are one measurement and one **rounding**
+  of another, compared as though both were exact.
+
+  Locally, against `build-coverage`, ten runs of the same cell:
+
+  ```
+  run 0: mlir  4.1000  instr 3.978771  shortfall -0.121229
+  run 2: mlir  5.5000  instr 5.297579  shortfall -0.202421
+  run 3: mlir  3.2000  instr 3.262634  shortfall +0.062634   <-- fails a strict >=
+  run 7: mlir  3.0000  instr 2.859018  shortfall -0.140982
+  ```
+
+  One run in ten. The gcov instrumented build is slower and jitterier, which does
+  not create the fault but moves the sum across the boundary often enough to be
+  seen.
+
+- **What was wrong.** `--mlir-timing` prints **seconds to four decimal places**,
+  so every figure this project parses out of it is a multiple of 0.1 ms and
+  stands within 0.05 ms of a number it cannot see. Measured, the eleven parsed
+  values of an `-O2` run: `0.1, 0.2, 0.1, 0.1, 0.4, 0.4, 0.2, 0.3, 0.2, 0.5, 0.2`.
+  Not one of them has a digit finer than the quantum.
+
+  The instrumentation's own figures are `steady_clock` differences at
+  microsecond resolution.
+
+  The direction the cross check asserts is sound and is not what changed: MLIR's
+  timer opens before this instrumentation is called and closes after it, so
+  `true_mlir >= instrumented`. What was wrong is that the comparison was made
+  against the **printed** figure as though it were the true one. For one pass the
+  error is at most half a unit in the last place; for a sum of `n` passes it is
+  at most `n` halves, which at `-O2` is 0.55 ms. The assertion allowed zero.
+
+  Two bounds beside it were **magic numbers that happened to work**, which is the
+  same fault in a milder form: `TIMING_RESOLUTION_MS = 0.15` and
+  `TIMING_FLOOR_MS = 0.15` were chosen loosely at three times a quantum nobody
+  had written down. They are gone.
+
+- **The fix, and the shape of it is the point.** The quantum is **derived from
+  the text that was parsed**, per report, rather than written into the module.
+  `parse_mlir_timing` now returns a `TimingReport` carrying the rows, the number
+  of decimals it actually read, and half a unit in the last place computed from
+  it. Every bound in the cross check is expressed in those terms:
+
+  | bound | before | after |
+  |---|---|---|
+  | per pass, MLIR below ours | `0.15` | `half_ulp` |
+  | per pass, MLIR above ours | `0.15 + 0.5 * mlir` | `half_ulp + 0.5 * mlir` |
+  | totals | strict `>=` | `>= instrumented - n * half_ulp` |
+
+  Measured against those: the worst per pass deficit over ten coverage build runs
+  is **0.039971 ms** against a bound of 0.05, and the worst total shortfall is
+  **+0.062634 ms** against an allowance of 0.55.
+
+  **Deriving it rather than fixing it at 0.05 is not ceremony.** A report printed
+  to two decimals of seconds has a quantum of 10 ms, and a constant would have
+  gone on asserting a precision the figures no longer had, which is this defect
+  again rather than a smaller version of it.
+  `test_the_print_precision_decides_the_bound_rather_than_a_constant` feeds the
+  parser a two decimal report and asserts the half unit comes back as 5 ms.
+
+- **What was deliberately not done.** The bound was not widened to a number that
+  makes the observed failure pass. 0.05 ms per pass is not a tolerance chosen
+  against data; it is the largest error a rounded figure can carry, and the
+  containment argument makes it exact: `printed >= true - half_ulp >=
+  instrumented - half_ulp`. A deficit larger than that still fails, and still
+  means the two clocks are not measuring the same run. **The cross check clause
+  of P10's gate is only worth having if its bound is principled**, and it is
+  tighter now than it was: the per pass bound went from 0.15 to 0.05.
+
+- **Why the coverage job and not `build-and-test`.** Nothing about gcov is
+  special here. The instrumented build makes each pass slower and noisier, which
+  moves the sum of eleven roundings across zero more often. `build-and-test` has
+  been running the same flawed assertion since P10 landed and passing it by luck,
+  which is the more uncomfortable half of this entry: **a bound that is wrong by
+  construction can be green for days.**
+
+- **Verified.** 27 tests in `test_pass_instrumentation.py`, including the two new
+  ones; ten runs against `build-coverage` with no failure and the numbers above;
+  the full suite at 957 passed, 18 skipped.

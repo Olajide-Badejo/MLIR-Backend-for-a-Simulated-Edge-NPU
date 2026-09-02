@@ -677,7 +677,7 @@
     }
   ],
   "generator_version": "1.1.0",
-  "git_sha": "f7cd5597901652d87d2d634ae9f04e3c537f578e",
+  "git_sha": "c1e894010765ff84f5cb34bab97e3b013b925789",
   "levels": [
     0,
     1,
@@ -960,7 +960,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 956,
+      "passed": 957,
       "skipped": 18,
       "tests": [
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
@@ -1785,6 +1785,7 @@
         "test.Python.test_pass_instrumentation::test_the_op_names_are_real_operation_names",
         "test.Python.test_pass_instrumentation::test_the_parser_ignores_what_is_not_a_pass",
         "test.Python.test_pass_instrumentation::test_the_passes_that_change_the_count_are_the_ones_that_should",
+        "test.Python.test_pass_instrumentation::test_the_print_precision_decides_the_bound_rather_than_a_constant",
         "test.Python.test_pass_instrumentation::test_the_timing_text_is_the_tree_display_and_is_parsed_as_one",
         "test.Python.test_pass_instrumentation::test_the_two_clocks_agree_on_the_same_run",
         "test.Python.test_pass_instrumentation::test_the_two_clocks_disagreeing_about_the_passes_raises",

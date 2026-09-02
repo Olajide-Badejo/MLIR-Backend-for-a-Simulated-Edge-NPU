@@ -19,11 +19,14 @@ costs more than writing these lines did.
 ## Current phase
 
 **P10, measurement.** Branch `phase/p10-measurement`, cut from `main` at
-`fe43ee4`, which is the P9b merge. Sixteen commits. **Pushed twice and red both
-times, on two different defects, neither of which could have been found on this
-machine.** Run 33559636835 was D-0041, the checkout depth; run 33571635111 was
-D-0042, a git fatal read as an answer. The commits after each handoff are that
-run's finding and its fix. The branch has not been pushed since the second.
+`fe43ee4`, which is the P9b merge. Eighteen commits. **Pushed three times and red
+three times, on three different defects, none of which could have been found on
+this machine.** Run 33559636835 was D-0041, the checkout depth. Run 33571635111
+was D-0042, a git fatal read as an answer. Run 33575891610 turned
+`build-and-test` **green including every D-0041 and D-0042 test**, so those two
+are proven in CI, and was red in the coverage job alone on D-0043, a comparison
+that ignored the precision of one of its operands. The commits after each handoff
+are that run's finding and its fix.
 
 | Commit | Subject |
 |---|---|
@@ -42,18 +45,19 @@ run's finding and its fix. The branch has not been pushed since the second.
 | `2c58bb0` | `chore(baseline): re-record for the one test D-0041 added` |
 | `37949f1` | `docs: record what the first CI run found, at the tip that fixes it` |
 | `f7cd559` | `fix(git): a fatal is not an answer, and cat-file could not have told us anyway` |
-| tip | `docs: record what the second CI run found, and re-record for its test` |
+| `c1e8940` | `docs: record what the second CI run found, and re-record for its test` |
+| tip | `fix(timing): the cross check now carries the precision of the coarser clock` |
 
 **The tip carries this table's own last row**, so it is named by subject rather
 than by a sha it cannot know, which is what P9 and P9b both did for the same
 reason.
 
-**The last seven are two CI runs' findings and their fixes.** `79eff63` through
-`37949f1` are D-0041, from run 33559636835; `f7cd559` and the tip are D-0042,
-from run 33571635111 on the commit that fixed D-0041. Everything before `a89cc6b`
-was written when the branch had never been pushed, and the difference between
-what those handoffs predicted and what CI reported is recorded rather than edited
-away.
+**The last nine are three CI runs' findings and their fixes.** `79eff63` through
+`37949f1` are D-0041, from run 33559636835. `f7cd559` and `c1e8940` are D-0042,
+from run 33571635111 on the commit that fixed D-0041. The tip is D-0043, from run
+33575891610 on the commit that fixed D-0042. Everything before `a89cc6b` was
+written when the branch had never been pushed, and the difference between what
+those handoffs predicted and what CI reported is recorded rather than edited away.
 
 **The ordering carries two of this project's rules and is the part to check
 first.** `f92de42` lands the prediction **before** `a203995` records the cells
@@ -70,7 +74,7 @@ contains the harness rather than the one before it.
 | Clause | Status |
 |---|---|
 | Before and after operation counts per pass computed by the `PassInstrumentation` in `runBeforePass` and `runAfterPass`, not by any flag | met. `lib/Pipeline/PassStats.cpp`. `test_the_counts_chain_across_the_pipeline` asserts one pass's after equals the next pass's before across the anchor change, which only a running pipeline produces |
-| Wall clock from the same instrumentation cross checked against `--mlir-timing` | met. Both flags on one invocation, so the two clocks describe the same execution. Worst gap over 175 cells and 1750 trials: **0.1968 ms** |
+| Wall clock from the same instrumentation cross checked against `--mlir-timing` | met. Both flags on one invocation, so the two clocks describe the same execution. Every bound derives its quantum from the precision MLIR printed, per D-0043: **half a unit in the last place, 0.05 ms, per pass**, and that times the pass count for a sum. Worst per pass deficit measured against the coverage build: 0.040 ms |
 | A pass present in the pipeline but absent from the JSON raises, shown | met. `test_a_pass_absent_from_the_json_raises`, on a doctored file, plus ten more that each drop one field |
 | Every ablatable `-O2` pass has an ablation row at every budget, set read from the driver at run time | met. 8 passes times 7 models times 2 budgets equals 112 rows. `ablatable_passes(2)` is the only source of the set |
 | Every schema field present in every result file, `null` plus a reason where a later phase fills it | met. `test_every_committed_result_validates` over all 175, and three refusals shown on doctored input |
@@ -194,8 +198,8 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `build/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q` | 947 passed, 18 skipped, 9 deselected |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **956 passed, 18 skipped**. 871 at P9b, plus 85 |
+| `python -m pytest test/Python -q` | 948 passed, 18 skipped, 9 deselected |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **957 passed, 18 skipped**. 871 at P9b, plus 86 |
 | the suite under a real `--depth 1` clone, both `push` and `pull_request` shapes | 6 failed with the shallow refusal by name, 1 skipped, and the harness refuses before measuring. D-0041's fix is that this is diagnosable rather than eight assertions about shas |
 | the same two shapes at `fetch-depth: 0` | **44 passed, 0 failed** in the affected files, and `run_benchmarks.py` exits 0 |
 | `mypy` | no issues found in 23 source files |
@@ -226,7 +230,7 @@ the same grep also reports four matches on this branch, all of them the substrin
 inside `wallMs`, which is why the recorded run is the case sensitive one with
 word boundaries.
 
-**The suite grew by 85 pytest tests and one lit test.** No existing test changed
+**The suite grew by 86 pytest tests and one lit test.** No existing test changed
 its result and no recorded number moved: both baseline re-records on this branch
 touch `git_sha`, the suite counts and the test names, and nothing else. All 21
 golden tensors are byte identical to P9b's.
@@ -248,7 +252,7 @@ run is green.
 seven `test_every_model_imports_at_a_second_seed` cases have been marked `slow`
 since the model suite landed, and CI has never run one of them, because the only
 step that runs slow tests is this one and this one was off. The suite runs green
-at 956 passed, 18 skipped.
+at 957 passed, 18 skipped.
 
 **Fault, and it is one only this step can catch.** Every `@pytest.mark.slow`
 removed. The step's count guard reports zero and exits 1 with the message saying
@@ -320,7 +324,35 @@ own: even with the environment still broken, nothing is answered wrongly.
 **Which trigger this needs:** none. The `safe.directory` step runs in every job
 that has it, so the next push exercises it.
 
-### 5. The two traceability tests, both faults
+### 5. The two clocks' quantum, D-0043, under the coverage build
+
+Found by CI's coverage job, which is the one build where the fault is frequent
+enough to be seen: gcov makes each pass slower and noisier, so the sum of eleven
+rounded figures crosses zero often.
+
+Rehearsed against `build-coverage` locally, ten runs of one cell:
+
+```
+run 0: mlir  4.1000  instr 3.978771  shortfall -0.121229
+run 2: mlir  5.5000  instr 5.297579  shortfall -0.202421
+run 3: mlir  3.2000  instr 3.262634  shortfall +0.062634   <-- fails a strict >=
+run 7: mlir  3.0000  instr 2.859018  shortfall -0.140982
+```
+
+**One run in ten reproduces it**, and run 3 is CI's failure in a larger margin:
+CI's was 1.7 microseconds, this is 63. Against the derived bounds, over the same
+ten runs: worst per pass deficit **0.039971 ms** against 0.05, worst total
+shortfall **+0.062634 ms** against an allowance of 0.55.
+
+**The bound got tighter rather than wider**, from 0.15 ms per pass to 0.05, which
+is the point: 0.05 is not a tolerance chosen against data, it is the largest
+error a figure printed to four decimals of seconds can carry, and the containment
+argument makes it exact.
+
+**Which trigger this needs:** none. It is a pytest test and runs in every job that
+runs pytest, including the coverage job that found it.
+
+### 6. The two traceability tests, both faults
 
 **Fault A**, a hand typed number: `resnet_block`'s cycle count changed from 1626
 to 1499 in the README table. Red, naming the number and the row it sits in.
@@ -366,20 +398,37 @@ nothing on a developer machine varies either.
   through one runner that raises unless the exit code is genuinely an answer, and
   `commit_exists` moved off `cat-file -e`, which returns 128 for an absent object
   **and** for an unreadable repository and cannot separate them at all.
+- **D-0043**, a bound between two clocks that ignored the quantum of the coarser
+  one. **Found by CI**, run 33575891610, which is also the run where
+  `build-and-test` went green including every D-0041 and D-0042 test, so those
+  two are proven in CI. `--mlir-timing` prints seconds to four decimals, the
+  instrumentation records microseconds, and the comparison treated both as exact;
+  it failed on a 1.7 microsecond margin between a one decimal figure and a six
+  decimal one. Every bound now derives its quantum from the text actually parsed,
+  and **the per pass bound got tighter**, from a loosely chosen 0.15 ms to a
+  derived 0.05 ms. Reproduced locally against `build-coverage` at one run in ten.
 
 **No defect was found in the compiler.** Every failure this phase produced was in
 the measuring apparatus or in a claim about it, which is what a measurement phase
 should expect and is worth saying rather than leaving as an absence.
 
-**The three are one lesson told three ways, and it is worth stating because the
+**The four are one lesson told four ways, and it is worth stating because the
 project already knew it.** D-0040 was a test that only ever ran in one
 environment. D-0041 was a helper that answered a question it could not observe.
 D-0042 was the same helper answering a different unobservable question, one day
 later, through a probe that could not have distinguished the cases even had the
-exit codes been read correctly. Section 16.1 spends a paragraph forbidding
-exactly this for result fields, and `values_of` refuses to average a `null`
-because of it. **The discipline existed and had not been applied to a subprocess
-call**, which is the only novel part.
+exit codes been read correctly. D-0043 is a comparison that ignored the precision
+of one of its two operands.
+
+All four are the same shape: **a value arrived through a channel that loses
+information, and the code treated it as though it had not.** Section 16.1 spends
+a paragraph forbidding exactly this for result fields, which is why
+`instruction_count` is an integer and every wall clock is an object carrying an
+interval that says how uncertain it is, and why `values_of` refuses to average a
+`null`. **The schema had the discipline and the code around it kept not having
+it.** That is the part worth carrying into P11, which shells out to two more
+tools and parses their output: whatever reads an external tool's numbers has to
+carry that tool's precision alongside them.
 
 ## The prediction, adjudicated
 
@@ -438,24 +487,27 @@ Three things, in this order.
 git push -u origin phase/p10-measurement
 ```
 
-**This has happened twice and both were red, on two different defects.**
+**This has happened three times and all three were red, on three different
+defects. Each run got further than the last.**
 
 Run 33559636835 was D-0041: `fetch-depth: 1` meeting the first phase whose tests
 resolve historical shas. Run 33571635111, on the commit that fixed it, was
 D-0042: the history was fetched and the commits were present, and git was
 refusing the repository as dubiously owned while this project read its exit 128
-as "the commit is absent".
+as "the commit is absent". Run 33575891610, on the commit that fixed that, turned
+**`build-and-test` green including every D-0041 and D-0042 test**, and was red in
+the coverage job alone on D-0043.
 
-**Both are fixed and both were rehearsed in the pinned image with the workspace
-owned by uid 1001 and the container running as root**, which is the runner's
-actual shape and the thing no local run varies. The third push is the one that
-confirms it.
+**All three are fixed.** D-0041 and D-0042 are additionally **proven in CI** by
+that third run rather than only rehearsed. D-0043 is rehearsed against
+`build-coverage`, which is the build it appears in. The fourth push is the one
+that confirms it.
 
 **What to expect.** `lint`, `sanitizers`, `coverage` and `ndebug` green.
 `build-and-test` green with two things to read: the new `pytest slow cells` step
-should report **nine** tests carrying the marker and then run 956 passed 18
+should report **nine** tests carrying the marker and then run 957 passed 18
 skipped, and `regression-baseline --check` should report no drift with the suite
-table showing `check-npu 26` and `pytest 956`.
+table showing `check-npu 26` and `pytest 957`.
 
 **The one line that is genuinely new information** is the slow cells step's
 count. It is the first time in this project's history that CI has executed
@@ -568,15 +620,23 @@ gh workflow run nightly.yml --ref phase/p10-measurement
 ```
 
 **The green condition for the push** is the `pytest slow cells` step reporting
-nine tests and running 956 passed, followed by `regression-baseline: no drift.`
+nine tests and running 957 passed, followed by `regression-baseline: no drift.`
 
-**And one line to check before anything else**, because it is what both previous
-runs died on: the `pytest` arm must not report a sha as a commit that does not
-exist. Since D-0042 that message can only mean one thing, because the three other
-readings now refuse instead. A shallow checkout says so and names `fetch-depth`;
-a repository git cannot open says so and quotes git's own fatal; a sha that is
-absent because it really is absent is the only remaining case, and that would be
-a genuine provenance failure worth stopping for.
+**Two lines to check before anything else**, because they are what the three
+previous runs died on.
+
+The `pytest` arm must not report a sha as a commit that does not exist. Since
+D-0042 that message can only mean one thing, because the other readings now
+refuse instead: a shallow checkout says so and names `fetch-depth`, a repository
+git cannot open says so and quotes git's own fatal, and a genuinely absent commit
+is the only case left. That one would be a real provenance failure worth stopping
+for.
+
+**And the coverage job**, which is the only one that has not yet been green on
+this branch. Its single failure was D-0043 and it is fixed; if it goes red again
+on `test_the_two_clocks_agree_on_the_same_run`, read the numbers in the message
+rather than the assertion, because the message now prints both totals, the pass
+count and the allowance, which is what the previous version did not.
 
 **The green condition for the nightly** is the benchmark suite printing a per
 cell cost and `run-benchmarks: inside the budget`. Record that cost in the

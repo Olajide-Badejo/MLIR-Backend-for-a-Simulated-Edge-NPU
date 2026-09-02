@@ -4417,3 +4417,106 @@ There is a narrower lesson too, and it is the one worth carrying into P11, which
 adds two external tools that are both shelled out to. **When a subprocess can
 fail for a reason that is not the question, the return type has to have somewhere
 to put that.** Neither Accelergy nor SCALE-Sim will be more reliable than git.
+
+## 2026-09-02 D-0043: comparing a rounded sum against an exact one
+
+**Symptom.** Third CI run, 33575891610. `build-and-test` green, including every
+D-0041 and D-0042 test, so those two are proven in CI. The coverage job red on
+one test:
+
+```
+test_pass_instrumentation.py:273: AssertionError: assert 5.3 >= 5.301691
+```
+
+**The two numbers are the diagnosis.** `5.3` carries one decimal. `5.301691`
+carries six. The margin is 1.7 microseconds. Those are not two measurements that
+disagree; they are one measurement and one rounding of another, compared as
+though both were exact.
+
+**Root cause.** `--mlir-timing` prints seconds to four decimal places. Every
+figure this project parses out of it is therefore a multiple of 0.1 ms and stands
+within 0.05 ms of a number it cannot see. Measured, the eleven values of an `-O2`
+run: `0.1, 0.2, 0.1, 0.1, 0.4, 0.4, 0.2, 0.3, 0.2, 0.5, 0.2`. Not one has a digit
+finer than the quantum. The instrumentation's own figures are `steady_clock`
+differences at microsecond resolution.
+
+The direction the check asserts is sound and is not what changed. MLIR's timer
+opens before this instrumentation is called and closes after it, so
+`true_mlir >= instrumented`. The error was comparing against the **printed**
+figure as though it were the true one. Per pass that is worth half a unit in the
+last place; over a sum of eleven it is worth eleven halves, which is 0.55 ms. The
+assertion allowed nothing at all.
+
+**Reproduced under the build CI failed on**, ten runs of one cell against
+`build-coverage`:
+
+```
+run 0: mlir  4.1000  instr 3.978771  shortfall -0.121229
+run 2: mlir  5.5000  instr 5.297579  shortfall -0.202421
+run 3: mlir  3.2000  instr 3.262634  shortfall +0.062634   <-- fails a strict >=
+run 7: mlir  3.0000  instr 2.859018  shortfall -0.140982
+```
+
+One in ten. gcov is not special: it makes each pass slower and noisier, which
+moves the sum of eleven roundings across zero often enough to be seen.
+`build-and-test` has been running the same flawed assertion since P10 landed and
+passing it by luck, which is the more uncomfortable half of this. **A bound that
+is wrong by construction can be green for days.**
+
+### Two magic numbers beside it, which were the same fault milder
+
+`TIMING_RESOLUTION_MS = 0.15` and `TIMING_FLOOR_MS = 0.15` were the per pass
+bounds. Both were chosen loosely, at three times a quantum nobody had written
+down, and their docstring called 0.15 "the display's own resolution", which is
+wrong: the resolution is 0.1 ms and half of it is what a rounding can cost. They
+were generous enough never to have fired, which is why nothing pointed at them.
+
+### The fix, and why it is derived rather than set
+
+The quantum is read off the text that was parsed, per report.
+`parse_mlir_timing` returns a `TimingReport` carrying the rows, the decimals it
+actually saw, and half a unit in the last place computed from them.
+
+| bound | before | after |
+|---|---|---|
+| per pass, MLIR below ours | `0.15` | `half_ulp` |
+| per pass, MLIR above ours | `0.15 + 0.5 * mlir` | `half_ulp + 0.5 * mlir` |
+| totals | strict `>=` | `>= instrumented - n * half_ulp` |
+
+Against those, over the ten coverage runs: worst per pass deficit **0.039971 ms**
+against 0.05, worst total shortfall **+0.062634 ms** against 0.55.
+
+**Deriving it is not ceremony.** A report printed to two decimals of seconds has
+a quantum of 10 ms, and a constant of 0.05 would go on asserting a precision the
+figures no longer had, which is this defect again rather than a smaller version
+of it. A test feeds the parser a two decimal report and asserts the half unit
+comes back as 5 ms.
+
+**And the bound got tighter, not looser.** Per pass it went from 0.15 to 0.05.
+The containment argument makes 0.05 exact rather than cautious:
+`printed >= true - half_ulp >= instrumented - half_ulp`. Anything beyond it still
+fails and still means the two clocks are not measuring the same run. The cross
+check clause of P10's gate is only worth having if its bound is principled, and
+widening to whatever made the observed failure pass would have thrown that away
+to save one red run.
+
+### The pattern, and this is the fourth
+
+D-0040 was a test that only ever ran in one environment. D-0041 was a helper
+answering a question it could not observe. D-0042 was the same helper answering a
+different unobservable question through a probe that could not have told either
+way. This one is a comparison that ignored the precision of one of its two
+operands.
+
+They are all the same shape: **a value arrived through a channel that loses
+information, and the code treated it as though it had not.** An exit code that
+collapses three answers into two. A figure printed to four decimals. Section 16.1
+forbids exactly this for result fields, which is why `instruction_count` is an
+integer and every wall clock is an object with an interval saying how uncertain
+it is. The schema had the discipline; the code around it kept not having it.
+
+The narrow lesson for P11, which shells out to two more tools and parses their
+output: **whatever reads an external tool's numbers has to carry that tool's
+precision alongside them**, or every comparison downstream silently assumes an
+exactness that was never there. SCALE-Sim's cycle counts and Accelergy's energy
+figures will arrive through exactly this kind of channel.

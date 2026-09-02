@@ -67,6 +67,17 @@ Semantic Versioning once a release is tagged.
   immediately after the checkout in all three container jobs that run the suite,
   one of which had never set it, and the two later settings that used to be the
   first are no longer what makes anything work.
+- **D-0043: the cross check between the two clocks carries the precision of the
+  coarser one.** `--mlir-timing` prints seconds to four decimals, so every figure
+  read from it is a multiple of 0.1 ms standing for a number this project cannot
+  see, while the instrumentation's own figures are microsecond resolution. The
+  comparison treated both as exact, and a sum of eleven rounded values against an
+  exact sum went red in CI's coverage job on a margin of 1.7 microseconds. The
+  quantum is now derived from the text actually parsed, per report, and every
+  bound is expressed in it: half a unit in the last place per pass, and that
+  times the pass count for a sum. **The per pass bound got tighter, from a
+  loosely chosen 0.15 ms to a derived 0.05 ms**, because the point of the clause
+  is that the bound is principled rather than that the test is green.
 - **The tight scratchpad budget does not cross the batch axis**, recorded in
   `docs/adr/0010`. Six of the seven models do not allocate at batch 4 under the
   tight budget measured for them at batch 1, because a tight budget is the

@@ -41,7 +41,11 @@ from npu_frontend import (
     generate_model,
     load_pass_stats,
 )
-from npu_frontend.pass_stats import REQUIRED_PASS_KEYS, parse_mlir_timing
+from npu_frontend.pass_stats import (
+    MLIR_TIMING_DECIMALS,
+    REQUIRED_PASS_KEYS,
+    parse_mlir_timing,
+)
 
 from tools import tool
 
@@ -267,10 +271,30 @@ def test_the_two_clocks_agree_on_the_same_run(instrumented: Instrumented) -> Non
     ]
     assert check.mlir_total_ms > 0.0
     assert check.instrumented_total_ms > 0.0
-    # The direction, which is the part that makes this a check. MLIR's timer
-    # opens before this project's instrumentation is called and closes after it,
-    # so MLIR's figure contains the operation walk and this project's does not.
-    assert check.mlir_total_ms >= check.instrumented_total_ms
+
+    # **The direction is what makes this a check; the allowance is what makes it
+    # true.** MLIR's timer opens before this project's instrumentation is called
+    # and closes after it, so MLIR's figure contains the operation walk and this
+    # project's does not.
+    #
+    # The allowance is D-0043. MLIR prints seconds to four decimals, so each of
+    # its figures is a multiple of 0.1 ms standing for a number this project
+    # cannot see, and a sum of eleven of them is within 0.55 ms of the true sum.
+    # This was a strict `>=` between that sum and an exact one, and it went red
+    # in CI's coverage job on a margin of 1.7 microseconds, which is a
+    # hundredth of one figure's rounding.
+    assert check.totals_agree, (
+        f"MLIR {check.mlir_total_ms:.6f} ms against instrumented "
+        f"{check.instrumented_total_ms:.6f} ms over {len(check.rows)} passes, "
+        f"allowance {check.rounding_allowance_ms:.4f} ms"
+    )
+    assert check.rounding_allowance_ms == pytest.approx(
+        len(check.rows) * check.half_ulp_ms
+    )
+    assert check.half_ulp_ms > 0.0, (
+        "a report with no printed precision would make every bound here zero, "
+        "which is the check switching itself off rather than tightening"
+    )
 
 
 def test_the_two_clocks_disagreeing_about_the_passes_raises(
@@ -293,13 +317,25 @@ def test_the_timing_text_is_the_tree_display_and_is_parsed_as_one(
     not a pass. What the tree display gives and the list does not is the
     pipeline's own order, which is what `position` is compared against.
     """
-    rows = parse_mlir_timing(instrumented.timing)
-    assert rows, "no timing rows were parsed, so the cross check has no data"
-    assert [name for name, _ in rows] == [
+    report = parse_mlir_timing(instrumented.timing)
+    assert report.rows, "no timing rows were parsed, so the cross check has no data"
+    assert [name for name, _ in report.rows] == [
         record.pass_name for record in instrumented.records
     ]
     assert "Execution time report" in instrumented.timing
-    assert all(milliseconds >= 0.0 for _, milliseconds in rows)
+    assert all(milliseconds >= 0.0 for _, milliseconds in report.rows)
+
+    # **The precision is read off the report rather than assumed**, D-0043, and
+    # this is the assertion that would notice MLIR changing its format. Four
+    # decimals of seconds is a quantum of 0.1 ms, so every parsed value is a
+    # multiple of it and every bound derived from it moves if the format does.
+    assert report.decimals == MLIR_TIMING_DECIMALS
+    assert report.half_ulp_ms == pytest.approx(0.05)
+    for _, milliseconds in report.rows:
+        remainder = milliseconds % (2 * report.half_ulp_ms)
+        assert remainder == pytest.approx(0.0) or remainder == pytest.approx(
+            2 * report.half_ulp_ms
+        ), f"{milliseconds} is not a multiple of the quantum this report prints"
 
 
 def test_the_parser_ignores_what_is_not_a_pass() -> None:
@@ -321,7 +357,32 @@ def test_the_parser_ignores_what_is_not_a_pass() -> None:
             "    0.0074 (100.0%)  Total",
         ]
     )
-    assert parse_mlir_timing(text) == [("NPUConstantFold", 0.1)]
+    report = parse_mlir_timing(text)
+    assert report.rows == [("NPUConstantFold", 0.1)]
+    assert report.decimals == 4
+    assert report.half_ulp_ms == pytest.approx(0.05)
+
+
+def test_the_print_precision_decides_the_bound_rather_than_a_constant() -> None:
+    """D-0043: the quantum comes from the text, so a format change moves it.
+
+    A report printed to two decimals of seconds has a quantum of 10 ms and a
+    half unit of 5 ms, and every bound in the cross check has to widen by a
+    hundred fold with it. A constant written into this module would have stayed
+    at 0.05 and asserted a precision the figures no longer had, which is the
+    same fault as the one it replaced rather than a smaller version of it.
+    """
+    coarse = "\n".join(
+        [
+            "  ----Wall Time----  ----Name----",
+            "    0.01 (  1.0%)  NPUConstantFold",
+            "    0.02 (  2.0%)  CSE",
+        ]
+    )
+    report = parse_mlir_timing(coarse)
+    assert report.decimals == 2
+    assert report.half_ulp_ms == pytest.approx(5.0)
+    assert [milliseconds for _, milliseconds in report.rows] == [10.0, 20.0]
 
 
 # ---------------------------------------------------------------------------

@@ -72,35 +72,30 @@ REQUIRED_ROOT_KEYS: Final[tuple[str, ...]] = (
     "unmatched_after_pass",
 )
 
-#: How far apart the two clocks may be, per pass.
+#: The fraction of a pass's time this instrumentation's own operation walk may
+#: add to MLIR's figure.
 #:
-#: The bound is a floor plus a fraction rather than one absolute number, and
-#: both halves are there for a reason.
+#: The walk sits inside MLIR's window and outside this project's, and it is work
+#: proportional to the module and therefore to the time the pass took. A fixed
+#: allowance would be one that held on this machine and went red on a slower one
+#: for a reason that is not a defect, which is the mistake `tolerances.py`
+#: records having been made once already about `onnxruntime`.
 #:
-#: The **floor** is the display's own resolution. `--mlir-timing` prints seconds
-#: to four decimal places, so a pass it prints as `0.0001` was somewhere in
-#: `[0.05, 0.15]` ms and no comparison finer than that is available.
-#:
-#: The **fraction** is the operation walk this instrumentation does inside
-#: MLIR's window and outside its own, which is work proportional to the module
-#: and therefore to the time the pass took. An absolute bound would have been a
-#: bound that held on this machine and went red on a slower one for a reason
-#: that is not a defect, which is the same mistake `tolerances.py` records
-#: having been made once already about `onnxruntime`.
-#:
-#: **Measured on 2026-09-01 over all seven models at all three levels**, both
+#: **Measured on 2026-09-01** over all seven models at all three levels and both
 #: batch sizes: the worst gap was 0.069 ms on a pass MLIR timed at 1.1 ms, which
-#: is 6 percent, and the worst case where MLIR came out below was 0.034 ms,
-#: inside the display resolution. The bounds are set to half and to 0.15 ms.
-#: Never widened to make a cell pass: a pass outside them is a finding about the
-#: two clocks and is recorded as one.
-TIMING_FLOOR_MS: Final[float] = 0.15
+#: is 6 percent. Half is a wide allowance against that. Never widened to make a
+#: cell pass: a pass outside it is a finding about the two clocks.
 TIMING_GAP_FRACTION: Final[float] = 0.5
 
-#: The floor of the same comparison in the other direction. MLIR's figure
-#: contains this project's instrumentation, so it cannot legitimately come out
-#: below it by more than the display resolution.
-TIMING_RESOLUTION_MS: Final[float] = 0.15
+#: How many decimals of seconds MLIR's tree display prints, as this module was
+#: written against it.
+#:
+#: **Not used as a constant in any comparison**, which is D-0043. It is here so
+#: the parser can say when what it read stops matching what this was written
+#: against. Every bound derives its quantum from the text actually parsed, per
+#: report, so that a format change moves the bound instead of silently
+#: invalidating it.
+MLIR_TIMING_DECIMALS: Final[int] = 4
 
 
 class PassStatisticsError(Exception):
@@ -311,8 +306,29 @@ _TIMING_ROW = re.compile(r"^\s*([0-9]+\.[0-9]+)\s*\(\s*[0-9.]+%\)\s+(\S.*?)\s*$"
 _NOT_A_PASS = ("Parser", "Output", "Rest", "Total", "root")
 
 
-def parse_mlir_timing(text: str) -> list[tuple[str, float]]:
-    """The per pass rows of a tree display, in order, as (name, milliseconds).
+@dataclass(frozen=True)
+class TimingReport:
+    """What one `--mlir-timing` tree display said, and how precisely it said it.
+
+    **The precision is part of the reading**, which is D-0043. These figures are
+    printed to a fixed number of decimals, so each one is a rounding of a number
+    this project cannot see, and every comparison against them has to carry the
+    quantum of that rounding. Returning the rows without it invited exactly the
+    assertion that went red: a strict `>=` between a sum of rounded values and a
+    sum of exact ones.
+    """
+
+    rows: list[tuple[str, float]]
+    #: Half a unit in the last place of the printed figures, in milliseconds.
+    #: Derived from the text that was parsed rather than assumed, so a format
+    #: change moves the bound rather than silently invalidating it.
+    half_ulp_ms: float
+    #: How many decimals of seconds this report printed.
+    decimals: int
+
+
+def parse_mlir_timing(text: str) -> TimingReport:
+    """The per pass rows of a tree display, in order, with their print precision.
 
     Nothing else in this project parses a tool's human readable output, and the
     exception is deliberate rather than an oversight: this is the *independent*
@@ -320,8 +336,15 @@ def parse_mlir_timing(text: str) -> list[tuple[str, float]]:
     MLIR's own timing machinery rather than from the instrumentation being
     checked. Reading it through a second channel this project also wrote would
     make the two agree for the wrong reason.
+
+    **The price of reading printed output is that every value is a rounding**,
+    and this returns the size of that rounding beside the values. MLIR prints
+    seconds to four decimals, so every figure is a multiple of 0.1 ms and is
+    within 0.05 ms of the truth. Measured, on the eleven passes of `-O2`: the
+    parsed values are 0.1, 0.2, 0.1, 0.1, 0.4, 0.4, 0.2, 0.3, 0.2, 0.5, 0.2.
     """
     rows: list[tuple[str, float]] = []
+    decimals = 0
     for line in text.splitlines():
         match = _TIMING_ROW.match(line)
         if not match:
@@ -329,8 +352,18 @@ def parse_mlir_timing(text: str) -> list[tuple[str, float]]:
         name = match.group(2)
         if name in _NOT_A_PASS or name.startswith("(A)") or "Pipeline" in name:
             continue
-        rows.append((name, float(match.group(1)) * 1000.0))
-    return rows
+        seconds = match.group(1)
+        # The coarsest row decides, because a sum is as coarse as its coarsest
+        # term. Every row of one report has the same format today; taking the
+        # maximum means a report that ever mixed them stays sound.
+        decimals = max(decimals, len(seconds.split(".")[1]))
+        rows.append((name, float(seconds) * 1000.0))
+
+    # Seconds printed to `decimals` places is a quantum of 10**-decimals
+    # seconds, which is 10**(3 - decimals) milliseconds, and a rounded figure is
+    # within half of that of the truth.
+    half_ulp = 10.0 ** (3 - decimals) / 2.0 if rows else 0.0
+    return TimingReport(rows=rows, half_ulp_ms=half_ulp, decimals=decimals)
 
 
 @dataclass(frozen=True)
@@ -341,6 +374,9 @@ class CrossCheck:
     rows: list[tuple[str, float, float, float]]
     instrumented_total_ms: float
     mlir_total_ms: float
+    #: Half a unit in the last place of MLIR's printed figures, from the report
+    #: this check read. Every bound here is expressed in terms of it.
+    half_ulp_ms: float
 
     @property
     def worst_gap_ms(self) -> float:
@@ -359,6 +395,39 @@ class CrossCheck:
         """How far MLIR ever came out *below* the instrumentation."""
         return max((-row[3] for row in self.rows), default=0.0)
 
+    @property
+    def rounding_allowance_ms(self) -> float:
+        """How far the sum of MLIR's printed figures may fall below the truth.
+
+        **This is D-0043.** Each printed figure is within half a unit in the last
+        place of the value it stands for, so a sum of `n` of them is within `n`
+        times that of the true sum. Comparing the two totals with a strict `>=`
+        ignored the quantum of the coarser one entirely, and went red in CI on a
+        1.7 microsecond margin between a one decimal number and a microsecond
+        resolution one.
+
+        Scaling with the pass count rather than being one number is the point: a
+        level with more passes accumulates more rounding, and a bound that did
+        not know how many rows it summed would be right at one level and wrong at
+        another.
+        """
+        return len(self.rows) * self.half_ulp_ms
+
+    @property
+    def totals_agree(self) -> bool:
+        """Whether MLIR's total is at or above this project's, allowing rounding.
+
+        The direction is the substantive claim and it survives: MLIR's timer
+        opens before this instrumentation is called and closes after it, so its
+        figure contains the operation walk and this project's does not. What the
+        allowance concedes is only that the containment is observed through
+        figures printed to a finite number of decimals.
+        """
+        return (
+            self.mlir_total_ms
+            >= self.instrumented_total_ms - self.rounding_allowance_ms
+        )
+
 
 def cross_check_against_mlir_timing(
     records: list[PassRecord], timing_text: str
@@ -371,7 +440,8 @@ def cross_check_against_mlir_timing(
     need a translation table and a translation table is a third place for the
     two to disagree.
     """
-    mlir_rows = parse_mlir_timing(timing_text)
+    report = parse_mlir_timing(timing_text)
+    mlir_rows = report.rows
     ours = [(record.pass_name, record.wall_ms) for record in records]
 
     if [name for name, _ in mlir_rows] != [name for name, _ in ours]:
@@ -390,29 +460,57 @@ def cross_check_against_mlir_timing(
         rows=rows,
         instrumented_total_ms=sum(row[1] for row in rows),
         mlir_total_ms=sum(row[2] for row in rows),
+        half_ulp_ms=report.half_ulp_ms,
     )
 
-    if check.worst_deficit_ms > TIMING_RESOLUTION_MS:
+    # The deficit bound is exactly the print quantum and is derived rather than
+    # chosen, which is D-0043. MLIR's true figure contains this project's span,
+    # so `true_mlir >= instrumented`; the printed figure is within half a unit in
+    # the last place of the true one, so `printed >= instrumented - half_ulp`.
+    # Any deficit larger than that is the two clocks not measuring the same run.
+    if check.worst_deficit_ms > report.half_ulp_ms:
         offender = min(rows, key=lambda row: row[3])
         raise PassStatisticsError(
             f"--mlir-timing reports {offender[0]} at {offender[2]:.4f} ms and "
-            f"this project's instrumentation at {offender[1]:.4f} ms. MLIR's "
-            f"timer opens before this instrumentation is called and closes "
-            f"after it, so its figure contains ours and cannot legitimately be "
-            f"the smaller by more than the {TIMING_RESOLUTION_MS} ms the tree "
-            f"display rounds to. The two are not measuring the same run."
+            f"this project's instrumentation at {offender[1]:.4f} ms, which is "
+            f"{-offender[3]:.4f} ms below it against a bound of "
+            f"{report.half_ulp_ms:.4f} ms. MLIR's timer opens before this "
+            f"instrumentation is called and closes after it, so its figure "
+            f"contains ours and can only come out below it by the rounding of "
+            f"its own display, which prints seconds to {report.decimals} "
+            f"decimals. A deficit larger than that means the two are not "
+            f"measuring the same run."
         )
+    # The upper bound has the same two terms for the same reason: the print
+    # quantum, because a rounded figure can sit half a unit *above* the truth as
+    # readily as below it, plus the walk, which is proportional to the pass.
     for name, instrumented, from_mlir, gap in rows:
-        allowed = TIMING_FLOOR_MS + TIMING_GAP_FRACTION * from_mlir
+        allowed = report.half_ulp_ms + TIMING_GAP_FRACTION * from_mlir
         if gap > allowed:
             raise PassStatisticsError(
                 f"--mlir-timing reports {name} at {from_mlir:.4f} ms and this "
                 f"project's instrumentation at {instrumented:.4f} ms, a gap of "
                 f"{gap:.4f} ms against a bound of {allowed:.4f} ms, which is "
-                f"{TIMING_FLOOR_MS} ms plus {TIMING_GAP_FRACTION:.0%} of MLIR's "
-                f"figure. The gap is this instrumentation's own operation walk, "
-                f"which sits inside MLIR's window and outside ours, so a gap "
-                f"this size means the instrumentation is costing more than the "
-                f"pass it measures."
+                f"{report.half_ulp_ms:.4f} ms of display rounding plus "
+                f"{TIMING_GAP_FRACTION:.0%} of MLIR's figure. The gap is this "
+                f"instrumentation's own operation walk, which sits inside "
+                f"MLIR's window and outside ours, so a gap this size means the "
+                f"instrumentation is costing more than the pass it measures."
             )
+
+    # The totals, which is the comparison that went red in CI. A sum of `n`
+    # rounded figures is within `n` half units of the true sum, and comparing it
+    # against an exact sum with no allowance was asserting a precision the
+    # printed values do not have.
+    if not check.totals_agree:
+        raise PassStatisticsError(
+            f"--mlir-timing totals {check.mlir_total_ms:.6f} ms over "
+            f"{len(rows)} passes and this project's instrumentation totals "
+            f"{check.instrumented_total_ms:.6f} ms, which is "
+            f"{check.instrumented_total_ms - check.mlir_total_ms:.6f} ms more, "
+            f"against an allowance of {check.rounding_allowance_ms:.4f} ms. "
+            f"That allowance is {len(rows)} passes times the "
+            f"{report.half_ulp_ms:.4f} ms each printed figure is rounded by, "
+            f"and a shortfall beyond it is not rounding."
+        )
     return check
