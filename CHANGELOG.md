@@ -56,6 +56,35 @@ Semantic Versioning once a release is tagged.
   is worth roughly a factor of three on a narrow deep convolution. Retuning a
   cost model against an external tool would invalidate every ablation already
   recorded, so P13 gets a reproduction instead of P11 getting a silent change.
+- **Energy and area per component, from Accelergy at a pinned 45 nm.** Every cell
+  records `energy_pj`, `area_mm2`, both per component breakdowns,
+  `energy_pj_per_inference`, `edp` and `technology_node`. The array's action
+  count is the **raw** `macs` and a test builds a cell whose `effective_macs` is
+  four times its `macs` to check which one the answer followed. `lenet` costs
+  54.4 uJ per inference and `depthwise_separable` 1.7 uJ; the whole design is
+  8.5 mm2, of which the 1 MB scratchpad is 6.4.
+- **The energy numbers carry what they are worth on their face.** Only the per
+  action coefficients are external, so a counting bug in the simulator would
+  propagate straight into them. And the fp32 MAC coefficient **fails** Section
+  16.4's order of magnitude sanity check at a factor of 10.7, because Aladdin's
+  figure is a synthesised pipelined unit and the published one is a combinational
+  datapath. The bound was not widened: the measured value is pinned instead, and
+  `docs/NUMBERS.md` records that at the published coefficient the scratchpad
+  would be the largest consumer on every model, so no conclusion in this project
+  rests on the array being dominant.
+- **Fusion is re-argued in energy terms and the answer is exactly zero.**
+  `-npu-fuse-ops` moves no picojoule on any of the seven models, because an
+  unfused chain on this machine already keeps its intermediate in the scratchpad.
+  What it would be worth where the intermediate spilled is quantified beside it:
+  up to 46 percent of `depthwise_separable`'s whole energy budget.
+- **The result schema is at version 2 and the baseline at version 3**, both
+  declared in `docs/BREAKING_CHANGES.md` before the commits that moved them and
+  re-recorded in one run each afterwards. No golden tensor and no counted metric
+  moved.
+- **The external tools are pinned by git sha in `docs/adr/0003`** and cited the
+  way each repository asks to be cited, in `report/references.bib`. Four of the
+  six specify no citation form and their entries are constructed from their own
+  packaging metadata, which the entry says.
 
 ### Phase P10: measurement
 

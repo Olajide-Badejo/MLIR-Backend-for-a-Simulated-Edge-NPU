@@ -1351,9 +1351,18 @@ def _run(arguments: argparse.Namespace) -> int:
 
     # Section 16.3: rank fidelity beside the absolute error, and no agreement
     # figure printed without a coverage fraction beside it.
+    # **Ranked on the covered layers, not on the serial total.** The serial total
+    # includes the pooling and elementwise work SCALE-Sim never saw, so ranking
+    # on it would ask whether the two tools order cells the same way while
+    # letting one of them see work the other did not. This is the same quantity
+    # the per cell divergence is computed over, so the two figures describe the
+    # same comparison.
     cells = rank_fidelity(
         [
-            (answer.analytical_serial_total, float(answer.scalesim_total))
+            (
+                sum(layer.analytical_cycles for layer in answer.layers),
+                float(answer.scalesim_total),
+            )
             for answer in answers
         ]
     )

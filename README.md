@@ -73,13 +73,26 @@ nothing to propagate across because every module holds one function, and
 which is a limit of leave one out ablation rather than a fact about
 canonicalization.
 
-**What the measurement cost.** 175 cells in 1.76 minutes, 0.60 seconds per cell,
-run serially against a 90 minute budget the harness enforces by failing.
+**What the measurement cost.** 175 cells in 3.70 minutes, 1.27 seconds per cell,
+run serially against a 90 minute budget the harness enforces by failing. The
+external cross validation tools run inside that, which is why it is 1.27 seconds
+and was 0.60 at P10.
 
-**What is not measured yet.** Energy, area, the roofline bound and the SCALE-Sim
-cross check arrive at P11, tiling at P13, quantization at P14. Every result file
-carries those fields as `null` with a reason naming the phase, rather than as a
-plausible number or an absent key.
+**What P11 added, and what it is worth.** Every cell now carries a roofline
+bound, SCALE-Sim cycles with a per layer breakdown and both coverage fractions,
+and energy and area per component at 45 nm. Two of those come with a caveat this
+project states rather than buries: the **roofline cannot fail** against this cost
+model, because `effective_macs` is defined from the cycle count, so it is a
+regression bound for P13 rather than evidence today; and the **fp32 MAC energy
+coefficient fails** Section 16.4's order of magnitude sanity check by a factor of
+10.7, for a reason that is Aladdin's pipelined unit rather than this project.
+`docs/NUMBERS.md` carries both accounts, and the registered prediction the
+SCALE-Sim comparison answers turned out to be mostly wrong, which is recorded
+without editing the prediction.
+
+**What is not measured yet.** Tiling arrives at P13 and quantization at P14.
+Every result file carries those fields as `null` with a reason naming the phase,
+rather than as a plausible number or an absent key.
 
 **What CI enforces, and what those numbers are worth.** 85 percent line coverage
 on `lib/Dialect`, `lib/Encoding` and `lib/Simulator`, and 90 percent on

@@ -4601,3 +4601,166 @@ date.
 memory branch and the rest by the compute branch. The tightest layer in the suite
 is `lenet`'s first convolution at 0.000635 headroom over its compute bound, which
 is the issue overhead and nothing else, which is what the tautology predicts.
+
+## 2026-09-02 Phase P11: two external tools, and both of them lie by exiting zero
+
+The install was started before anything else in the phase, because Section 23
+says P11 blocks on it entirely. It took under two minutes of wall clock and then
+cost most of a session anyway, for reasons that had nothing to do with download
+time.
+
+### SCALE-Sim does not run
+
+Not on this project's topology. On **its own shipped example**, at the pinned
+sha, on every upstream branch:
+
+```
+self.total_cycles = int(max(ofmap_serviced_cycles))
+TypeError: only 0-dimensional arrays can be converted to Python scalars
+```
+
+numpy 2 removed `int()` on arrays of rank one or more, and three expressions in
+the tool use it. The choice was between moving numpy, which would make all 175
+committed results describe an environment that no longer exists, and a three
+expression patch to the install. Ubuntu 26.04 ships CPython 3.14 only and no
+numpy 1.x wheel exists for it, so the second interpreter that would have avoided
+the choice was not available. D-0044 carries it. Every manifest now records
+`scalesim_installed_tree_sha256` beside the upstream sha, so the record says the
+tool was modified rather than showing a sha that does not describe the code that
+ran.
+
+### And both tools report failure by exiting zero
+
+While measuring the above, the tool was run with a missing input file:
+
+```
+ERROR: scalesim.scale.py: Layout file not found
+Exiting
+```
+
+Exit status **0**. `scale_sim.set_params` calls the builtin `exit()`, which is
+status zero, so a hard input error and a successful run are reported the same
+way. An uncaught exception exits 1, which makes the two failure modes report
+differently from each other, which is worse than either.
+
+Accelergy does the same thing in a different place. Its own shipped basic example
+crashes on this install, prints `Accelergy has encountered an error and crashed`,
+and exits **0**; other failures exit 255.
+
+**This is D-0040 through D-0043's shape arriving from outside the project.** The
+lesson those four left for P11 was that whatever reads an external tool's numbers
+has to carry that tool's precision alongside them. The stronger version, which
+this phase learned the hard way, is that it has to carry the tool's **failure
+modes** too, and that an exit status is a channel that loses information the same
+way a rounded figure is. So neither wrapper reads a status. SCALE-Sim's requires
+`COMPUTE_REPORT.csv` to exist, to carry the header the parser was written
+against, and to hold exactly one row per exported layer. Accelergy's requires
+three output files and every component it asked about to appear in each. Both
+raise with the tool's own stdout and stderr, because the tool explains itself
+better than a paraphrase would.
+
+### Accelergy 0.4 ships no primitive component library
+
+`~/npu-venv/share/accelergy/primitive_component_libs` does not exist. A primitive
+component therefore has no declared action list, the energy reference table comes
+out as `tables: []`, and the energy calculator then asserts that it cannot find
+an entry for the first component. That is why the architecture description is
+three compound classes with their actions written out rather than three bare
+primitives, and the docstring says so where somebody would otherwise simplify it
+back.
+
+### The comparison had to be made honest before it meant anything
+
+The first SCALE-Sim export copied the activation's own height and width across.
+SCALE-Sim's topology has no padding field and no batch field and this machine has
+both, so the two tools were being charged for different amounts of arithmetic,
+and every divergence figure would have carried that difference without naming it.
+The extents are now derived from the output positions instead, so SCALE-Sim's own
+output size formula produces exactly this layer's output count with the batch
+folded into the row dimension, which is what the cost model of Section 5.5 does.
+
+Two checks hold that in place and one of them can fail. `check_macs` asserts the
+exported topology implies the MAC count this project charged.
+`check_the_same_arithmetic` reconciles SCALE-Sim's **own** utilization figure
+against that count, which closes the loop from the other side: the export
+describes this program, and the tool agreed about what it was given. Without
+those, a divergence figure could be two tools answering about two different
+layers, and it would have a plausible size and no cause.
+
+### The decomposition counted one effect twice
+
+`dilated_stack` came out with a residual of minus 1838 cycles against named terms
+of plus 1524 and minus 1410. A decomposition whose residual is the same order as
+its largest term has counted something twice, and it had: the fragmentation term
+was computed against the dilated topology, which does three times the multiplies,
+so it absorbed the dilation approximation a second time. Every term except the
+dilation one is now taken from the arithmetic matched run, and the residual is
+zero on every cell.
+
+**The residual being zero is not a result and the module says so.** The terms are
+a partition of the difference, not a fit to it, so a nonzero residual would mean
+cycles were lost between them. The check that can actually fail is
+`check_the_same_arithmetic`.
+
+### What the comparison found
+
+D-0045, and it is the thing cross validation exists for: this project charges the
+array's weight preload **once per instruction** and SCALE-Sim charges it **per
+fold**. On `resnet_block`'s 3 by 3 convolution the two accounts differ by about a
+factor of three. It is not fixed here. Retuning a cost model against an external
+tool invalidates every ablation already recorded, and Section 16.5 states that
+rule for ZigZag in the same words. P13 gets the reproduction.
+
+### The prediction was mostly wrong
+
+Direction wrong on five of seven models, all three magnitude bands wrong, both
+rank fidelity figures wrong, the coverage floor on `lenet` wrong. What it got
+right was the mechanism behind the widest positive gaps, the treatment of
+pooling, and the existence of a fragmentation disagreement.
+
+The entry was not edited. That is the whole of Section 17.8 and it is worth
+saying plainly: a prediction written before the measurement, that turned out to
+be mostly wrong, and that is answered as written, is more informative than a
+prediction that was right, because the places it is wrong are where this project
+learned something.
+
+### The fp32 MAC coefficient fails the sanity check and is reported failing
+
+49.286 pJ against a published 4.6 pJ for a multiply plus an add at 45 nm, a
+factor of 10.71, where Section 16.4 asks for within an order of magnitude. The
+cause is identifiable and is not this project: Aladdin's number is a synthesised
+three stage pipelined unit at a 1 ns clock with its registers, and the published
+figure is a combinational datapath. The scratchpad and DRAM coefficients both
+pass.
+
+The bound was not widened. The test pins the measured value so that it moving is
+a failure, and separately asserts the ratio is still above ten so that
+`docs/NUMBERS.md` going out of date is a failure too. And `docs/NUMBERS.md` says
+what the overstatement means for every conclusion drawn from these numbers: at
+the published coefficient the scratchpad would be the largest consumer on every
+model in the suite, so nothing in this project may rest on the array being
+dominant.
+
+### Two smaller things worth recording
+
+A DRAM byte count that is not a whole number of accesses raised, on the reasoning
+that rounding must never invent or discard one. `dilated_stack` moves 5004 bytes,
+because 1251 floats is 5004 bytes, and the refusal was reading a remainder as a
+bug. A DRAM cannot fetch part of a word, so a partial access is paid in full and
+the count rounds up.
+
+And a coverage threshold failed the run on `lenet` at 0.9548, quoting the
+prediction's own falsifier. The exporter is representing nothing it should not.
+A covered layer's cycles are the later of its compute and the DMA that feeds it,
+on both sides, and `lenet`'s matmuls are dominated by loading a 400 by 120 weight
+matrix. The op fraction is 0.208 and is the figure the clause was reaching for.
+The threshold went; both fractions and the explanation stayed.
+
+### One flake, recorded because it will recur
+
+The first re-record run died at cell 74 on the `--mlir-timing` cross check:
+`NPUFuseBias` at 0.3000 ms against the instrumentation's 0.0843, a gap of 0.2157
+against a bound of 0.2000. The machine was running SCALE-Sim in another process
+at the time. Two subsequent runs on a quiet machine reported worst gaps of 0.1577
+and 0.1177 ms and passed. The bound is D-0043's and is principled; it is also
+sensitive to load, and the suite should not be run beside the external tools.

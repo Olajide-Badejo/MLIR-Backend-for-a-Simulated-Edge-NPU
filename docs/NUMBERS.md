@@ -33,16 +33,25 @@ both trace back here.
 | Cells recorded | 175 | `experiments/results/` |
 | Benchmark cells | 63 | 7 models times 3 levels times 3 budget and batch combinations |
 | Ablation cells | 112 | 8 ablatable passes times 7 models times 2 budgets |
-| Suite runtime | 1.76 minutes | `experiments/results-runtime.json`, `suite_seconds` 105.699 |
-| Cost per cell | 0.60 seconds | `experiments/results-runtime.json`, `seconds_per_cell` |
+| Suite runtime | 3.70 minutes | `experiments/results-runtime.json`, `suite_seconds` 221.721 |
+| Cost per cell | 1.27 seconds | `experiments/results-runtime.json`, `seconds_per_cell` |
 | Budget | 90 minutes | Section 2, enforced as a gate by `experiments/run_benchmarks.py` |
-| Worst clock disagreement | 0.1968 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
+| Worst clock disagreement | 0.1177 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
 
-**0.60 seconds per cell is the measured figure that replaces Section 2's 15
-second planning number.** The suite is inside its budget by a factor of fifty.
-That headroom is what pays for running the cells serially, which the timing
-objects require: cells competing for cores would measure the contention rather
-than the compiler.
+**1.27 seconds per cell is the measured figure that replaces Section 2's 15
+second planning number.** The suite is inside its budget by a factor of
+twenty four. That headroom is what pays for running the cells serially, which the
+timing objects require: cells competing for cores would measure the contention
+rather than the compiler.
+
+**It was 0.60 seconds at P10 and the difference is P11's external tools**, which
+now run inside the same suite: one SCALE-Sim invocation per cell and two on the
+dilated cells, plus one Accelergy invocation per distinct scratchpad budget. The
+factor in hand went from fifty to twenty four. **Do not run the suite beside
+those tools in another process**: the first P11 re-record died at cell 74 on the
+`--mlir-timing` cross check with a gap of 0.2157 ms against a bound of 0.2000
+while SCALE-Sim was running elsewhere, and two quiet runs measured 0.1577 and
+0.1177.
 
 ---
 
@@ -183,11 +192,15 @@ what has been measured rather than a selection of what came out well.
 
 | Field | Arrives at |
 |---|---|
-| `roofline_bound_cycles`, `operational_intensity`, `roofline_verdict` | P11, Section 16.6 |
-| `scalesim_cycles` and both coverage fractions | P11, Section 16.3 |
-| `energy_pj`, `energy_pj_per_inference`, `edp`, `area_mm2`, `technology_node` | P11, Section 16.4 |
 | `tiling_choices` | P13 |
 | `quant_boundary_crossings`, `per_layer_sqnr_db`, `max_abs_error_vs_fp32_simulated` | P14 |
+
+The three groups P11 filled left this table when they were filled:
+`roofline_bound_cycles`, `operational_intensity` and `roofline_verdict`;
+`scalesim_cycles` and both coverage fractions; `energy_pj`,
+`energy_pj_per_inference`, `edp`, `area_mm2` and `technology_node`. Every one of
+them is measured in all 175 cells, and each lost its `_null_reason` sibling in
+the same write, because a field carrying both is refused.
 
 **No number on this page is an estimate.** Where a phase has not measured
 something, the field is null with a reason rather than a plausible figure, and
@@ -251,3 +264,314 @@ to drain it. Comparing the compute charge alone against a bound with a memory
 branch in it compares a compute time against a memory time, and it puts every
 matmul in `lenet` three times below its bound for a reason that is arithmetic
 rather than physical. `docs/ENGINEERING_LOG.md` carries that run.
+
+---
+
+## SCALE-Sim, and the divergence prediction answered
+
+*Added at P11.* Every figure below is from the 175 committed cells and is
+reproducible with `python experiments/scalesim_export.py`.
+
+### The comparison, and what it is over
+
+Two tools are charged the **same arithmetic**, and that is asserted rather than
+assumed: `check_macs` holds the exported topology to the MAC count this project
+charged, and `check_the_same_arithmetic` reconciles SCALE-Sim's own utilization
+figure against that count before any divergence is computed. Without those two,
+a divergence figure could be two tools answering about two different layers.
+
+| Model | Widest whole model divergence | Narrowest | Mean covered cycle fraction | Mean covered op fraction |
+|---|---|---|---|---|
+| `lenet` | +19.78% | +9.45% | 0.946 | 0.208 |
+| `lenet_batched` | +19.78% | +9.45% | 0.894 | 0.208 |
+| `depthwise_separable` | -16.82% | -9.34% | 0.770 | 0.182 |
+| `conv_bn_relu_stack` | -50.46% | -4.67% | 0.797 | 0.189 |
+| `inception_block` | -73.41% | -1.85% | 0.758 | 0.192 |
+| `resnet_block` | -69.90% | -9.61% | 0.591 | 0.141 |
+| `dilated_stack` | -87.14% | -65.81% | 0.778 | 0.177 |
+
+Positive means this project charges more than SCALE-Sim. The worst cell is
+`dilated_stack-O0-tight-n1-fp32-normal` at **-87.14%** over a covered cycle
+fraction of 0.711.
+
+**No agreement figure appears here without a coverage fraction beside it**, which
+is Section 16.3's rule, and the schema enforces it: the two fractions are written
+in the same block as the cycles.
+
+### The 550 layers against Section 16.3's pre-registered bands
+
+| Band | Layers |
+|---|---|
+| under 10 percent, expected | 99 |
+| 10 to 25 percent, a finding requiring an explanation | 111 |
+| above 25 percent, a defect requiring a root cause | **340** |
+
+The widest gaps, one row per distinct layer:
+
+| Model | Layer | MACs | This project | SCALE-Sim | Divergence |
+|---|---|---|---|---|---|
+| `inception_block` | `node_conv2d` (1x1) | 2048 | 473.0 | 109 | **+333.9%** |
+| `conv_bn_relu_stack` | `head` (matmul) | 32 | 145.0 | 46 | +215.2% |
+| `depthwise_separable` | `node_conv2d_1` (1x1) | 8192 | 172.0 | 109 | +57.8% |
+| `dilated_stack` | `conv1` | 5670 | 146.8 | 1211 | -87.9% |
+| `dilated_stack` | `conv0` | 36036 | 481.0 | 3672 | -86.9% |
+| `inception_block` | `node_conv2d_2` (5x5) | 25600 | 1044.0 | 6407 | -83.7% |
+| `resnet_block` | `node_conv2d` (3x3) | 36864 | 478.0 | 1465 | -67.4% |
+
+### The divergence decomposed into named terms
+
+Summed over the suite, in cycles. The terms are a **partition** of the
+difference and not a fit to it, so the residual is zero by construction and is
+asserted rather than reported as evidence; a nonzero one would mean cycles were
+lost between the terms.
+
+| Term | Cycles | What it is |
+|---|---|---|
+| double buffering | +442289 | this machine's DMA time that could not hide behind compute, against SCALE-Sim's own stall cycles |
+| array fragmentation | -435825 | the two models' compute times for the same MAC count, which differ only in how each charges array occupancy |
+| elementwise gap | +73982 | work with no systolic representation |
+| dilation approximation | -60966 | measured by a second SCALE-Sim run at the true tap extent, not argued |
+| pooling gap | +53114 | SCALE-Sim models no pooling at all |
+| uncovered DMA gap | +37161 | transfers feeding operations SCALE-Sim never saw |
+| residual | 0 | |
+| **total** | **+109756** | |
+
+The two dominant terms are nearly equal and opposite, which is the single most
+useful thing this comparison produced: the suite wide headline of plus 110
+thousand cycles is the small remainder of two large effects pointing in opposite
+directions, and quoting it without them would be quoting an accident.
+
+### Rank fidelity, which Section 16.3 asks for beside the absolute error
+
+| Ordering | Kendall tau b | Pairwise accuracy | n |
+|---|---|---|---|
+| whole cells | 0.6337 | 0.8211 | 175 |
+| individual layers | 0.7460 | 0.8783 | 550 |
+
+**Ranked over the covered layers on both sides**, which is the same quantity the
+divergence figures above use. Ranking a cell's whole serial total against
+SCALE-Sim's would ask whether the two tools order cells the same way while
+letting one of them see work the other never did. Tau **b**, because this suite
+has many exact ties: the same program at three optimization levels ties on both
+sides, and counting a tie as a discordance would report a disagreement where both
+tools said the same thing.
+
+### The prediction, quoted and answered
+
+`experiments/predictions/p11-scalesim-divergence.md` landed at **`f92de42`**,
+which is a strict ancestor of the commit that added
+`experiments/scalesim_export.py`;
+`test_the_divergence_prediction_landed_before_the_exporter` proves the ordering
+from `git log` rather than from a date in a file. The entry has not been edited
+since, whatever the measurement says, which is what its own last line promised.
+
+Quoted verbatim, claim by claim:
+
+> **direction:** this project's analytical cycle count comes out **above**
+> SCALE-Sim's on the layers SCALE-Sim covers, and the gap is dominated by named
+> modelling differences rather than by error
+
+**Half right, and the half that is wrong is the direction.** This project reads
+above SCALE-Sim on `lenet` and `lenet_batched` and **below** on the other five
+models, by as much as 87 percent. The entry's own falsification list names
+"this project reading systematically below SCALE-Sim on the covered layers" as a
+falsifier, and that is what happened on five of seven models. The second half
+holds: the decomposition is a sum of named modelling differences with a residual
+of exactly zero.
+
+> **magnitude bracket:** per layer divergence under 10 percent on dense compute
+> bound layers, 10 to 25 percent on the 1 by 1 convolutions, and a whole model
+> divergence of 5 to 20 percent once the skipped operations are excluded from
+> both sides
+
+**Wrong on all three.** 340 of 550 layers exceed 25 percent where the entry
+predicted none would at the default budget with both ports on. The 1 by 1
+convolutions are the widest gaps, which the entry got right, but at +334 percent
+rather than 10 to 25. Whole model divergence reaches -87 percent against a
+predicted 5 to 20.
+
+> **above 25 percent is a defect requiring a root cause**, and I predict no layer
+> reaches it at the default budget with both ports enabled
+
+**The root cause is D-0045** and it is the same one on every layer in that band:
+this project charges the array's weight preload **once per instruction** and
+SCALE-Sim charges it **per fold**. `resnet_block`'s 3 by 3 convolution presents a
+72 by 8 weight matrix to a 16 by 16 array, five row tiles each occupying half the
+columns, and the two accounts of the resulting fills differ by about a factor of
+three. The defect is recorded with a reproduction and **is not fixed here**,
+because retuning a cost model against an external tool invalidates every ablation
+already recorded; Section 16.5 states that rule for ZigZag and it is the same
+rule.
+
+> 1. **SCALE-Sim assumes optimistically high bandwidth on 1 by 1 convolutions**,
+>    so its counts come out low there. `inception_block` and `resnet_block` are
+>    the models in this suite with 1 by 1 convolutions, so I expect the widest per
+>    layer gaps on those two, and I expect them in the direction of this project
+>    reading higher.
+
+**Confirmed, and it is the one mechanism the entry got fully right.** The widest
+positive gap in the suite is `inception_block`'s 1 by 1 convolution at +333.9
+percent, and `depthwise_separable`'s pointwise convolution is +57.8 percent.
+Both are in the predicted direction and on the predicted layer shape. The entry
+named `resnet_block` as the second such model and its 1 by 1 is on the residual
+path rather than a topology row, so the second half of that sentence is
+unconfirmed rather than wrong.
+
+> 2. **SCALE-Sim does not model pooling at all** ... its contribution appears as
+>    a coverage fraction below one rather than as a divergence.
+
+**Confirmed.** Pooling is 53114 cycles of the suite's uncovered work and appears
+in the decomposition as its own term, never inside a divergence.
+
+> 3. **Array fragmentation.** ... I expect the two to disagree about how much
+
+**Confirmed and larger than expected.** It is the second largest term at -435825
+cycles, and D-0045 is what it is made of.
+
+> **Coverage:** I expect `scalesim_covered_cycle_fraction` between 0.5 and 0.85 on
+> the convolutional models and **below 0.3 on `lenet`**
+
+**Wrong on `lenet`, which measures 0.946, and right on the rest.** The
+convolutional models land between 0.591 and 0.797. The reason `lenet` is high is
+not the one the entry's falsification list names: the exporter is not
+representing operations it has no systolic representation for. A covered layer's
+cycles are the later of its compute and the DMA that feeds it, on **both** sides
+of the comparison, and `lenet`'s three matmuls are dominated by loading a 400 by
+120 weight matrix, so most of `lenet`'s time is genuinely inside layers SCALE-Sim
+covers. `scalesim_covered_op_fraction` is **0.208** on the same cells, which is
+the quantity the entry's 0.3 was reaching for and which is comfortably below it.
+
+> **A coverage fraction above 0.9 on any model**, which would mean the exporter is
+> representing operations it has no systolic representation for
+
+**This falsifier fired and the diagnosis it carries is wrong**, for the reason
+just given. It fired on `lenet` at 0.946. `test_everything_without_a_systolic_representation_is_skipped_with_its_cost`
+asserts that every operation is either exported or in the skipped list and never
+both, so the mechanism the clause suspects is checked directly and does not
+occur.
+
+> I predict **Kendall tau above 0.8** ... and pairwise comparison accuracy above
+> 0.85
+
+**Wrong on tau and marginal on pairwise.** Tau b is 0.6337 over cells and 0.7460
+over layers, against a predicted 0.8. Pairwise accuracy is 0.8211 over cells,
+below the predicted 0.85, and 0.8783 over layers, above it. The entry called this
+"a stronger finding than any absolute error here", and it is: the cost model is
+not merely imprecise, it orders one pair in five differently from the reference.
+
+**What the entry got right, in one line.** The mechanism behind the widest
+positive gaps, the treatment of pooling, and the existence of a fragmentation
+disagreement. **What it got wrong**: the direction on five of seven models, all
+three magnitude bands, the coverage floor on `lenet`, and both rank fidelity
+figures. A prediction that was mostly wrong, recorded before the measurement and
+answered without editing, is the mechanism of Section 17.8 working rather than
+failing.
+
+---
+
+## Energy and area, and what they are worth
+
+*Added at P11 with Accelergy at a pinned 45 nm.* `-O2`, default budget, batch 1.
+
+| Model | Energy per inference | Array | Scratchpad | DRAM | Area | EDP (pJ s) |
+|---|---|---|---|---|---|---|
+| `depthwise_separable` | 1.706 uJ | 37.0% | 51.7% | 11.3% | 8.545 mm2 | 2.258 |
+| `dilated_stack` | 3.212 uJ | 64.0% | 25.3% | 10.7% | 8.545 mm2 | 3.964 |
+| `conv_bn_relu_stack` | 3.480 uJ | 71.8% | 20.5% | 7.6% | 8.545 mm2 | 4.039 |
+| `inception_block` | 4.260 uJ | 64.0% | 23.1% | 13.0% | 8.545 mm2 | 10.217 |
+| `resnet_block` | 5.425 uJ | 67.0% | 22.6% | 10.4% | 8.545 mm2 | 8.821 |
+| `lenet` | 54.406 uJ | 37.7% | 32.9% | 29.4% | 8.545 mm2 | 966.585 |
+
+The area is the same on every row because it describes the machine and not the
+program: a 256 element fp32 MAC array at 2.129 mm2 plus a 1 MB scratchpad at
+6.416 mm2. DRAM contributes no area, which is right: it is off chip.
+
+### Two things a reader could reasonably get wrong
+
+**Accelergy is not an independent check of activity.** The action counts come
+from this project's own `Stats`, so **only the per action coefficients are
+external**. Every counting bug in the simulator propagates straight into these
+numbers, the fusion argument below included.
+
+**The clock is an assumption this project did not have before P11.** Accelergy's
+Aladdin tables are indexed by the cycle time they were synthesised for, so a
+figure cannot be obtained without one. 1 ns was chosen because it is Accelergy's
+own default in every shipped example and is the round number, and it was chosen
+before looking at what it did to the sanity check below. A slower clock lowers
+the per MAC figure: the table's 2 ns row would give about 40.7 pJ instead of
+49.3.
+
+### The per action coefficients, and the sanity check of Section 16.4
+
+| Action | Measured | Published at 45 nm and 0.9 V | Ratio | Estimator |
+|---|---|---|---|---|
+| one fp32 MAC | 49.286 pJ | 3.7 multiply plus 0.9 add, 4.6 pJ | **10.71** | `Aladdin_table` |
+| one 32 kB scratchpad read | 6.427 pJ | about 20 pJ for a 32 kB cache | 0.32 | `CactiSRAM` |
+| one 64 bit DRAM access | 512.0 pJ | 1.3 to 2.6 nJ | 0.39 to 0.20 | `CactiDRAM` |
+
+**Two of the three land within an order of magnitude and the MAC does not.**
+That is reported rather than smoothed, and the cause is identifiable: Aladdin's
+figure is a synthesised three stage pipelined fp32 unit at a 1 ns clock,
+registers included, and the published figure is a combinational datapath. The
+gap is the pipeline, not this project.
+
+**The bound was not widened to make it pass.**
+`test_the_sanity_check_of_section_16_4_including_where_it_does_not_pass` pins the
+measured 49.286 pJ so that it moving is a failure, and separately asserts that
+the ratio is still above ten so that this section going out of date is a failure
+too. A pinned value under a failing check is a stronger assertion than a
+loosened bound that passes.
+
+**What it means for the numbers above.** The array's share of the energy is
+overstated by whatever that factor is worth. At the published coefficient the
+array would be 4.6/49.3 of what it is, which would move `conv_bn_relu_stack` from
+71.8 percent array dominated to about 20 percent, and would make the scratchpad
+the largest consumer on every model in the suite. **So no conclusion in this
+project rests on the array being the dominant consumer**, and this paragraph is
+here so that none quietly starts to.
+
+### Fusion, re-argued in energy terms
+
+Section 16.4's argument asks for fusion in energy terms with numbers, and the
+number is **exactly zero**.
+
+| Model | Fused | `-npu-fuse-ops` ablated | Delta |
+|---|---|---|---|
+| `conv_bn_relu_stack` | 3480159.520 pJ | 3480159.520 pJ | **0.000** |
+| `depthwise_separable` | 1705554.304 pJ | 1705554.304 pJ | **0.000** |
+| `dilated_stack` | 3211815.924 pJ | 3211815.924 pJ | **0.000** |
+| `inception_block` | 4259711.200 pJ | 4259711.200 pJ | **0.000** |
+| `lenet` | 54405699.152 pJ | 54405699.152 pJ | **0.000** |
+| `lenet_batched` | 127526606.480 pJ | 127526606.480 pJ | **0.000** |
+| `resnet_block` | 5424776.776 pJ | 5424776.776 pJ | **0.000** |
+
+That is the same zero the P10 ablation table records for instructions and cycles,
+now confirmed on the quantity fusion is usually argued in. It is a confirmation
+rather than a disappointment, and `docs/PASSES.md` carries why: an unfused chain
+on this machine already keeps its intermediate in the scratchpad, because the
+only DMA producers are the boundary, the spiller and P13's double buffering. The
+region states the fusion in the IR; it does not move any bytes.
+
+**What the pass would be worth on a machine where the intermediate spilled**, at
+this project's own coefficients:
+
+| Model | Fused intermediates | Elements | DRAM round trip that does not happen | As a share of the model's energy |
+|---|---|---|---|---|
+| `depthwise_separable` | 2 | 1536 | 786432 pJ | **46.11%** |
+| `dilated_stack` | 2 | 1091 | 559104 pJ | 17.41% |
+| `conv_bn_relu_stack` | 2 | 1024 | 524288 pJ | 15.07% |
+| `lenet` | 4 | 6508 | 3332096 pJ | 6.12% |
+| `resnet_block` | 1 | 512 | 262144 pJ | 4.83% |
+| `inception_block` | 0 | 0 | 0 pJ | 0.00% |
+
+Read as: writing `depthwise_separable`'s two fused intermediates to DRAM and
+reading them back would cost 46 percent of that model's whole energy budget. So
+the pass is worth a great deal in the design where it fires and nothing in this
+one, and the reason is the flat scratchpad rather than the pass. **That is the
+honest energy argument for fusion in this project**, and it is a different
+sentence from the one a reader expects, which is why it is written out with the
+counterfactual rather than asserted as a saving.
+
+`inception_block` has no fused intermediate because its convolutions feed a
+concatenation rather than an activation, which is the multiple use guard
+`docs/PASSES.md` documents doing its job.

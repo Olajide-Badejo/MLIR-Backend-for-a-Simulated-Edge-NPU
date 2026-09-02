@@ -491,6 +491,52 @@ What the region adds is that the fusion is **stated** in the IR, which is what
 P13's tiling and double buffering read. Measuring that rather than asserting it
 is what keeps the P10 ablation row honest.
 
+### In energy terms, which is how fusion is usually argued
+
+*Added at P11, with Accelergy at a pinned 45 nm.* Fusion is normally justified by
+the DRAM round trip it avoids, so the argument above is incomplete until it is
+made in that currency. **The energy delta is exactly zero on all seven models at
+both budgets**, to the last picojoule:
+
+| Model | Fused | Ablated | Delta |
+|---|---|---|---|
+| `conv_bn_relu_stack` | 3480159.520 pJ | 3480159.520 pJ | **0.000** |
+| `depthwise_separable` | 1705554.304 pJ | 1705554.304 pJ | **0.000** |
+| `dilated_stack` | 3211815.924 pJ | 3211815.924 pJ | **0.000** |
+| `inception_block` | 4259711.200 pJ | 4259711.200 pJ | **0.000** |
+| `lenet` | 54405699.152 pJ | 54405699.152 pJ | **0.000** |
+| `lenet_batched` | 127526606.480 pJ | 127526606.480 pJ | **0.000** |
+| `resnet_block` | 5424776.776 pJ | 5424776.776 pJ | **0.000** |
+
+The zero is exact rather than approximate because the energy is a linear function
+of counts that do not move: the MAC count, the scratchpad traffic and the DRAM
+traffic are identical with and without the pass, which is the same fact the
+instruction and cycle rows record.
+
+**What the pass would be worth where the intermediate did spill**, at this
+project's own DRAM coefficient of 512 pJ per 64 bit access:
+
+| Model | Fused intermediates | Elements | Round trip avoided | Share of the model's energy |
+|---|---|---|---|---|
+| `depthwise_separable` | 2 | 1536 | 786432 pJ | **46.11%** |
+| `dilated_stack` | 2 | 1091 | 559104 pJ | 17.41% |
+| `conv_bn_relu_stack` | 2 | 1024 | 524288 pJ | 15.07% |
+| `lenet` | 4 | 6508 | 3332096 pJ | 6.12% |
+| `resnet_block` | 1 | 512 | 262144 pJ | 4.83% |
+| `inception_block` | 0 | 0 | 0 pJ | 0.00% |
+
+So the honest statement is neither "fusion saves no energy" nor "fusion saves
+energy". It is: **on this machine it saves none, and the reason is the flat
+scratchpad rather than the pass**; on a machine whose intermediates spilled it
+would be worth up to 46 percent of a model's whole energy budget.
+`inception_block` has no fused intermediate at all, because its convolutions feed
+a concatenation rather than an activation, which is the multiple use guard below
+doing its job.
+
+`docs/NUMBERS.md` carries both tables with the caveat that matters: only the per
+action coefficients are external, so a counting bug in the simulator would
+propagate straight into this argument.
+
 ### Before and after
 
 ```mlir
