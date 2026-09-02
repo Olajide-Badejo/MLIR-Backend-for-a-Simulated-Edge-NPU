@@ -674,6 +674,52 @@ jobs:
           python3 scripts/build-model-ir.py
           python3 scripts/check-reachability.py
 
+      # ---- the external cross validation tools. OFF at P11, and it says so. --
+      #
+      # **Section 19.0's rule is that a step which is off says so in the run
+      # log**, because silence and success must not look alike. This is that
+      # line for the three tools P11 added, and the reasoning is recorded here
+      # rather than in a commit message somebody would have to go looking for.
+      #
+      # SCALE-Sim and Accelergy are not in the CI image, whose digest is pinned
+      # at P0 and which republishing is a P0 decision rather than a P11 one.
+      # Both install from source, Accelergy's plug ins need a CACTI build, and
+      # SCALE-Sim needs the numpy 2 patch of D-0044. None of that belongs inside
+      # a per pull request job.
+      #
+      # **Nothing is lost by leaving it off**, and that is the part worth
+      # checking rather than asserting. The tests that need a tool skip through
+      # `pytest.importorskip`, so they are reported as skips in the `pytest`
+      # step above rather than as passes. `regression-baseline --check` needs
+      # neither tool: the energy coefficients are recorded in the baseline at
+      # record time and `--check` recomputes each cell's energy against those,
+      # so an energy drift in CI is a drift in the counts, which is the thing
+      # that can actually move here.
+      #
+      # **The trigger to switch it on** is the CI image gaining the tools, which
+      # is a `llvm-image.yml` change and a new digest. At that point this step
+      # becomes `python3 experiments/roofline.py` plus
+      # `python3 experiments/scalesim_export.py` over the committed cells, and
+      # the activation is proven red first per Section 19.1 by perturbing one
+      # committed `simulated_cycles` below its roofline bound.
+      - name: "external cross validation (activation table: P11, off)"
+        run: |
+          set -euo pipefail
+          echo "external: OFF at P11. SCALE-Sim and Accelergy are not in this"
+          echo "external: image, so experiments/roofline.py,"
+          echo "external: experiments/scalesim_export.py and"
+          echo "external: experiments/accelergy_energy.py are run on the"
+          echo "external: development machine and their answers are committed in"
+          echo "external: experiments/results/."
+          if python3 -c "import scalesim" 2>/dev/null; then
+            echo "::error::scalesim is importable in this image."
+            echo "external: this step is OFF because the tools are absent. If"
+            echo "external: they are present, the step should be ON and running"
+            echo "external: them, not printing that it is not."
+            exit 1
+          fi
+          echo "external: confirmed absent, which is what this step asserts."
+
       # ---- regression-baseline --check. ON at P9b. -------------------------
       #
       # **Why it was not a step until now, and what changed.** P8 and P9 both

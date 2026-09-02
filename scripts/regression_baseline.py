@@ -78,19 +78,39 @@ GOLDEN_DIR = BASELINE_DIR / "golden"
 #: rather than read, which is the point of the version: at version 1 a reader
 #: would find fourteen cells where there are forty two and report twenty eight
 #: of them as regressions from nothing.
-SCHEMA_VERSION: Final[int] = 2
+#: **3 at P11**, which is the bump Section 17.6 asks for when the energy fields
+#: arrive, declared in `docs/BREAKING_CHANGES.md` before the commit that caused
+#: it. What changed: `energy` left `absent_fields`, every cell gained
+#: `energy_pj_per_inference`, and the manifest gained `technology_node`,
+#: `registered_estimators` and `energy_per_action_pj`. A version 2 baseline is
+#: refused rather than read.
+SCHEMA_VERSION: Final[int] = 3
 
 #: The fields Section 17.6 names and this phase cannot compute, with the phase
 #: that adds each. Recorded in the file itself, so a reader of a P9 baseline at
 #: P14 is told why the field is missing rather than left to infer it.
 #:
 #: `per_level` was here at P8 and left at P9 with the levels themselves.
-ABSENT_FIELDS: Final[dict[str, str]] = {
-    "energy": (
-        "P11, when Accelergy lands. A baseline that claimed energy before then "
-        "would be recording a number no phase had computed."
-    ),
-}
+#: `energy` was here from P8 and left at P11 with Accelergy.
+#:
+#: **Empty is a legitimate state and is not the same as absent.** The key stays
+#: in the recorded file carrying `{}`, which says "this baseline claims every
+#: field the schema has" rather than "nobody wrote this down".
+ABSENT_FIELDS: Final[dict[str, str]] = {}
+
+#: The technology node the recorded energy is at, from the energy module's one
+#: home rather than restated here.
+#:
+#: **Why the baseline records the per action table and not just the totals.**
+#: `--check` re-runs everything and compares, and it runs in CI, where Accelergy
+#: is not installed. Recomputing the energy there would either need the tool or
+#: silently skip the field. So the coefficients are recorded **once**, at record
+#: time, and `--check` recomputes each cell's energy from the current action
+#: counts against the **recorded** coefficients. That makes the energy field a
+#: drift check on the counts, which is the thing that can move, and makes a
+#: coefficient change visible as a manifest difference rather than as a hundred
+#: cell differences with no cause.
+ENERGY_COMPONENTS: Final[tuple[str, ...]] = ("mac_array", "scratchpad", "main_memory")
 
 #: The GoogleTest binaries, in the order the CI job runs them.
 GTEST_BINARIES: Final[tuple[str, ...]] = (
@@ -555,6 +575,18 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                         "dram_bytes_read": statistics["dram_bytes_read"],
                         "dram_bytes_written": statistics["dram_bytes_written"],
                         "macs": statistics["macs"],
+                        # The scratchpad port's traffic, recorded from P11
+                        # because it is what Accelergy's scratchpad action
+                        # counts are and the energy field below is computed
+                        # from it. `effective_macs` is deliberately not here:
+                        # Section 5.5 keeps it out of the energy path and the
+                        # cheapest way to keep it out is not to record it.
+                        "scratchpad_elements_read": statistics[
+                            "scratchpad_elements_read"
+                        ],
+                        "scratchpad_elements_written": statistics[
+                            "scratchpad_elements_written"
+                        ],
                         "max_abs_error_vs_onnxruntime": worst,
                         # Section 17.6's per level field and P9's own gate
                         # clause: how far this level's answer sits from the
@@ -615,11 +647,107 @@ def git_sha() -> str:
     return completed.stdout.strip() or "unknown"
 
 
-def measure() -> tuple[dict[str, Any], dict[str, Any]]:
+def energy_tables(cells: list[dict[str, Any]]) -> tuple[dict[str, Any], str, list[str]]:
+    """Accelergy's per action coefficients, one table per distinct budget.
+
+    Run once, at record time, and recorded in the baseline so that `--check` can
+    recompute every cell's energy without the tool. See `ENERGY_COMPONENTS` for
+    why that is the arrangement rather than re-running Accelergy in CI.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "experiments"))
+    # Imported here rather than at module scope, and by path rather than as a
+    # package, because `experiments/` is a directory of scripts and not an
+    # importable package: `--check` must work without it on `sys.path` and
+    # without Accelergy installed at all.
+    import accelergy_energy  # type: ignore[import-not-found]
+
+    tables: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="npu-baseline-energy-") as directory:
+        estimator = accelergy_energy.Estimator(Path(directory))
+        for cell in cells:
+            budget = str(int(cell["budget_bytes"]))
+            if budget in tables:
+                continue
+            estimate = estimator.estimate(
+                {
+                    "cell": {
+                        "name": f"baseline-{budget}",
+                        "scratchpad_budget_bytes": int(cell["budget_bytes"]),
+                    },
+                    "simulation": {
+                        "macs": int(cell["macs"]),
+                        "scratchpad_elements_read": int(
+                            cell["scratchpad_elements_read"]
+                        ),
+                        "scratchpad_elements_written": int(
+                            cell["scratchpad_elements_written"]
+                        ),
+                        "dram_bytes_read": int(cell["dram_bytes_read"]),
+                        "dram_bytes_written": int(cell["dram_bytes_written"]),
+                    },
+                }
+            )
+            tables[budget] = {
+                component: dict(estimate.energy_per_action_pj[component])
+                for component in ENERGY_COMPONENTS
+            }
+        return tables, accelergy_energy.TECHNOLOGY_NODE, estimator.registered
+
+
+def energy_of(cell: dict[str, Any], tables: dict[str, Any]) -> float:
+    """One cell's picojoules per inference, from its counts and one table.
+
+    The counts are this project's own and the coefficients are Accelergy's, which
+    is Section 16.4's honest division: only the coefficients are external, and
+    every counting bug in the simulator propagates straight into this number.
+
+    `macs` is **raw**. Section 5.5 forbids the energy path from seeing
+    `effective_macs`, and the baseline does not record it, so the wrong figure is
+    not merely unused here but unavailable.
+    """
+    table = tables[str(int(cell["budget_bytes"]))]
+    dram_access_bytes = 8
+    for label in ("dram_bytes_read", "dram_bytes_written"):
+        if int(cell[label]) % dram_access_bytes:
+            raise SystemExit(
+                f"baseline cell {cell_key(cell)} moved {cell[label]} bytes, which "
+                f"is not a whole number of {dram_access_bytes} byte DRAM "
+                f"accesses. Rounding would invent or discard an access."
+            )
+    return (
+        table["mac_array"]["mac"] * int(cell["macs"])
+        + table["scratchpad"]["read"] * int(cell["scratchpad_elements_read"])
+        + table["scratchpad"]["write"] * int(cell["scratchpad_elements_written"])
+        + table["main_memory"]["read"]
+        * (int(cell["dram_bytes_read"]) // dram_access_bytes)
+        + table["main_memory"]["write"]
+        * (int(cell["dram_bytes_written"]) // dram_access_bytes)
+    )
+
+
+def measure(
+    energy_from: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Everything the baseline records.
+
+    `energy_from` is the coefficient table a previously recorded baseline
+    carries. `--check` passes it so the energy is recomputed against the same
+    coefficients rather than against a tool that may not be installed; recording
+    passes nothing and runs Accelergy.
+    """
     with tempfile.TemporaryDirectory(prefix="npu-baseline-") as directory:
         work = Path(directory)
         suites = collect_suites(work)
         cells, goldens = collect_cells(work)
+
+    if energy_from is None:
+        tables, node, estimators = energy_tables(cells)
+    else:
+        tables = energy_from["energy_per_action_pj"]
+        node = energy_from["technology_node"]
+        estimators = energy_from["registered_estimators"]
+    for cell in cells:
+        cell["energy_pj_per_inference"] = energy_of(cell, tables)
 
     frontend = _frontend()
     baseline = {
@@ -628,6 +756,12 @@ def measure() -> tuple[dict[str, Any], dict[str, Any]]:
         "generator_version": frontend.GENERATOR_VERSION,
         "tool_versions": tool_versions(),
         "absent_fields": ABSENT_FIELDS,
+        # Section 16.4's pinned node, and the estimator list Section 16.1 asks
+        # for: two runs at the same Accelergy sha with different plug ins are two
+        # different measurements.
+        "technology_node": node,
+        "registered_estimators": estimators,
+        "energy_per_action_pj": tables,
         # The levels this baseline covers, as a field rather than as something a
         # reader infers by grouping the cells. *Added at P9.* It is what makes
         # "the baseline records -O0 only" and "the baseline records all three"
@@ -869,7 +1003,11 @@ def check() -> int:
         return 2
 
     recorded = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-    current, goldens = measure()
+    # The recorded coefficients, so that `--check` needs no Accelergy. A
+    # coefficient that moved shows up as a manifest difference rather than as a
+    # hundred unexplained cell differences, which is the more readable failure
+    # and the one that names its own cause.
+    current, goldens = measure(energy_from=recorded)
     drift = compare(recorded, current, goldens)
     notes = oracle_notes(recorded, current)
 
