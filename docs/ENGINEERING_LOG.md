@@ -4520,3 +4520,325 @@ output: **whatever reads an external tool's numbers has to carry that tool's
 precision alongside them**, or every comparison downstream silently assumes an
 exactness that was never there. SCALE-Sim's cycle counts and Accelergy's energy
 figures will arrive through exactly this kind of channel.
+
+## 2026-09-02 Phase P11: the roofline first, and what it turned out to be worth
+
+Section 16.6 says to build the roofline before the other three tools, because it
+is the frame they are presented inside and building the frame after the pictures
+is how the pictures end up framing themselves. So it went first, before either
+external tool had finished installing, and it needed nothing from them.
+
+### The per layer number had to be reconstructed, and then checked
+
+`Stats` reports the program's totals. The roofline wants a bound per layer and
+the SCALE-Sim exporter wants the shape of every convolution, and neither is in a
+result file. So `python/npu_frontend/npuisa_walk.py` walks the allocated
+`npuisa` module and charges each operation through the Python mirror of
+`CostModel.h`, which is one walker for both consumers rather than two sets of
+shapes to keep in agreement.
+
+A reconstruction is worth nothing until it is checked against the thing it
+reconstructs, so `check_against_result` compares the walk with the cell: raw
+MACs, DRAM bytes read and written, and the instruction count exactly, because
+those are counts on both sides and a band on a count hides the disagreement it
+was added to tolerate. Then `effective_macs`, `utilization` and `delta` within a
+band derived from double accumulation, because those three are what actually
+exercise the convolution charge. `macs` would agree even if both occupancy terms
+had been dropped.
+
+`conv2d_charge` was missing from the Python mirror and had been since P7. The
+C++ has had it all along. That is not a defect, because nothing had needed it and
+the mirror never claimed to carry it, but it is the shape of gap that becomes one
+the moment a phase needs the number: the mirror test compared constants and one
+matmul, so a convolution charge could have drifted for four phases without a
+single test noticing. It now reproduces the recorded `effective_macs`,
+`utilization` and `delta` of four real cells exactly.
+
+### The first roofline run was red, and the roofline was wrong
+
+Every matmul in `lenet` came out below its bound, by a factor of three. The
+reading that would have been convenient is that the cost model charges too little
+for a matmul. The reading that is true is that the comparison had two different
+quantities in it: `node_linear` charges 3404 cycles for the arithmetic over a
+400 by 120 weight matrix, and the 192480 bytes of that matrix take 12030 cycles
+to move. The bytes were not moved faster than the interconnect. They were moved
+by a `dma_load` the comparison had left out.
+
+Section 5.5 accumulates cycles on two independent ports and reports the later of
+them at `HALT`, so the time one layer occupies is the later of the array's charge
+for its arithmetic and the DMA port's charge for its bytes. Comparing the compute
+charge alone against a bound with a memory branch in it is comparing a compute
+time against a memory time. The fix is one `max`, and the wrong version is
+recorded here because it produced 175 confident red rows that looked exactly
+like a finding.
+
+### What the check is actually worth, said plainly
+
+Under the cost model of Section 5.5, `effective_macs` is **defined** as
+`cycles * peak`. So the compute branch of the roofline, `effective_macs / peak`,
+is identically the kernel's own cycle count, and the comparison is a tautology up
+to the four cycle issue overhead. The memory branch is no better placed: a
+transfer is charged bytes over bandwidth **plus** a descriptor, so it always
+costs strictly more than the bound its own bytes produce.
+
+**The roofline as specified cannot fail against this cost model.** Section 16.6
+warns that the compute branch is partly the cost model grading its own homework;
+the measurement is that both branches are, entirely. Writing that down is
+preferable to reporting 175 green cells as though they were 175 pieces of
+evidence.
+
+It is not worth nothing. It is a **regression** bound, and the phase it is
+waiting for is P13: double buffering and tiling are exactly the changes that
+could produce a charge no longer built from the traffic it moves, and the day one
+does, this check goes red for a real reason. Both halves of the tautology are
+asserted in `test/Python/test_roofline.py` rather than only described, so the day
+either stops holding a test says so instead of a docstring going quietly out of
+date.
+
+### Numbers
+
+175 cells, 550 MAC bearing layers. 175 layers and 61 cells are bound by the
+memory branch and the rest by the compute branch. The tightest layer in the suite
+is `lenet`'s first convolution at 0.000635 headroom over its compute bound, which
+is the issue overhead and nothing else, which is what the tautology predicts.
+
+## 2026-09-02 Phase P11: two external tools, and both of them lie by exiting zero
+
+The install was started before anything else in the phase, because Section 23
+says P11 blocks on it entirely. It took under two minutes of wall clock and then
+cost most of a session anyway, for reasons that had nothing to do with download
+time.
+
+### SCALE-Sim does not run
+
+Not on this project's topology. On **its own shipped example**, at the pinned
+sha, on every upstream branch:
+
+```
+self.total_cycles = int(max(ofmap_serviced_cycles))
+TypeError: only 0-dimensional arrays can be converted to Python scalars
+```
+
+numpy 2 removed `int()` on arrays of rank one or more, and three expressions in
+the tool use it. The choice was between moving numpy, which would make all 175
+committed results describe an environment that no longer exists, and a three
+expression patch to the install. Ubuntu 26.04 ships CPython 3.14 only and no
+numpy 1.x wheel exists for it, so the second interpreter that would have avoided
+the choice was not available. D-0044 carries it. Every manifest now records
+`scalesim_installed_tree_sha256` beside the upstream sha, so the record says the
+tool was modified rather than showing a sha that does not describe the code that
+ran.
+
+### And both tools report failure by exiting zero
+
+While measuring the above, the tool was run with a missing input file:
+
+```
+ERROR: scalesim.scale.py: Layout file not found
+Exiting
+```
+
+Exit status **0**. `scale_sim.set_params` calls the builtin `exit()`, which is
+status zero, so a hard input error and a successful run are reported the same
+way. An uncaught exception exits 1, which makes the two failure modes report
+differently from each other, which is worse than either.
+
+Accelergy does the same thing in a different place. Its own shipped basic example
+crashes on this install, prints `Accelergy has encountered an error and crashed`,
+and exits **0**; other failures exit 255.
+
+**This is D-0040 through D-0043's shape arriving from outside the project.** The
+lesson those four left for P11 was that whatever reads an external tool's numbers
+has to carry that tool's precision alongside them. The stronger version, which
+this phase learned the hard way, is that it has to carry the tool's **failure
+modes** too, and that an exit status is a channel that loses information the same
+way a rounded figure is. So neither wrapper reads a status. SCALE-Sim's requires
+`COMPUTE_REPORT.csv` to exist, to carry the header the parser was written
+against, and to hold exactly one row per exported layer. Accelergy's requires
+three output files and every component it asked about to appear in each. Both
+raise with the tool's own stdout and stderr, because the tool explains itself
+better than a paraphrase would.
+
+### Accelergy 0.4 ships no primitive component library
+
+`~/npu-venv/share/accelergy/primitive_component_libs` does not exist. A primitive
+component therefore has no declared action list, the energy reference table comes
+out as `tables: []`, and the energy calculator then asserts that it cannot find
+an entry for the first component. That is why the architecture description is
+three compound classes with their actions written out rather than three bare
+primitives, and the docstring says so where somebody would otherwise simplify it
+back.
+
+### The comparison had to be made honest before it meant anything
+
+The first SCALE-Sim export copied the activation's own height and width across.
+SCALE-Sim's topology has no padding field and no batch field and this machine has
+both, so the two tools were being charged for different amounts of arithmetic,
+and every divergence figure would have carried that difference without naming it.
+The extents are now derived from the output positions instead, so SCALE-Sim's own
+output size formula produces exactly this layer's output count with the batch
+folded into the row dimension, which is what the cost model of Section 5.5 does.
+
+Two checks hold that in place and one of them can fail. `check_macs` asserts the
+exported topology implies the MAC count this project charged.
+`check_the_same_arithmetic` reconciles SCALE-Sim's **own** utilization figure
+against that count, which closes the loop from the other side: the export
+describes this program, and the tool agreed about what it was given. Without
+those, a divergence figure could be two tools answering about two different
+layers, and it would have a plausible size and no cause.
+
+### The decomposition counted one effect twice
+
+`dilated_stack` came out with a residual of minus 1838 cycles against named terms
+of plus 1524 and minus 1410. A decomposition whose residual is the same order as
+its largest term has counted something twice, and it had: the fragmentation term
+was computed against the dilated topology, which does three times the multiplies,
+so it absorbed the dilation approximation a second time. Every term except the
+dilation one is now taken from the arithmetic matched run, and the residual is
+zero on every cell.
+
+**The residual being zero is not a result and the module says so.** The terms are
+a partition of the difference, not a fit to it, so a nonzero residual would mean
+cycles were lost between them. The check that can actually fail is
+`check_the_same_arithmetic`.
+
+### What the comparison found
+
+D-0045, and it is the thing cross validation exists for: this project charges the
+array's weight preload **once per instruction** and SCALE-Sim charges it **per
+fold**. On `resnet_block`'s 3 by 3 convolution the two accounts differ by about a
+factor of three. It is not fixed here. Retuning a cost model against an external
+tool invalidates every ablation already recorded, and Section 16.5 states that
+rule for ZigZag in the same words. P13 gets the reproduction.
+
+### The prediction was mostly wrong
+
+Direction wrong on five of seven models, all three magnitude bands wrong, both
+rank fidelity figures wrong, the coverage floor on `lenet` wrong. What it got
+right was the mechanism behind the widest positive gaps, the treatment of
+pooling, and the existence of a fragmentation disagreement.
+
+The entry was not edited. That is the whole of Section 17.8 and it is worth
+saying plainly: a prediction written before the measurement, that turned out to
+be mostly wrong, and that is answered as written, is more informative than a
+prediction that was right, because the places it is wrong are where this project
+learned something.
+
+### The fp32 MAC coefficient fails the sanity check and is reported failing
+
+49.286 pJ against a published 4.6 pJ for a multiply plus an add at 45 nm, a
+factor of 10.71, where Section 16.4 asks for within an order of magnitude. The
+cause is identifiable and is not this project: Aladdin's number is a synthesised
+three stage pipelined unit at a 1 ns clock with its registers, and the published
+figure is a combinational datapath. The scratchpad and DRAM coefficients both
+pass.
+
+The bound was not widened. The test pins the measured value so that it moving is
+a failure, and separately asserts the ratio is still above ten so that
+`docs/NUMBERS.md` going out of date is a failure too. And `docs/NUMBERS.md` says
+what the overstatement means for every conclusion drawn from these numbers: at
+the published coefficient the scratchpad would be the largest consumer on every
+model in the suite, so nothing in this project may rest on the array being
+dominant.
+
+### Two smaller things worth recording
+
+A DRAM byte count that is not a whole number of accesses raised, on the reasoning
+that rounding must never invent or discard one. `dilated_stack` moves 5004 bytes,
+because 1251 floats is 5004 bytes, and the refusal was reading a remainder as a
+bug. A DRAM cannot fetch part of a word, so a partial access is paid in full and
+the count rounds up.
+
+And a coverage threshold failed the run on `lenet` at 0.9548, quoting the
+prediction's own falsifier. The exporter is representing nothing it should not.
+A covered layer's cycles are the later of its compute and the DMA that feeds it,
+on both sides, and `lenet`'s matmuls are dominated by loading a 400 by 120 weight
+matrix. The op fraction is 0.208 and is the figure the clause was reaching for.
+The threshold went; both fractions and the explanation stayed.
+
+### One flake, recorded because it will recur
+
+The first re-record run died at cell 74 on the `--mlir-timing` cross check:
+`NPUFuseBias` at 0.3000 ms against the instrumentation's 0.0843, a gap of 0.2157
+against a bound of 0.2000. The machine was running SCALE-Sim in another process
+at the time. Two subsequent runs on a quiet machine reported worst gaps of 0.1577
+and 0.1177 ms and passed. The bound is D-0043's and is principled; it is also
+sensitive to load, and the suite should not be run beside the external tools.
+
+## 2026-09-03 D-0046: the phase was green only where the machine was special
+
+The first CI run of this branch was red in three jobs. One cause, and it is one
+this project has now met three times.
+
+I installed two external tools on this machine and then, without deciding to,
+wrote three things that assume they are there. A test of the **budget gate** and
+a test of **rerun determinism** both drove the whole harness, so both invoked
+Accelergy, so both died on `FileNotFoundError: 'accelergy'` in an image that has
+never had it. A `# type: ignore[import-untyped]` on the `scalesim` import was
+correct here and wrong there **twice**: the error that fires without the package
+is `import-not-found`, which that code does not cover, and `warn_unused_ignores`
+then reports the ignore itself. And the coverage job was the same two tests
+again.
+
+**None of it was visible locally, and that is the whole shape.** D-0032 was three
+copies of a tool lookup where one failed and two skipped. D-0040 was seven tests
+marked slow that CI had never run. This is both at once: tests that could only
+pass where the author's machine was special, and no mechanism anywhere to say
+which environments are supposed to have the tools.
+
+### The fix is a policy, not three patches
+
+`test/Python/tools.py` already owns this project's answer to "the tool is not
+here": **skip when nobody promised it, fail when somebody did.** That file now
+carries the same rule for the external tools, under `NPU_EXTERNAL_TOOLS`. A tool
+counts as reachable only when the module imports **and** its binary is on
+`PATH`, because Accelergy is driven as a subprocess and an importable package
+with no binary is a tool this project cannot actually run. Reporting that as
+present is how the failure moved from a readable skip to a `FileNotFoundError`
+in the middle of a benchmark.
+
+The two harness tests now pass `--skip-external`, which is Section 16.4's opt out
+and exists for exactly this. What that gives up is the determinism of the P11
+fields, so it is recovered rather than lost:
+`test_a_rerun_reproduces_the_external_fields_too` runs the same comparison with
+those fields included and is guarded by the policy above. And because two tests
+now depend on a flag, the flag got its own contract test: the fields are present
+and null, every reason names `--skip-external`, and `values_of` still refuses
+them. A flag two tests rely on and nobody checks is the next entry in this file.
+
+mypy gets a per module `ignore_missing_imports` override for `scalesim` and the
+line level ignore goes. **No global strictness setting moved**, which was the
+constraint worth keeping: the honest fix for an import that resolves in one
+environment and not the other is to say so once about that module, not to relax
+what the rest of the project is checked against. The first version of the
+override also listed `scalesim.*`, `accelergy` and `accelergy.*` on the reasoning
+that the neighbours would need it too, and `warn_unused_configs` reported all
+three as unused sections. It is one module now, which is that setting doing its
+job.
+
+### Rehearsing it, which is the part that makes this finished
+
+A defect found by an environment I cannot run is only fixed when I can run that
+environment. A meta path finder that refuses `scalesim` and `accelergy`, plus a
+`PATH` without the venv's `bin`, reproduces both observable facts of the CI
+image. mypy needs its own reproduction because it resolves imports statically
+rather than at runtime, and `--python-executable /usr/bin/python3` is what makes
+it see what CI sees. Both reproduced the exact failures before anything was
+changed, which is the only order in which a fix means anything.
+
+After: **997 passed, 29 skipped, 0 failed** without the tools; **1008 passed, 18
+skipped** with them; mypy clean in both; and with `NPU_EXTERNAL_TOOLS=1` set in
+the tool free environment the guard **fails** naming the variable rather than
+skipping, so the third branch of the policy is proven rather than asserted.
+
+**And the coverage cluster was checked rather than assumed.** Python line
+coverage without the tools was 91.5561 percent, the same figure as with them,
+because `--cov=python/npu_frontend` measured the frontend package and the tool
+driven code lives in `experiments/`. Nothing was hiding behind the two failures.
+That measurement is also what made the next paragraph unavoidable.
+
+**The standing lesson gains a line.** P10 left "whatever reads an external tool's
+numbers has to carry that tool's precision". P11 added "and its failure modes".
+This adds the one before both: **an environment that has a tool is not the
+environment the project ships to**, and a suite that has only ever been green in
+the richer one has not been tested.

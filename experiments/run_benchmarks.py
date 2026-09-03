@@ -194,6 +194,12 @@ from npu_frontend.results import (  # noqa: E402
 from npu_frontend.tolerances import ABSOLUTE_TOLERANCE  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
+sys.path.insert(0, str(REPO_ROOT / "experiments"))
+
+import accelergy_energy  # noqa: E402
+import roofline  # noqa: E402
+import scalesim_export  # noqa: E402
+
 #: Section 2's budget, in minutes, and the gate this file enforces.
 DEFAULT_BUDGET_MINUTES = 90.0
 
@@ -488,6 +494,24 @@ class Runner:
         #: only that it did.
         self.worst_timing_gap_ms = 0.0
         self.worst_timing_gap_pass = ""
+        #: Why the per pass timing gap bound did not run, when it did not. Empty
+        #: when it did. Reported at the end of the run, because Section 19.0's
+        #: rule is that a check which is off says so in the log.
+        self.timing_bound_skipped = ""
+        #: The allocated IR of every cell this runner measured, by cell name.
+        #: The P11 groups are filled from it after the run rather than during it,
+        #: for the same reason the deltas are: the run order is randomized.
+        self.allocated_ir: dict[str, str] = {}
+        #: The commit the divergence prediction landed in, resolved once. It
+        #: refuses in a shallow checkout rather than returning the graft commit,
+        #: which is D-0041.
+        self.divergence_sha = landing_sha(DIVERGENCE_PREDICTION)
+        if self.divergence_sha is None:
+            raise BenchmarkError(
+                f"the prediction {DIVERGENCE_PREDICTION!r} is not in any commit, "
+                f"so no cell can name a prediction_sha for the SCALE-Sim "
+                f"numbers it now carries."
+            )
 
     # ---- the pieces a cell needs ----------------------------------------
 
@@ -568,6 +592,8 @@ class Runner:
                 check = cross_check_against_mlir_timing(
                     records, program.mlir_timing_text
                 )
+                if check.upper_bound_skipped:
+                    self.timing_bound_skipped = check.upper_bound_skipped
                 if check.worst_gap_ms > self.worst_timing_gap_ms:
                     self.worst_timing_gap_ms = check.worst_gap_ms
                     worst = max(check.rows, key=lambda row: row[3])
@@ -597,6 +623,11 @@ class Runner:
             for name, count in records[-1].ops_after.items()
             if name.startswith("npuisa.")
         }
+        # Kept so the P11 groups can be filled after the run without recompiling.
+        # The roofline and the SCALE-Sim export both walk this text, and a second
+        # compilation to get it back would be a second program to argue was the
+        # same one.
+        self.allocated_ir[cell.name] = program.stages["npuisa"]
 
         return self._assemble(
             cell=cell,
@@ -710,6 +741,12 @@ class Runner:
             "effective_macs": float(statistics["effective_macs"]),
             "utilization": float(statistics["utilization"]),
             "delta": float(statistics["delta"]),
+            # The scratchpad port's traffic, which is what Accelergy's scratchpad
+            # action counts are. Recorded from P11 with the energy path.
+            "scratchpad_elements_read": int(statistics["scratchpad_elements_read"]),
+            "scratchpad_elements_written": int(
+                statistics["scratchpad_elements_written"]
+            ),
             "int8_macs": int(statistics["int8_macs"]),
             "spill_count": int(allocation["spill_count"]),
             "fragmentation_ratio": float(allocation["fragmentation_ratio"]),
@@ -853,6 +890,201 @@ def fill_deltas(results: dict[str, dict[str, Any]]) -> None:
         }
 
 
+# ---------------------------------------------------------------------------
+# The P11 groups, which need the program rather than only its statistics.
+# ---------------------------------------------------------------------------
+
+
+#: The prediction the SCALE-Sim fields are evidence for. Every cell carries them,
+#: so every cell names it.
+DIVERGENCE_PREDICTION = "p11-scalesim-divergence"
+
+
+def opt_out_external(result: dict[str, Any]) -> None:
+    """Record the P11 fields as null with the reason Section 16.4 asks for.
+
+    Not the same thing as the tools being absent. A missing tool fails loudly
+    naming the dependency, which is what the exporters do; this is the explicit
+    opt out, and it says which one it is in the reason string so nobody reads a
+    declined measurement as a failed one.
+    """
+    for field in (
+        "roofline_bound_cycles",
+        "roofline_bound_cycles_per_layer",
+        "operational_intensity",
+        "roofline_verdict",
+    ):
+        result["roofline"].pop(field, None)
+        result["roofline"].pop(f"{field}_null_reason", None)
+        result["roofline"].update(null(field, cause="opted_out"))
+    for field in (
+        "scalesim_cycles",
+        "scalesim_cycles_per_layer",
+        "scalesim_skipped",
+        "scalesim_approximations",
+        "scalesim_covered_cycle_fraction",
+        "scalesim_covered_op_fraction",
+        "energy_pj",
+        "energy_pj_per_component",
+        "area_mm2",
+        "area_mm2_per_component",
+        "technology_node",
+    ):
+        result["external"].pop(field, None)
+        result["external"].pop(f"{field}_null_reason", None)
+        result["external"].update(null(field, cause="opted_out"))
+    for field in ("energy_pj_per_inference", "edp"):
+        result["normalized"].pop(field, None)
+        result["normalized"].pop(f"{field}_null_reason", None)
+        result["normalized"].update(null(field, cause="opted_out"))
+    for field in ("technology_node", "tool_shas", "registered_estimators"):
+        result["manifest"].pop(field, None)
+        result["manifest"].pop(f"{field}_null_reason", None)
+        result["manifest"].update(null(field, cause="opted_out"))
+
+
+def fill_external(
+    result: dict[str, Any],
+    npuisa_text: str,
+    *,
+    estimator: accelergy_energy.Estimator,
+    directory: Path,
+    prediction_sha: str,
+) -> list[str]:
+    """The roofline, SCALE-Sim and Accelergy groups for one cell.
+
+    Returns the roofline violations, which Section 16.6 makes a failure of the
+    run rather than a note.
+
+    **Filling a field means deleting its null reason**, because
+    `validate_result` refuses a field carrying both and a half done fill is
+    therefore red rather than quietly partial. Each group is replaced whole for
+    that reason: updating the value and leaving the sibling behind is the exact
+    failure the validator exists to catch.
+    """
+    answer = roofline.roofline_for(result, npuisa_text)
+    result["roofline"] = answer.as_schema()
+
+    divergence = scalesim_export.divergence_for(result, npuisa_text, directory)
+    energy = estimator.energy(result)
+
+    external = divergence.as_schema()
+    external.update(
+        {
+            key: value
+            for key, value in energy.as_schema(
+                float(result["simulation"]["simulated_cycles"])
+            ).items()
+            if key not in ("energy_pj_per_inference", "edp")
+        }
+    )
+    result["external"] = external
+
+    result["normalized"] = {
+        "macs_per_dram_byte": result["normalized"]["macs_per_dram_byte"],
+        "units_convention": UNITS_CONVENTION,
+        "energy_pj_per_inference": energy.energy_pj,
+        "edp": energy.energy_pj
+        * float(result["simulation"]["simulated_cycles"])
+        * accelergy_energy.GLOBAL_CYCLE_SECONDS,
+    }
+
+    manifest = result["manifest"]
+    for field in ("technology_node", "tool_shas", "registered_estimators"):
+        manifest.pop(field, None)
+        manifest.pop(f"{field}_null_reason", None)
+    manifest["technology_node"] = accelergy_energy.TECHNOLOGY_NODE
+    manifest["tool_shas"] = external_tool_shas()
+    manifest["registered_estimators"] = estimator.registered
+
+    # Every cell now carries a SCALE-Sim number, so every cell is evidence for
+    # the divergence prediction. A cell that already names the P10 ablation
+    # prediction keeps it: `prediction_id` holds one entry, and the ablation
+    # deltas are the claim those cells were recorded to answer.
+    if result["prediction_id"] is None:
+        result["prediction_id"] = DIVERGENCE_PREDICTION
+        result["prediction_sha"] = prediction_sha
+
+    return divergence_findings(divergence) + answer.violations
+
+
+def divergence_findings(divergence: scalesim_export.CellDivergence) -> list[str]:
+    """What the SCALE-Sim comparison fails the run for, which is nothing.
+
+    **Section 16.3 pre-registers divergence bands and this does not enforce
+    them.** A band being exceeded is a finding to write up in `docs/NUMBERS.md`;
+    it is not a reason to fail a measurement run, whose job is to record what
+    happened. The prediction of Section 17.8 is answered by reading the recorded
+    numbers, not by a run refusing to record them.
+
+    **A coverage threshold was here for one revision and was wrong.** It failed
+    the run on `scalesim_covered_cycle_fraction` above 0.9, on the grounds that
+    the divergence prediction names that as evidence the exporter is representing
+    operations it has no systolic representation for. `lenet` measures 0.9548 and
+    the exporter is representing nothing it should not: the fraction is high
+    because a covered layer's cycles are the later of its compute and the DMA
+    that feeds it, on both sides of the comparison, and `lenet`'s three matmuls
+    are dominated by loading a 400 by 120 weight matrix. `scalesim_covered_op_fraction`
+    is 0.21 on the same cell and is the figure the prediction's clause was
+    reaching for. Both are recorded; `docs/NUMBERS.md` answers the clause with
+    both and with the reason. A check that fails a run for a number the exporter
+    is right about is worse than no check.
+
+    Kept as a function rather than deleted, because the SCALE-Sim comparison is
+    where a future genuinely run failing condition would go, and a caller that
+    already collects findings is easier to add one to than one that does not.
+    """
+    del divergence
+    return []
+
+
+def external_tool_shas() -> dict[str, str]:
+    """The tool provenance Section 16.1 asks the manifest to carry.
+
+    Git shas rather than installed metadata, because Accelergy is not on PyPI and
+    SCALE-Sim has no tagged releases, so reading installed metadata would record
+    nothing useful for two of the three. Read from the clones this project
+    installed from, and the installed SCALE-Sim tree's own hash beside its sha,
+    because `scripts/patch-scalesim.py` means the sha does not describe the code
+    that ran. D-0044.
+    """
+    shas: dict[str, str] = {}
+    root = Path(os.environ.get("NPU_EXTERNAL_DIR", str(Path.home() / "npu-external")))
+    for name in (
+        "scale-sim-v2",
+        "accelergy",
+        "accelergy-library-plug-in",
+        "accelergy-aladdin-plug-in",
+        "accelergy-cacti-plug-in",
+        "accelergy-table-based-plug-ins",
+    ):
+        clone = root / name
+        if not (clone / ".git").exists():
+            raise BenchmarkError(
+                f"the clone of {name} is not at {clone}, so this run cannot "
+                f"record which commit of it produced the numbers. Section 16.1 "
+                f"records these by git sha, and a manifest that omitted one "
+                f"would carry an external figure traceable to nothing. Set "
+                f"NPU_EXTERNAL_DIR if the clones live elsewhere."
+            )
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(clone),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            raise BenchmarkError(
+                f"`git rev-parse HEAD` in {clone} exited "
+                f"{completed.returncode}.\n\n{completed.stderr.strip()}"
+            )
+        shas[name] = completed.stdout.strip()
+
+    shas["scalesim_installed_tree_sha256"] = scalesim_export.installed_tree_sha256()
+    return shas
+
+
 def budget_verdict(elapsed_seconds: float, budget_minutes: float) -> str | None:
     """The Section 2 gate, as a function so a test can reach it without a run.
 
@@ -943,6 +1175,17 @@ def main(argv: list[str] | None = None) -> int:
         help="redo cells that exist and validate, instead of skipping them",
     )
     parser.add_argument(
+        "--skip-external",
+        action="store_true",
+        help=(
+            "do not run the roofline, SCALE-Sim or Accelergy, and record their "
+            "fields as null with a reason saying this flag was used. Section "
+            "16.4: a missing external tool fails loudly naming the dependency, "
+            "and an explicit opt out records a null plus a reason. This is the "
+            "second of those and never a way to make the first quiet."
+        ),
+    )
+    parser.add_argument(
         "--allow-stale",
         action="store_true",
         help=(
@@ -1009,13 +1252,54 @@ def _run(arguments: argparse.Namespace) -> int:
             results[cell.name] = runner.run(cell, position, arguments.run_order_seed)
             measured += 1
 
+        # Section 16.6, 16.3 and 16.4, filled after the loop rather than inside
+        # it, for the same reason the deltas are: the cell that a figure needs
+        # may not have run yet. Inside the temporary directory, because the
+        # external tools want somewhere to write and their traces are large.
+        external_findings: list[str] = []
+        if arguments.skip_external:
+            for result in results.values():
+                opt_out_external(result)
+            print(
+                "run-benchmarks: --skip-external, so the roofline, SCALE-Sim and "
+                "Accelergy fields are null with a reason rather than absent. "
+                "Section 16.4 asks for the opt out to be recorded rather than to "
+                "look like a tool that could not be found."
+            )
+        else:
+            estimator = accelergy_energy.Estimator(Path(directory) / "accelergy")
+            for index, (name, result) in enumerate(
+                tqdm(
+                    sorted(results.items()),
+                    unit="cell",
+                    desc="external",
+                    dynamic_ncols=True,
+                )
+            ):
+                text = runner.allocated_ir.get(name)
+                if text is None:
+                    raise BenchmarkError(
+                        f"cell {name} was reused from disk, so this run does not "
+                        f"have its program and cannot fill the P11 fields from "
+                        f"it. Re-record the whole suite with --force: Section "
+                        f"16.1's staleness rule and results_to_tex.py both "
+                        f"require the committed cells to come from one run."
+                    )
+                external_findings += fill_external(
+                    result,
+                    text,
+                    estimator=estimator,
+                    directory=Path(directory) / "scalesim" / f"cell{index}",
+                    prediction_sha=runner.divergence_sha,
+                )
+
     elapsed = time.perf_counter() - started
 
     fill_deltas(results)
     for result in results.values():
         write_result(result, results_dir)
 
-    findings = check_ablation_numerics(results)
+    findings = check_ablation_numerics(results) + external_findings
 
     print()
     print(f"run-benchmarks: {len(results)} cells, {measured} measured, {reused} reused")
@@ -1028,6 +1312,11 @@ def _run(arguments: argparse.Namespace) -> int:
             else ""
         )
     )
+    if runner.timing_bound_skipped:
+        print(
+            f"run-benchmarks: the per pass timing gap bound DID NOT RUN, "
+            f"because {runner.timing_bound_skipped}"
+        )
 
     # The number that replaces Section 2's 15 second planning figure. Printed
     # over the cells this run actually measured, because averaging in the reused

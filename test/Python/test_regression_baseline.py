@@ -213,6 +213,97 @@ def test_the_oracle_band_is_the_matrix_band_and_not_a_second_copy() -> None:
     assert baseline.oracle_bound() == ABSOLUTE_TOLERANCE
 
 
+def test_a_suite_count_that_differs_because_the_environment_does_is_not_drift(
+    empty_goldens: Path,
+) -> None:
+    """Two environments run different amounts of the same suite. CI run 33707070166.
+
+    *Added at P11.* The baseline is recorded on a machine with SCALE-Sim and
+    Accelergy and checked in an image without them, and thirteen tests that run
+    here skip there. Reading that as a regression makes the check red for having
+    less installed, which is not something a contributor can act on and is not a
+    number moving.
+
+    This is the treatment `max_abs_error_vs_onnxruntime` already gets above: a
+    quantity that legitimately differs between two machines is noted rather than
+    compared for equality.
+    """
+    recorded = minimal()
+    recorded["environment"] = {
+        "external_tools_reachable": True,
+        "scalesim_source_tree_present": True,
+    }
+    current = copy.deepcopy(recorded)
+    current["environment"] = {
+        "external_tools_reachable": False,
+        "scalesim_source_tree_present": False,
+    }
+    current["suites"]["check-npu"]["passed"] = 1
+    current["suites"]["check-npu"]["skipped"] = 1
+
+    assert baseline.compare(recorded, current, {}) == []
+
+    # And it is printed rather than discarded, because a comparison this script
+    # stopped making is a check that was switched off.
+    notes = baseline.suite_notes(recorded, current)
+    assert notes
+    assert any("environment" in note for note in notes)
+    assert any("2 -> 1" in note for note in notes)
+
+
+def test_the_same_environment_still_compares_its_counts_exactly(
+    empty_goldens: Path,
+) -> None:
+    """The half that must not be lost: a test silently starting to skip.
+
+    Within one environment the counts are still exact. Without this the fix
+    above would have switched off the check that catches D-0040's shape, a test
+    that stops running and takes its coverage with it.
+    """
+    recorded = minimal()
+    recorded["environment"] = {
+        "external_tools_reachable": True,
+        "scalesim_source_tree_present": True,
+    }
+    current = copy.deepcopy(recorded)
+    current["suites"]["check-npu"]["passed"] = 1
+    current["suites"]["check-npu"]["skipped"] = 1
+
+    drift = baseline.compare(recorded, current, {})
+    assert any("passed 2 -> 1" in line for line in drift), drift
+    assert any("skipped 0 -> 1" in line for line in drift), drift
+    assert baseline.suite_notes(recorded, current) == []
+
+
+def test_a_failure_is_drift_in_any_environment(empty_goldens: Path) -> None:
+    """`failed` is never environment dependent and is never excused by one."""
+    recorded = minimal()
+    recorded["environment"] = {"external_tools_reachable": True}
+    current = copy.deepcopy(recorded)
+    current["environment"] = {"external_tools_reachable": False}
+    current["suites"]["check-npu"]["failed"] = 1
+
+    drift = baseline.compare(recorded, current, {})
+    assert any("failed 0 -> 1" in line for line in drift), drift
+
+
+def test_a_baseline_without_an_environment_reads_as_the_developer_machine(
+    empty_goldens: Path,
+) -> None:
+    """Every baseline before P11 was recorded with the tools present.
+
+    Defaulting to that is the honest reading of an older file. Defaulting to
+    something that compared equal to everything would make the field decorative
+    the moment it was added.
+    """
+    older = minimal()
+    assert "environment" not in older
+    assert baseline.recorded_environment(older) == {
+        "external_tools_reachable": True,
+        "scalesim_source_tree_present": True,
+    }
+
+
 def test_a_deleted_test_is_drift(empty_goldens: Path) -> None:
     """The failure mode a suite count alone does not catch.
 
@@ -318,19 +409,35 @@ def test_the_committed_baseline_records_every_level_the_compiler_builds() -> Non
 
 
 def test_the_committed_baseline_names_its_absent_fields() -> None:
-    """Explicitly absent, with the phase that adds each.
-
-    Not zero, and not missing without explanation. A baseline that claimed
-    energy before P11 would be recording a number no phase had computed.
+    """Explicitly absent, with the phase that adds each, and empty when none are.
 
     `per_level` was here until P9 and left with the levels themselves, which is
     the removal Section 17.6 asks for in the same commit that adds the fields.
+    `energy` was here from P8 saying "P11, when Accelergy lands", and left at P11
+    the same way.
+
+    **Empty is not the same as absent.** The key stays in the recorded file
+    carrying `{}`, which says "this baseline claims every field the schema has";
+    a missing key would say "nobody wrote this down". So the assertion is on the
+    value being empty rather than on the key being gone.
     """
-    absent = committed()["absent_fields"]
-    assert set(absent) == {"energy"}
-    assert "P11" in absent["energy"]
-    for cell in committed()["cells"]:
-        assert not any("energy" in key for key in cell)
+    baseline = committed()
+    assert "absent_fields" in baseline
+    assert baseline["absent_fields"] == {}
+
+    # And the fields that entry held a place for are here now, on every cell and
+    # in the manifest. A baseline that emptied `absent_fields` without adding
+    # them would have removed the explanation rather than the gap.
+    assert baseline["technology_node"] == "45nm"
+    assert baseline["registered_estimators"]
+    assert baseline["energy_per_action_pj"]
+    for cell in baseline["cells"]:
+        assert cell["energy_pj_per_inference"] > 0.0
+        assert cell["scratchpad_elements_read"] >= 0
+        assert cell["scratchpad_elements_written"] >= 0
+        # Section 5.5: the energy path never sees the utilization scaled count,
+        # and the cheapest way to keep it out is not to record it here at all.
+        assert "effective_macs" not in cell
 
 
 def test_the_committed_baseline_records_this_phases_numerics_movement() -> None:

@@ -89,9 +89,18 @@ RESULTS_DIR: Final[Path] = REPO_ROOT / "experiments" / "results"
 #: not know rather than guessing what a missing field meant.
 #:
 #: **1 at P10**, which is the first version there is. The baseline of Section
-#: 17.6 is at its own version 2 and the two are unrelated numbers on unrelated
+#: 17.6 is at its own version and the two are unrelated numbers on unrelated
 #: files; they are not kept in step and nothing should try.
-SCHEMA_VERSION: Final[int] = 1
+#:
+#: **2 at P11**, declared in `docs/BREAKING_CHANGES.md` before the commit that
+#: caused it. What changed: `simulation` gained `scratchpad_elements_read` and
+#: `scratchpad_elements_written`, which the simulator has counted since P7 and
+#: which are exactly Accelergy's scratchpad action counts. Recording them is what
+#: makes an energy figure reconstructible from a committed cell rather than only
+#: reproducible by re-running the simulator. A version 1 file is refused rather
+#: than read, because a reader would otherwise find two absent keys and have to
+#: guess whether the design performed no scratchpad accesses.
+SCHEMA_VERSION: Final[int] = 2
 
 #: One MAC is two operations, and FLOPs is never reported for an integer cell.
 #: Section 16.1 requires this stated in the file rather than in a report nobody
@@ -322,6 +331,12 @@ SIMULATION_KEYS: Final[tuple[str, ...]] = (
     "effective_macs",
     "utilization",
     "delta",
+    # *Added at P11 with the energy path.* The traffic at the scratchpad port,
+    # counted as the logical size of each buffer an instruction names. They are
+    # Accelergy's scratchpad action counts and nothing else reads them, which is
+    # why they arrive with the phase that needed them rather than at P10.
+    "scratchpad_elements_read",
+    "scratchpad_elements_written",
     "int8_macs",
     "spill_count",
     "fragmentation_ratio",
@@ -507,6 +522,53 @@ NULL_REASONS: Final[dict[str, str]] = {
         "decoration."
     ),
 }
+
+#: The fields a run can deliberately decline to measure, and the one reason it
+#: gives when it does.
+#:
+#: **Section 16.4 asks for exactly this**: a missing external tool fails loudly
+#: naming the dependency, and an explicit opt out flag records a null plus a
+#: reason string. The two are different states and the difference is the whole
+#: point. A run that could not find Accelergy stops; a run that was told not to
+#: use it records a null saying so, and `values_of` then refuses to average that
+#: null into a table exactly as it refuses every other one.
+#:
+#: Generated rather than written out, because seventeen hand written strings
+#: saying the same thing is seventeen chances for two of them to differ.
+OPT_OUT_FIELDS: Final[tuple[str, ...]] = (
+    "roofline_bound_cycles",
+    "roofline_bound_cycles_per_layer",
+    "operational_intensity",
+    "roofline_verdict",
+    "scalesim_cycles",
+    "scalesim_cycles_per_layer",
+    "scalesim_skipped",
+    "scalesim_approximations",
+    "scalesim_covered_cycle_fraction",
+    "scalesim_covered_op_fraction",
+    "energy_pj",
+    "energy_pj_per_component",
+    "area_mm2",
+    "area_mm2_per_component",
+    "technology_node",
+    "energy_pj_per_inference",
+    "edp",
+    "tool_shas",
+    "registered_estimators",
+)
+
+NULL_REASONS.update(
+    {
+        f"{field}.opted_out": (
+            "this run was told not to compute it, with "
+            "`run_benchmarks.py --skip-external`. Section 16.4: a missing "
+            "external tool fails loudly naming the dependency, and an explicit "
+            "opt out records a null plus a reason. This is the second of those "
+            "two and never the first."
+        )
+        for field in OPT_OUT_FIELDS
+    }
+)
 
 #: The sentence Section 16.1 attaches to the two metrics it records and forbids
 #: ranking on. Carried in every file beside them, because a reader meets the

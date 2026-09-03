@@ -70,3 +70,30 @@ ABSOLUTE_TOLERANCE: Final[float] = 5e-5
 #: predicate in which a large `atol` hides a failed relative bound and a large
 #: `rtol` hides a failed absolute one.
 RELATIVE_TOLERANCE: Final[float] = 5e-6
+
+# ---------------------------------------------------------------------------
+# The roofline slack of Section 16.6, added at P11.
+#
+# A different quantity from the two above and kept apart from them for the
+# reason this module was created: two bands with different meanings sharing one
+# name is how one gets applied to the other's quantity. These bound a distance
+# between two answers; the one below bounds nothing but floating point rounding.
+# ---------------------------------------------------------------------------
+
+#: How far below its bound a cycle count may sit and still be read as at the
+#: bound rather than under it.
+#:
+#: **Derived from the representation, not chosen.** Both sides of the comparison
+#: are IEEE 754 doubles accumulated over the tiles of one instruction. The
+#: largest tile count in this suite is `lenet`'s 400 by 120 matmul, which folds
+#: into 25 times 8 tiles, so a few hundred additions rather than a few thousand;
+#: taking 10^4 as a generous ceiling and 2.22e-16 as the unit roundoff gives a
+#: relative error bound near 2.2e-12. This is 1e-9, three orders above that
+#: ceiling and six orders below the smallest divergence that would mean
+#: anything: a pass that produced cycles genuinely below a physical bound would
+#: be under it by percent, not by parts per billion.
+#:
+#: **It is a slack on rounding and never on a finding.** Section 16.6 fails the
+#: run on a cell below its bound. If a cell ever needs this widened to pass,
+#: that is the finding, and widening it would be deleting the finding.
+ROOFLINE_RELATIVE_SLACK: Final[float] = 1e-9

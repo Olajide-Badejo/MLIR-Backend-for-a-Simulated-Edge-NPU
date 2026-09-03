@@ -170,6 +170,62 @@ def gemm_charge(rows: int, reduction: int, columns: int, peak: int) -> ComputeCh
     )
 
 
+def conv2d_charge(
+    batch: int,
+    output_channels: int,
+    input_channels: int,
+    output_height: int,
+    output_width: int,
+    kernel_height: int,
+    kernel_width: int,
+    group: int,
+    peak: int,
+) -> ComputeCharge:
+    """The convolution's charge, expressed through ``gemm_charge``.
+
+    *Added at P11, because the roofline of Section 16.6 and the SCALE-Sim export
+    of Section 16.3 both need the charge one convolution carries and neither can
+    get it from `Stats`, which reports the program's total.* The C++ has had
+    ``conv2dCharge`` since P7; this is the missing half of the mirror, and
+    ``test_cost_model_mirror.py`` compares the two on the shapes the suite
+    actually contains rather than on a case chosen to be easy.
+
+    Per group the weight matrix is ``(input_channels / group) * kernel_height *
+    kernel_width`` by ``output_channels / group``, and the streamed row count is
+    ``batch * output_height * output_width``. Grouping is what makes a depthwise
+    layer expensive here: with ``group == C`` each group presents a single column
+    to a sixteen column array.
+
+    **Padded positions are counted**, because a weight stationary array is fed
+    the padding as zeros and the multiplies happen.
+
+    **Dilation does not appear**, and that is the model rather than an omission:
+    a dilated filter has the same tap count as an undilated one, so it presents
+    the same weight matrix to the array and costs the same. The extent it reaches
+    over changes what the DMA gathers, not what the array multiplies. Section
+    16.3 records the effective extent separately for SCALE-Sim, which models no
+    dilation at all and therefore needs one.
+    """
+    if group <= 0 or output_channels % group != 0 or input_channels % group != 0:
+        return ComputeCharge(0.0, 0, 0.0, 1.0, 1.0)
+
+    rows = batch * output_height * output_width
+    reduction = (input_channels // group) * kernel_height * kernel_width
+    columns = output_channels // group
+    per_group = gemm_charge(rows, reduction, columns, peak)
+
+    # Every group presents the same shape to the array, so the whole convolution
+    # is the group charge multiplied by the group count. The utilization and the
+    # delta are intensive quantities and do not multiply.
+    return ComputeCharge(
+        cycles=per_group.cycles * group,
+        macs=per_group.macs * group,
+        effective_macs=per_group.effective_macs * group,
+        utilization=per_group.utilization,
+        delta=per_group.delta,
+    )
+
+
 def overlap_fraction(dma_total: float, compute_total: float, total: float) -> float:
     """The fraction of the shorter timeline hidden underneath the longer one.
 

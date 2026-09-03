@@ -2317,3 +2317,345 @@ None.
 - **Verified.** 27 tests in `test_pass_instrumentation.py`, including the two new
   ones; ten runs against `build-coverage` with no failure and the numbers above;
   the full suite at 957 passed, 18 skipped.
+
+### D-0044 SCALE-Sim v3 does not run under numpy 2, and says so by exiting zero
+
+- **Found:** 2026-09-02, phase P11, on the first attempt to run the pinned tool,
+  before any export existed to blame.
+- **Status:** worked around, upstream unfixed. The workaround is
+  `scripts/patch-scalesim.py` and it is applied by hand rather than by anything
+  automatic.
+- **Reproduce.** The tool's own shipped example, at the pinned sha, in
+  `~/npu-venv`:
+
+  ```
+  python -m scalesim.scale \
+      -c configs/scale.cfg \
+      -t topologies/conv_nets/Resnet_test.csv \
+      -l layouts/conv_nets/test.csv -p /tmp/out
+
+  File ".../scalesim/memory/double_buffered_scratchpad_mem.py", line 307,
+      in service_memory_requests
+    self.total_cycles = int(max(ofmap_serviced_cycles))
+  TypeError: only 0-dimensional arrays can be converted to Python scalars
+  ```
+
+- **What is wrong.** Three expressions convert a numpy array to a Python integer
+  with the builtin `int`. numpy 2.0 removed that conversion for arrays of rank
+  one or more, and `~/npu-venv` has numpy 2.5.1. `read_buffer.py:423`,
+  `double_buffered_scratchpad_mem.py:279` and `:307`. Both code paths reach one
+  of them, so neither the estimate bandwidth mode nor the user bandwidth mode
+  runs. Checked against every upstream branch at the pinned sha, including
+  `origin/3.1`: none of them fixes it.
+
+- **The second half, and it is the one worth remembering.** While measuring the
+  above, the tool was also run with no layout file:
+
+  ```
+  ERROR: scalesim.scale.py: Layout file not found
+  Input file:./layouts/conv_nets/test.csv
+  Exiting
+  ```
+
+  Exit status **0**. `scale_sim.set_params` calls the builtin `exit()` on every
+  input validation failure, and `exit()` with no argument is status zero. So this
+  tool reports a hard input error the same way it reports a successful run. An
+  uncaught exception does exit 1, which makes the two failure modes report
+  differently from each other, which is worse than either.
+
+  **This is D-0040 through D-0043's shape, arriving from outside.** A channel
+  that loses information, read as though it had not. So
+  `experiments/scalesim_export.py` never treats the exit status as an answer: it
+  requires `COMPUTE_REPORT.csv` to exist, to carry the header the parser was
+  written against, and to hold exactly one row per exported layer, and it raises
+  with the tool's own stdout and stderr when any of the three fails.
+  `test_a_zero_exit_with_no_report_is_not_an_answer` proves the refusal.
+
+- **Why the environment was not changed instead.** numpy 2.5.1 is pinned in
+  `requirements-lock.txt` and is recorded in the manifest of all 175 committed
+  results. Moving it to satisfy an external tool would make every recorded number
+  describe an environment that no longer exists. A second interpreter with numpy
+  1.x was the other option and is not available: Ubuntu 26.04 ships CPython 3.14
+  only, and no numpy 1.x wheel exists for 3.14. Running the tool in a container
+  was possible and was rejected as a larger change than the two line one, for a
+  dependency this project runs by hand rather than in CI.
+
+- **How a reader knows what ran.** The upstream git sha alone would describe code
+  that is not the code that produced the numbers. So every result manifest
+  carries **both** `scalesim` at the upstream sha and
+  `scalesim_installed_tree_sha256`, a hash over the installed package as it was
+  when the run happened. A modified install is visible in the record rather than
+  hidden behind a sha that is very nearly true.
+
+- **Deviation from Section 16.3, recorded rather than absorbed.** That section
+  says to read the example topologies from the **installed path** of the pinned
+  version. The pinned version's wheel ships the package and not its
+  `topologies/` or `layouts/` directories, so the examples are read from the
+  pinned source clone instead. `test_the_column_order_is_the_pinned_versions_own`
+  reads the real file and asserts the exporter's header still matches it, so the
+  rule that matters, that the column order is copied and never remembered, is
+  enforced from the pinned source rather than dropped.
+
+### D-0045 the cost model charges the array's weight preload once per instruction, and SCALE-Sim charges it per fold
+
+- **Found:** 2026-09-02, phase P11, by the SCALE-Sim cross validation. This is
+  the defect that cross validation exists to find, and it was found by the tool
+  rather than by reading the code.
+- **Status:** open, deliberately. **Not fixed in P11**, for the reason Section
+  16.5 states for the same situation with ZigZag: do not silently retune a model
+  against an external tool, because it invalidates every ablation and every
+  number already recorded. P13 revisits the charge with tiling, and this entry is
+  the reproduction it starts from.
+- **Reproduce.** `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`:
+
+  ```
+  macs 36864   ideal cycles 144.0 (36864 / 256)
+  this project  478.0 cycles   utilization 0.47   delta 0.80
+  SCALE-Sim    1465   cycles   overall utilization 0.098
+  ```
+
+  Both tools are charged the same 36864 multiply accumulates;
+  `check_the_same_arithmetic` reconciles SCALE-Sim's own utilization figure
+  against that count before any of this is compared.
+
+- **What the difference is.** The convolution presents a `72 by 8` weight matrix
+  to a 16 by 16 array, which folds into five row tiles each occupying half the
+  columns. `gemmCharge` computes `delta = m / (m + kWeightPreloadCycles)` **once
+  per instruction** and applies it to every tile, so the sixteen cycle pipeline
+  fill is amortised across the whole layer no matter how many times the array is
+  actually refilled. SCALE-Sim refills the array per fold and charges each fill.
+  With five folds the two accounts differ by roughly a factor of three, and that
+  is the dominant term in the `array_fragmentation` column of the decomposition:
+  minus 435825 cycles summed over the suite.
+
+- **Which one is right.** SCALE-Sim's, on the mechanism: a weight stationary
+  array physically has to push a new tile in before it can stream against it, and
+  five tiles means five pushes. This project's `delta` is defensible as an
+  average over an instruction and is documented as an assumption in
+  `CostModel.h`, but the assumption is visibly optimistic for narrow deep GEMMs,
+  which is most of this suite.
+
+- **What it does not affect.** Nothing about correctness, and nothing about the
+  golden files: `delta` enters the cycle charge and never the arithmetic. It
+  affects `simulated_cycles`, `effective_macs` and `utilization`, and therefore
+  every performance claim taken from them, which is why the entry says so here
+  rather than in a report footnote.
+
+- **What was deliberately not done.** The charge was not changed, the band in
+  `experiments/predictions/p11-scalesim-divergence.md` was not widened, and no
+  cell was excluded from the comparison after the fact. The prediction is
+  answered as it was written, including where it is wrong.
+
+### D-0046 the suite was green only on the machine that had the external tools
+
+- **Found:** 2026-09-03, phase P11, by **CI**, on this branch's first push: run
+  33691128405 and the pull request shape 33691234670. Three red clusters, one
+  cause.
+- **Status:** resolved 2026-09-03.
+- **Reproduce.** Not on the developer machine, which is the whole point. In an
+  interpreter that cannot reach SCALE-Sim or Accelergy:
+
+  ```
+  FAILED test_benchmarks.py::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing
+  FAILED test_benchmarks.py::test_the_run_fails_when_it_exceeds_its_budget
+  FileNotFoundError: [Errno 2] No such file or directory: 'accelergy'
+
+  scripts/patch-scalesim.py:73: error: Unused "type: ignore" comment  [unused-ignore]
+  scripts/patch-scalesim.py:73: error: Cannot find implementation or library stub
+      for module named "scalesim"  [import-not-found]
+  ```
+
+- **What was wrong, and it is one sentence three times.** P11 installed two
+  external tools on the development machine and then wrote code that assumed
+  their presence in three different ways, none of them deliberate.
+
+  1. **Two tests that have nothing to do with energy drove the whole harness.**
+     `test_the_run_fails_when_it_exceeds_its_budget` tests the Section 2 budget
+     gate and `test_a_rerun_is_byte_identical...` tests determinism, and both ran
+     `run_benchmarks.py` without `--skip-external`, so both invoked Accelergy.
+     The harness failing loudly on a missing tool is correct, per Section 16.4;
+     what was wrong was asking it to.
+  2. **A line level `# type: ignore` was correct in one environment and wrong in
+     the other, twice.** Where SCALE-Sim is installed the import resolves and
+     ships no `py.typed`, so mypy reports `import-untyped` and the ignore is
+     used. Where it is absent mypy reports `import-not-found`, which the ignore
+     does not cover, **and** `warn_unused_ignores` then reports the ignore
+     itself. Two errors on one line, neither visible locally.
+  3. **The coverage job was the same two tests under the instrumented run.**
+     Verified rather than assumed: Python line coverage in an environment
+     without the tools is **91.5561 percent**, identical to the figure with them,
+     because `--cov=python/npu_frontend` measures the frontend package and the
+     tool driven code lives in `experiments/`. Nothing hid behind the two
+     failures.
+
+- **This is D-0032 and D-0040 happening again one layer out**, and that is the
+  reason it gets an entry rather than three small fixes. D-0032 was three copies
+  of a tool lookup that skipped where one failed, and its fix was one policy:
+  **skip when nobody promised the tool, fail when somebody did.** D-0040 was a
+  set of tests that only ever ran on the developer machine. This is both: a set
+  of tests that could only pass where the author's machine was special, and no
+  mechanism to say which environments are supposed to have the tools.
+
+- **The fix, in three parts.**
+
+  - `test/Python/tools.py` gains `require_external_tools()` and
+    `NPU_EXTERNAL_TOOLS`, which is `BUILD_DIR_VARIABLE`'s policy applied to a
+    second kind of tool. A tool counts as reachable only when the module imports
+    **and** its binary is on `PATH`, because Accelergy is driven as a subprocess
+    and an importable package with no binary is a tool this project cannot run.
+  - The two harness tests pass `--skip-external`, and what that gives up is
+    recovered by `test_a_rerun_reproduces_the_external_fields_too`, which runs
+    the same determinism check with the P11 fields included and is guarded by the
+    policy above. `test_the_opt_out_records_a_null_and_a_reason` checks the flag
+    those two now depend on: the fields are present and null, each reason names
+    the flag, and `values_of` still refuses them.
+  - `pyproject.toml` carries a per module `ignore_missing_imports` override for
+    `scalesim` and the line level ignore is gone. **No global strictness setting
+    moved.** The override names exactly one module, because the first version
+    also listed `scalesim.*`, `accelergy` and `accelergy.*` and
+    `warn_unused_configs` reported all three as unused sections.
+
+- **Rehearsed in the environment that found it**, which is now the second
+  environment this project has to stay green in. A meta path finder refusing
+  `scalesim` and `accelergy` plus a `PATH` without the venv's `bin` reproduces
+  both observable facts of the CI image: the imports fail and the binary is not
+  found. Before the fix: the same two failures and the same two mypy errors.
+  After: **997 passed, 29 skipped, 0 failed**, mypy clean, coverage 91.5561.
+  With the tools present and promised: **1008 passed, 18 skipped**. And the third
+  branch is proven rather than argued: with `NPU_EXTERNAL_TOOLS=1` set in the
+  tool free environment, the guard **fails** naming the variable instead of
+  skipping.
+
+- **What was deliberately not done.** The harness was not made to tolerate a
+  missing tool silently. Section 16.4 says a missing external tool fails loudly
+  naming the dependency, and it still does; the opt out is a flag a caller sets,
+  recorded in the result as a null with a reason naming the flag, and never a
+  fallback the code chooses on its own. A test that could not find a tool is a
+  skip; a run that was not told to skip is a failure.
+
+#### The second half, found by run 33707070166: the rehearsal was wrong by two tests
+
+The fix above went green in CI for `lint`, `coverage`, `sanitizers` and `ndebug`.
+`regression-baseline --check` stayed red, and the drift was confined to the
+pytest suite row: **996 passed and 31 skipped in CI, against a rehearsal that
+predicted 998 and 29.** A rehearsal wrong by two tests cannot be trusted about
+the other thousand, so the two were found rather than absorbed.
+
+- **The two tests are `test_the_column_order_is_the_pinned_versions_own` and
+  `test_the_layout_header_is_the_pinned_versions_own`.**
+- **The mechanism is that neither imports `scalesim`.** They read the example
+  topology and layout CSVs out of the **pinned source clone**, because the
+  pinned wheel ships the package without its `topologies/` and `layouts/`
+  directories, which is D-0044's recorded deviation from Section 16.3. The shim
+  modelled the two things this phase had been thinking about, the import and the
+  binary; the clone is a third thing, and `~/npu-external/` is a developer
+  machine artefact no CI image has. So the meta path finder never touched those
+  two tests, they ran here and skipped there, and every tool guard in the suite
+  agreed the environments matched.
+- **The shim models the clone now**, by pointing `NPU_SCALESIM_SOURCE` at a path
+  that does not exist, and its comments say what it models and what it
+  deliberately does not. Corrected, it predicts **996 passed and 31 skipped**,
+  which is CI's row exactly.
+- **The guard was wrong as well as the shim.** Those two tests skipped on a bare
+  `is_file()` check, so `NPU_EXTERNAL_TOOLS=1` could not turn the skip into a
+  failure. `tools.require_source_tree()` applies the policy the rest of the suite
+  uses: skip where nobody promised, fail where somebody did.
+
+**And the deeper cause, of which the two tests were the visible part.** The
+baseline records suite counts and is checked in both environments, so it could
+never be green in both: thirteen tests run on a machine with the external tools
+and skip on one without, and recording either shape makes the other red. Copying
+CI's numbers in would have made the developer machine permanently red instead,
+which is the same defect facing the other way.
+
+So the baseline records **which environment it was taken in**, and `compare`
+compares `passed` and `skipped` only between two environments that can run the
+same tests. `failed` is compared always. The test **name lists** are compared
+always, so a test disappearing is still drift; and within one environment the
+counts are still exact, so a test silently starting to skip is still caught,
+which is the D-0040 shape this must not give up. The difference between two
+environments is printed by `suite_notes` rather than discarded, because a
+comparison this script has stopped making is a check that was switched off and
+this project's rule is that such a step says so in its own output. That is the
+treatment `max_abs_error_vs_onnxruntime` has had since P9b, arriving at the
+suite counts.
+
+`python/npu_frontend/external_tools.py` is the one home for "can this
+environment reach the tools", because `test/Python/tools.py` and
+`scripts/regression_baseline.py` both need the answer and two copies of it would
+be the duplication D-0032's fix built a test to hunt for.
+
+- **Verified in both environments against one baseline.** Developer machine:
+  1013 passed, 18 skipped, **no drift**, counts compared exactly. CI shape: 1000
+  passed, **31 skipped**, **no drift**, with both environments named in a note
+  and the count difference printed. The skip count matches CI's 31 exactly; the
+  pass count is 1000 rather than 996 because this fix adds four tests.
+- **Four tests cover the change itself**: an environment difference is not
+  drift, the same environment still compares exactly, a failure is drift in any
+  environment, and a baseline recorded before the field existed reads as the
+  developer machine rather than as something that compares equal to everything.
+
+#### The third half, found by run 33711091899: the fix made a tree environment dependent
+
+`build-and-test` went green including `--check`, so the environment aware
+baseline is proven. `coverage` stayed red: **`python/npu_frontend` at 92.9004 in
+CI against a threshold of 93**, with `scripts` at 16.12 against 14 and
+`experiments` at 58.45 against 58 both passing.
+
+**The threshold was not wrong when it was set; the tree moved under it.** 93 came
+from a measurement taken before `python/npu_frontend/external_tools.py` existed,
+and the commit that fixed the second half added that module to the tree the
+threshold gates. Its whole purpose is to decide what an environment can reach, so
+its tools present branches cannot execute in CI and its tools absent branches
+cannot execute here. The prose beside the threshold claimed the frontend measured
+identically in both environments, which had been true and had quietly stopped
+being true.
+
+**And re-measuring found a second cause the first does not explain.** With
+`external_tools.py` covered the local figure was 93.3333 against CI's 92.9004, a
+gap of about six statements the module cannot account for.
+`pass_stats.interpreter_is_traced` asks two questions because CPython has two
+tracing mechanisms, and **which one is live depends on the interpreter version**:
+`coverage` uses `sys.settrace` on the 3.12 the CI image ships and
+`sys.monitoring` on the 3.14 this machine runs, so the function answers on the
+first question there and reaches the second one here.
+
+Measured rather than deduced: `COVERAGE_CORE=ctrace` on 3.14 moves
+`pass_stats.py` from 16 missing lines to 20, and the four are exactly the
+`sys.monitoring` block. Two `# pragma: no cover` comments came off in the same
+change, because the branches they excused are tested now.
+
+- **Both are fixed by covering the branches, not by moving the gate.**
+  `test/Python/test_external_tools.py` substitutes `find_spec`, `which` and the
+  environment; `test_every_way_an_interpreter_can_be_traced` substitutes both
+  tracing mechanisms. Neither consults the real environment, so both run
+  everywhere. A test that asserted "the tools are reachable here" would pass on
+  this machine and fail in CI for a reason that is not a defect, which is the
+  shape of the thing being fixed.
+- **Measured at the tip, and equal across four combinations** rather than two:
+  CI shape and developer shape, each under both tracing backends.
+
+  | Tree | CI shape | Developer | Threshold |
+  |---|---|---|---|
+  | `python/npu_frontend` | 93.4313 | 93.4313 | **93** |
+  | `scripts` | 16.1191 | 16.1191 | **16** |
+  | `experiments` | 58.4488 | 73.1302 | **58** |
+
+  `scripts` moves from 14 to 16 because the environment aware comparison added
+  tested lines to `regression_baseline.py`. Only `experiments` is environment
+  dependent, which is by design and is where the tool driven code lives.
+- **`external_tools.py` stays in the measured frontend package**, and the reason
+  is recorded where the thresholds are so it is not re-litigated: the import
+  graph forces it, because `scripts/regression_baseline.py` needs the same answer
+  and a script must not import from `test/`. Moving it to `scripts/` would
+  satisfy the import graph and drop it from a tree gated at 93 into one gated at
+  16, which is hiding a measurement rather than making it true.
+
+**The lesson this adds to the two above.** The first half was a suite green only
+where the machine was special. The second was a rehearsal that modelled two of
+three differences. This one is the same failure applied to a **number**: a
+threshold is a measurement of a tree, and a commit that adds environment
+dependent code to that tree invalidates the measurement as surely as it would
+invalidate a recorded cycle count. **The prose beside a threshold is part of the
+threshold**, and when it claims a property the code no longer has it is wrong in
+the way a stale comment is never merely cosmetic.

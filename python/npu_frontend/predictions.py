@@ -395,3 +395,34 @@ def landing_sha(identifier: str, *, repository: str | Path | None = None) -> str
     )
     lines = [line for line in completed.stdout.splitlines() if line]
     return lines[-1] if lines else None
+
+
+def landing_sha_of_path(
+    relative_path: str, *, repository: str | Path | None = None
+) -> str | None:
+    """The commit that added any tracked file, or `None` when it is untracked.
+
+    *Added at P11.* `landing_sha` answers the same question for a prediction
+    entry, and this is the general form, needed because P11's gate asks for the
+    ordering between a prediction and a **file** to be proved: the divergence
+    prediction must land strictly before `experiments/scalesim_export.py`.
+
+    It carries `landing_sha`'s two refusals, and for its reasons. A shallow
+    checkout is refused rather than answered, because `--diff-filter=A` against a
+    truncated history attributes every file to the graft commit and returns a sha
+    that looks exactly like an answer. And a git failure raises instead of
+    reading as "no such commit", which is D-0042.
+
+    `None` means the path is not in any commit, which is a different statement
+    from a shallow checkout and from a git error, and all three are told apart
+    here so that a caller can act on the right one.
+    """
+    require_full_history(
+        f"finding the commit that added {relative_path}", repository=repository
+    )
+    completed = _git(
+        ["log", "--format=%H", "--diff-filter=A", "--", relative_path],
+        repository=repository,
+    )
+    lines = [line for line in completed.stdout.splitlines() if line]
+    return lines[-1] if lines else None

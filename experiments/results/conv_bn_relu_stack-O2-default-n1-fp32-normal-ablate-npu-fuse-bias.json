@@ -25,7 +25,7 @@
     "scratchpad_budget": "default",
     "scratchpad_budget_bytes": 1048576
   },
-  "content_hash": "237d4c57e103aa504424d19174583710d28d310257d4dd274a0dfd003fc6c787",
+  "content_hash": "3163eb7138153cba7e613a5f63f67d31c8b44c0ac72aa6780487a2385dd24217",
   "deltas": {
     "dram_bytes_total": 0,
     "instruction_count": 0,
@@ -33,28 +33,149 @@
     "simulated_cycles": 0.0
   },
   "external": {
-    "area_mm2": null,
-    "area_mm2_null_reason": "P11, when Accelergy lands.",
-    "area_mm2_per_component": null,
-    "area_mm2_per_component_null_reason": "P11, when Accelergy lands.",
-    "energy_pj": null,
-    "energy_pj_null_reason": "P11, when Accelergy lands.",
-    "energy_pj_per_component": null,
-    "energy_pj_per_component_null_reason": "P11, when Accelergy lands.",
-    "scalesim_approximations": null,
-    "scalesim_approximations_null_reason": "P11, with the exporter that produces it.",
-    "scalesim_covered_cycle_fraction": null,
-    "scalesim_covered_cycle_fraction_null_reason": "P11, with the exporter that produces it.",
-    "scalesim_covered_op_fraction": null,
-    "scalesim_covered_op_fraction_null_reason": "P11, with the exporter that produces it.",
-    "scalesim_cycles": null,
-    "scalesim_cycles_null_reason": "P11, with experiments/scalesim_export.py per Section 16.3.",
-    "scalesim_cycles_per_layer": null,
-    "scalesim_cycles_per_layer_null_reason": "P11, with experiments/scalesim_export.py.",
-    "scalesim_skipped": null,
-    "scalesim_skipped_null_reason": "P11. The list of operations with no systolic representation is the exporter's output and there is no exporter yet.",
-    "technology_node": null,
-    "technology_node_null_reason": "P11. Accelergy has no default node and pinning one before there is anything to compute at it would be recording a decision nobody had reason to make yet."
+    "area_mm2": 8.54464056,
+    "area_mm2_per_component": {
+      "mac_array": 2.12877056,
+      "main_memory": 0.0,
+      "scratchpad": 6.41587
+    },
+    "energy_pj": 3480159.52,
+    "energy_pj_per_component": {
+      "mac_array": 2499785.92,
+      "main_memory": 265216.0,
+      "scratchpad": 715157.6
+    },
+    "scalesim_approximations": [],
+    "scalesim_covered_cycle_fraction": 0.8839608045384219,
+    "scalesim_covered_op_fraction": 0.21428571428571427,
+    "scalesim_cycles": 814,
+    "scalesim_cycles_per_layer": [
+      {
+        "analytical_compute_cycles": 164.0,
+        "analytical_cycles": 308.0,
+        "analytical_dma_cycles": 308.0,
+        "divergence_cycles": 89.0,
+        "macs": 13824,
+        "name": "conv0",
+        "op": "conv2d",
+        "position": 3,
+        "relative_divergence": 0.4063926940639269,
+        "scalesim_arithmetic_matched_cycles": 219,
+        "scalesim_cycles": 219,
+        "scalesim_overall_utilization": 0.2465753424657534,
+        "scalesim_stall_cycles": 0
+      },
+      {
+        "analytical_compute_cycles": 404.0,
+        "analytical_cycles": 404.0,
+        "analytical_dma_cycles": 282.0,
+        "divergence_cycles": -145.0,
+        "macs": 36864,
+        "name": "conv1",
+        "op": "conv2d",
+        "position": 7,
+        "relative_divergence": -0.2641165755919854,
+        "scalesim_arithmetic_matched_cycles": 549,
+        "scalesim_cycles": 549,
+        "scalesim_overall_utilization": 0.26229508196721313,
+        "scalesim_stall_cycles": 0
+      },
+      {
+        "analytical_compute_cycles": 21.0,
+        "analytical_cycles": 145.0,
+        "analytical_dma_cycles": 145.0,
+        "divergence_cycles": 99.0,
+        "macs": 32,
+        "name": "head",
+        "op": "matmul",
+        "position": 12,
+        "relative_divergence": 2.152173913043478,
+        "scalesim_arithmetic_matched_cycles": 46,
+        "scalesim_cycles": 46,
+        "scalesim_overall_utilization": 0.002717391304347826,
+        "scalesim_stall_cycles": 0
+      }
+    ],
+    "scalesim_skipped": [
+      {
+        "analytical_cycles": 116.0,
+        "name": "dma_load_0",
+        "op": "dma_load",
+        "position": 0,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 122.0,
+        "name": "dma_load_1",
+        "op": "dma_load",
+        "position": 1,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "dma_load_2",
+        "op": "dma_load",
+        "position": 2,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 36.0,
+        "name": "relu0",
+        "op": "relu",
+        "position": 4,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "dma_load_5",
+        "op": "dma_load",
+        "position": 5,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 212.0,
+        "name": "dma_load_6",
+        "op": "dma_load",
+        "position": 6,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 36.0,
+        "name": "relu1",
+        "op": "relu",
+        "position": 8,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 36.0,
+        "name": "pooled",
+        "op": "pool_avg",
+        "position": 9,
+        "reason": "SCALE-Sim does not model pooling at all, which is the second mechanism the divergence prediction names."
+      },
+      {
+        "analytical_cycles": 4.5,
+        "name": "flat",
+        "op": "reshape",
+        "position": 10,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 76.0,
+        "name": "dma_load_11",
+        "op": "dma_load",
+        "position": 11,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 69.0,
+        "name": "dma_store_13",
+        "op": "dma_store",
+        "position": 13,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      }
+    ],
+    "technology_node": "45nm"
   },
   "instruction_count": 15,
   "manifest": {
@@ -74,17 +195,30 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "d4210f352957b95e69185003bb1b960a2a3286be",
+    "git_sha": "17d63ed9955fcd1132b7a0e1999d047a96a73d14",
     "llvm_tag": "LLVM version 22.1.8",
-    "registered_estimators": null,
-    "registered_estimators_null_reason": "P11, with Accelergy. Which estimation plug ins registered decides what Accelergy answers, so two runs at the same sha with different plug ins are two different measurements and the list is provenance rather than decoration.",
+    "registered_estimators": [
+      "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
+      "dummy",
+      "Aladdin_table",
+      "Library",
+      "CactiCache",
+      "CactiDRAM",
+      "CactiSRAM"
+    ],
     "run_order_position": 157,
     "run_order_seed": 20260901,
-    "technology_node": null,
-    "technology_node_null_reason": "P11. Accelergy has no default node and pinning one before there is anything to compute at it would be recording a decision nobody had reason to make yet.",
-    "timestamp": "2026-09-01T19:35:06.598524+00:00",
-    "tool_shas": null,
-    "tool_shas_null_reason": "P11. Section 16.1 records Accelergy and SCALE-Sim by git sha rather than by installed metadata, and neither is installed yet. Accelergy is not on PyPI and SCALE-Sim has no tagged releases, so reading installed metadata would silently record nothing useful for two of the three.",
+    "technology_node": "45nm",
+    "timestamp": "2026-09-02T21:23:42.223312+00:00",
+    "tool_shas": {
+      "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
+      "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
+      "accelergy-cacti-plug-in": "7649b2c02a389f3c3d585d7ff4ececacfb01e6ea",
+      "accelergy-library-plug-in": "ba4e9dac1b2e7a3076fb8b7816a5228211623055",
+      "accelergy-table-based-plug-ins": "bad19e941043045e130ea999852331f203d8c3fe",
+      "scale-sim-v2": "9f98c4371055a54c75209c2e02b640b897550532",
+      "scalesim_installed_tree_sha256": "c5095fb318865988d7d87c9c667e4bde8fcb6a0cf81d7e3327cc820df1927ac5"
+    },
     "tool_versions": {
       "llvm": "LLVM version 22.1.8",
       "numpy": "2.5.1",
@@ -97,10 +231,8 @@
     "wall_clock_note": "every wall clock in this file was measured on the host named by cpu_model, under whatever else that machine was doing. The counted metrics are exact and reproduce on any host; the timed ones are a measurement of this one and are recorded with an interval for that reason."
   },
   "normalized": {
-    "edp": null,
-    "edp_null_reason": "P11. Energy times latency needs the energy, which is P11's.",
-    "energy_pj_per_inference": null,
-    "energy_pj_per_inference_null_reason": "P11, when Accelergy lands.",
+    "edp": 4.03872512296,
+    "energy_pj_per_inference": 3480159.52,
     "macs_per_dram_byte": 12.23938223938224,
     "units_convention": "one multiply accumulate is two operations. FLOPs is never reported for an integer cell: the integer kernels arrive at P14 and a floating point operation count over them would be a unit that does not apply. macs is the raw count and is the only one Accelergy ever sees; effective_macs is the utilization scaled figure the cycle charge used, and utilization and delta are recorded beside it so the charge can be reconstructed rather than trusted."
   },
@@ -148,10 +280,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.32828450000000003,
-        "ci95_low_ms": 0.137374675,
-        "iqr_ms": 0.012174249999999998,
-        "median_ms": 0.145494,
+        "ci95_high_ms": 0.20880300000000002,
+        "ci95_low_ms": 0.1431274,
+        "iqr_ms": 0.029438500000000006,
+        "median_ms": 0.14907900000000002,
         "n_trials": 10
       }
     },
@@ -188,10 +320,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.4723023,
-        "ci95_low_ms": 0.27160175000000003,
-        "iqr_ms": 0.024780249999999948,
-        "median_ms": 0.294061,
+        "ci95_high_ms": 0.422729425,
+        "ci95_low_ms": 0.28321277499999997,
+        "iqr_ms": 0.010957750000000044,
+        "median_ms": 0.30415749999999997,
         "n_trials": 10
       }
     },
@@ -227,10 +359,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 2,
       "timing": {
-        "ci95_high_ms": 0.339517875,
-        "ci95_low_ms": 0.205561575,
-        "iqr_ms": 0.025159250000000022,
-        "median_ms": 0.2146425,
+        "ci95_high_ms": 0.268671325,
+        "ci95_low_ms": 0.20714695,
+        "iqr_ms": 0.0048177500000000095,
+        "median_ms": 0.2153695,
         "n_trials": 10
       }
     },
@@ -267,10 +399,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 3,
       "timing": {
-        "ci95_high_ms": 0.4708063,
-        "ci95_low_ms": 0.271534,
-        "iqr_ms": 0.057536500000000046,
-        "median_ms": 0.330474,
+        "ci95_high_ms": 0.483299225,
+        "ci95_low_ms": 0.284475225,
+        "iqr_ms": 0.05964975,
+        "median_ms": 0.3230735,
         "n_trials": 10
       }
     },
@@ -309,10 +441,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 4,
       "timing": {
-        "ci95_high_ms": 0.5416382750000001,
-        "ci95_low_ms": 0.354658325,
-        "iqr_ms": 0.047818499999999986,
-        "median_ms": 0.3996815,
+        "ci95_high_ms": 0.6038182000000001,
+        "ci95_low_ms": 0.368682375,
+        "iqr_ms": 0.047067000000000025,
+        "median_ms": 0.395887,
         "n_trials": 10
       }
     },
@@ -351,10 +483,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 5,
       "timing": {
-        "ci95_high_ms": 0.41956805,
-        "ci95_low_ms": 0.156914225,
-        "iqr_ms": 0.09455024999999997,
-        "median_ms": 0.2177515,
+        "ci95_high_ms": 0.36180825000000005,
+        "ci95_low_ms": 0.146849,
+        "iqr_ms": 0.04713500000000001,
+        "median_ms": 0.1877585,
         "n_trials": 10
       }
     },
@@ -395,10 +527,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 6,
       "timing": {
-        "ci95_high_ms": 0.419823575,
-        "ci95_low_ms": 0.23419247499999998,
-        "iqr_ms": 0.14329875000000003,
-        "median_ms": 0.281018,
+        "ci95_high_ms": 0.43796132500000007,
+        "ci95_low_ms": 0.21887667500000002,
+        "iqr_ms": 0.06089024999999998,
+        "median_ms": 0.28511,
         "n_trials": 10
       }
     },
@@ -439,10 +571,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 7,
       "timing": {
-        "ci95_high_ms": 0.2436169,
-        "ci95_low_ms": 0.1370757,
-        "iqr_ms": 0.04031675000000001,
-        "median_ms": 0.1991895,
+        "ci95_high_ms": 0.287733675,
+        "ci95_low_ms": 0.1365828,
+        "iqr_ms": 0.027581999999999995,
+        "median_ms": 0.182395,
         "n_trials": 10
       }
     },
@@ -483,10 +615,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 8,
       "timing": {
-        "ci95_high_ms": 0.49842045,
-        "ci95_low_ms": 0.41165615,
-        "iqr_ms": 0.028047499999999947,
-        "median_ms": 0.4294295,
+        "ci95_high_ms": 0.793822575,
+        "ci95_low_ms": 0.429235625,
+        "iqr_ms": 0.016566750000000074,
+        "median_ms": 0.458558,
         "n_trials": 10
       }
     },
@@ -527,10 +659,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 9,
       "timing": {
-        "ci95_high_ms": 0.357152825,
-        "ci95_low_ms": 0.20024720000000001,
-        "iqr_ms": 0.020011500000000015,
-        "median_ms": 0.21557300000000001,
+        "ci95_high_ms": 0.370487925,
+        "ci95_low_ms": 0.2023708,
+        "iqr_ms": 0.08296150000000002,
+        "median_ms": 0.2247535,
         "n_trials": 10
       }
     }
@@ -538,16 +670,64 @@
   "prediction_id": "p10-ablation-deltas",
   "prediction_sha": "f92de427d1f315d9d6621c44516e54f886f18a9c",
   "roofline": {
-    "operational_intensity": null,
-    "operational_intensity_null_reason": "P11, with experiments/roofline.py per Section 16.6.",
-    "roofline_bound_cycles": null,
-    "roofline_bound_cycles_null_reason": "P11, with experiments/roofline.py per Section 16.6.",
-    "roofline_bound_cycles_per_layer": null,
-    "roofline_bound_cycles_per_layer_null_reason": "P11, with experiments/roofline.py per Section 16.6.",
-    "roofline_verdict": null,
-    "roofline_verdict_null_reason": "P11. The verdict field records that the bound was checked; leaving it null rather than writing below_bound is the difference between a check that has not run and a check that passed."
+    "operational_intensity": 35.64478764478765,
+    "roofline_bound_cycles": 577.0,
+    "roofline_bound_cycles_per_layer": [
+      {
+        "bound_by": "compute",
+        "bound_cycles": 160.0,
+        "charged_cycles": 308.0,
+        "compute_branch_cycles": 160.0,
+        "compute_cycles": 164.0,
+        "dma_cycles": 308.0,
+        "dram_bytes": 1664,
+        "effective_macs": 40960.0,
+        "macs": 13824,
+        "memory_branch_cycles": 104.0,
+        "name": "conv0",
+        "op": "conv2d",
+        "operational_intensity": 24.615384615384617,
+        "position": 3,
+        "verdict": "at_or_above_bound"
+      },
+      {
+        "bound_by": "compute",
+        "bound_cycles": 400.0,
+        "charged_cycles": 404.0,
+        "compute_branch_cycles": 400.0,
+        "compute_cycles": 404.0,
+        "dma_cycles": 282.0,
+        "dram_bytes": 2336,
+        "effective_macs": 102400.0,
+        "macs": 36864,
+        "memory_branch_cycles": 146.0,
+        "name": "conv1",
+        "op": "conv2d",
+        "operational_intensity": 43.83561643835616,
+        "position": 7,
+        "verdict": "at_or_above_bound"
+      },
+      {
+        "bound_by": "compute",
+        "bound_cycles": 17.0,
+        "charged_cycles": 145.0,
+        "compute_branch_cycles": 17.0,
+        "compute_cycles": 21.0,
+        "dma_cycles": 145.0,
+        "dram_bytes": 144,
+        "effective_macs": 4352.0,
+        "macs": 32,
+        "memory_branch_cycles": 9.0,
+        "name": "head",
+        "op": "matmul",
+        "operational_intensity": 30.22222222222222,
+        "position": 12,
+        "verdict": "at_or_above_bound"
+      }
+    ],
+    "roofline_verdict": "at_or_above_bound"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "simulation": {
     "delta": 0.7995323807756541,
     "dram_bytes_read": 4128,
@@ -560,6 +740,8 @@
     "overlap_fraction": 0.39688164422395467,
     "quant_boundary_crossings": null,
     "quant_boundary_crossings_null_reason": "P14, with the quantization passes. Every cell here is fp32 and a count of crossings in a program with no quantization boundary would be a zero that means something different from the zero P14 will record.",
+    "scratchpad_elements_read": 3100,
+    "scratchpad_elements_written": 3100,
     "simulated_cycles": 1160.5,
     "spill_count": 0,
     "tiling_choices": null,
@@ -568,17 +750,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 59.47222753020469,
-      "ci95_low_ms": 45.258735364768654,
-      "iqr_ms": 6.015388673404232,
-      "median_ms": 49.94743602583185,
+      "ci95_high_ms": 60.38402729909649,
+      "ci95_low_ms": 48.218634300428675,
+      "iqr_ms": 7.045103752716386,
+      "median_ms": 52.898598498359206,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 3.44823865,
-      "ci95_low_ms": 2.498980025,
-      "iqr_ms": 0.47535250000000007,
-      "median_ms": 2.9417345,
+      "ci95_high_ms": 4.128089325,
+      "ci95_low_ms": 2.54732045,
+      "iqr_ms": 0.2819769999999995,
+      "median_ms": 2.8051095,
       "n_trials": 10
     }
   }

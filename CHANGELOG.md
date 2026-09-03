@@ -6,6 +6,144 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P11: external cross validation and the roofline
+
+- **The roofline check of Section 16.6 lands, and it lands first.**
+  `experiments/roofline.py` computes the bound per layer and per cell over the
+  committed results and **fails the run** on any cell whose charge falls below
+  it. The branch that bound each layer is recorded beside the verdict, because a
+  memory bound violation and a compute bound one are not the same finding.
+- **And the project says what the check is worth rather than only that it
+  passed.** Under the cost model of Section 5.5 `effective_macs` is defined as
+  `cycles * peak`, so the compute branch of the bound is identically the kernel's
+  own cycle count; and a transfer is charged bytes over bandwidth plus a
+  descriptor, so it always costs more than the memory branch its bytes produce.
+  The roofline therefore cannot fail against this cost model as it stands. It is
+  a regression bound against the phase that introduces a charge no longer built
+  from the traffic it moves, which is P13, and both halves of that statement are
+  asserted in `test/Python/test_roofline.py` so the day either stops holding a
+  test says so. `docs/NUMBERS.md` carries the measurement.
+- **`conv2d_charge` joins the Python mirror of `CostModel.h`.** The C++ has had
+  it since P7 and the mirror did not, so the convolution charge was the one part
+  of the cost model no test compared across the two languages. It now reproduces
+  the recorded `effective_macs`, `utilization` and `delta` of four real cells
+  exactly, and the depthwise composition, which is the case a wrong mirror would
+  get wrong, has its own assertion.
+- **SCALE-Sim v3 cross validation, with the gap decomposed into named terms.**
+  `experiments/scalesim_export.py` emits a topology and an architecture
+  configuration from the allocated IR and reports the divergence as a sum: the
+  pooling and elementwise work the topology cannot represent, the DMA outside the
+  covered layers, the dilation approximation measured by a second run at the true
+  tap extent, the array fragmentation difference, and the memory time neither
+  model hid. Coverage fractions are reported beside every agreement figure,
+  because an agreement over a topology that silently dropped pooling is an
+  agreement on an unstated subset.
+- **The divergence prediction is answered as written, and it is largely wrong.**
+  340 of 550 layers diverge by more than 25 percent, where the entry predicted
+  none would; the direction is mixed rather than systematic; and Kendall tau is
+  0.64 over cells against a predicted 0.8. The entry was not edited.
+  `docs/NUMBERS.md` answers it claim by claim.
+- **D-0044: the pinned SCALE-Sim does not run under numpy 2, and reports a
+  missing input file by exiting zero.** Both are measured rather than assumed.
+  `scripts/patch-scalesim.py` is the three expression compatibility fix, applied
+  by hand and never as a side effect of running a benchmark, and every result
+  manifest records the installed tree's sha256 beside the upstream git sha so a
+  reader is told the tool was modified. The exporter never reads an exit status
+  as an answer.
+- **D-0045, found by the cross validation and deliberately not fixed here.** This
+  project charges the array's weight preload once per instruction and SCALE-Sim
+  charges it per fold, which is the dominant term in the fragmentation column and
+  is worth roughly a factor of three on a narrow deep convolution. Retuning a
+  cost model against an external tool would invalidate every ablation already
+  recorded, so P13 gets a reproduction instead of P11 getting a silent change.
+- **Energy and area per component, from Accelergy at a pinned 45 nm.** Every cell
+  records `energy_pj`, `area_mm2`, both per component breakdowns,
+  `energy_pj_per_inference`, `edp` and `technology_node`. The array's action
+  count is the **raw** `macs` and a test builds a cell whose `effective_macs` is
+  four times its `macs` to check which one the answer followed. `lenet` costs
+  54.4 uJ per inference and `depthwise_separable` 1.7 uJ; the whole design is
+  8.5 mm2, of which the 1 MB scratchpad is 6.4.
+- **The energy numbers carry what they are worth on their face.** Only the per
+  action coefficients are external, so a counting bug in the simulator would
+  propagate straight into them. And the fp32 MAC coefficient **fails** Section
+  16.4's order of magnitude sanity check at a factor of 10.7, because Aladdin's
+  figure is a synthesised pipelined unit and the published one is a combinational
+  datapath. The bound was not widened: the measured value is pinned instead, and
+  `docs/NUMBERS.md` records that at the published coefficient the scratchpad
+  would be the largest consumer on every model, so no conclusion in this project
+  rests on the array being dominant.
+- **Fusion is re-argued in energy terms and the answer is exactly zero.**
+  `-npu-fuse-ops` moves no picojoule on any of the seven models, because an
+  unfused chain on this machine already keeps its intermediate in the scratchpad.
+  What it would be worth where the intermediate spilled is quantified beside it:
+  up to 46 percent of `depthwise_separable`'s whole energy budget.
+- **The result schema is at version 2 and the baseline at version 3**, both
+  declared in `docs/BREAKING_CHANGES.md` before the commits that moved them and
+  re-recorded in one run each afterwards. No golden tensor and no counted metric
+  moved.
+- **The external tools are pinned by git sha in `docs/adr/0003`** and cited the
+  way each repository asks to be cited, in `report/references.bib`. Four of the
+  six specify no citation form and their entries are constructed from their own
+  packaging metadata, which the entry says.
+- **D-0046: the suite was green only on the machine that had the external
+  tools.** Found by the first CI run of this branch, in three clusters with one
+  cause. Two tests that exercise the budget gate and rerun determinism were
+  driving the whole harness and so invoking Accelergy; they pass
+  `--skip-external` now, and what that gives up is recovered by a test running
+  the same determinism check with the P11 fields where the tools exist. A line
+  level `type: ignore` was correct where SCALE-Sim is installed and wrong twice
+  where it is not, replaced by a per module override that moves no global
+  strictness setting. `test/Python/tools.py` gains `NPU_EXTERNAL_TOOLS` and the
+  policy D-0032 established: **skip when nobody promised the tool, fail when
+  somebody did.** The project now has to stay green in two environments and both
+  are rehearsed.
+- **Python coverage is measured over three trees and gated per tree.**
+  `python/npu_frontend` at 93, `scripts` at 16 and `experiments` at 58, each
+  rounded down from what the CI image can execute, and never blended: a blend
+  would let the frontend's size carry the scripts tree and hide a fall in either.
+  The P8 rationale for measuring one package root is recorded in
+  `scripts/coverage.sh` and superseded: `scripts/` is 974 statements and
+  `experiments/` 1444, and both carry real logic now.
+- **Subprocess coverage is wired**, worth 1.8 points on the frontend alone,
+  because scripts and the benchmark harness are exercised as subprocesses that
+  `pytest-cov` did not see. Stale coverage data is erased first, which is D-0037
+  applied to the Python side. The coverage job's pytest phase is slower for it,
+  248 seconds to 302.
+- **Two modules were made environment independent so a coverage threshold could
+  mean the same thing in both places.** CI found `python/npu_frontend` at 92.9004
+  against a threshold of 93 that had been set before `external_tools.py` joined
+  that tree; the module decides what an environment can reach, so half its
+  branches cannot run in either environment. Re-measuring found a second cause:
+  `pass_stats.interpreter_is_traced` answers on `sys.settrace` under the 3.12 the
+  CI image ships and on `sys.monitoring` under the developer machine's 3.14.
+  Both are covered by substitution now rather than by lowering the gate, so the
+  frontend and `scripts` measure identically under both tool environments **and**
+  both tracing backends. Two `# pragma: no cover` comments came off because the
+  branches they excused are tested.
+- **The regression baseline records which environment it was taken in**, and
+  compares suite pass and skip counts only between environments that can run the
+  same tests. `failed` is compared always, the test name lists are compared
+  always, and within one environment the counts are still exact, so a test
+  silently starting to skip is still drift. A difference between two
+  environments is printed rather than discarded. Without this the baseline could
+  not be green in both places at once: thirteen tests run where the external
+  tools are installed and skip where they are not.
+- **D-0046's second half: the rehearsal shim was wrong by exactly two tests.**
+  `test_the_column_order_is_the_pinned_versions_own` and
+  `test_the_layout_header_is_the_pinned_versions_own` read the example CSVs out
+  of the pinned SCALE-Sim source clone and never import `scalesim`, so a shim
+  that modelled the import and the binary left them running. The shim models the
+  clone now and predicts CI's suite row exactly, the recipe is recorded in
+  `docs/PHASE_STATE.md`, and those two tests use the same skip or fail policy as
+  the rest of the suite instead of a bare file check.
+- **The per pass timing gap bound does not run under a tracer, and says so.** Its
+  premise is that the gap is the instrumentation's own operation walk; a tracer
+  stretches everything else in that window too. Measured: untraced worst gaps
+  0.0658, 0.0729 and 0.0690 ms, under `coverage` 0.2757, 0.0844 and 0.0769. The
+  deficit bound and the totals still run, and `run_benchmarks.py` prints that the
+  gap bound did not, because a check that is off must not look like one that
+  passed.
+
 ### Phase P10: measurement
 
 - **Every number this project publishes now comes from a recorded result file.**

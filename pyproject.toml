@@ -130,6 +130,34 @@ exclude = ["scripts/testdata/"]
 module = ["mlir.*", "onnx.*", "onnxruntime.*", "torch.*"]
 ignore_missing_imports = true
 
+# The external cross validation tools, which are **installed in one environment
+# and absent in the other**, and that is the whole reason this override exists
+# rather than a comment on the import. See D-0046.
+#
+# `scripts/patch-scalesim.py` imports `scalesim` to find where it is installed.
+# On the developer machine the package resolves and ships no `py.typed`, so mypy
+# reports `import-untyped`. In the CI image the package is not there at all, so
+# mypy reports `import-not-found`. A line level `# type: ignore[import-untyped]`
+# is correct in the first environment and **wrong in the second twice over**: it
+# does not cover the error that actually fires, and `warn_unused_ignores` then
+# reports the ignore itself as unused. That is two errors on one line, and it is
+# what CI found.
+#
+# `ignore_missing_imports` for this module covers both codes, is scoped to the
+# one module that has the problem, and leaves every global strictness setting
+# above untouched.
+#
+# **Exactly one module is listed, and that is `warn_unused_configs` doing its
+# job.** The first version of this override also named `scalesim.*`, `accelergy`
+# and `accelergy.*`, on the reasoning that the neighbouring tools would need the
+# same treatment. mypy reported all three as unused sections, because nothing
+# mypy checks imports them: `experiments/` is not in `files` above, and only the
+# bare `scalesim` name is imported. Config that does nothing is config nobody
+# will notice has stopped matching, so it went.
+[[tool.mypy.overrides]]
+module = ["scalesim"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["test/Python"]
 # The MLIR Python bindings are not pip installed. They resolve only out of the

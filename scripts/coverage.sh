@@ -7,7 +7,8 @@
 #
 #   bash scripts/coverage.sh              measure, report, gate at the defaults
 #   bash scripts/coverage.sh 85           gate C++ line coverage at 85 percent
-#   bash scripts/coverage.sh 85 90        and gate Python at 90 percent
+#   bash scripts/coverage.sh 85 93        and gate python/npu_frontend at 93
+#   bash scripts/coverage.sh 85 93 16 58  and gate scripts at 16, experiments 58
 #   bash scripts/coverage.sh --help       this text
 #
 # Both thresholds default to 0, which is what the activation table of Section
@@ -26,9 +27,72 @@
 #   Python lines  90.3 percent over python/npu_frontend
 #
 # The C++ threshold is 85, which is Section 17.7's floor, one point below the
-# measurement. The Python threshold is 90, which is Section 17.7's rule for it:
-# the measured value rounded down to a whole percent and never above what the
-# suite achieves.
+# measurement. Every Python threshold follows Section 17.7's rule for them: the
+# measured value rounded down to a whole percent and never above what the suite
+# achieves.
+#
+# **The Python thresholds are set from what CI can execute, not from what this
+# machine can**, and the difference is real. Measured 2026-09-03 at the tip, the
+# whole matrix, subprocess coverage on:
+#
+#   tree                  CI shape    developer machine   threshold
+#   python/npu_frontend   93.4313     93.4313             93
+#   scripts               16.1191     16.1191             16
+#   experiments           58.4488     73.1302             58
+#
+# "CI shape" is an interpreter that cannot reach SCALE-Sim or Accelergy and has
+# no pinned source clone, with the `--skip-external` path exercised, which is
+# what the image has. `experiments/` differs by **14.7 points** between the two,
+# because `scalesim_export.py` and `accelergy_energy.py` only execute where the
+# tools do: 58.2 against 84.3 and 37.8 against 79.3 per file. Setting the gate
+# from the developer figure would make CI red for having less installed, which is
+# not a fall in coverage and not something a contributor could act on.
+#
+# **Two trees measure identically in both, and that took work rather than being
+# a property they had.** Run 33711091899 found `python/npu_frontend` at 92.9004
+# in CI against a threshold of 93 set from a local measurement, and the prose
+# here claimed the tree was environment independent. It was not, for two reasons,
+# and both are fixed by covering the branches rather than by moving the gate:
+#
+#   1. `python/npu_frontend/external_tools.py` decides what an environment can
+#      reach, so its tools present branches cannot execute in CI and its tools
+#      absent branches cannot execute here. `test/Python/test_external_tools.py`
+#      substitutes `find_spec`, `which` and the environment, so every branch runs
+#      everywhere and the module is at 100 percent in both.
+#   2. `pass_stats.interpreter_is_traced` asks two questions because CPython has
+#      two tracing mechanisms, and **which one is live depends on the interpreter
+#      version**: coverage uses `sys.settrace` on the 3.12 the CI image ships and
+#      `sys.monitoring` on the 3.14 this machine runs, so the function answered
+#      on the first question there and reached the second one here. Measured:
+#      `COVERAGE_CORE=ctrace` on 3.14 moved `pass_stats.py` from 16 missing lines
+#      to 20, and the four were exactly the `sys.monitoring` block.
+#      `test_every_way_an_interpreter_can_be_traced` covers all six branches on
+#      any interpreter.
+#
+# The figures above are identical under **both** tracing backends as well as both
+# tool environments, which is what lets a local measurement predict CI's at all.
+#
+# **Why `external_tools.py` is in the measured frontend package rather than
+# beside `test/Python/tools.py`**, so the next person does not re-litigate it:
+# the import graph forces it. `scripts/regression_baseline.py` needs the same
+# answer to record which environment a baseline was taken in, and a script must
+# not import from `test/`. Moving it to `scripts/` would satisfy the import graph
+# and would drop it from a tree gated at 93 into one gated at 16, which is hiding
+# a measurement rather than making it true.
+#
+# `python/npu_frontend` at 93 leaves 0.43 points of headroom. That is the rule
+# rather than a preference: the measured value rounded down to a whole percent.
+# **If it goes red, the question is which test stopped running**, not what the
+# threshold should be.
+#
+# **`scripts` at 16 is a real number and a weak gate, and the difference is
+# stated where the threshold is.** Five of its seven files measure exactly 0.0,
+# because they are driven by shell scripts and CI steps rather than by pytest;
+# the figure is close to a statement about `regression_baseline.py` alone. It is
+# gated anyway, as a ratchet: it catches that one file's coverage collapsing,
+# which is the part of the tree pytest can see. It was 14 when the tree was first
+# gated and is 16 now, because the environment aware baseline comparison added
+# tested lines to that one file.
 #
 # Three rules from Section 17.7 shape this script, and each is a line in it
 # rather than a paragraph somebody remembers:
@@ -75,10 +139,22 @@ esac
 threshold="${1:-${NPU_COVERAGE_THRESHOLD:-0}}"
 python_threshold="${2:-${NPU_PYTHON_COVERAGE_THRESHOLD:-0}}"
 
+# The second and third Python trees, added at P11. `${2}` stays the frontend's
+# threshold, so every existing caller keeps meaning what it meant.
+#
+# **Three numbers and never one blended figure**, which is the whole reason this
+# is three variables rather than one. `python/npu_frontend` is 2262 statements
+# and `scripts` is 955: a blend would let the frontend's 93 percent carry the
+# scripts tree's 14 and report a middling number nobody could act on, and a fall
+# in either would hide behind the other's size.
+scripts_threshold="${3:-${NPU_SCRIPTS_COVERAGE_THRESHOLD:-0}}"
+experiments_threshold="${4:-${NPU_EXPERIMENTS_COVERAGE_THRESHOLD:-0}}"
+
 # A threshold is compared numerically later, so it has to be a number now. A
 # typo that reached the comparison would be read as 0 by some shells and as an
 # error by others, and either way the gate would stop meaning what it says.
-for value in "${threshold}" "${python_threshold}"; do
+for value in "${threshold}" "${python_threshold}" "${scripts_threshold}" \
+             "${experiments_threshold}"; do
   if ! printf '%s' "${value}" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
     echo "coverage: a threshold must be a number, got '${value}'" >&2
     exit 2
@@ -333,11 +409,41 @@ echo "coverage: PASS. C++ ${line_percent} percent is at or above the threshold o
 # ---------------------------------------------------------------------------
 # Python, per Section 17.7's second half.
 #
-# pytest-cov over python/npu_frontend, which is the one package root this
-# project has. `scripts/` is deliberately outside the measurement: those files
-# are command line entry points whose bodies are exercised by running them
-# rather than by the suite, and folding them in would make the number a
-# statement about how many scripts have a `--help` test.
+# pytest-cov over **three trees, reported and gated separately**:
+# `python/npu_frontend`, `scripts` and `experiments`.
+#
+# **The P8 reasoning for measuring one tree is recorded here and is superseded.**
+# It said `scripts/` holds command line entry points whose bodies are exercised
+# by running them rather than by the suite, so folding them in would make the
+# number a statement about how many scripts have a `--help` test. That was true
+# of P8's `scripts/`. It is not a reason to leave 955 statements in `scripts/`
+# and 1439 in `experiments/` unmeasured at P11: `regression_baseline.py` alone is
+# 393 statements of real logic, and `experiments/` now carries the roofline, the
+# SCALE-Sim export and the energy path, which are where this project's published
+# numbers come from.
+#
+# **The P8 observation was right about the shape and that is why each tree gets
+# its own number.** Measured on 2026-09-03, five of the seven files in `scripts/`
+# are at exactly 0.0 percent, because `dash_lint.py`, `check-reachability.py`,
+# `gen-design-decisions.py`, `build-model-ir.py` and `patch-scalesim.py` are
+# driven by shell scripts and CI steps rather than by pytest. So the `scripts/`
+# figure is close to a statement about `regression_baseline.py` alone, its
+# threshold is set from that measurement rather than from an aspiration, and
+# this paragraph is what stops the number being read as "86 percent of the
+# scripts tree is untested by anything". Most of it is tested by the CI steps
+# that run it; none of that is visible to pytest.
+#
+# **Subprocess coverage is wired**, because it would otherwise be invisible in
+# the other direction. `coverage`'s `a1_coverage.pth` calls `process_startup()`
+# when `COVERAGE_PROCESS_START` names a config, and `parallel = true` keeps each
+# process's data separate until pytest-cov combines them. Without it the
+# frontend measured 91.5561 percent and with it 93.3687, so the wiring is worth
+# 1.8 points of numbers that were being executed and not counted.
+#
+# **Stale data is erased first, which is D-0037 on the Python side.** That defect
+# was `.gcda` files from a previous build being folded into a new run's number.
+# `coverage` has exactly the same trap with `.coverage.*` parallel files, and the
+# erase below is what keeps the figure about this run.
 #
 # **A threshold that cannot be measured is not a gate**, so a missing dependency
 # is a failure when a threshold was asked for and an off line when it was not.
@@ -392,7 +498,8 @@ done
 
 echo ""
 if ! python3 -c "import pytest, pytest_cov, torch, onnx, onnxruntime" >/dev/null 2>&1; then
-  if [ "${python_threshold}" != "0" ]; then
+  if [ "${python_threshold}" != "0" ] || [ "${scripts_threshold}" != "0" ] \
+     || [ "${experiments_threshold}" != "0" ]; then
     echo "coverage: FAIL. A Python threshold of ${python_threshold} was asked" >&2
     echo "coverage: for and the suite's dependencies are not importable, so" >&2
     echo "coverage: there is no number to compare. Install" >&2
@@ -404,40 +511,118 @@ if ! python3 -c "import pytest, pytest_cov, torch, onnx, onnxruntime" >/dev/null
   exit 0
 fi
 
-echo "coverage: measuring Python coverage over python/npu_frontend"
+coverage_rc="${build_dir}/python-coverage.rc"
+coverage_data="${build_dir}/python-coverage-data/.coverage"
+
+echo "coverage: measuring Python coverage over python/npu_frontend, scripts"
+echo "coverage: and experiments, reported per tree"
+
+# D-0037 on the Python side. A `.coverage.<host>.<pid>` left by a previous run
+# would be combined into this one's number exactly as a stale `.gcda` was.
+rm -rf "${build_dir}/python-coverage-data"
+rm -f "${root}/.coverage" "${root}"/.coverage.*
+mkdir -p "${build_dir}/python-coverage-data"
+
+cat > "${coverage_rc}" <<RC
+[run]
+parallel = true
+data_file = ${coverage_data}
+source =
+    python/npu_frontend
+    scripts
+    experiments
+omit =
+    */__pycache__/*
+    scripts/testdata/*
+RC
+
 (
   cd "${root}"
+  # Subprocess coverage. `coverage`'s installed `.pth` calls `process_startup()`
+  # when this names a config, so a script this suite runs as a subprocess is
+  # measured rather than reported as dead code.
+  export COVERAGE_PROCESS_START="${coverage_rc}"
   # The whole matrix, not the fast subset. A coverage number taken from the
   # default marker expression would be a number about the subset.
   python3 -m pytest test/Python -q -p no:cacheprovider -m 'slow or not slow' \
-    --cov=python/npu_frontend \
+    --cov-config="${coverage_rc}" --cov \
     --cov-report="json:${python_json}"
 )
 
-read -r python_percent <<EOF
+# Per tree, one line each, and never a blended figure. The three numbers are read
+# out in one pass so that a tree present in the config and absent from the report
+# is a loud KeyError rather than a silent zero, which is the same rule the C++
+# half applies above.
+read -r frontend_percent scripts_percent experiments_percent <<EOF
 $(python3 - "${python_json}" <<'PYTHON'
 import json
 import sys
 
+TREES = ("python/npu_frontend", "scripts", "experiments")
+
 with open(sys.argv[1], encoding="utf-8") as handle:
-    summary = json.load(handle)
+    report = json.load(handle)
 
 # KeyError here is the point, for the same reason it is above.
-print(summary["totals"]["percent_covered"])
+files = report["files"]
+
+percents = []
+for tree in TREES:
+    statements = missing = 0
+    for name, entry in files.items():
+        normalised = name.replace("./", "")
+        if not normalised.startswith(tree + "/"):
+            continue
+        statements += entry["summary"]["num_statements"]
+        missing += entry["summary"]["missing_lines"]
+    if statements == 0:
+        # A tree that measured nothing is a tree whose name stopped matching, and
+        # reporting 100 or 0 for it would both be wrong. Section 16.4's rule, in
+        # a shell script: an absent number must never look like a measured one.
+        raise SystemExit(
+            f"coverage: no statements were measured for {tree}. The tree is "
+            f"named in the coverage config and nothing in the report matches "
+            f"it, so the path moved or the source list is stale."
+        )
+    percents.append(str((statements - missing) / statements * 100))
+
+print(" ".join(percents))
 PYTHON
 )
 EOF
 
-echo ""
-echo "coverage: Python line coverage ${python_percent} percent"
-echo "coverage: JSON summary         ${python_json}"
-
-if ! above_threshold "${python_percent}" "${python_threshold}"; then
-  echo ""
-  echo "coverage: FAIL. Python line coverage ${python_percent} percent is below" >&2
-  echo "coverage: the threshold of ${python_threshold} percent." >&2
+if [ -z "${experiments_percent}" ]; then
+  echo "coverage: FAIL. The per tree figures could not be read from" >&2
+  echo "coverage: ${python_json}." >&2
   exit 1
 fi
 
 echo ""
-echo "coverage: PASS. Python ${python_percent} percent is at or above the threshold of ${python_threshold} percent."
+echo "coverage: Python line coverage per tree"
+echo "coverage:   python/npu_frontend  ${frontend_percent} percent, threshold ${python_threshold}"
+echo "coverage:   scripts              ${scripts_percent} percent, threshold ${scripts_threshold}"
+echo "coverage:   experiments          ${experiments_percent} percent, threshold ${experiments_threshold}"
+echo "coverage: JSON summary         ${python_json}"
+
+# **Every tree is checked before any of them fails the script**, so one run
+# reports every tree that is below rather than the first one. A gate that stops
+# at the first failure makes a reader run it three times to see three numbers.
+python_failed=0
+check_tree() {
+  if ! above_threshold "${2}" "${3}"; then
+    echo "coverage: FAIL. ${1} line coverage ${2} percent is below the" >&2
+    echo "coverage: threshold of ${3} percent." >&2
+    python_failed=1
+  fi
+}
+
+echo ""
+check_tree "python/npu_frontend" "${frontend_percent}" "${python_threshold}"
+check_tree "scripts" "${scripts_percent}" "${scripts_threshold}"
+check_tree "experiments" "${experiments_percent}" "${experiments_threshold}"
+
+if [ "${python_failed}" -ne 0 ]; then
+  exit 1
+fi
+
+echo "coverage: PASS. Every Python tree is at or above its threshold."

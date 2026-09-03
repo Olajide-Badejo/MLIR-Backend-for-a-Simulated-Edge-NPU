@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 
 import pytest
-from npu_frontend import find_tool
+from npu_frontend import external_tools, find_tool
 from npu_frontend.diagnostics import VerificationError
 
 #: The variable a caller sets to say which build directory to use. Named here
@@ -50,6 +50,104 @@ BUILD_DIR_VARIABLE = "NPU_BUILD_DIR"
 def named_build_directory() -> str | None:
     """The build directory a caller named, or None when nobody did."""
     return os.environ.get(BUILD_DIR_VARIABLE) or None
+
+
+# ---------------------------------------------------------------------------
+# The same policy, for the external cross validation tools. Added at P11 after
+# D-0046.
+# ---------------------------------------------------------------------------
+
+#: **`BUILD_DIR_VARIABLE`'s rule applied to a second kind of tool**, because
+#: D-0046 was D-0032 happening again one layer out. The developer machine has the
+#: external tools and the CI image does not, so `pytest.importorskip` alone means
+#: the only environment that runs these tests is the one place nobody is
+#: watching, which is exactly the shape of D-0040.
+#:
+#: **The answer itself lives in `npu_frontend.external_tools`** and not here,
+#: because `scripts/regression_baseline.py` needs the same answer to record which
+#: environment a baseline was taken in. Two copies of it would be the duplication
+#: D-0032's fix built a test to hunt for. What stays here is the pytest policy,
+#: which is the half that belongs to the suite.
+EXTERNAL_TOOLS_VARIABLE = external_tools.EXTERNAL_TOOLS_VARIABLE
+EXTERNAL_TOOLS = external_tools.EXTERNAL_TOOLS
+external_tools_promised = external_tools.tools_promised
+missing_external_tools = external_tools.missing_tools
+
+
+def require_source_tree() -> None:
+    """Skip, or fail, on a missing pinned SCALE-Sim source clone.
+
+    *Added after CI run 33707070166.* The same policy as `require_external_tools`
+    below, for a third thing that is neither of the two tools: the clone the
+    example topologies are read from, per Section 16.3 and D-0044's deviation.
+
+    **It needs its own guard because it is genuinely independent.** The two tests
+    that read those CSVs never import `scalesim`, so every mechanism that reasons
+    about the package leaves them alone. They ran on the developer machine and
+    skipped in CI, and the rehearsal shim modelled the import and the binary and
+    not the clone, so it predicted 998 passed where CI produced 996. Those two
+    tests are the whole of that difference.
+    """
+    if external_tools.source_tree_present():
+        return
+    where = external_tools.source_tree()
+    if external_tools.tools_promised():
+        raise AssertionError(
+            f"the pinned SCALE-Sim source clone is not at {where}, and "
+            f"{EXTERNAL_TOOLS_VARIABLE} is set. A caller that names that "
+            f"variable is asserting this environment has the external tools, and "
+            f"the clone is where Section 16.3's example topologies are read "
+            f"from, so this is a failure rather than a skip.\n\n"
+            f"Clone it at the sha in docs/adr/0003-resolved-tool-matrix.md, or "
+            f"set {external_tools.SOURCE_TREE_VARIABLE} to where it is."
+        )
+    pytest.skip(
+        f"the pinned SCALE-Sim source clone is not at {where}, and no "
+        f"{EXTERNAL_TOOLS_VARIABLE} was set, so nobody claimed this environment "
+        f"has it. The pinned wheel ships the package without its topologies/ and "
+        f"layouts/ directories, which is D-0044, so this check can only run "
+        f"where the clone is."
+    )
+
+
+def require_external_tools() -> None:
+    """Skip, or fail, on a missing external tool. The policy of this module.
+
+    - Present: return, and the caller runs the real thing.
+    - Absent and **nobody promised them**: skip. That is the CI image, and a
+      developer without them, and both are legitimate.
+    - Absent and **somebody promised them**: fail. A caller that sets
+      `NPU_EXTERNAL_TOOLS` is asserting the tools are there, and a skip in that
+      case is the suite quietly doing less than the caller asked for.
+
+    The third branch is the whole point. Without it the external tool tests can
+    only ever be skipped in CI, which means the day the image gains the tools
+    nothing notices, and the day the tools break nothing notices either.
+    """
+    absent = missing_external_tools()
+    if not absent:
+        return
+    if external_tools_promised():
+        raise AssertionError(
+            f"these external tools are not reachable: {absent}, and "
+            f"{EXTERNAL_TOOLS_VARIABLE} is set to "
+            f"{os.environ[EXTERNAL_TOOLS_VARIABLE]!r}. A caller that names that "
+            f"variable is asserting the tools are installed, so this is a "
+            f"failure rather than a skip: skipping here would mean the suite ran "
+            f"less than the caller asked for, and the external cross validation "
+            f"is the part of this phase that only exists when they run.\n\n"
+            f"Install them from the pinned shas in "
+            f"docs/adr/0003-resolved-tool-matrix.md, and remember "
+            f"scripts/patch-scalesim.py."
+        )
+    pytest.skip(
+        f"these external tools are not reachable: {absent}, and no "
+        f"{EXTERNAL_TOOLS_VARIABLE} was set, so nobody claimed this environment "
+        f"has them. Section 16.4: a missing external tool fails loudly naming "
+        f"the dependency when something asks it to run, and a test that has no "
+        f"tool to drive skips. Set {EXTERNAL_TOOLS_VARIABLE}=1 to turn this skip "
+        f"into a failure."
+    )
 
 
 def tool(name: str) -> Path:

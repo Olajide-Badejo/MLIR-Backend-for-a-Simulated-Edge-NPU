@@ -241,3 +241,71 @@ likewise not a regression: a field that did not exist cannot have moved.
 **The causing commit** is `feat(pipeline): -O1 and -O2, and the two exemptions
 -npu-fuse-ops closes`. The baseline is re-recorded two commits later, in a commit
 that touches `test/baseline/` and nothing else.
+
+## 2026-09-02, P11: the energy fields, and two action counts the schema did not carry
+
+**This entry declares a schema movement and not a numeric regression, and it says
+so first because the distinction is the one this file exists to draw.** No golden
+tensor moves. No instruction count, cycle count, DRAM byte count or MAC count
+moves. Nothing this project has ever measured changes value. What changes is the
+shape of two recorded files, and the rule at the top of this page says a field
+that did not exist cannot have regressed. It is written here anyway, before the
+commit that causes it, because the `schema_version` refusal that follows is loud
+and a reader meeting it deserves to find the reason where this project promised
+to put it.
+
+### What moves
+
+**`test/baseline/baseline.json`, `schema_version` 2 to 3.**
+
+- `energy` leaves `absent_fields`. It has been there since P8 saying "P11, when
+  Accelergy lands", and Accelergy has landed.
+- Every cell gains `energy_pj_per_inference`, computed from that cell's own
+  action counts and Accelergy's per action coefficients at 45 nm.
+- The manifest gains `technology_node` and `registered_estimators`, because two
+  runs at the same Accelergy sha with different estimation plug ins are two
+  different measurements and the baseline has to be able to say which one it is.
+
+**`experiments/results/*.json`, `schema_version` 1 to 2.**
+
+- `simulation` gains `scratchpad_elements_read` and
+  `scratchpad_elements_written`. These are counts the simulator has produced
+  since P7 and `npu-sim` has printed since P7, and the schema did not carry them
+  because until P11 nothing consumed them. Accelergy's scratchpad action counts
+  are exactly these two, so recording them is what makes an energy figure
+  reconstructible from a committed cell rather than only reproducible by
+  re-running the simulator.
+- The P11 fields stop being null: the roofline group, the SCALE-Sim group, the
+  energy and area group, `technology_node`, `tool_shas` and
+  `registered_estimators`. Each loses its `_null_reason` sibling in the same
+  write, because the validator refuses a field carrying both and a half done fill
+  is red.
+
+### Why the two new fields rather than recomputing them
+
+The alternative was to leave the schema alone and have the energy path re-run the
+simulator for every cell it wanted a scratchpad count for. That would make the
+energy figure a thing this project can produce rather than a thing a reader can
+check, and law 3 of Section 0.2 is that every published number traces to a
+committed file. A field that has to be recomputed to be read is not recorded.
+
+### What the movement costs
+
+One re-record of all 175 cells and of the baseline, in one run each. The whole
+suite has to be re-recorded in a single run rather than cell by cell, because
+`experiments/results_to_tex.py` refuses to generate a table from cells measured
+at more than one commit, and it refuses for the right reason: a table whose rows
+come from different builds is a table nobody can reproduce.
+
+### The order these commits land in
+
+1. This entry, in its own commit, touching `docs/BREAKING_CHANGES.md` and nothing
+   else.
+2. The commit that causes the movement: the schema fields, the energy path, and
+   the wiring that fills them.
+3. The re-record, in its own commit, touching `experiments/results/`,
+   `test/baseline/` and the generated table and nothing else.
+
+That is Section 17.6's declare then re-record, and the reason it is three commits
+rather than two is that `git log` is the only thing that can tell a decision from
+an explanation.

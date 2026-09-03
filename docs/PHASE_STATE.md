@@ -14,58 +14,39 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-02.
+**Last updated:** 2026-09-03.
 
 ## Current phase
 
-**P10, measurement.** Branch `phase/p10-measurement`, cut from `main` at
-`fe43ee4`, which is the P9b merge. Eighteen commits. **Pushed three times and red
-three times, on three different defects, none of which could have been found on
-this machine.** Run 33559636835 was D-0041, the checkout depth. Run 33571635111
-was D-0042, a git fatal read as an answer. Run 33575891610 turned
-`build-and-test` **green including every D-0041 and D-0042 test**, so those two
-are proven in CI, and was red in the coverage job alone on D-0043, a comparison
-that ignored the precision of one of its operands. The commits after each handoff
-are that run's finding and its fix.
+**P11, external cross validation and the roofline.** Branch
+`phase/p11-cross-validation`, cut from `main` at `d4e19a2`, which is the P10
+merge. Seven commits. **Not pushed.**
 
 | Commit | Subject |
 |---|---|
-| `847837c` | `feat(pipeline): the PassInstrumentation of Section 16.2, on the manager that runs` |
-| `f92de42` | `feat(experiments): the prediction mechanism of Section 17.8, with two real entries` |
-| `d4210f3` | `feat(experiments): the result schema of Section 16.1 and the harness that fills it` |
-| `a203995` | `chore(results): record the 175 cells, in their own commit after the code` |
-| `1889089` | `docs: the README table, the numbers ledger, and the two traceability tests` |
-| `16cf7aa` | `docs(passes): the measured ablation delta Section 12 has asked every entry for` |
-| `d318a49` | `ci: the slow cells step and the nightly full matrix, both at the phase 19.0 names` |
-| `5401d39` | `chore(baseline): re-record the suite counts, in its own commit and nothing else` |
-| `a89cc6b` | `docs: hand off P10, with the number Section 2 asks for and cannot be given here` |
-| `79eff63` | `fix(ci): fetch the history these tests ask about, and refuse rather than guess` |
-| `7acd6da` | `test(predictions): the shallow guard test asserted about the wrong repository` |
-| `5d4ffa1` | `test(predictions): the contrast half needs a source that has history` |
-| `2c58bb0` | `chore(baseline): re-record for the one test D-0041 added` |
-| `37949f1` | `docs: record what the first CI run found, at the tip that fixes it` |
-| `f7cd559` | `fix(git): a fatal is not an answer, and cat-file could not have told us anyway` |
-| `c1e8940` | `docs: record what the second CI run found, and re-record for its test` |
-| tip | `fix(timing): the cross check now carries the precision of the coarser clock` |
+| `53c50e5` | `feat(roofline): the physical bound of Section 16.6, and what it is worth` |
+| `087ad3a` | `feat(scalesim): the cross validation of Section 16.3, with its gap named` |
+| `6c54e26` | `docs(breaking): declare the P11 schema movement before it happens` |
+| `17d63ed` | `feat(energy): Accelergy energy and area, and the schema movement declared` |
+| `6afe2d8` | `fix(p11): a partial DRAM access is paid in full, and four tests that encoded P10` |
+| `9bdb317` | `record: the suite and the baseline at the P11 schema, in one run each` |
+| tip | `docs: hand off P11, with the prediction answered and two tools that exit zero on failure` |
 
-**The tip carries this table's own last row**, so it is named by subject rather
-than by a sha it cannot know, which is what P9 and P9b both did for the same
-reason.
+**The commit order carries meaning and is the part to check first.** The roofline
+lands first because Section 16.6 says to build the frame before the pictures. The
+SCALE-Sim exporter lands second, which is what turns the P10 test asserting it
+does not exist into the ordering proof P11's gate asks for. `6c54e26` is the
+`docs/BREAKING_CHANGES.md` declaration and touches that file and nothing else;
+`17d63ed` is the movement it declared; `9bdb317` is the re-record, touching only
+recorded numbers. That is Section 17.6's declare then re-record in three commits
+rather than two, because `git log` is the only thing that can tell a decision
+from an explanation.
 
-**The last nine are three CI runs' findings and their fixes.** `79eff63` through
-`37949f1` are D-0041, from run 33559636835. `f7cd559` and `c1e8940` are D-0042,
-from run 33571635111 on the commit that fixed D-0041. The tip is D-0043, from run
-33575891610 on the commit that fixed D-0042. Everything before `a89cc6b` was
-written when the branch had never been pushed, and the difference between what
-those handoffs predicted and what CI reported is recorded rather than edited away.
-
-**The ordering carries two of this project's rules and is the part to check
-first.** `f92de42` lands the prediction **before** `a203995` records the cells
-that name it, which is the whole of Section 17.8 and is what the ancestor test
-asserts. `d4210f3` lands the harness before `a203995` records what it measured,
-because a result is committed after the code it measures, and the suite was run a
-second time at `d4210f3` so that every `manifest.git_sha` names the commit that
-contains the harness rather than the one before it.
+**Two intermediate commits are red, and that is what the governance costs.** At
+`17d63ed` and `6afe2d8` the committed cells are still at `schema_version` 1 while
+the reader writes and reads 2, so every test that loads a cell refuses. `9bdb317`
+re-records them and the tip is green. The alternative was to fold the re-record
+into the movement, which would have made the declaration unfalsifiable.
 
 ## Gate status
 
@@ -73,16 +54,20 @@ contains the harness rather than the one before it.
 
 | Clause | Status |
 |---|---|
-| Before and after operation counts per pass computed by the `PassInstrumentation` in `runBeforePass` and `runAfterPass`, not by any flag | met. `lib/Pipeline/PassStats.cpp`. `test_the_counts_chain_across_the_pipeline` asserts one pass's after equals the next pass's before across the anchor change, which only a running pipeline produces |
-| Wall clock from the same instrumentation cross checked against `--mlir-timing` | met. Both flags on one invocation, so the two clocks describe the same execution. Every bound derives its quantum from the precision MLIR printed, per D-0043: **half a unit in the last place, 0.05 ms, per pass**, and that times the pass count for a sum. Worst per pass deficit measured against the coverage build: 0.040 ms |
-| A pass present in the pipeline but absent from the JSON raises, shown | met. `test_a_pass_absent_from_the_json_raises`, on a doctored file, plus ten more that each drop one field |
-| Every ablatable `-O2` pass has an ablation row at every budget, set read from the driver at run time | met. 8 passes times 7 models times 2 budgets equals 112 rows. `ablatable_passes(2)` is the only source of the set |
-| Every schema field present in every result file, `null` plus a reason where a later phase fills it | met. `test_every_committed_result_validates` over all 175, and three refusals shown on doctored input |
-| The full matrix passes | met. 426 tests, 24.8 seconds |
-| Suite runtime measured against the 90 minute budget, run fails if exceeded | met. **175 cells, 1.76 minutes, 0.60 s per cell.** Failure branch rehearsed at `--budget-minutes 0`, exit 1 |
-| The measured per cell cost replaces the 15 second planning figure | **carved out, see below.** The number is 0.60 seconds; the specification is outside this repository and is not edited from here |
-| At least one prediction through the full path with its ancestor test green | met. `p10-ablation-deltas`, named by 126 of 175 cells, ancestor test green, and the check shown refusing a non ancestor |
-| The README table and both traceability tests green | met, and both proven red on a deliberate fault and restored |
+| The roofline bound computed for every model and every cell | met. 175 cells, 550 MAC bearing layers, `experiments/roofline.py`, exit 0 |
+| `roofline_verdict` recorded | met. `at_or_above_bound` in all 175, with the branch that bound each layer beside it: 375 compute, 175 memory |
+| Any cell above its bound investigated and written up as a finding rather than noted | met, and the finding is that **the check cannot fail against this cost model**. `effective_macs` is defined as `cycles * peak` and a transfer costs bytes over bandwidth plus a descriptor, so neither branch can bind. Both halves are asserted in `test/Python/test_roofline.py` and `docs/NUMBERS.md` carries the account. No cell is below its bound; the tightest layer is 0.000635 above, which is the issue overhead and nothing else |
+| SCALE-Sim cycles and per layer breakdown on every cell | met. `scalesim_cycles` and `scalesim_cycles_per_layer` in all 175 |
+| The skipped and approximated layers recorded | met. `scalesim_skipped` carries every operation with no systolic representation **and the analytical cycles it cost**, which is what lets the divergence read as a sum; `scalesim_approximations` carries the dilated layers with their effective extents |
+| The divergence decomposed into named terms | met. Pooling, elementwise, uncovered DMA, dilation approximation, array fragmentation, double buffering, residual. The residual is zero on every cell **by construction**, because the terms are a partition rather than a fit, and the module says so rather than presenting it as a result |
+| Accelergy energy and area per component on every cell | met. Three components, `energy_pj_per_component` and `area_mm2_per_component` in all 175, with the estimation plug in that answered recorded per component |
+| Computed from **raw** `macs`, never from `effective_macs` | met. `counts_for` reads `simulation.macs` by name. `test_the_energy_path_never_sees_the_scaled_count` builds a cell whose `effective_macs` is four times its `macs` and checks which one the answer followed |
+| Energy fields added to the baseline with a `schema_version` bump | met. Baseline 2 to 3, results 1 to 2, both declared in `docs/BREAKING_CHANGES.md` in a commit that touches only that file, moved in the next commit, re-recorded in one after that |
+| The prediction quoted verbatim with its sha and answered | met. `f92de42`, quoted clause by clause in `docs/NUMBERS.md`, answered including where it is wrong, and not edited |
+| The `git log` ordering proven in a test | met. `test_the_divergence_prediction_landed_before_the_exporter` asserts the prediction's landing commit is a **strict** ancestor of the exporter's, and refuses the same commit for both |
+| Fusion re-argued in energy terms with numbers | met. Exactly 0.000 pJ on all seven models, with the counterfactual quantified beside it: up to 46.11 percent of `depthwise_separable`'s energy where the intermediate spilled. `docs/PASSES.md` and `docs/NUMBERS.md` |
+| The declare then re-record step run for any intended baseline movement | met, in three commits, and the two red intermediates are named above rather than hidden |
+| Dependencies pinned at the versions the manifests record | met. Six repositories by git sha in `docs/adr/0003-resolved-tool-matrix.md` and in every result manifest, plus `scalesim_installed_tree_sha256` because the sha does not describe the patched install |
 
 ## The Section 2 carve out, for the owner
 
@@ -93,9 +78,14 @@ repository and the standing rule is that it is not edited from here, so the
 replacement is recorded rather than applied. **This is the one item of P10's gate
 that needs a hand other than this branch's.**
 
-- **The measured figure is 0.60 seconds per cell**, over 175 cells in 105.7
-  seconds, serially, on the 14700K under WSL2. Recorded in
+- **The measured figure is 1.27 seconds per cell**, over 175 cells in 3.70
+  minutes, serially, on the 14700K under WSL2. Recorded in
   `experiments/results-runtime.json` and quoted in `docs/NUMBERS.md`.
+- **It was 0.60 seconds at P10 and the difference is P11's external tools**,
+  which now run inside the same suite: a SCALE-Sim invocation and, on the dilated
+  cells, two, plus one Accelergy invocation per distinct scratchpad budget. The
+  suite still finishes in under four minutes against ninety, so the factor in
+  hand went from fifty to twenty four. The figure below is the one to quote.
 - **Section 2's arithmetic needs two further corrections**, and they change the
   cell count rather than the cost:
   - it multiplies **11** ablatable passes; there are **8**, because
@@ -111,16 +101,54 @@ that needs a hand other than this branch's.**
   > axes, because a tight budget is the smallest budget at which one program
   > allocates and the same model at a larger batch is a different program.
   > **Ablation cells:** 8 ablatable `-O2` passes times 7 models times 2 budgets
-  > equals **112**. Total **175 cells**. Measured at Phase P10 at **0.60 seconds
-  > per cell** serially, which is 105.7 seconds for the whole suite, so **the
-  > stated budget of 90 minutes stands with a factor of fifty in hand**. The
-  > headroom is what pays for running the cells serially, which the per cell
-  > timing objects of Section 16.1 require.
+  > equals **112**. Total **175 cells**. Measured at Phase P11 at **1.27 seconds
+  > per cell** serially, which is 3.70 minutes for the whole suite including the
+  > external cross validation tools, so **the stated budget of 90 minutes stands
+  > with a factor of twenty four in hand**. The headroom is what pays for running
+  > the cells serially, which the per cell timing objects of Section 16.1
+  > require. It was 0.60 seconds at P10, before SCALE-Sim and Accelergy ran
+  > inside the suite.
 
-## What P10 measured, in one place
+## What P11 measured, in one place
 
-`docs/NUMBERS.md` is the ledger and is the file to read. Four things worth
+`docs/NUMBERS.md` is the ledger and is the file to read. Six things worth
 repeating here.
+
+- **The roofline cannot fail against this cost model**, and that is the phase's
+  most useful negative result. `effective_macs` is defined as `cycles * peak`, so
+  the compute branch is the kernel's own cycle count; a transfer costs bytes over
+  bandwidth **plus** a descriptor, so it always exceeds the memory branch its own
+  bytes produce. All 175 cells and all 550 layers are at or above their bound and
+  none of that is evidence. It is a regression bound waiting for P13, and both
+  halves of the tautology are asserted so the day either stops holding a test
+  says so.
+- **The divergence prediction was mostly wrong and is answered as written.**
+  Direction wrong on five of seven models, all three magnitude bands wrong, both
+  rank fidelity figures wrong, the coverage floor on `lenet` wrong. Right about
+  the mechanism behind the widest positive gaps, about pooling, and about there
+  being a fragmentation disagreement. 340 of 550 layers exceed 25 percent where
+  it predicted none would.
+- **The root cause of that band is D-0045 and it is a real finding about this
+  cost model.** The array's weight preload is charged once per instruction here
+  and per fold by SCALE-Sim, worth about a factor of three on a narrow deep
+  convolution. Not fixed at P11, because retuning a model against an external
+  tool invalidates every ablation already recorded.
+- **The suite wide divergence headline is the small remainder of two large
+  opposite terms**: double buffering at plus 442289 cycles and array
+  fragmentation at minus 435825, summing to plus 109756. Quoting the headline
+  without them would be quoting an accident.
+- **Energy runs from 1.7 uJ per inference on `depthwise_separable` to 54.4 uJ on
+  `lenet`, on an 8.5 mm2 design at 45 nm.** The fp32 MAC coefficient **fails**
+  Section 16.4's order of magnitude sanity check at a factor of 10.71, for an
+  identified reason that is not this project, and `docs/NUMBERS.md` records that
+  at the published coefficient the scratchpad would be the largest consumer on
+  every model. **No conclusion here rests on the array being dominant.**
+- **Fusion moves exactly zero picojoules**, on all seven models, which is the
+  same zero the P10 ablation table records for instructions and cycles arriving
+  in the currency fusion is usually argued in. What it would be worth where the
+  intermediate spilled is quantified beside it.
+
+### What P10 measured, and still holds
 
 - **175 cells, 1.76 minutes, 0.60 seconds per cell**, against a 90 minute budget.
 - **Two of the eight ablatable passes have a nonzero row.**
@@ -185,12 +213,12 @@ and the timing object**, which is the same distinction made executable.
 ## Verification output
 
 Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
-`~/npu-venv`. Re-measured at the tip after D-0041's fix.
+`~/npu-venv`.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 26 discovered, 26 passed. 25 at P9b, plus `test/Pipeline/pass-stats.mlir` |
+| `ninja -C build check-npu` | 26 discovered, 26 passed |
 | `build/bin/NPUInterfaceTests` | 23 passed |
 | `build/bin/NPUTilingTests` | 12 passed |
 | `build/bin/NPUAllocatorTests` | 29 passed |
@@ -198,16 +226,14 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `build/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUSimulatorTests` | 54 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q` | 948 passed, 18 skipped, 9 deselected |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **957 passed, 18 skipped**. 871 at P9b, plus 86 |
-| the suite under a real `--depth 1` clone, both `push` and `pull_request` shapes | 6 failed with the shallow refusal by name, 1 skipped, and the harness refuses before measuring. D-0041's fix is that this is diagnosable rather than eight assertions about shas |
-| the same two shapes at `fetch-depth: 0` | **44 passed, 0 failed** in the affected files, and `run_benchmarks.py` exits 0 |
-| `mypy` | no issues found in 23 source files |
-| `black --check .` | 53 files unchanged |
+| `python -m pytest test/Python -q` | 988 passed, 18 skipped, 18 deselected |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1006 passed, 18 skipped**. 957 at P10, plus 49 |
+| `mypy` | no issues found in 25 source files |
+| `black --check .` | 61 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 465 of 465 files |
+| `reuse lint` | compliant, 473 of 473 files |
 | `pre-commit run --all-files` | all twelve hooks passed |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
@@ -215,12 +241,104 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
-| `python experiments/run_benchmarks.py` | 175 cells, 1.76 minutes, 0.60 s per cell, inside the budget, exit 0 |
-| `bash scripts/regression-baseline.sh --check` | **no drift, exit 0**, 2 minutes 17 seconds |
-| `bash scripts/coverage.sh 85 90` | C++ **86.5** PASS, Python **90.97** PASS, exit 0 |
+| `python experiments/roofline.py` | 175 cells, 550 layers, 175 memory bound and 375 compute bound, **every cell at or above its bound**, exit 0 |
+| `python experiments/scalesim_export.py` | 175 cells, worst whole model divergence **-87.14%** on `dilated_stack-O0-tight-n1-fp32-normal` at coverage 0.711, exit 0 |
+| `python experiments/accelergy_energy.py` | 175 cells at 45 nm, per MAC **49.286 pJ** against a published 4.60, a factor of **10.71**, exit 0 |
+| `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
+| `python experiments/run_benchmarks.py --force` | **175 cells, 3.70 minutes, 1.27 s per cell**, inside the budget, exit 0 |
+| `bash scripts/regression-baseline.sh --check` | **no drift, exit 0** |
+| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.5** PASS, branch 76.9; per tree **93.4313 / 16.1191 / 73.1302** PASS, exit 0 |
+| the whole suite in the CI shape, all three differences modelled | **1016 passed, 31 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.4313 / 16.1191 / 58.4488**. The skip count is CI's exactly |
+| `regression-baseline --check` in the CI shape, against the baseline recorded here | **no drift**, with both environments named in a note and the count difference printed |
+| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
 | `git status --short` | empty |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case sensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
+
+**The suite grew from 957 pytest tests at P10 to 1029**, in four new files:
+`test_roofline.py`, `test_scalesim_export.py`, `test_accelergy_energy.py` and
+`test_external_tools.py`. Four existing tests changed because they encoded the
+P10 state, and each change is recorded in `6afe2d8`'s message rather than folded
+into a larger commit. The last three of the new files exist because CI found
+something the developer machine could not.
+
+**All 21 golden tensors are byte identical to P10's**, which is what the
+`docs/BREAKING_CHANGES.md` entry said would happen. The baseline moved in shape
+and not in value.
+
+**The external tool steps are off in CI and say so in the run log**, per Section
+19.0's rule that silence and success must not look alike. The step asserts the
+tools are **absent**, so it cannot quietly become a second copy of a step that is
+on. The trigger to switch it on is the CI image gaining them.
+
+**Python coverage is measured over three trees now and gated per tree**, which
+is the P8 rationale for one package root being superseded rather than
+contradicted: `scripts/` is 955 statements and `experiments/` 1439, and both
+carry real logic at P11 where `scripts/` carried entry points at P8.
+
+| Tree | CI shape | Developer machine | Threshold |
+|---|---|---|---|
+| `python/npu_frontend` | 93.4313 | 93.4313 | **93** |
+| `scripts` | 16.1191 | 16.1191 | **16** |
+| `experiments` | 58.4488 | 73.1302 | **58** |
+
+**Those figures are equal across four combinations, not two**: CI shape and
+developer shape, each under both of CPython's tracing backends. That took two
+fixes rather than being a property the trees had, and CI run 33711091899 found
+it: the frontend measured **92.9004** against a threshold of 93 that had been set
+from a measurement taken before `external_tools.py` was added to the tree it
+gates.
+
+- **`external_tools.py` decides what an environment can reach**, so half its
+  branches cannot execute in either environment. `test_external_tools.py`
+  substitutes `find_spec`, `which` and the environment, so every branch runs
+  everywhere and the module is at 100 percent in both.
+- **`pass_stats.interpreter_is_traced` depends on the interpreter version**, not
+  on the tools. `coverage` uses `sys.settrace` on the 3.12 the CI image ships and
+  `sys.monitoring` on this machine's 3.14, so the function answers on the first
+  question there and reaches the second here. Measured rather than deduced:
+  `COVERAGE_CORE=ctrace` on 3.14 moves `pass_stats.py` from 16 missing lines to
+  20, and the four are exactly the `sys.monitoring` block.
+  `test_every_way_an_interpreter_can_be_traced` covers all six branches on any
+  interpreter, and two `# pragma: no cover` comments came off because the
+  branches they excused are tested now.
+
+**A threshold is a measurement of a tree**, so a commit that adds environment
+dependent code to that tree invalidates it as surely as it would invalidate a
+recorded cycle count. The prose beside the threshold claimed the tree was
+environment independent, which had been true and had quietly stopped being true,
+and a stale claim next to a gate is never merely cosmetic. D-0046.
+
+Three further things about that table are load bearing and are recorded where the
+thresholds are defined as well as here.
+
+- **Subprocess coverage is wired**, through `COVERAGE_PROCESS_START` and
+  `parallel = true`. It is worth 1.8 points on the frontend alone, 91.5561
+  before and 93.3687 after, which were lines being executed and not counted.
+  Stale `.coverage.*` files are erased first, which is D-0037 on the Python side.
+- **`experiments/` differs by 14.7 points between the two environments**, because
+  `scalesim_export.py` and `accelergy_energy.py` only execute where the tools do.
+  The gate is set from what CI can execute; setting it from the developer figure
+  would make CI red for having less installed. **It is the only tree that still
+  differs**, which is by design and is where the tool driven code lives.
+- **`scripts` at 16 is a real number and a weak gate**, and the prose says so
+  where the threshold lives. Five of its seven files measure exactly 0.0, because
+  they are driven by shell scripts and CI steps rather than by pytest, so the
+  figure is close to a statement about `regression_baseline.py` alone. It is
+  gated as a ratchet on the part pytest can see. It was 14 when the tree was
+  first gated and is 16 now, because the environment aware baseline comparison
+  added tested lines to that one file.
+- **`external_tools.py` lives in the measured frontend package and the reason is
+  recorded beside the thresholds**, so it is not re-litigated: the import graph
+  forces it, because `scripts/regression_baseline.py` needs the same answer and a
+  script must not import from `test/`. Moving it to `scripts/` would satisfy the
+  import graph and drop it from a tree gated at 93 into one gated at 16, which is
+  hiding a measurement rather than making it true.
+
+**The coverage job got slower and by how much is recorded**: its pytest phase
+went from 248.45 to 302.02 seconds with the tools present, which is the tracer
+over two more source trees. The whole script is 328 seconds here and 241 in the
+CI shape. C++ is unmoved at 86.5, which is right: this phase added no C++.
 
 **The authorship grep is worth one sentence, because it caught itself once.** The
 row above it originally named the thing it searches for, which made the row a
@@ -239,6 +357,50 @@ golden tensors are byte identical to P9b's.
 threshold of 90. It was 0.49 at P9 and 0.61 at P8. The threshold stays at 90.
 
 ## Activation proofs and rehearsal recipes
+
+### 0. Reproducing the CI image locally, which is now a standing recipe
+
+*Added at P11 after D-0046.* This project has to stay green in **two**
+environments, and the second cannot be reached by running the suite here. The
+recipe below is what CI's image looks like from this machine, and run
+33707070166 is the evidence that getting it slightly wrong is worth catching:
+the first version modelled two of the three differences and predicted a suite
+row two tests off.
+
+Three things, and all three are needed:
+
+1. **`import scalesim` and `import accelergy` must fail.** A `sitecustomize.py`
+   on `PYTHONPATH` installing a meta path finder that raises
+   `ModuleNotFoundError` for those two roots.
+2. **The `accelergy` binary must not be on `PATH`**, and everything else must
+   be. The `PATH` is the venv's `bin` **minus** those entry points, not a `PATH`
+   without the venv: the image has `gcovr`, `pytest` and `python3`, and the
+   first shim dropped them and died on a missing `gcovr` rather than on anything
+   real. Symlink each entry except `accelergy*` and `scalesim*`, and write
+   `python`, `python3` and `python3.14` as `exec` wrappers rather than symlinks,
+   because a symlinked venv interpreter resolves its prefix from the link's own
+   directory and then finds no site-packages.
+3. **The pinned SCALE-Sim source clone must not exist.** Point
+   `NPU_SCALESIM_SOURCE` at a path that is not there. `~/npu-external/` is a
+   developer machine artefact, and the two tests that read the example CSVs out
+   of it never import `scalesim`, so 1 and 2 leave them running. **Those are the
+   two tests run 33707070166 found.**
+
+`NPU_EXTERNAL_TOOLS` must also be unset, so the guards take their skip branch
+rather than their fail branch.
+
+**What it does not model, stated so nobody assumes otherwise**: a different libc,
+CPU, compiler or container uid. Those move golden tensors and timings rather than
+which tests run, and `--check` has its own bands for them.
+
+**mypy needs a separate reproduction**, because it resolves imports statically
+rather than at run time and no meta path finder reaches it.
+`mypy --python-executable /usr/bin/python3` is what makes it see what CI sees.
+
+The recipe predicts CI's suite row exactly: **996 passed, 31 skipped** at
+`1e77083`, which is what run 33707070166 reported.
+
+### The activations this branch carries
 
 **This branch activates one CI step and one CI job.** Both were rehearsed under
 their own step scripts with the prediction written first.
@@ -366,10 +528,37 @@ that runs pytest.
 
 ## Defects
 
-Three, all found by this branch and fixed in it. **Two were found by CI, on the
-two pushes this branch has had, and neither could have been found locally**: one
-varied the checkout depth and the other varied who owns the workspace, and
-nothing on a developer machine varies either.
+**Two new at P11, and neither is in this project's own code.** One is in an
+external tool and one is in this project's cost model, found by the external
+tool, which is what cross validation is for.
+
+- **D-0044**, SCALE-Sim v3 does not run under numpy 2, and reports a missing
+  input file by exiting **zero**. Three `int(max(...))` casts over numpy arrays,
+  failing on the tool's own shipped example, on every upstream branch at the
+  pinned sha. `scripts/patch-scalesim.py` is the three expression fix, applied by
+  hand and never as a side effect of running a benchmark, and every manifest
+  records `scalesim_installed_tree_sha256` beside the upstream sha so the record
+  says the tool was modified. **The second half is the one to remember**:
+  `scale_sim.set_params` calls the builtin `exit()` on an input error, which is
+  status zero, and Accelergy's own shipped example crashes and exits zero too.
+  Neither wrapper in this project reads an exit status; both check the outputs.
+  That is D-0040 through D-0043's shape arriving from outside the repository.
+- **D-0045**, the cost model charges the array's weight preload once per
+  instruction and SCALE-Sim charges it per fold. **Found by the cross
+  validation**, not by reading the code, on `resnet_block`'s 3 by 3 convolution:
+  478 cycles here against 1465 there for the same 36864 multiply accumulates,
+  reconciled by `check_the_same_arithmetic` before being compared. It is the
+  dominant term in the fragmentation column and the root cause of every layer in
+  the above 25 percent band. **Open, deliberately.** Retuning a cost model
+  against an external tool invalidates every ablation already recorded, which is
+  the rule Section 16.5 states for ZigZag; P13 gets the reproduction.
+
+### The three from P10, which are fixed and stay recorded
+
+Three, all found by that branch and fixed in it. **Two were found by CI, on the
+two pushes it had, and neither could have been found locally**: one varied the
+checkout depth and the other varied who owns the workspace, and nothing on a
+developer machine varies either.
 
 - **D-0040**, seven tests marked `slow` at P3 that CI has never run. **Found by a
   prediction that was wrong**, while rehearsing the step that turns them on. It
@@ -432,6 +621,30 @@ carry that tool's precision alongside them.
 
 ## The prediction, adjudicated
 
+`experiments/predictions/p11-scalesim-divergence.md`, committed at `f92de42`
+before `experiments/scalesim_export.py` existed at all. **Most of it is wrong**,
+and the full clause by clause answer with the entry quoted verbatim is in
+`docs/NUMBERS.md`. The file is not edited.
+
+| Claim | Verdict |
+|---|---|
+| Direction: this project reads **above** SCALE-Sim on the covered layers | **wrong on five of seven models.** Above on `lenet` and `lenet_batched`, below on the rest, by as much as 87 percent. The entry's own falsification list names this |
+| The gap is dominated by named modelling differences rather than by error | **met.** The decomposition is a partition of named terms with a residual of exactly zero |
+| Under 10 percent per layer on dense compute bound layers, 10 to 25 on the 1 by 1s, 5 to 20 whole model | **wrong on all three.** 340 of 550 layers exceed 25 percent; the 1 by 1s reach +334; whole model reaches -87 |
+| No layer above 25 percent at the default budget with both ports on | **wrong**, and D-0045 is the root cause the clause demands |
+| Mechanism 1: SCALE-Sim reads low on 1 by 1 convolutions, widest gaps there, this project reading higher | **confirmed**, and it is the one mechanism the entry got fully right |
+| Mechanism 2: pooling leaves the comparison as coverage rather than as divergence | **confirmed.** 53114 cycles, its own term, never inside a divergence |
+| Mechanism 3: the two models disagree about array fragmentation | **confirmed**, and larger than expected at minus 435825 cycles |
+| Coverage 0.5 to 0.85 on the convolutional models | **met.** 0.591 to 0.797 |
+| Coverage below 0.3 on `lenet` | **wrong.** 0.946, for a reason the entry's falsifier misdiagnoses. `scalesim_covered_op_fraction` is 0.208 and is the quantity the clause was reaching for |
+| Kendall tau above 0.8, pairwise above 0.85 | **wrong on tau**, 0.6337 over cells and 0.7460 over layers. Pairwise 0.8211 over cells and 0.8783 over layers, so below on one and above on the other |
+
+**The entry called rank fidelity "a stronger finding than any absolute error
+here" and it was right about that.** The cost model is not merely imprecise; it
+orders one pair in five differently from the reference.
+
+### The P10 prediction, still adjudicated
+
 `experiments/predictions/p10-ablation-deltas.md`, committed at `f92de42` before
 the harness had been run once. **Two of its four claims are wrong.** The file is
 not edited; the adjudication is in `docs/ENGINEERING_LOG.md`.
@@ -449,13 +662,43 @@ than as a rule this project took on trust.
 
 ## Open questions
 
-Five, and two are new.
+Eight, and five are new.
+
+**D-0045 is open and P13 inherits it.** The weight preload accounting is
+optimistic for narrow deep GEMMs, which is most of this suite. Every performance
+claim taken from `simulated_cycles`, `effective_macs` or `utilization` carries
+that, and `docs/DEFECT_LOG.md` says so rather than a report footnote saying it.
+
+**SCALE-Sim runs from a patched install and there is no upstream fix.** The three
+expression numpy 2 patch is applied by hand and recorded by tree hash. The
+question for a later phase is whether to carry the patch upstream, pin a
+container with an older interpreter, or wait: none is obviously right, and the
+tree hash makes the current arrangement honest rather than tidy.
+
+**The fp32 MAC coefficient fails Section 16.4's sanity check at 10.71 times.**
+The cause is identified and is not this project, and the measured value is pinned
+so that it moving is a failure. What is still open is whether an fp32 array is
+the right thing to model at all: at P14 the integer kernels arrive and the
+published int8 multiply is 0.2 pJ against 3.7, so the energy story changes shape
+rather than scale.
+
+**The clock is 1 ns and this project has no other reason to have one.** It was
+needed because Accelergy's tables are indexed by cycle time, it was chosen before
+looking at what it did to the sanity check, and it is recorded as an assumption.
+A later phase that pins a clock for another reason should reconcile the two
+rather than discover them separately.
+
+**The external tools do not run in CI and the committed numbers are the only
+record of them.** The step is off, says so in the run log, and asserts the tools
+are absent so that it cannot quietly become a second copy of a step that is on.
+The trigger to switch it on is the CI image gaining the tools, which is a P0
+shaped decision.
 
 **The measured per cell cost has not reached Section 2.** This is the carve out
-above and it is the only part of P10's gate this branch cannot close by itself.
-Until the owner applies it, Section 2 says 15 seconds and 238 cells while the
-repository says 0.60 seconds and 175, and a reader comparing them finds a
-disagreement rather than a correction.
+above and it is the only part of the P10 and P11 gates this branch cannot close
+by itself. Until the owner applies it, Section 2 says 15 seconds and 238 cells
+while the repository says 1.27 seconds and 175, and a reader comparing them finds
+a disagreement rather than a correction.
 
 **`lenet_batched`'s tight budget cell at batch 1 does not exist, and would not
 have been tight if it did.** Its recorded tight budget is 200832 against a batch
@@ -552,41 +795,46 @@ request covers it.
 
 ## Next phase
 
-**P11, external cross validation and the roofline.** The roofline of Section 16.6
-first, then Sections 16.3 and 16.4.
+**P12, performance.** Prove the sweep line's growth against the committed
+benchmark, parallelise the convolution kernel, and confirm the suite runtime.
+**The phase must be numerically inert**: goldens byte identical, cycles and DRAM
+bytes and instruction counts unmoved, only host wall clock changing, and
+`CHANGELOG.md` saying so explicitly so nobody reads the speedup as a simulated
+result.
 
-**What P10 leaves on P11's desk, and most of it is already built.**
+**What P11 leaves on P12's desk.**
 
-- **The prediction P11 needs already exists and is already an ancestor.**
-  `experiments/predictions/p11-scalesim-divergence.md` landed at `f92de42`,
-  before `experiments/scalesim_export.py` exists at all, which is the strongest
-  form of that claim available. P11's gate asks for the divergence prediction to
-  predate the first SCALE-Sim number; it predates the exporter. A test asserts
-  the exporter does not exist yet, so the day it does, that test is the prompt to
-  check the ordering rather than assume it.
-- **Every field P11 fills is already in the schema, carrying `null` and a reason
-  naming P11.** `roofline_bound_cycles`, `operational_intensity`,
-  `roofline_verdict`, `scalesim_cycles` and both coverage fractions, `energy_pj`,
-  `area_mm2`, `technology_node`, `tool_shas` and `registered_estimators`. Filling
-  one means replacing a null and **deleting its `_null_reason` sibling**; the
-  validator refuses a field carrying both, so a half done fill is red.
-- **`macs` is raw and is the only one Accelergy may see.** `effective_macs` sits
-  beside it with `utilization` and `delta` so the charge can be reconstructed.
-  Section 5.5 forbids the energy path from seeing the scaled figure, the schema
-  keeps them apart, and `docs/NUMBERS.md` says so where the two would first get
-  confused.
-- **`experiments/results_to_tex.py` refuses to generate if the committed cells
-  were measured at more than one commit.** P11 re-records the whole suite when it
-  adds fields, in one run, or that refusal fires.
-- **The roofline check fails a cell below its bound**, per Section 16.1, and
-  `roofline_verdict` records that the check ran. Leaving it null rather than
-  writing `below_bound` is the difference between a check that has not run and a
-  check that passed, which the null reason says in those words.
+- **The suite budget has less headroom than it did and the figure to quote moved.**
+  1.27 seconds per cell against P10's 0.60, because SCALE-Sim and Accelergy now
+  run inside the suite. 3.70 minutes against ninety. P12's gate re-measures the
+  budget and this is the number it starts from.
+- **Do not run the benchmark suite beside the external tools.** The first P11
+  re-record died at cell 74 on the `--mlir-timing` cross check with a gap of
+  0.2157 ms against a bound of 0.2000, while SCALE-Sim was running in another
+  process. Two quiet runs measured 0.1577 and 0.1177. The bound is D-0043's and
+  is principled; it is also load sensitive, and P12 parallelises a kernel, which
+  is exactly the change that makes the machine busier.
+- **`--skip-external` exists and is not a way to make a red run quiet.** It
+  records the P11 fields as null with a reason naming the flag, which Section
+  16.4 distinguishes from a tool that could not be found. A P12 run that only
+  cares about wall clock may use it; a recorded suite may not.
+- **Every P11 field is now filled in all 175 cells and a P12 run must keep them
+  filled.** The suite writes them from one run, and a cell reused from disk
+  raises rather than being written with the fields it no longer has. That is
+  deliberate: `results_to_tex.py` refuses a table whose rows come from more than
+  one commit.
+- **The roofline is the regression bound P12 has to stay above**, and it is worth
+  saying which way round that is. P12 is numerically inert, so nothing it does
+  should move a cycle count at all. If one moves, the roofline is the check most
+  likely to notice.
+- **D-0045 is open and belongs to P13, not P12.** P12 must not touch the cost
+  model. A performance phase that changed a charge would make its own inertness
+  claim unfalsifiable.
 
-**Accelergy and its plug ins install from source at pinned git shas and are the
-longest lead dependency in the project.** Section 23 says P11 blocks on them
-entirely and to start that install before the phase does. Nothing in P10 started
-it.
+**The frozen tools are installed and pinned** in `~/npu-external/`, recorded by
+git sha in `docs/adr/0003-resolved-tool-matrix.md`. `scripts/patch-scalesim.py
+--check` reports whether the numpy 2 patch is still in place, and the verification
+matrix runs it.
 
 ## The frozen v1 fallback
 
@@ -610,34 +858,76 @@ point, deleting `~/npu-mlir-v2` returns the machine exactly to its pre build
 state with no reasoning about reflogs required. That guarantee holds only while
 the frozen copy is untouched.
 
+## The external tool install, recorded
+
+Started before anything else in the phase, because Section 23 says P11 blocks on
+it entirely. **Total wall clock under two minutes**, and then it cost most of a
+session anyway for reasons unrelated to download time.
+
+| Step | Seconds |
+|---|---|
+| clone and install SCALE-Sim | 35 |
+| clone and install Accelergy | 11 |
+| the four plug ins, first pass | 44, two of them failing |
+| `accelergy-table-based-plug-ins` with `--no-build-isolation` | 1 |
+| CACTI submodule, `make -j4`, and the plug in install | 9 |
+
+Every install used a constraints file built from `requirements-lock.txt`, so no
+external tool could move a pin the 175 committed results were measured under.
+**Nothing in the lock file moved.**
+
+Three deviations, each recorded where it belongs rather than absorbed:
+
+- `accelergy-table-based-plug-ins` imports `yaml` in its `setup.py`, which pip's
+  isolated build environment does not have. Installed with
+  `--no-build-isolation`. `docs/adr/0003-resolved-tool-matrix.md`.
+- `accelergy-cacti-plug-in` copies a built CACTI binary its clone does not
+  contain. Submodule initialised and `make` run first. Same record.
+- **SCALE-Sim does not run under numpy 2**, so its install is patched.
+  D-0044, and `scalesim_installed_tree_sha256` in every manifest.
+
+And one deviation from the specification itself: Section 16.3 says to read the
+example topologies from the **installed path** of the pinned version, and the
+pinned version's wheel ships the package without its `topologies/` or `layouts/`
+directories. They are read from the pinned source clone instead, and
+`test_the_column_order_is_the_pinned_versions_own` reads the real file and
+asserts the exporter's header still matches it, so the rule that matters is
+enforced from the pinned source rather than dropped.
+
 ## Next command
 
-Push the branch, then dispatch the nightly, which is the job that has never run.
+Push the branch, then dispatch the nightly.
 
 ```
-git push -u origin phase/p10-measurement
-gh workflow run nightly.yml --ref phase/p10-measurement
+git push -u origin phase/p11-cross-validation
+gh workflow run nightly.yml --ref phase/p11-cross-validation
 ```
 
-**The green condition for the push** is the `pytest slow cells` step reporting
-nine tests and running 957 passed, followed by `regression-baseline: no drift.`
+**The green condition for the push** is the `pytest slow cells` step running
+1006 passed and 18 skipped, the new `external cross validation` step printing
+`external: confirmed absent`, and `regression-baseline: no drift.`
 
-**Two lines to check before anything else**, because they are what the three
-previous runs died on.
+**Three lines to check before anything else.**
 
-The `pytest` arm must not report a sha as a commit that does not exist. Since
-D-0042 that message can only mean one thing, because the other readings now
-refuse instead: a shallow checkout says so and names `fetch-depth`, a repository
-git cannot open says so and quotes git's own fatal, and a genuinely absent commit
-is the only case left. That one would be a real provenance failure worth stopping
-for.
+**The `external cross validation` step must print `confirmed absent`.** If it
+errors instead, the CI image has gained SCALE-Sim, and the right response is to
+switch the step on and run the tools rather than to relax the assertion. The
+recipe is in the step's own comment.
 
-**And the coverage job**, which is the only one that has not yet been green on
-this branch. Its single failure was D-0043 and it is fixed; if it goes red again
-on `test_the_two_clocks_agree_on_the_same_run`, read the numbers in the message
-rather than the assertion, because the message now prints both totals, the pass
-count and the allowance, which is what the previous version did not.
+**The `pytest` arm's skip count.** 18 locally and it should be more in CI,
+because the tests that need SCALE-Sim or Accelergy skip through
+`pytest.importorskip` there and run here. A skip count of 18 in CI would mean
+those tests are being collected and passed without a tool, which is not possible
+and would mean something else is wrong.
+
+**And `regression-baseline --check`, which recomputes energy against the
+recorded coefficients rather than against Accelergy.** If it reports energy
+drift, read the manifest difference first: a coefficient that moved shows up
+there, and a hundred cell differences with no manifest change means the counts
+moved, which is the thing this field exists to catch.
 
 **The green condition for the nightly** is the benchmark suite printing a per
 cell cost and `run-benchmarks: inside the budget`. Record that cost in the
-engineering log beside the 0.60 seconds this machine measured.
+engineering log beside the 1.27 seconds this machine measured, and expect it to
+be higher: the nightly runner is slower and the external tools now run inside the
+suite.
