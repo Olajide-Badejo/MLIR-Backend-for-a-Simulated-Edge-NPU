@@ -27,16 +27,15 @@ number is in a report.
 
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
-from npu_frontend import npuisa_walk
+from npu_frontend import external_tools, npuisa_walk
 from npu_frontend.results import RESULTS_DIR, load_result
 
-from tools import tool
+from tools import require_source_tree, tool
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "experiments"))
@@ -50,11 +49,11 @@ import scalesim_export as export  # noqa: E402
 #: its `topologies/` or `layouts/` directories, so the source clone is where they
 #: are. That deviation is recorded in `docs/DEFECT_LOG.md` D-0044 rather than
 #: papered over by writing the column order out from memory.
-SOURCE_TREE = Path(
-    os.environ.get(
-        "NPU_SCALESIM_SOURCE", str(Path.home() / "npu-external" / "scale-sim-v2")
-    )
-)
+#:
+#: Resolved through `npu_frontend.external_tools` rather than from the
+#: environment here, so that the guard which decides whether to skip and the
+#: constant which reads the file agree about where it is by construction.
+SOURCE_TREE = external_tools.source_tree()
 
 
 def require_scalesim() -> None:
@@ -96,18 +95,24 @@ def test_the_column_order_is_the_pinned_versions_own() -> None:
     installed path of the pinned version and copy their column order exactly, do
     not invent a column order from memory. This is the assertion that keeps that
     true after the sentence has been forgotten.
+
+    **`require_source_tree` rather than a bare skip**, after CI run 33707070166.
+    This test and the one below never import `scalesim`: they read a CSV out of
+    the pinned clone, which is a developer machine artefact the CI image does not
+    have. So they were the two tests that ran here and skipped there while every
+    tool guard in the suite agreed the environments matched. The guard now says
+    which of the two states it is in, and fails rather than skips where somebody
+    claimed the tools are installed.
     """
+    require_source_tree()
     example = SOURCE_TREE / "topologies" / "conv_nets" / "alexnet.csv"
-    if not example.is_file():
-        pytest.skip(f"the pinned SCALE-Sim source tree is not at {SOURCE_TREE}")
     header = example.read_text(encoding="utf-8").splitlines()[0].strip()
     assert export.TOPOLOGY_HEADER == header
 
 
 def test_the_layout_header_is_the_pinned_versions_own() -> None:
+    require_source_tree()
     example = SOURCE_TREE / "layouts" / "conv_nets" / "test.csv"
-    if not example.is_file():
-        pytest.skip(f"the pinned SCALE-Sim source tree is not at {SOURCE_TREE}")
     header = example.read_text(encoding="utf-8").splitlines()[0].strip()
     assert export.LAYOUT_HEADER == header
 

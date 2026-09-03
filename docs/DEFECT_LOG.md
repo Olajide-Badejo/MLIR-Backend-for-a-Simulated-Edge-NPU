@@ -2532,3 +2532,65 @@ None.
   recorded in the result as a null with a reason naming the flag, and never a
   fallback the code chooses on its own. A test that could not find a tool is a
   skip; a run that was not told to skip is a failure.
+
+#### The second half, found by run 33707070166: the rehearsal was wrong by two tests
+
+The fix above went green in CI for `lint`, `coverage`, `sanitizers` and `ndebug`.
+`regression-baseline --check` stayed red, and the drift was confined to the
+pytest suite row: **996 passed and 31 skipped in CI, against a rehearsal that
+predicted 998 and 29.** A rehearsal wrong by two tests cannot be trusted about
+the other thousand, so the two were found rather than absorbed.
+
+- **The two tests are `test_the_column_order_is_the_pinned_versions_own` and
+  `test_the_layout_header_is_the_pinned_versions_own`.**
+- **The mechanism is that neither imports `scalesim`.** They read the example
+  topology and layout CSVs out of the **pinned source clone**, because the
+  pinned wheel ships the package without its `topologies/` and `layouts/`
+  directories, which is D-0044's recorded deviation from Section 16.3. The shim
+  modelled the two things this phase had been thinking about, the import and the
+  binary; the clone is a third thing, and `~/npu-external/` is a developer
+  machine artefact no CI image has. So the meta path finder never touched those
+  two tests, they ran here and skipped there, and every tool guard in the suite
+  agreed the environments matched.
+- **The shim models the clone now**, by pointing `NPU_SCALESIM_SOURCE` at a path
+  that does not exist, and its comments say what it models and what it
+  deliberately does not. Corrected, it predicts **996 passed and 31 skipped**,
+  which is CI's row exactly.
+- **The guard was wrong as well as the shim.** Those two tests skipped on a bare
+  `is_file()` check, so `NPU_EXTERNAL_TOOLS=1` could not turn the skip into a
+  failure. `tools.require_source_tree()` applies the policy the rest of the suite
+  uses: skip where nobody promised, fail where somebody did.
+
+**And the deeper cause, of which the two tests were the visible part.** The
+baseline records suite counts and is checked in both environments, so it could
+never be green in both: thirteen tests run on a machine with the external tools
+and skip on one without, and recording either shape makes the other red. Copying
+CI's numbers in would have made the developer machine permanently red instead,
+which is the same defect facing the other way.
+
+So the baseline records **which environment it was taken in**, and `compare`
+compares `passed` and `skipped` only between two environments that can run the
+same tests. `failed` is compared always. The test **name lists** are compared
+always, so a test disappearing is still drift; and within one environment the
+counts are still exact, so a test silently starting to skip is still caught,
+which is the D-0040 shape this must not give up. The difference between two
+environments is printed by `suite_notes` rather than discarded, because a
+comparison this script has stopped making is a check that was switched off and
+this project's rule is that such a step says so in its own output. That is the
+treatment `max_abs_error_vs_onnxruntime` has had since P9b, arriving at the
+suite counts.
+
+`python/npu_frontend/external_tools.py` is the one home for "can this
+environment reach the tools", because `test/Python/tools.py` and
+`scripts/regression_baseline.py` both need the answer and two copies of it would
+be the duplication D-0032's fix built a test to hunt for.
+
+- **Verified in both environments against one baseline.** Developer machine:
+  1013 passed, 18 skipped, **no drift**, counts compared exactly. CI shape: 1000
+  passed, **31 skipped**, **no drift**, with both environments named in a note
+  and the count difference printed. The skip count matches CI's 31 exactly; the
+  pass count is 1000 rather than 996 because this fix adds four tests.
+- **Four tests cover the change itself**: an environment difference is not
+  drift, the same environment still compares exactly, a failure is drift in any
+  environment, and a baseline recorded before the field existed reads as the
+  developer machine rather than as something that compares equal to everything.

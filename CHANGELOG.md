@@ -109,6 +109,22 @@ Semantic Versioning once a release is tagged.
   `pytest-cov` did not see. Stale coverage data is erased first, which is D-0037
   applied to the Python side. The coverage job's pytest phase is 32 percent
   slower for it, 248 seconds to 328.
+- **The regression baseline records which environment it was taken in**, and
+  compares suite pass and skip counts only between environments that can run the
+  same tests. `failed` is compared always, the test name lists are compared
+  always, and within one environment the counts are still exact, so a test
+  silently starting to skip is still drift. A difference between two
+  environments is printed rather than discarded. Without this the baseline could
+  not be green in both places at once: thirteen tests run where the external
+  tools are installed and skip where they are not.
+- **D-0046's second half: the rehearsal shim was wrong by exactly two tests.**
+  `test_the_column_order_is_the_pinned_versions_own` and
+  `test_the_layout_header_is_the_pinned_versions_own` read the example CSVs out
+  of the pinned SCALE-Sim source clone and never import `scalesim`, so a shim
+  that modelled the import and the binary left them running. The shim models the
+  clone now and predicts CI's suite row exactly, the recipe is recorded in
+  `docs/PHASE_STATE.md`, and those two tests use the same skip or fail policy as
+  the rest of the suite instead of a bare file check.
 - **The per pass timing gap bound does not run under a tracer, and says so.** Its
   premise is that the gap is the instrumentation's own operation walk; a tracer
   stretches everything else in that window too. Measured: untraced worst gaps

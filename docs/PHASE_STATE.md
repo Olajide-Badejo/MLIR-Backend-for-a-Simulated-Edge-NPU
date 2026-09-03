@@ -248,8 +248,9 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `python experiments/run_benchmarks.py --force` | **175 cells, 3.70 minutes, 1.27 s per cell**, inside the budget, exit 0 |
 | `bash scripts/regression-baseline.sh --check` | **no drift, exit 0** |
 | `bash scripts/coverage.sh 85 93 14 58` | C++ **86.5** PASS, branch 76.9; per tree **93.2337 / 14.6597 / 73.1302** PASS, exit 0 |
-| the whole suite in an environment with neither external tool | **998 passed, 29 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.2337 / 14.6597 / 58.4488** |
-| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guard **fails** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
+| the whole suite in the CI shape, all three differences modelled | **1000 passed, 31 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.2337 / 14.6597 / 58.4488**. The skip count is CI's exactly |
+| `regression-baseline --check` in the CI shape, against the baseline recorded here | **no drift**, with both environments named in a note and the count difference printed |
+| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
 | `git status --short` | empty |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case sensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
@@ -319,6 +320,50 @@ golden tensors are byte identical to P9b's.
 threshold of 90. It was 0.49 at P9 and 0.61 at P8. The threshold stays at 90.
 
 ## Activation proofs and rehearsal recipes
+
+### 0. Reproducing the CI image locally, which is now a standing recipe
+
+*Added at P11 after D-0046.* This project has to stay green in **two**
+environments, and the second cannot be reached by running the suite here. The
+recipe below is what CI's image looks like from this machine, and run
+33707070166 is the evidence that getting it slightly wrong is worth catching:
+the first version modelled two of the three differences and predicted a suite
+row two tests off.
+
+Three things, and all three are needed:
+
+1. **`import scalesim` and `import accelergy` must fail.** A `sitecustomize.py`
+   on `PYTHONPATH` installing a meta path finder that raises
+   `ModuleNotFoundError` for those two roots.
+2. **The `accelergy` binary must not be on `PATH`**, and everything else must
+   be. The `PATH` is the venv's `bin` **minus** those entry points, not a `PATH`
+   without the venv: the image has `gcovr`, `pytest` and `python3`, and the
+   first shim dropped them and died on a missing `gcovr` rather than on anything
+   real. Symlink each entry except `accelergy*` and `scalesim*`, and write
+   `python`, `python3` and `python3.14` as `exec` wrappers rather than symlinks,
+   because a symlinked venv interpreter resolves its prefix from the link's own
+   directory and then finds no site-packages.
+3. **The pinned SCALE-Sim source clone must not exist.** Point
+   `NPU_SCALESIM_SOURCE` at a path that is not there. `~/npu-external/` is a
+   developer machine artefact, and the two tests that read the example CSVs out
+   of it never import `scalesim`, so 1 and 2 leave them running. **Those are the
+   two tests run 33707070166 found.**
+
+`NPU_EXTERNAL_TOOLS` must also be unset, so the guards take their skip branch
+rather than their fail branch.
+
+**What it does not model, stated so nobody assumes otherwise**: a different libc,
+CPU, compiler or container uid. Those move golden tensors and timings rather than
+which tests run, and `--check` has its own bands for them.
+
+**mypy needs a separate reproduction**, because it resolves imports statically
+rather than at run time and no meta path finder reaches it.
+`mypy --python-executable /usr/bin/python3` is what makes it see what CI sees.
+
+The recipe predicts CI's suite row exactly: **996 passed, 31 skipped** at
+`1e77083`, which is what run 33707070166 reported.
+
+### The activations this branch carries
 
 **This branch activates one CI step and one CI job.** Both were rehearsed under
 their own step scripts with the prediction written first.

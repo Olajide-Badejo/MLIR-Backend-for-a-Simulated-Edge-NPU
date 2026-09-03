@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 
 import pytest
-from npu_frontend import find_tool
+from npu_frontend import external_tools, find_tool
 from npu_frontend.diagnostics import VerificationError
 
 #: The variable a caller sets to say which build directory to use. Named here
@@ -57,55 +57,57 @@ def named_build_directory() -> str | None:
 # D-0046.
 # ---------------------------------------------------------------------------
 
-#: The variable a caller sets to say this environment has SCALE-Sim and
-#: Accelergy, so a test that needs one must **fail** rather than skip.
+#: **`BUILD_DIR_VARIABLE`'s rule applied to a second kind of tool**, because
+#: D-0046 was D-0032 happening again one layer out. The developer machine has the
+#: external tools and the CI image does not, so `pytest.importorskip` alone means
+#: the only environment that runs these tests is the one place nobody is
+#: watching, which is exactly the shape of D-0040.
 #:
-#: **This is `BUILD_DIR_VARIABLE`'s rule applied to a second kind of tool**, and
-#: it exists because D-0046 was D-0032 happening again one layer out. The
-#: developer machine has the external tools and the CI image does not, so
-#: `pytest.importorskip` alone means the only environment that runs these tests
-#: is the one place nobody is watching, which is exactly the shape of D-0040.
-EXTERNAL_TOOLS_VARIABLE = "NPU_EXTERNAL_TOOLS"
-
-#: What each external tool is, as an importable module name and the binary that
-#: has to be on `PATH` for it to answer. `None` means the tool is a library and
-#: has no binary of its own.
-EXTERNAL_TOOLS: dict[str, str | None] = {
-    "scalesim": None,
-    "accelergy": "accelergy",
-}
+#: **The answer itself lives in `npu_frontend.external_tools`** and not here,
+#: because `scripts/regression_baseline.py` needs the same answer to record which
+#: environment a baseline was taken in. Two copies of it would be the duplication
+#: D-0032's fix built a test to hunt for. What stays here is the pytest policy,
+#: which is the half that belongs to the suite.
+EXTERNAL_TOOLS_VARIABLE = external_tools.EXTERNAL_TOOLS_VARIABLE
+EXTERNAL_TOOLS = external_tools.EXTERNAL_TOOLS
+external_tools_promised = external_tools.tools_promised
+missing_external_tools = external_tools.missing_tools
 
 
-def external_tools_promised() -> bool:
-    """Whether a caller asserted this environment has the external tools."""
-    return bool(os.environ.get(EXTERNAL_TOOLS_VARIABLE))
+def require_source_tree() -> None:
+    """Skip, or fail, on a missing pinned SCALE-Sim source clone.
 
+    *Added after CI run 33707070166.* The same policy as `require_external_tools`
+    below, for a third thing that is neither of the two tools: the clone the
+    example topologies are read from, per Section 16.3 and D-0044's deviation.
 
-def missing_external_tools() -> list[str]:
-    """Which of the external tools this environment cannot reach, by name.
-
-    A tool counts as reachable only when both halves are there: the module
-    imports **and** its binary is on `PATH`. Accelergy is driven as a
-    subprocess, so an importable package with no `accelergy` on `PATH` is a tool
-    this project cannot actually run, and reporting it as present would move the
-    failure from a readable skip to a `FileNotFoundError` in the middle of a
-    benchmark run. That is precisely how D-0046 reached CI.
+    **It needs its own guard because it is genuinely independent.** The two tests
+    that read those CSVs never import `scalesim`, so every mechanism that reasons
+    about the package leaves them alone. They ran on the developer machine and
+    skipped in CI, and the rehearsal shim modelled the import and the binary and
+    not the clone, so it predicted 998 passed where CI produced 996. Those two
+    tests are the whole of that difference.
     """
-    import importlib.util
-    import shutil
-
-    absent: list[str] = []
-    for module, binary in EXTERNAL_TOOLS.items():
-        try:
-            found = importlib.util.find_spec(module) is not None
-        except (ImportError, ValueError):
-            found = False
-        if not found:
-            absent.append(module)
-            continue
-        if binary is not None and shutil.which(binary) is None:
-            absent.append(f"{module} (the {binary} binary is not on PATH)")
-    return absent
+    if external_tools.source_tree_present():
+        return
+    where = external_tools.source_tree()
+    if external_tools.tools_promised():
+        raise AssertionError(
+            f"the pinned SCALE-Sim source clone is not at {where}, and "
+            f"{EXTERNAL_TOOLS_VARIABLE} is set. A caller that names that "
+            f"variable is asserting this environment has the external tools, and "
+            f"the clone is where Section 16.3's example topologies are read "
+            f"from, so this is a failure rather than a skip.\n\n"
+            f"Clone it at the sha in docs/adr/0003-resolved-tool-matrix.md, or "
+            f"set {external_tools.SOURCE_TREE_VARIABLE} to where it is."
+        )
+    pytest.skip(
+        f"the pinned SCALE-Sim source clone is not at {where}, and no "
+        f"{EXTERNAL_TOOLS_VARIABLE} was set, so nobody claimed this environment "
+        f"has it. The pinned wheel ships the package without its topologies/ and "
+        f"layouts/ directories, which is D-0044, so this check can only run "
+        f"where the clone is."
+    )
 
 
 def require_external_tools() -> None:

@@ -442,6 +442,20 @@ def collect_suites(work: Path) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _external_tools() -> Any:
+    """The one home for "can this environment reach the external tools".
+
+    `test/Python/tools.py` asks the same module the same question, which is one
+    home and two importers rather than two copies of the answer. Imported inside
+    a function for the reason `_frontend` is: this script's `--help` must work
+    where the frontend cannot be imported at all.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "python"))
+    from npu_frontend import external_tools
+
+    return external_tools
+
+
 def _frontend() -> Any:
     """Imports the frontend, with this repository's package root on the path.
 
@@ -761,6 +775,12 @@ def measure(
         "technology_node": node,
         "registered_estimators": estimators,
         "energy_per_action_pj": tables,
+        # Which optional dependencies this environment could reach, so that a
+        # comparison between two environments can tell an environment difference
+        # from a regression. CI run 33707070166 is why: thirteen tests run on a
+        # machine with the external tools and skip on one without, and the suite
+        # row went red for a difference that was true of both trees.
+        "environment": _external_tools().environment(),
         # The levels this baseline covers, as a field rather than as something a
         # reader infers by grouping the cells. *Added at P9.* It is what makes
         # "the baseline records -O0 only" and "the baseline records all three"
@@ -807,6 +827,46 @@ def write(baseline: dict[str, Any], goldens: dict[str, Any]) -> None:
 
 def cell_key(cell: dict[str, Any]) -> str:
     return f"{cell['model']}-O{cell['level']}-{cell['budget']}"
+
+
+def recorded_environment(baseline: dict[str, Any]) -> dict[str, bool]:
+    """What a baseline says about the environment it was taken in.
+
+    *Added at P11 after CI run 33707070166.* A baseline recorded before this
+    field existed reports the developer machine's shape, which is what every
+    baseline in this project's history was recorded on, so the default is the
+    honest reading of an old file rather than a guess that makes it compare
+    equal to everything.
+    """
+    default = {"external_tools_reachable": True, "scalesim_source_tree_present": True}
+    return dict(baseline.get("environment", default))
+
+
+def suite_notes(recorded: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    """Suite counts that differ because the environments do, printed not ignored.
+
+    The `oracle_notes` treatment, for the counts. A comparison this script has
+    stopped making is a check that was switched off, and this project's rule is
+    that a step which is off says so in its own output. So the difference is
+    printed with both environments named, and the reader gets to disagree.
+    """
+    if recorded_environment(recorded) == recorded_environment(current):
+        return []
+
+    notes = [
+        f"environment: recorded {recorded_environment(recorded)}, "
+        f"checked {recorded_environment(current)}"
+    ]
+    before, after = recorded["suites"], current["suites"]
+    for name in sorted(set(before) & set(after)):
+        for field_name in ("passed", "skipped"):
+            if before[name][field_name] != after[name][field_name]:
+                notes.append(
+                    f"suite {name}: {field_name} {before[name][field_name]} -> "
+                    f"{after[name][field_name]}, not compared because the two "
+                    f"environments run different amounts of the same suite"
+                )
+    return notes
 
 
 def oracle_bound() -> float:
@@ -894,7 +954,32 @@ def compare(
         if name not in before:
             drift.append(f"suite {name}: runs and was not in the baseline")
             continue
-        for field_name in ("passed", "failed", "skipped"):
+        # **`failed` is compared always; `passed` and `skipped` only between two
+        # environments that can run the same tests.**
+        #
+        # This is the same distinction `ORACLE_FIELD` draws a few lines below,
+        # arriving at the suite counts: a number that legitimately differs
+        # between two machines is bounded or noted, never compared for equality.
+        # A suite whose optional dependencies differ runs a different number of
+        # the same tests, and calling that a regression makes the check red for
+        # having less installed, which is not something a contributor can act on.
+        #
+        # **Nothing is switched off by this.** `failed` is still exact. The test
+        # name lists below are still compared, so a test disappearing is drift in
+        # either environment. And within one environment the counts are compared
+        # exactly, which is the case that catches a test silently starting to
+        # skip. What is dropped is precisely the comparison between two different
+        # environments, and `suite_notes` prints it rather than discarding it.
+        #
+        # Found by CI run 33707070166: the baseline was recorded on a machine
+        # with SCALE-Sim and Accelergy and checked in an image without them, so
+        # thirteen tests that run here skip there, and the row went red for a
+        # reason that was true of both trees.
+        same_environment = recorded_environment(recorded) == recorded_environment(
+            current
+        )
+        compared = ("passed", "failed", "skipped") if same_environment else ("failed",)
+        for field_name in compared:
             if before[name][field_name] != after[name][field_name]:
                 drift.append(
                     f"suite {name}: {field_name} {before[name][field_name]} -> "
@@ -1008,7 +1093,7 @@ def check() -> int:
     # and the one that names its own cause.
     current, goldens = measure(energy_from=recorded)
     drift = compare(recorded, current, goldens)
-    notes = oracle_notes(recorded, current)
+    notes = suite_notes(recorded, current) + oracle_notes(recorded, current)
 
     print("regression-baseline --check")
     print()
