@@ -298,6 +298,81 @@ def test_the_two_clocks_agree_on_the_same_run(instrumented: Instrumented) -> Non
     )
 
 
+class _FakeMonitoring:
+    """`sys.monitoring` with a controlled tool table.
+
+    Substituted rather than consulted, because the real one reports whatever the
+    interpreter running these tests happens to use, which is the thing being
+    tested around.
+    """
+
+    _MAX_TOOLS = 6
+
+    def __init__(self, tools: dict[int, str], raises: bool = False) -> None:
+        self._tools = tools
+        self._raises = raises
+
+    def get_tool(self, tool_id: int) -> str | None:
+        if self._raises:
+            raise ValueError("this interpreter refuses the question")
+        return self._tools.get(tool_id)
+
+
+@pytest.mark.parametrize(
+    ("gettrace", "threadtrace", "monitoring", "expected"),
+    [
+        (object(), None, _FakeMonitoring({}), True),
+        (None, object(), _FakeMonitoring({}), True),
+        (None, None, _FakeMonitoring({2: "coverage.py"}), True),
+        (None, None, _FakeMonitoring({}), False),
+        (None, None, None, False),
+        (None, None, _FakeMonitoring({}, raises=True), False),
+    ],
+    ids=[
+        "settrace",
+        "thread-settrace",
+        "sys-monitoring",
+        "nothing-registered",
+        "no-monitoring-module",
+        "get-tool-raises",
+    ],
+)
+def test_every_way_an_interpreter_can_be_traced(
+    monkeypatch: pytest.MonkeyPatch,
+    gettrace: object,
+    threadtrace: object,
+    monitoring: object,
+    expected: bool,
+) -> None:
+    """All six branches, on any interpreter, which is the whole point.
+
+    *Added at P11 after CI run 33711091899.* `interpreter_is_traced` asks two
+    questions because CPython has two mechanisms, and **which one is live depends
+    on the interpreter version**: `coverage` uses `sys.settrace` on 3.12, which
+    the CI image ships, and `sys.monitoring` on 3.14, which this machine runs. So
+    the function answers on the first question in CI and reaches the second one
+    here, and `python/npu_frontend` measured 0.26 points higher locally than in
+    CI for that reason alone.
+
+    Measured rather than deduced: forcing `COVERAGE_CORE=ctrace` on 3.14 moves
+    `pass_stats.py` from 16 missing lines to 20, and the four are exactly the
+    `sys.monitoring` block.
+
+    Substituting both mechanisms covers every branch wherever this runs, so the
+    tree stops being interpreter dependent. That is better than lowering the
+    coverage gate, which would have made it mean less in both environments
+    rather than the same thing in both.
+    """
+    monkeypatch.setattr(pass_stats.sys, "gettrace", lambda: gettrace)
+    monkeypatch.setattr(pass_stats.threading, "gettrace", lambda: threadtrace)
+    if monitoring is None:
+        monkeypatch.delattr(pass_stats.sys, "monitoring", raising=False)
+    else:
+        monkeypatch.setattr(pass_stats.sys, "monitoring", monitoring, raising=False)
+
+    assert pass_stats.interpreter_is_traced() is expected
+
+
 def test_the_gap_bound_does_not_run_under_a_tracer_and_says_so(
     instrumented: Instrumented, monkeypatch: pytest.MonkeyPatch
 ) -> None:

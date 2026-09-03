@@ -98,17 +98,28 @@ Semantic Versioning once a release is tagged.
   somebody did.** The project now has to stay green in two environments and both
   are rehearsed.
 - **Python coverage is measured over three trees and gated per tree.**
-  `python/npu_frontend` at 93, `scripts` at 14 and `experiments` at 58, each
+  `python/npu_frontend` at 93, `scripts` at 16 and `experiments` at 58, each
   rounded down from what the CI image can execute, and never blended: a blend
   would let the frontend's size carry the scripts tree and hide a fall in either.
   The P8 rationale for measuring one package root is recorded in
-  `scripts/coverage.sh` and superseded: `scripts/` is 955 statements and
-  `experiments/` 1439, and both carry real logic now.
+  `scripts/coverage.sh` and superseded: `scripts/` is 974 statements and
+  `experiments/` 1444, and both carry real logic now.
 - **Subprocess coverage is wired**, worth 1.8 points on the frontend alone,
   because scripts and the benchmark harness are exercised as subprocesses that
   `pytest-cov` did not see. Stale coverage data is erased first, which is D-0037
-  applied to the Python side. The coverage job's pytest phase is 32 percent
-  slower for it, 248 seconds to 328.
+  applied to the Python side. The coverage job's pytest phase is slower for it,
+  248 seconds to 302.
+- **Two modules were made environment independent so a coverage threshold could
+  mean the same thing in both places.** CI found `python/npu_frontend` at 92.9004
+  against a threshold of 93 that had been set before `external_tools.py` joined
+  that tree; the module decides what an environment can reach, so half its
+  branches cannot run in either environment. Re-measuring found a second cause:
+  `pass_stats.interpreter_is_traced` answers on `sys.settrace` under the 3.12 the
+  CI image ships and on `sys.monitoring` under the developer machine's 3.14.
+  Both are covered by substitution now rather than by lowering the gate, so the
+  frontend and `scripts` measure identically under both tool environments **and**
+  both tracing backends. Two `# pragma: no cover` comments came off because the
+  branches they excused are tested.
 - **The regression baseline records which environment it was taken in**, and
   compares suite pass and skip counts only between environments that can run the
   same tests. `failed` is compared always, the test name lists are compared

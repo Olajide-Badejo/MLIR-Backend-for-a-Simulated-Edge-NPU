@@ -350,7 +350,7 @@ def interpreter_is_traced() -> bool:
     if sys.gettrace() is not None or threading.gettrace() is not None:
         return True
     monitoring = getattr(sys, "monitoring", None)
-    if monitoring is None:  # pragma: no cover - 3.11 and older
+    if monitoring is None:
         return False
     # Any tool registered at all: `coverage` takes `COVERAGE_ID`, but naming one
     # id would miss a profiler or a debugger doing the same thing for the same
@@ -359,7 +359,7 @@ def interpreter_is_traced() -> bool:
         try:
             if monitoring.get_tool(tool_id) is not None:
                 return True
-        except (ValueError, AttributeError):  # pragma: no cover - defensive
+        except (ValueError, AttributeError):
             continue
     return False
 

@@ -8,7 +8,7 @@
 #   bash scripts/coverage.sh              measure, report, gate at the defaults
 #   bash scripts/coverage.sh 85           gate C++ line coverage at 85 percent
 #   bash scripts/coverage.sh 85 93        and gate python/npu_frontend at 93
-#   bash scripts/coverage.sh 85 93 14 58  and gate scripts at 14, experiments 58
+#   bash scripts/coverage.sh 85 93 16 58  and gate scripts at 16, experiments 58
 #   bash scripts/coverage.sh --help       this text
 #
 # Both thresholds default to 0, which is what the activation table of Section
@@ -32,37 +32,67 @@
 # achieves.
 #
 # **The Python thresholds are set from what CI can execute, not from what this
-# machine can**, and the difference is real. Measured 2026-09-03 by running this
-# script twice, the whole matrix, subprocess coverage on:
+# machine can**, and the difference is real. Measured 2026-09-03 at the tip, the
+# whole matrix, subprocess coverage on:
 #
 #   tree                  CI shape    developer machine   threshold
-#   python/npu_frontend   93.2337     93.2337             93
-#   scripts               14.6597     14.6597             14
+#   python/npu_frontend   93.4313     93.4313             93
+#   scripts               16.1191     16.1191             16
 #   experiments           58.4488     73.1302             58
 #
-# "CI shape" is an interpreter that cannot reach SCALE-Sim or Accelergy, with
-# the `--skip-external` path exercised, which is what the image has.
-# `experiments/` differs by **14.7 points** between the two, because
-# `scalesim_export.py` and `accelergy_energy.py` only execute where the tools do:
-# 58.2 against 84.3 and 37.8 against 79.3 per file. Setting the gate from the
-# developer figure would make CI red for having less installed, which is not a
-# fall in coverage and not something a contributor could act on.
+# "CI shape" is an interpreter that cannot reach SCALE-Sim or Accelergy and has
+# no pinned source clone, with the `--skip-external` path exercised, which is
+# what the image has. `experiments/` differs by **14.7 points** between the two,
+# because `scalesim_export.py` and `accelergy_energy.py` only execute where the
+# tools do: 58.2 against 84.3 and 37.8 against 79.3 per file. Setting the gate
+# from the developer figure would make CI red for having less installed, which is
+# not a fall in coverage and not something a contributor could act on.
 #
-# The other two trees measure **identically** in both, which is the useful check
-# on that reasoning: only the tree with tool dependent code moves.
+# **Two trees measure identically in both, and that took work rather than being
+# a property they had.** Run 33711091899 found `python/npu_frontend` at 92.9004
+# in CI against a threshold of 93 set from a local measurement, and the prose
+# here claimed the tree was environment independent. It was not, for two reasons,
+# and both are fixed by covering the branches rather than by moving the gate:
 #
-# `python/npu_frontend` at 93 leaves 0.23 points of headroom, which is tighter
-# than the 1.5 the old blended threshold of 90 had. That is deliberate and it is
-# the rule rather than a preference: the measured value rounded down to a whole
-# percent. **If it goes red, the question is which test stopped running**, not
-# what the threshold should be.
+#   1. `python/npu_frontend/external_tools.py` decides what an environment can
+#      reach, so its tools present branches cannot execute in CI and its tools
+#      absent branches cannot execute here. `test/Python/test_external_tools.py`
+#      substitutes `find_spec`, `which` and the environment, so every branch runs
+#      everywhere and the module is at 100 percent in both.
+#   2. `pass_stats.interpreter_is_traced` asks two questions because CPython has
+#      two tracing mechanisms, and **which one is live depends on the interpreter
+#      version**: coverage uses `sys.settrace` on the 3.12 the CI image ships and
+#      `sys.monitoring` on the 3.14 this machine runs, so the function answered
+#      on the first question there and reached the second one here. Measured:
+#      `COVERAGE_CORE=ctrace` on 3.14 moved `pass_stats.py` from 16 missing lines
+#      to 20, and the four were exactly the `sys.monitoring` block.
+#      `test_every_way_an_interpreter_can_be_traced` covers all six branches on
+#      any interpreter.
 #
-# **`scripts` at 14 is a real number and a weak gate, and the difference is
+# The figures above are identical under **both** tracing backends as well as both
+# tool environments, which is what lets a local measurement predict CI's at all.
+#
+# **Why `external_tools.py` is in the measured frontend package rather than
+# beside `test/Python/tools.py`**, so the next person does not re-litigate it:
+# the import graph forces it. `scripts/regression_baseline.py` needs the same
+# answer to record which environment a baseline was taken in, and a script must
+# not import from `test/`. Moving it to `scripts/` would satisfy the import graph
+# and would drop it from a tree gated at 93 into one gated at 16, which is hiding
+# a measurement rather than making it true.
+#
+# `python/npu_frontend` at 93 leaves 0.43 points of headroom. That is the rule
+# rather than a preference: the measured value rounded down to a whole percent.
+# **If it goes red, the question is which test stopped running**, not what the
+# threshold should be.
+#
+# **`scripts` at 16 is a real number and a weak gate, and the difference is
 # stated where the threshold is.** Five of its seven files measure exactly 0.0,
 # because they are driven by shell scripts and CI steps rather than by pytest;
 # the figure is close to a statement about `regression_baseline.py` alone. It is
 # gated anyway, as a ratchet: it catches that one file's coverage collapsing,
-# which is the part of the tree pytest can see.
+# which is the part of the tree pytest can see. It was 14 when the tree was first
+# gated and is 16 now, because the environment aware baseline comparison added
+# tested lines to that one file.
 #
 # Three rules from Section 17.7 shape this script, and each is a line in it
 # rather than a paragraph somebody remembers:

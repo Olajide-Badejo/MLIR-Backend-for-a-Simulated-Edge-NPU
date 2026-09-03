@@ -247,18 +247,20 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
 | `python experiments/run_benchmarks.py --force` | **175 cells, 3.70 minutes, 1.27 s per cell**, inside the budget, exit 0 |
 | `bash scripts/regression-baseline.sh --check` | **no drift, exit 0** |
-| `bash scripts/coverage.sh 85 93 14 58` | C++ **86.5** PASS, branch 76.9; per tree **93.2337 / 14.6597 / 73.1302** PASS, exit 0 |
-| the whole suite in the CI shape, all three differences modelled | **1000 passed, 31 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.2337 / 14.6597 / 58.4488**. The skip count is CI's exactly |
+| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.5** PASS, branch 76.9; per tree **93.4313 / 16.1191 / 73.1302** PASS, exit 0 |
+| the whole suite in the CI shape, all three differences modelled | **1016 passed, 31 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.4313 / 16.1191 / 58.4488**. The skip count is CI's exactly |
 | `regression-baseline --check` in the CI shape, against the baseline recorded here | **no drift**, with both environments named in a note and the count difference printed |
 | the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
 | `git status --short` | empty |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case sensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
 
-**The suite grew by 49 pytest tests**, in three new files: `test_roofline.py`,
-`test_scalesim_export.py` and `test_accelergy_energy.py`. Four existing tests
-changed, all of them because they encoded the P10 state, and each change is
-recorded in `6afe2d8`'s message rather than folded into a larger commit.
+**The suite grew from 957 pytest tests at P10 to 1029**, in four new files:
+`test_roofline.py`, `test_scalesim_export.py`, `test_accelergy_energy.py` and
+`test_external_tools.py`. Four existing tests changed because they encoded the
+P10 state, and each change is recorded in `6afe2d8`'s message rather than folded
+into a larger commit. The last three of the new files exist because CI found
+something the developer machine could not.
 
 **All 21 golden tensors are byte identical to P10's**, which is what the
 `docs/BREAKING_CHANGES.md` entry said would happen. The baseline moved in shape
@@ -276,11 +278,38 @@ carry real logic at P11 where `scripts/` carried entry points at P8.
 
 | Tree | CI shape | Developer machine | Threshold |
 |---|---|---|---|
-| `python/npu_frontend` | 93.2337 | 93.2337 | **93** |
-| `scripts` | 14.6597 | 14.6597 | **14** |
+| `python/npu_frontend` | 93.4313 | 93.4313 | **93** |
+| `scripts` | 16.1191 | 16.1191 | **16** |
 | `experiments` | 58.4488 | 73.1302 | **58** |
 
-Three things about that table are load bearing and are recorded where the
+**Those figures are equal across four combinations, not two**: CI shape and
+developer shape, each under both of CPython's tracing backends. That took two
+fixes rather than being a property the trees had, and CI run 33711091899 found
+it: the frontend measured **92.9004** against a threshold of 93 that had been set
+from a measurement taken before `external_tools.py` was added to the tree it
+gates.
+
+- **`external_tools.py` decides what an environment can reach**, so half its
+  branches cannot execute in either environment. `test_external_tools.py`
+  substitutes `find_spec`, `which` and the environment, so every branch runs
+  everywhere and the module is at 100 percent in both.
+- **`pass_stats.interpreter_is_traced` depends on the interpreter version**, not
+  on the tools. `coverage` uses `sys.settrace` on the 3.12 the CI image ships and
+  `sys.monitoring` on this machine's 3.14, so the function answers on the first
+  question there and reaches the second here. Measured rather than deduced:
+  `COVERAGE_CORE=ctrace` on 3.14 moves `pass_stats.py` from 16 missing lines to
+  20, and the four are exactly the `sys.monitoring` block.
+  `test_every_way_an_interpreter_can_be_traced` covers all six branches on any
+  interpreter, and two `# pragma: no cover` comments came off because the
+  branches they excused are tested now.
+
+**A threshold is a measurement of a tree**, so a commit that adds environment
+dependent code to that tree invalidates it as surely as it would invalidate a
+recorded cycle count. The prose beside the threshold claimed the tree was
+environment independent, which had been true and had quietly stopped being true,
+and a stale claim next to a gate is never merely cosmetic. D-0046.
+
+Three further things about that table are load bearing and are recorded where the
 thresholds are defined as well as here.
 
 - **Subprocess coverage is wired**, through `COVERAGE_PROCESS_START` and
@@ -290,18 +319,26 @@ thresholds are defined as well as here.
 - **`experiments/` differs by 14.7 points between the two environments**, because
   `scalesim_export.py` and `accelergy_energy.py` only execute where the tools do.
   The gate is set from what CI can execute; setting it from the developer figure
-  would make CI red for having less installed.
-- **`scripts` at 14 is a real number and a weak gate**, and the prose says so
+  would make CI red for having less installed. **It is the only tree that still
+  differs**, which is by design and is where the tool driven code lives.
+- **`scripts` at 16 is a real number and a weak gate**, and the prose says so
   where the threshold lives. Five of its seven files measure exactly 0.0, because
   they are driven by shell scripts and CI steps rather than by pytest, so the
   figure is close to a statement about `regression_baseline.py` alone. It is
-  gated as a ratchet on the part pytest can see.
+  gated as a ratchet on the part pytest can see. It was 14 when the tree was
+  first gated and is 16 now, because the environment aware baseline comparison
+  added tested lines to that one file.
+- **`external_tools.py` lives in the measured frontend package and the reason is
+  recorded beside the thresholds**, so it is not re-litigated: the import graph
+  forces it, because `scripts/regression_baseline.py` needs the same answer and a
+  script must not import from `test/`. Moving it to `scripts/` would satisfy the
+  import graph and drop it from a tree gated at 93 into one gated at 16, which is
+  hiding a measurement rather than making it true.
 
 **The coverage job got slower and by how much is recorded**: its pytest phase
-went from 248.45 to 327.57 seconds with the tools present, plus 32 percent, which
-is the tracer over two more source trees. The whole script is 351 seconds locally
-and 246 in the CI shape. C++ is unmoved at 86.5, which is right: this phase added
-no C++.
+went from 248.45 to 302.02 seconds with the tools present, which is the tracer
+over two more source trees. The whole script is 328 seconds here and 241 in the
+CI shape. C++ is unmoved at 86.5, which is right: this phase added no C++.
 
 **The authorship grep is worth one sentence, because it caught itself once.** The
 row above it originally named the thing it searches for, which made the row a

@@ -1106,12 +1106,21 @@ jobs:
       # Three Python trees from P11, gated separately, because a blended figure
       # lets a fall in one hide behind another's size. Every one is the value
       # this image can execute, rounded down to a whole percent: measured
-      # 2026-09-03 in an environment shaped like this one, 93.2337, 14.6597 and
+      # 2026-09-03 in an environment shaped like this one, 93.4313, 16.1191 and
       # 58.4488. `experiments/` is 73.13 on a machine with SCALE-Sim and
       # Accelergy installed and 58.45 here, so gating it at the developer figure
       # would make this job red for having less installed. D-0046.
+      #
+      # Run 33711091899 found the frontend at 92.9004 against a threshold of 93,
+      # because two modules had branches only one environment could execute: the
+      # tool reachability helper, and the tracing check that answers on
+      # `sys.settrace` under this image's 3.12 and on `sys.monitoring` under the
+      # developer machine's 3.14. Both are covered by substitution now, so the
+      # two figures are equal under both tool environments **and** both tracing
+      # backends. `scripts` moved 14 to 16 because the environment aware baseline
+      # comparison added tested lines to `regression_baseline.py`.
       NPU_PYTHON_COVERAGE_THRESHOLD: "93"
-      NPU_SCRIPTS_COVERAGE_THRESHOLD: "14"
+      NPU_SCRIPTS_COVERAGE_THRESHOLD: "16"
       NPU_EXPERIMENTS_COVERAGE_THRESHOLD: "58"
       NPU_COVERAGE_JOBS: "4"
       # conftest.py resolves the bindings from this first. The coverage job
@@ -1172,7 +1181,7 @@ jobs:
           echo "coverage:   experiments         ${NPU_EXPERIMENTS_COVERAGE_THRESHOLD}"
           echo "coverage: measured at P8 on 2026-08-31: C++ 86.0, Python 90.3."
           echo "coverage: measured at P11 on 2026-09-03 in this image's shape:"
-          echo "coverage:   93.2337, 14.6597, 58.4488, with subprocess coverage on."
+          echo "coverage:   93.4313, 16.1191, 58.4488, with subprocess coverage on."
           echo ""
           bash scripts/coverage.sh \
             "${NPU_COVERAGE_THRESHOLD}" "${NPU_PYTHON_COVERAGE_THRESHOLD}" \

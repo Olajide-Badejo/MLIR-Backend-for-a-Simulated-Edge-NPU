@@ -2594,3 +2594,68 @@ be the duplication D-0032's fix built a test to hunt for.
   drift, the same environment still compares exactly, a failure is drift in any
   environment, and a baseline recorded before the field existed reads as the
   developer machine rather than as something that compares equal to everything.
+
+#### The third half, found by run 33711091899: the fix made a tree environment dependent
+
+`build-and-test` went green including `--check`, so the environment aware
+baseline is proven. `coverage` stayed red: **`python/npu_frontend` at 92.9004 in
+CI against a threshold of 93**, with `scripts` at 16.12 against 14 and
+`experiments` at 58.45 against 58 both passing.
+
+**The threshold was not wrong when it was set; the tree moved under it.** 93 came
+from a measurement taken before `python/npu_frontend/external_tools.py` existed,
+and the commit that fixed the second half added that module to the tree the
+threshold gates. Its whole purpose is to decide what an environment can reach, so
+its tools present branches cannot execute in CI and its tools absent branches
+cannot execute here. The prose beside the threshold claimed the frontend measured
+identically in both environments, which had been true and had quietly stopped
+being true.
+
+**And re-measuring found a second cause the first does not explain.** With
+`external_tools.py` covered the local figure was 93.3333 against CI's 92.9004, a
+gap of about six statements the module cannot account for.
+`pass_stats.interpreter_is_traced` asks two questions because CPython has two
+tracing mechanisms, and **which one is live depends on the interpreter version**:
+`coverage` uses `sys.settrace` on the 3.12 the CI image ships and
+`sys.monitoring` on the 3.14 this machine runs, so the function answers on the
+first question there and reaches the second one here.
+
+Measured rather than deduced: `COVERAGE_CORE=ctrace` on 3.14 moves
+`pass_stats.py` from 16 missing lines to 20, and the four are exactly the
+`sys.monitoring` block. Two `# pragma: no cover` comments came off in the same
+change, because the branches they excused are tested now.
+
+- **Both are fixed by covering the branches, not by moving the gate.**
+  `test/Python/test_external_tools.py` substitutes `find_spec`, `which` and the
+  environment; `test_every_way_an_interpreter_can_be_traced` substitutes both
+  tracing mechanisms. Neither consults the real environment, so both run
+  everywhere. A test that asserted "the tools are reachable here" would pass on
+  this machine and fail in CI for a reason that is not a defect, which is the
+  shape of the thing being fixed.
+- **Measured at the tip, and equal across four combinations** rather than two:
+  CI shape and developer shape, each under both tracing backends.
+
+  | Tree | CI shape | Developer | Threshold |
+  |---|---|---|---|
+  | `python/npu_frontend` | 93.4313 | 93.4313 | **93** |
+  | `scripts` | 16.1191 | 16.1191 | **16** |
+  | `experiments` | 58.4488 | 73.1302 | **58** |
+
+  `scripts` moves from 14 to 16 because the environment aware comparison added
+  tested lines to `regression_baseline.py`. Only `experiments` is environment
+  dependent, which is by design and is where the tool driven code lives.
+- **`external_tools.py` stays in the measured frontend package**, and the reason
+  is recorded where the thresholds are so it is not re-litigated: the import
+  graph forces it, because `scripts/regression_baseline.py` needs the same answer
+  and a script must not import from `test/`. Moving it to `scripts/` would
+  satisfy the import graph and drop it from a tree gated at 93 into one gated at
+  16, which is hiding a measurement rather than making it true.
+
+**The lesson this adds to the two above.** The first half was a suite green only
+where the machine was special. The second was a rehearsal that modelled two of
+three differences. This one is the same failure applied to a **number**: a
+threshold is a measurement of a tree, and a commit that adds environment
+dependent code to that tree invalidates the measurement as surely as it would
+invalidate a recorded cycle count. **The prose beside a threshold is part of the
+threshold**, and when it claims a property the code no longer has it is wrong in
+the way a stale comment is never merely cosmetic.
