@@ -40,6 +40,7 @@ from npu_frontend import (
     expected_passes,
     generate_model,
     load_pass_stats,
+    pass_stats,
 )
 from npu_frontend.pass_stats import (
     MLIR_TIMING_DECIMALS,
@@ -295,6 +296,48 @@ def test_the_two_clocks_agree_on_the_same_run(instrumented: Instrumented) -> Non
         "a report with no printed precision would make every bound here zero, "
         "which is the check switching itself off rather than tightening"
     )
+
+
+def test_the_gap_bound_does_not_run_under_a_tracer_and_says_so(
+    instrumented: Instrumented, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per pass gap bound has a precondition, and a tracer breaks it.
+
+    *Added at P11, when `experiments/` joined the coverage measurement.* That
+    bound's premise, stated in its own message, is that the gap **is** this
+    instrumentation's operation walk: the one thing inside MLIR's window and
+    outside this project's. Under a tracer everything else in that window is
+    stretched too, so the gap becomes the walk plus whatever the tracer did.
+
+    Measured 2026-09-03, the same cells three times each: untraced worst gaps
+    0.0658, 0.0729 and 0.0690 ms; under `coverage` 0.2757, 0.0844 and 0.0769.
+    The tracer does not shift the gap, it produces occasional outliers, which
+    makes the check flaky rather than wrong, and a flaky check is worth less
+    than one that says it did not run.
+
+    **A skipped bound is recorded, never silent.** Section 19.0's rule is that a
+    check which did not run says so, and `run_benchmarks.py` prints the reason at
+    the end of a run. This asserts both directions.
+    """
+    untraced = cross_check_against_mlir_timing(
+        instrumented.records, instrumented.timing
+    )
+    if not pass_stats.interpreter_is_traced():
+        assert untraced.upper_bound_skipped == "", (
+            "nothing is tracing this interpreter and the bound reported itself "
+            "as skipped, which would switch the check off in the ordinary run"
+        )
+
+    monkeypatch.setattr(pass_stats, "interpreter_is_traced", lambda: True)
+    traced = cross_check_against_mlir_timing(instrumented.records, instrumented.timing)
+    assert traced.upper_bound_skipped
+    assert "traced" in traced.upper_bound_skipped
+    assert "deficit bound and the totals were still checked" in (
+        traced.upper_bound_skipped
+    )
+    # The rows survive, so a run can still report its worst gap. What is skipped
+    # is the assertion about the gap, never the measurement of it.
+    assert traced.rows == untraced.rows
 
 
 def test_the_two_clocks_disagreeing_about_the_passes_raises(

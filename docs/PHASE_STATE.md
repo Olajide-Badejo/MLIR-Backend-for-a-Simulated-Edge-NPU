@@ -247,7 +247,9 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
 | `python experiments/run_benchmarks.py --force` | **175 cells, 3.70 minutes, 1.27 s per cell**, inside the budget, exit 0 |
 | `bash scripts/regression-baseline.sh --check` | **no drift, exit 0** |
-| `bash scripts/coverage.sh 85 90` | C++ **86.5** PASS, branch 76.9, Python **91.56** PASS, exit 0 |
+| `bash scripts/coverage.sh 85 93 14 58` | C++ **86.5** PASS, branch 76.9; per tree **93.2337 / 14.6597 / 73.1302** PASS, exit 0 |
+| the whole suite in an environment with neither external tool | **998 passed, 29 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.2337 / 14.6597 / 58.4488** |
+| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guard **fails** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
 | `git status --short` | empty |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case sensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
@@ -266,10 +268,39 @@ and not in value.
 tools are **absent**, so it cannot quietly become a second copy of a step that is
 on. The trigger to switch it on is the CI image gaining them.
 
-**Python coverage headroom widened from 0.97 to 1.56 points**, 91.56 against a
-threshold of 90, over a suite 49 tests larger. It was 0.97 at P10 and 0.54 at
-P9b. The threshold stays at 90. C++ is unmoved at 86.5, which is right: this
-phase added no C++.
+**Python coverage is measured over three trees now and gated per tree**, which
+is the P8 rationale for one package root being superseded rather than
+contradicted: `scripts/` is 955 statements and `experiments/` 1439, and both
+carry real logic at P11 where `scripts/` carried entry points at P8.
+
+| Tree | CI shape | Developer machine | Threshold |
+|---|---|---|---|
+| `python/npu_frontend` | 93.2337 | 93.2337 | **93** |
+| `scripts` | 14.6597 | 14.6597 | **14** |
+| `experiments` | 58.4488 | 73.1302 | **58** |
+
+Three things about that table are load bearing and are recorded where the
+thresholds are defined as well as here.
+
+- **Subprocess coverage is wired**, through `COVERAGE_PROCESS_START` and
+  `parallel = true`. It is worth 1.8 points on the frontend alone, 91.5561
+  before and 93.3687 after, which were lines being executed and not counted.
+  Stale `.coverage.*` files are erased first, which is D-0037 on the Python side.
+- **`experiments/` differs by 14.7 points between the two environments**, because
+  `scalesim_export.py` and `accelergy_energy.py` only execute where the tools do.
+  The gate is set from what CI can execute; setting it from the developer figure
+  would make CI red for having less installed.
+- **`scripts` at 14 is a real number and a weak gate**, and the prose says so
+  where the threshold lives. Five of its seven files measure exactly 0.0, because
+  they are driven by shell scripts and CI steps rather than by pytest, so the
+  figure is close to a statement about `regression_baseline.py` alone. It is
+  gated as a ratchet on the part pytest can see.
+
+**The coverage job got slower and by how much is recorded**: its pytest phase
+went from 248.45 to 327.57 seconds with the tools present, plus 32 percent, which
+is the tracer over two more source trees. The whole script is 351 seconds locally
+and 246 in the CI shape. C++ is unmoved at 86.5, which is right: this phase added
+no C++.
 
 **The authorship grep is worth one sentence, because it caught itself once.** The
 row above it originally named the thing it searches for, which made the row a

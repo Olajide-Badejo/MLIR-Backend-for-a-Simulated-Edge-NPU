@@ -2445,3 +2445,90 @@ None.
   `experiments/predictions/p11-scalesim-divergence.md` was not widened, and no
   cell was excluded from the comparison after the fact. The prediction is
   answered as it was written, including where it is wrong.
+
+### D-0046 the suite was green only on the machine that had the external tools
+
+- **Found:** 2026-09-03, phase P11, by **CI**, on this branch's first push: run
+  33691128405 and the pull request shape 33691234670. Three red clusters, one
+  cause.
+- **Status:** resolved 2026-09-03.
+- **Reproduce.** Not on the developer machine, which is the whole point. In an
+  interpreter that cannot reach SCALE-Sim or Accelergy:
+
+  ```
+  FAILED test_benchmarks.py::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing
+  FAILED test_benchmarks.py::test_the_run_fails_when_it_exceeds_its_budget
+  FileNotFoundError: [Errno 2] No such file or directory: 'accelergy'
+
+  scripts/patch-scalesim.py:73: error: Unused "type: ignore" comment  [unused-ignore]
+  scripts/patch-scalesim.py:73: error: Cannot find implementation or library stub
+      for module named "scalesim"  [import-not-found]
+  ```
+
+- **What was wrong, and it is one sentence three times.** P11 installed two
+  external tools on the development machine and then wrote code that assumed
+  their presence in three different ways, none of them deliberate.
+
+  1. **Two tests that have nothing to do with energy drove the whole harness.**
+     `test_the_run_fails_when_it_exceeds_its_budget` tests the Section 2 budget
+     gate and `test_a_rerun_is_byte_identical...` tests determinism, and both ran
+     `run_benchmarks.py` without `--skip-external`, so both invoked Accelergy.
+     The harness failing loudly on a missing tool is correct, per Section 16.4;
+     what was wrong was asking it to.
+  2. **A line level `# type: ignore` was correct in one environment and wrong in
+     the other, twice.** Where SCALE-Sim is installed the import resolves and
+     ships no `py.typed`, so mypy reports `import-untyped` and the ignore is
+     used. Where it is absent mypy reports `import-not-found`, which the ignore
+     does not cover, **and** `warn_unused_ignores` then reports the ignore
+     itself. Two errors on one line, neither visible locally.
+  3. **The coverage job was the same two tests under the instrumented run.**
+     Verified rather than assumed: Python line coverage in an environment
+     without the tools is **91.5561 percent**, identical to the figure with them,
+     because `--cov=python/npu_frontend` measures the frontend package and the
+     tool driven code lives in `experiments/`. Nothing hid behind the two
+     failures.
+
+- **This is D-0032 and D-0040 happening again one layer out**, and that is the
+  reason it gets an entry rather than three small fixes. D-0032 was three copies
+  of a tool lookup that skipped where one failed, and its fix was one policy:
+  **skip when nobody promised the tool, fail when somebody did.** D-0040 was a
+  set of tests that only ever ran on the developer machine. This is both: a set
+  of tests that could only pass where the author's machine was special, and no
+  mechanism to say which environments are supposed to have the tools.
+
+- **The fix, in three parts.**
+
+  - `test/Python/tools.py` gains `require_external_tools()` and
+    `NPU_EXTERNAL_TOOLS`, which is `BUILD_DIR_VARIABLE`'s policy applied to a
+    second kind of tool. A tool counts as reachable only when the module imports
+    **and** its binary is on `PATH`, because Accelergy is driven as a subprocess
+    and an importable package with no binary is a tool this project cannot run.
+  - The two harness tests pass `--skip-external`, and what that gives up is
+    recovered by `test_a_rerun_reproduces_the_external_fields_too`, which runs
+    the same determinism check with the P11 fields included and is guarded by the
+    policy above. `test_the_opt_out_records_a_null_and_a_reason` checks the flag
+    those two now depend on: the fields are present and null, each reason names
+    the flag, and `values_of` still refuses them.
+  - `pyproject.toml` carries a per module `ignore_missing_imports` override for
+    `scalesim` and the line level ignore is gone. **No global strictness setting
+    moved.** The override names exactly one module, because the first version
+    also listed `scalesim.*`, `accelergy` and `accelergy.*` and
+    `warn_unused_configs` reported all three as unused sections.
+
+- **Rehearsed in the environment that found it**, which is now the second
+  environment this project has to stay green in. A meta path finder refusing
+  `scalesim` and `accelergy` plus a `PATH` without the venv's `bin` reproduces
+  both observable facts of the CI image: the imports fail and the binary is not
+  found. Before the fix: the same two failures and the same two mypy errors.
+  After: **997 passed, 29 skipped, 0 failed**, mypy clean, coverage 91.5561.
+  With the tools present and promised: **1008 passed, 18 skipped**. And the third
+  branch is proven rather than argued: with `NPU_EXTERNAL_TOOLS=1` set in the
+  tool free environment, the guard **fails** naming the variable instead of
+  skipping.
+
+- **What was deliberately not done.** The harness was not made to tolerate a
+  missing tool silently. Section 16.4 says a missing external tool fails loudly
+  naming the dependency, and it still does; the opt out is a flag a caller sets,
+  recorded in the result as a null with a reason naming the flag, and never a
+  fallback the code chooses on its own. A test that could not find a tool is a
+  skip; a run that was not told to skip is a failure.

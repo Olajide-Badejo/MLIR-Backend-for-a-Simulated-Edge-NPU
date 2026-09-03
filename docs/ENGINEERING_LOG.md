@@ -4764,3 +4764,81 @@ against a bound of 0.2000. The machine was running SCALE-Sim in another process
 at the time. Two subsequent runs on a quiet machine reported worst gaps of 0.1577
 and 0.1177 ms and passed. The bound is D-0043's and is principled; it is also
 sensitive to load, and the suite should not be run beside the external tools.
+
+## 2026-09-03 D-0046: the phase was green only where the machine was special
+
+The first CI run of this branch was red in three jobs. One cause, and it is one
+this project has now met three times.
+
+I installed two external tools on this machine and then, without deciding to,
+wrote three things that assume they are there. A test of the **budget gate** and
+a test of **rerun determinism** both drove the whole harness, so both invoked
+Accelergy, so both died on `FileNotFoundError: 'accelergy'` in an image that has
+never had it. A `# type: ignore[import-untyped]` on the `scalesim` import was
+correct here and wrong there **twice**: the error that fires without the package
+is `import-not-found`, which that code does not cover, and `warn_unused_ignores`
+then reports the ignore itself. And the coverage job was the same two tests
+again.
+
+**None of it was visible locally, and that is the whole shape.** D-0032 was three
+copies of a tool lookup where one failed and two skipped. D-0040 was seven tests
+marked slow that CI had never run. This is both at once: tests that could only
+pass where the author's machine was special, and no mechanism anywhere to say
+which environments are supposed to have the tools.
+
+### The fix is a policy, not three patches
+
+`test/Python/tools.py` already owns this project's answer to "the tool is not
+here": **skip when nobody promised it, fail when somebody did.** That file now
+carries the same rule for the external tools, under `NPU_EXTERNAL_TOOLS`. A tool
+counts as reachable only when the module imports **and** its binary is on
+`PATH`, because Accelergy is driven as a subprocess and an importable package
+with no binary is a tool this project cannot actually run. Reporting that as
+present is how the failure moved from a readable skip to a `FileNotFoundError`
+in the middle of a benchmark.
+
+The two harness tests now pass `--skip-external`, which is Section 16.4's opt out
+and exists for exactly this. What that gives up is the determinism of the P11
+fields, so it is recovered rather than lost:
+`test_a_rerun_reproduces_the_external_fields_too` runs the same comparison with
+those fields included and is guarded by the policy above. And because two tests
+now depend on a flag, the flag got its own contract test: the fields are present
+and null, every reason names `--skip-external`, and `values_of` still refuses
+them. A flag two tests rely on and nobody checks is the next entry in this file.
+
+mypy gets a per module `ignore_missing_imports` override for `scalesim` and the
+line level ignore goes. **No global strictness setting moved**, which was the
+constraint worth keeping: the honest fix for an import that resolves in one
+environment and not the other is to say so once about that module, not to relax
+what the rest of the project is checked against. The first version of the
+override also listed `scalesim.*`, `accelergy` and `accelergy.*` on the reasoning
+that the neighbours would need it too, and `warn_unused_configs` reported all
+three as unused sections. It is one module now, which is that setting doing its
+job.
+
+### Rehearsing it, which is the part that makes this finished
+
+A defect found by an environment I cannot run is only fixed when I can run that
+environment. A meta path finder that refuses `scalesim` and `accelergy`, plus a
+`PATH` without the venv's `bin`, reproduces both observable facts of the CI
+image. mypy needs its own reproduction because it resolves imports statically
+rather than at runtime, and `--python-executable /usr/bin/python3` is what makes
+it see what CI sees. Both reproduced the exact failures before anything was
+changed, which is the only order in which a fix means anything.
+
+After: **997 passed, 29 skipped, 0 failed** without the tools; **1008 passed, 18
+skipped** with them; mypy clean in both; and with `NPU_EXTERNAL_TOOLS=1` set in
+the tool free environment the guard **fails** naming the variable rather than
+skipping, so the third branch of the policy is proven rather than asserted.
+
+**And the coverage cluster was checked rather than assumed.** Python line
+coverage without the tools was 91.5561 percent, the same figure as with them,
+because `--cov=python/npu_frontend` measured the frontend package and the tool
+driven code lives in `experiments/`. Nothing was hiding behind the two failures.
+That measurement is also what made the next paragraph unavoidable.
+
+**The standing lesson gains a line.** P10 left "whatever reads an external tool's
+numbers has to carry that tool's precision". P11 added "and its failure modes".
+This adds the one before both: **an environment that has a tool is not the
+environment the project ships to**, and a suite that has only ever been green in
+the richer one has not been tested.

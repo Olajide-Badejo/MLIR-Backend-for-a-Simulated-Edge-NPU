@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -327,6 +329,41 @@ class TimingReport:
     decimals: int
 
 
+def interpreter_is_traced() -> bool:
+    """Whether something is tracing or monitoring this interpreter.
+
+    *Added at P11, with the coverage measurement over `experiments/`.* A tracer
+    stretches whatever runs between two C++ timestamps, and one of this module's
+    bounds is about exactly that interval, so the bound has to know.
+
+    Both mechanisms are checked because CPython has two and `coverage` picks per
+    version: `sys.settrace` on older interpreters, and `sys.monitoring` from
+    3.12. `sys.gettrace()` alone reports `None` under the monitoring backend,
+    which would make this answer "not traced" on the interpreter this project
+    actually runs, so a check that only asked it would be wrong in exactly the
+    environment it exists for.
+
+    `threading.gettrace()` covers a tracer installed for new threads but not for
+    this one, which is how a test harness that starts the work on a worker thread
+    would look.
+    """
+    if sys.gettrace() is not None or threading.gettrace() is not None:
+        return True
+    monitoring = getattr(sys, "monitoring", None)
+    if monitoring is None:  # pragma: no cover - 3.11 and older
+        return False
+    # Any tool registered at all: `coverage` takes `COVERAGE_ID`, but naming one
+    # id would miss a profiler or a debugger doing the same thing for the same
+    # reason.
+    for tool_id in range(getattr(monitoring, "_MAX_TOOLS", 6)):
+        try:
+            if monitoring.get_tool(tool_id) is not None:
+                return True
+        except (ValueError, AttributeError):  # pragma: no cover - defensive
+            continue
+    return False
+
+
 def parse_mlir_timing(text: str) -> TimingReport:
     """The per pass rows of a tree display, in order, with their print precision.
 
@@ -377,6 +414,15 @@ class CrossCheck:
     #: Half a unit in the last place of MLIR's printed figures, from the report
     #: this check read. Every bound here is expressed in terms of it.
     half_ulp_ms: float
+
+    #: Empty when every bound ran. Otherwise why the per pass gap bound did not,
+    #: which today has exactly one cause: a traced interpreter.
+    #:
+    #: **A string rather than a boolean, and set rather than defaulted**, because
+    #: Section 19.0's rule is that a check which did not run says so. A caller
+    #: that prints this cannot present a skipped bound as a passed one, and a
+    #: caller that ignores it is visibly ignoring something.
+    upper_bound_skipped: str = ""
 
     @property
     def worst_gap_ms(self) -> float:
@@ -461,6 +507,16 @@ def cross_check_against_mlir_timing(
         instrumented_total_ms=sum(row[1] for row in rows),
         mlir_total_ms=sum(row[2] for row in rows),
         half_ulp_ms=report.half_ulp_ms,
+        upper_bound_skipped=(
+            (
+                "the interpreter is traced, so the window MLIR times holds the "
+                "tracer as well as this instrumentation's operation walk, and "
+                "the gap bound's premise that the gap is the walk does not "
+                "hold. The deficit bound and the totals were still checked."
+            )
+            if interpreter_is_traced()
+            else ""
+        ),
     )
 
     # The deficit bound is exactly the print quantum and is derived rather than
@@ -484,7 +540,27 @@ def cross_check_against_mlir_timing(
     # The upper bound has the same two terms for the same reason: the print
     # quantum, because a rounded figure can sit half a unit *above* the truth as
     # readily as below it, plus the walk, which is proportional to the pass.
+    #
+    # **It is not checked under a traced interpreter, and that is a precondition
+    # rather than an exemption.** This bound's premise, stated in its own
+    # message, is that the gap *is* the instrumentation's operation walk: the one
+    # thing that sits inside MLIR's window and outside this project's. Under a
+    # tracer everything else in that window is stretched too, so the gap becomes
+    # the walk plus whatever the tracer did, and the bound stops measuring what
+    # it says.
+    #
+    # Measured on 2026-09-03, the same cells three times each: untraced worst
+    # gaps 0.0658, 0.0729 and 0.0690 ms; under `coverage` 0.2757, 0.0844 and
+    # 0.0769. The tracer does not shift the gap, it produces occasional
+    # outliers, which makes the check flaky rather than wrong, and a flaky check
+    # is worth less than one that says it did not run.
+    #
+    # The **deficit** bound above stays active, because its premise survives a
+    # tracer: MLIR's window contains this project's whatever the interpreter is
+    # doing in between.
     for name, instrumented, from_mlir, gap in rows:
+        if check.upper_bound_skipped:
+            break
         allowed = report.half_ulp_ms + TIMING_GAP_FRACTION * from_mlir
         if gap > allowed:
             raise PassStatisticsError(

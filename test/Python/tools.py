@@ -52,6 +52,102 @@ def named_build_directory() -> str | None:
     return os.environ.get(BUILD_DIR_VARIABLE) or None
 
 
+# ---------------------------------------------------------------------------
+# The same policy, for the external cross validation tools. Added at P11 after
+# D-0046.
+# ---------------------------------------------------------------------------
+
+#: The variable a caller sets to say this environment has SCALE-Sim and
+#: Accelergy, so a test that needs one must **fail** rather than skip.
+#:
+#: **This is `BUILD_DIR_VARIABLE`'s rule applied to a second kind of tool**, and
+#: it exists because D-0046 was D-0032 happening again one layer out. The
+#: developer machine has the external tools and the CI image does not, so
+#: `pytest.importorskip` alone means the only environment that runs these tests
+#: is the one place nobody is watching, which is exactly the shape of D-0040.
+EXTERNAL_TOOLS_VARIABLE = "NPU_EXTERNAL_TOOLS"
+
+#: What each external tool is, as an importable module name and the binary that
+#: has to be on `PATH` for it to answer. `None` means the tool is a library and
+#: has no binary of its own.
+EXTERNAL_TOOLS: dict[str, str | None] = {
+    "scalesim": None,
+    "accelergy": "accelergy",
+}
+
+
+def external_tools_promised() -> bool:
+    """Whether a caller asserted this environment has the external tools."""
+    return bool(os.environ.get(EXTERNAL_TOOLS_VARIABLE))
+
+
+def missing_external_tools() -> list[str]:
+    """Which of the external tools this environment cannot reach, by name.
+
+    A tool counts as reachable only when both halves are there: the module
+    imports **and** its binary is on `PATH`. Accelergy is driven as a
+    subprocess, so an importable package with no `accelergy` on `PATH` is a tool
+    this project cannot actually run, and reporting it as present would move the
+    failure from a readable skip to a `FileNotFoundError` in the middle of a
+    benchmark run. That is precisely how D-0046 reached CI.
+    """
+    import importlib.util
+    import shutil
+
+    absent: list[str] = []
+    for module, binary in EXTERNAL_TOOLS.items():
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            absent.append(module)
+            continue
+        if binary is not None and shutil.which(binary) is None:
+            absent.append(f"{module} (the {binary} binary is not on PATH)")
+    return absent
+
+
+def require_external_tools() -> None:
+    """Skip, or fail, on a missing external tool. The policy of this module.
+
+    - Present: return, and the caller runs the real thing.
+    - Absent and **nobody promised them**: skip. That is the CI image, and a
+      developer without them, and both are legitimate.
+    - Absent and **somebody promised them**: fail. A caller that sets
+      `NPU_EXTERNAL_TOOLS` is asserting the tools are there, and a skip in that
+      case is the suite quietly doing less than the caller asked for.
+
+    The third branch is the whole point. Without it the external tool tests can
+    only ever be skipped in CI, which means the day the image gains the tools
+    nothing notices, and the day the tools break nothing notices either.
+    """
+    absent = missing_external_tools()
+    if not absent:
+        return
+    if external_tools_promised():
+        raise AssertionError(
+            f"these external tools are not reachable: {absent}, and "
+            f"{EXTERNAL_TOOLS_VARIABLE} is set to "
+            f"{os.environ[EXTERNAL_TOOLS_VARIABLE]!r}. A caller that names that "
+            f"variable is asserting the tools are installed, so this is a "
+            f"failure rather than a skip: skipping here would mean the suite ran "
+            f"less than the caller asked for, and the external cross validation "
+            f"is the part of this phase that only exists when they run.\n\n"
+            f"Install them from the pinned shas in "
+            f"docs/adr/0003-resolved-tool-matrix.md, and remember "
+            f"scripts/patch-scalesim.py."
+        )
+    pytest.skip(
+        f"these external tools are not reachable: {absent}, and no "
+        f"{EXTERNAL_TOOLS_VARIABLE} was set, so nobody claimed this environment "
+        f"has them. Section 16.4: a missing external tool fails loudly naming "
+        f"the dependency when something asks it to run, and a test that has no "
+        f"tool to drive skips. Set {EXTERNAL_TOOLS_VARIABLE}=1 to turn this skip "
+        f"into a failure."
+    )
+
+
 def tool(name: str) -> Path:
     """Locate one built binary, or skip, or fail. See the module docstring.
 

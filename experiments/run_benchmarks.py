@@ -494,6 +494,10 @@ class Runner:
         #: only that it did.
         self.worst_timing_gap_ms = 0.0
         self.worst_timing_gap_pass = ""
+        #: Why the per pass timing gap bound did not run, when it did not. Empty
+        #: when it did. Reported at the end of the run, because Section 19.0's
+        #: rule is that a check which is off says so in the log.
+        self.timing_bound_skipped = ""
         #: The allocated IR of every cell this runner measured, by cell name.
         #: The P11 groups are filled from it after the run rather than during it,
         #: for the same reason the deltas are: the run order is randomized.
@@ -588,6 +592,8 @@ class Runner:
                 check = cross_check_against_mlir_timing(
                     records, program.mlir_timing_text
                 )
+                if check.upper_bound_skipped:
+                    self.timing_bound_skipped = check.upper_bound_skipped
                 if check.worst_gap_ms > self.worst_timing_gap_ms:
                     self.worst_timing_gap_ms = check.worst_gap_ms
                     worst = max(check.rows, key=lambda row: row[3])
@@ -1306,6 +1312,11 @@ def _run(arguments: argparse.Namespace) -> int:
             else ""
         )
     )
+    if runner.timing_bound_skipped:
+        print(
+            f"run-benchmarks: the per pass timing gap bound DID NOT RUN, "
+            f"because {runner.timing_bound_skipped}"
+        )
 
     # The number that replaces Section 2's 15 second planning figure. Printed
     # over the cells this run actually measured, because averaging in the reused

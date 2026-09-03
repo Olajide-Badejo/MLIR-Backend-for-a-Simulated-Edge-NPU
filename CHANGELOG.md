@@ -85,6 +85,37 @@ Semantic Versioning once a release is tagged.
   way each repository asks to be cited, in `report/references.bib`. Four of the
   six specify no citation form and their entries are constructed from their own
   packaging metadata, which the entry says.
+- **D-0046: the suite was green only on the machine that had the external
+  tools.** Found by the first CI run of this branch, in three clusters with one
+  cause. Two tests that exercise the budget gate and rerun determinism were
+  driving the whole harness and so invoking Accelergy; they pass
+  `--skip-external` now, and what that gives up is recovered by a test running
+  the same determinism check with the P11 fields where the tools exist. A line
+  level `type: ignore` was correct where SCALE-Sim is installed and wrong twice
+  where it is not, replaced by a per module override that moves no global
+  strictness setting. `test/Python/tools.py` gains `NPU_EXTERNAL_TOOLS` and the
+  policy D-0032 established: **skip when nobody promised the tool, fail when
+  somebody did.** The project now has to stay green in two environments and both
+  are rehearsed.
+- **Python coverage is measured over three trees and gated per tree.**
+  `python/npu_frontend` at 93, `scripts` at 14 and `experiments` at 58, each
+  rounded down from what the CI image can execute, and never blended: a blend
+  would let the frontend's size carry the scripts tree and hide a fall in either.
+  The P8 rationale for measuring one package root is recorded in
+  `scripts/coverage.sh` and superseded: `scripts/` is 955 statements and
+  `experiments/` 1439, and both carry real logic now.
+- **Subprocess coverage is wired**, worth 1.8 points on the frontend alone,
+  because scripts and the benchmark harness are exercised as subprocesses that
+  `pytest-cov` did not see. Stale coverage data is erased first, which is D-0037
+  applied to the Python side. The coverage job's pytest phase is 32 percent
+  slower for it, 248 seconds to 328.
+- **The per pass timing gap bound does not run under a tracer, and says so.** Its
+  premise is that the gap is the instrumentation's own operation walk; a tracer
+  stretches everything else in that window too. Measured: untraced worst gaps
+  0.0658, 0.0729 and 0.0690 ms, under `coverage` 0.2757, 0.0844 and 0.0769. The
+  deficit bound and the totals still run, and `run_benchmarks.py` prints that the
+  gap bound did not, because a check that is off must not look like one that
+  passed.
 
 ### Phase P10: measurement
 

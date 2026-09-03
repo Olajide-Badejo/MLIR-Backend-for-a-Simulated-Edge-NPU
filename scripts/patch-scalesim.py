@@ -70,7 +70,12 @@ EDITS: list[tuple[str, str, str]] = [
 
 def installed_root() -> Path:
     try:
-        import scalesim  # type: ignore[import-untyped]
+        # No line level ignore here, on purpose. This import resolves on a
+        # machine that has SCALE-Sim and does not on one that has not, so the
+        # error mypy reports differs between the two environments and no single
+        # ignore code is correct in both. `pyproject.toml` carries a per module
+        # override instead. D-0046.
+        import scalesim
     except ImportError:
         print(
             "scalesim is not installed in this interpreter. Install it from the "

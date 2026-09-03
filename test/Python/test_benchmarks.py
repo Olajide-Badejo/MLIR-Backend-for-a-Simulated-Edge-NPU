@@ -35,9 +35,14 @@ from typing import Any
 import pytest
 from npu_frontend import ablatable_passes, implemented_levels
 from npu_frontend.model_generator import DEFAULT_BUDGET, MODELS, TIGHT_BUDGETS
-from npu_frontend.results import RESULTS_DIR
+from npu_frontend.results import (
+    RESULTS_DIR,
+    ResultSchemaError,
+    load_result,
+    values_of,
+)
 
-from tools import tool
+from tools import require_external_tools, tool
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "experiments"))
@@ -195,6 +200,13 @@ def test_the_run_fails_when_it_exceeds_its_budget(built: None, tmp_path: Path) -
     way to reach the branch without making the suite slow on purpose. What is
     asserted is the exit code and the message, because the gate's job is to fail
     the run rather than to print a warning somebody scrolls past.
+
+    **`--skip-external` because this test is about the budget and nothing else**,
+    which is D-0046's fix. The budget gate has no relationship to SCALE-Sim or
+    Accelergy, and running them here made a test of the timing gate depend on two
+    tools that are not in the CI image. Section 16.4 provides the opt out for
+    exactly this: a run that was told not to measure energy records a null with a
+    reason, which `test_the_opt_out_records_a_null_and_a_reason` asserts.
     """
     status = run_benchmarks.main(
         [
@@ -204,6 +216,7 @@ def test_the_run_fails_when_it_exceeds_its_budget(built: None, tmp_path: Path) -
             str(tmp_path),
             "--budget-minutes",
             "0",
+            "--skip-external",
         ]
     )
     assert status == 1, "a suite over its budget must fail the run"
@@ -223,8 +236,20 @@ def test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing(
     with no tolerance. The timing object is checked for shape rather than for
     value, which is the whole reason it is a separate object: a wall clock that
     reproduced exactly would mean it was not being measured.
+
+    **`--skip-external`, so that this runs identically everywhere**, which is
+    D-0046's fix. Determinism of the compiler and the simulator is what this
+    asserts, and it must not depend on two tools the CI image does not have.
+    `test_a_rerun_reproduces_the_external_fields_too` is the same check with the
+    P11 fields included, and it runs where the tools exist.
     """
-    one_model = ["--models", "conv_bn_relu_stack", "--results", str(tmp_path)]
+    one_model = [
+        "--models",
+        "conv_bn_relu_stack",
+        "--results",
+        str(tmp_path),
+        "--skip-external",
+    ]
     assert run_benchmarks.main(one_model) == 0
     first = {
         path.name: json.loads(path.read_text(encoding="utf-8"))
@@ -247,6 +272,120 @@ def test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing(
     for name, cell in second.items():
         assert cell["timing"]["compile_ms"]["n_trials"] >= 10
         assert cell["manifest"]["timestamp"] != first[name]["manifest"]["timestamp"]
+
+
+@pytest.mark.slow
+def test_the_opt_out_records_a_null_and_a_reason(built: None, tmp_path: Path) -> None:
+    """Section 16.4's opt out, which is a different state from a missing tool.
+
+    *Added at P11 after D-0046.* Two tests above now use `--skip-external`, and a
+    flag that two tests rely on has to have its own contract checked, or the
+    thing it is trusted to do is the thing nobody looks at.
+
+    Three claims, and the third is the one that matters:
+
+    - the P11 fields are **present and null**, never absent, because Section
+      16.1's rule is explicit nulls rather than missing keys;
+    - each carries a `_null_reason` **naming the flag**, so a reader can tell a
+      declined measurement from a tool that could not be found;
+    - `values_of` **refuses** them, so a null recorded this way cannot reach a
+      table as a zero any more than any other null can.
+    """
+    assert (
+        run_benchmarks.main(
+            [
+                "--models",
+                "conv_bn_relu_stack",
+                "--results",
+                str(tmp_path),
+                "--skip-external",
+            ]
+        )
+        == 0
+    )
+    cells = [load_result(path) for path in sorted(tmp_path.glob("*.json"))]
+    assert cells
+
+    opted_out = [
+        ("roofline", "roofline_bound_cycles"),
+        ("roofline", "roofline_verdict"),
+        ("external", "scalesim_cycles"),
+        ("external", "scalesim_covered_cycle_fraction"),
+        ("external", "energy_pj"),
+        ("external", "area_mm2"),
+        ("external", "technology_node"),
+        ("normalized", "energy_pj_per_inference"),
+        ("normalized", "edp"),
+        ("manifest", "tool_shas"),
+        ("manifest", "registered_estimators"),
+    ]
+    for cell in cells:
+        for group, field in opted_out:
+            assert field in cell[group], (
+                f"{group}.{field} is absent. Section 16.1: every field is present "
+                f"in every result file, and a missing key is a schema violation "
+                f"rather than a null."
+            )
+            assert cell[group][field] is None
+            reason = cell[group][f"{field}_null_reason"]
+            assert "--skip-external" in reason, (
+                f"{group}.{field} is null and its reason does not name the flag "
+                f"that caused it. A reader has to be able to tell this from a "
+                f"tool that could not be found, which is the distinction Section "
+                f"16.4 draws between the two."
+            )
+
+    # And the null still refuses to become a zero, which is the property the opt
+    # out must not quietly buy its way out of.
+    with pytest.raises(ResultSchemaError) as failure:
+        values_of(cells, "normalized.energy_pj_per_inference")
+    assert "--skip-external" in str(failure.value)
+
+
+@pytest.mark.slow
+def test_a_rerun_reproduces_the_external_fields_too(
+    built: None, tmp_path: Path
+) -> None:
+    """The determinism check above, with the P11 fields included.
+
+    *Added at P11 after D-0046.* The test above opts out of the external tools so
+    that it runs identically in every environment, and that gives up checking
+    that the roofline, SCALE-Sim and energy fields reproduce. This recovers it
+    where the tools exist.
+
+    **Skips where nobody promised the tools and fails where somebody did**, which
+    is `tools.py`'s policy and the reason D-0046 exists: a test that can only ever
+    skip in CI runs in exactly one place, and that place is the one nobody is
+    watching.
+    """
+    require_external_tools()
+
+    one_model = ["--models", "conv_bn_relu_stack", "--results", str(tmp_path)]
+    assert run_benchmarks.main(one_model) == 0
+    first = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(tmp_path.glob("*.json"))
+    }
+    assert run_benchmarks.main([*one_model, "--force"]) == 0
+    second = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(tmp_path.glob("*.json"))
+    }
+
+    moved = [
+        name for name in first if _stripped(first[name]) != _stripped(second[name])
+    ]
+    assert not moved, f"these cells did not reproduce: {moved}"
+
+    # And the fields are genuinely filled rather than reproducing as two matching
+    # nulls, which is the way this test could pass while asserting nothing.
+    for cell in second.values():
+        assert cell["roofline"]["roofline_verdict"] == "at_or_above_bound"
+        assert cell["external"]["scalesim_cycles"] > 0
+        assert cell["external"]["energy_pj"] > 0.0
+        assert cell["normalized"]["energy_pj_per_inference"] > 0.0
+        assert cell["manifest"]["technology_node"] == "45nm"
+        assert cell["manifest"]["registered_estimators"]
 
 
 def _stripped(cell: dict[str, Any]) -> dict[str, Any]:
