@@ -894,7 +894,7 @@
     }
   },
   "generator_version": "1.1.0",
-  "git_sha": "17d63ed9955fcd1132b7a0e1999d047a96a73d14",
+  "git_sha": "63f846d8f90e1f5bd27eb46c45bbc0628062c01a",
   "levels": [
     0,
     1,
@@ -1186,7 +1186,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 1006,
+      "passed": 1009,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1202,6 +1202,7 @@
         "test.Python.test_accelergy_energy::test_the_scratchpad_depth_is_rounded_up_and_never_down",
         "test.Python.test_accelergy_energy::test_the_three_components_are_estimated_and_say_by_what",
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
+        "test.Python.test_benchmarks::test_a_rerun_reproduces_the_external_fields_too",
         "test.Python.test_benchmarks::test_a_tight_cell_runs_at_the_models_declared_batch",
         "test.Python.test_benchmarks::test_an_ablation_outside_the_band_fails_the_run",
         "test.Python.test_benchmarks::test_an_ablation_whose_baseline_is_missing_is_refused",
@@ -1212,6 +1213,7 @@
         "test.Python.test_benchmarks::test_the_budget_verdict_passes_inside_and_fails_outside",
         "test.Python.test_benchmarks::test_the_committed_run_records_its_own_measured_cost",
         "test.Python.test_benchmarks::test_the_counts_are_what_adr_0010_says",
+        "test.Python.test_benchmarks::test_the_opt_out_records_a_null_and_a_reason",
         "test.Python.test_benchmarks::test_the_planned_cells_are_the_computed_cross_product",
         "test.Python.test_benchmarks::test_the_run_fails_when_it_exceeds_its_budget",
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
@@ -2024,6 +2026,7 @@
         "test.Python.test_pass_instrumentation::test_every_pass_has_a_before_and_an_after_count",
         "test.Python.test_pass_instrumentation::test_the_ablatable_set_is_read_from_the_compiler_and_is_not_written_here",
         "test.Python.test_pass_instrumentation::test_the_counts_chain_across_the_pipeline",
+        "test.Python.test_pass_instrumentation::test_the_gap_bound_does_not_run_under_a_tracer_and_says_so",
         "test.Python.test_pass_instrumentation::test_the_import_stage_refuses_the_flag_rather_than_writing_nothing",
         "test.Python.test_pass_instrumentation::test_the_op_names_are_real_operation_names",
         "test.Python.test_pass_instrumentation::test_the_parser_ignores_what_is_not_a_pass",
