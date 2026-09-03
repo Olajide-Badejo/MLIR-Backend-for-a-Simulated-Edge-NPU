@@ -893,8 +893,12 @@
       }
     }
   },
+  "environment": {
+    "external_tools_reachable": true,
+    "scalesim_source_tree_present": true
+  },
   "generator_version": "1.1.0",
-  "git_sha": "63f846d8f90e1f5bd27eb46c45bbc0628062c01a",
+  "git_sha": "1e77083ce21338dfb34387f489e96eaf3aaaca23",
   "levels": [
     0,
     1,
@@ -1186,7 +1190,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 1009,
+      "passed": 1013,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -2082,8 +2086,10 @@
         "test.Python.test_refgraph::test_the_attributes_are_read_and_not_defaulted",
         "test.Python.test_refgraph::test_the_walker_reproduces_a_hand_written_reference",
         "test.Python.test_refgraph::test_the_wrong_number_of_inputs_is_refused",
+        "test.Python.test_regression_baseline::test_a_baseline_without_an_environment_reads_as_the_developer_machine",
         "test.Python.test_regression_baseline::test_a_cell_that_stopped_being_produced_is_drift",
         "test.Python.test_regression_baseline::test_a_deleted_test_is_drift",
+        "test.Python.test_regression_baseline::test_a_failure_is_drift_in_any_environment",
         "test.Python.test_regression_baseline::test_a_generator_version_change_is_reported_first",
         "test.Python.test_regression_baseline::test_a_golden_that_is_no_longer_produced_is_drift",
         "test.Python.test_regression_baseline::test_a_level_set_change_is_drift_and_says_why",
@@ -2091,6 +2097,7 @@
         "test.Python.test_regression_baseline::test_a_moved_metric_is_reported_with_both_values",
         "test.Python.test_regression_baseline::test_a_moved_oracle_distance_inside_the_band_is_not_drift",
         "test.Python.test_regression_baseline::test_a_moved_oracle_distance_is_reported_even_though_it_is_not_drift",
+        "test.Python.test_regression_baseline::test_a_suite_count_that_differs_because_the_environment_does_is_not_drift",
         "test.Python.test_regression_baseline::test_a_suite_that_stopped_running_is_drift",
         "test.Python.test_regression_baseline::test_an_oracle_distance_outside_the_band_is_drift",
         "test.Python.test_regression_baseline::test_an_unchanged_baseline_reports_no_drift",
@@ -2103,6 +2110,7 @@
         "test.Python.test_regression_baseline::test_the_committed_baseline_records_every_level_the_compiler_builds",
         "test.Python.test_regression_baseline::test_the_committed_baseline_records_this_phases_numerics_movement",
         "test.Python.test_regression_baseline::test_the_oracle_band_is_the_matrix_band_and_not_a_second_copy",
+        "test.Python.test_regression_baseline::test_the_same_environment_still_compares_its_counts_exactly",
         "test.Python.test_result_schema::test_a_cell_that_ablates_nothing_carries_no_deltas",
         "test.Python.test_result_schema::test_a_missing_key_is_refused",
         "test.Python.test_result_schema::test_a_null_never_aggregates_as_a_zero",
