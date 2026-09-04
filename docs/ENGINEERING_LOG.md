@@ -4842,3 +4842,417 @@ numbers has to carry that tool's precision". P11 added "and its failure modes".
 This adds the one before both: **an environment that has a tool is not the
 environment the project ships to**, and a suite that has only ever been green in
 the richer one has not been tested.
+
+## 2026-09-04 D-0047: the kernel was never parallel, and the test that proves it is bitwise stable was comparing two serial runs
+
+**This phase was going to be a measurement and it turned out to be a repair.**
+P12's brief is to prove the sweep line's growth, parallelise the convolution
+kernel and confirm the suite runtime, with the whole thing numerically inert. The
+convolution kernel had a `#pragma omp parallel for collapse(2)` in it since P7,
+`find_package(OpenMP)` had been succeeding since P7, and the configure log had
+been saying "the convolution kernel parallelises over the batch and output
+channel dimensions" on every configure since P7. None of it was true.
+
+### How it was found, which is the part worth copying
+
+The first thing this phase did was measure, before changing anything. Seven
+models, one thread against twenty eight, best of three:
+
+```
+model                     1t s     28t s   speedup
+conv_bn_relu_stack      0.0035   0.0034      1.03
+depthwise_separable     0.0016   0.0017      0.99
+dilated_stack           0.0029   0.0029      1.02
+inception_block         0.0035   0.0034      1.01
+lenet                   0.0227   0.0231      0.98
+lenet_batched           0.0847   0.0857      0.99
+resnet_block            0.0045   0.0044      1.03
+```
+
+**A table of ones is exactly what small models look like**, and these models are
+small: the largest is a batch of four LeNets and the whole simulation is eighty
+five milliseconds. The tempting reading was there and it was wrong. What made the
+difference was asking the machine a question with a yes or no answer instead:
+
+```
+$ /usr/bin/time -v ./build/bin/npu-sim lenet_batched.nbin ...
+        Percent of CPU this job got: 98%
+```
+
+Ninety eight percent, with `OMP_NUM_THREADS=28`. A parallel region that finds no
+work still costs more than one CPU somewhere. This was one CPU exactly, which is
+not a small model, it is no parallelism.
+
+```
+$ nm -C build/lib/Simulator/CMakeFiles/obj.NPUSimulator.dir/Kernels.cpp.o \
+    | grep -ci 'GOMP\|omp_'
+0
+$ ldd build/bin/npu-sim | grep -c gomp
+0
+$ grep -A4 'Kernels.cpp.o: CXX' build/build.ninja | grep -c fopenmp
+0
+$ grep -A4 'DeterminismTest.cpp.o: CXX' build/build.ninja | grep -c fopenmp
+1
+```
+
+The last two lines are the defect. `-fopenmp` reached the **test** and never
+reached the **kernel**.
+
+### What was wrong
+
+`add_mlir_library` compiles a library's sources in an object library named
+`obj.<name>` and then assembles the library from the objects.
+`lib/Simulator/CMakeLists.txt` had exactly one piece of OpenMP wiring:
+
+```cmake
+target_link_libraries(NPUSimulator PUBLIC OpenMP::OpenMP_CXX)
+```
+
+A usage requirement attached to `NPUSimulator` propagates to everything that
+links `NPUSimulator`. It does not propagate to `obj.NPUSimulator`, which is a
+different target and is where the four sources actually compile. So the imported
+target's `-fopenmp` landed on `npu-sim`, on `NPUSimulatorTests`, on every
+consumer, and on none of the kernels. `#ifdef _OPENMP` in `Kernels.cpp` was false
+in every build in every environment for three phases.
+
+**The link half worked and hid the compile half.** `NPUSimulatorTests` links
+libgomp, so `omp_get_max_threads()` in `DeterminismTest.cpp` returns 28 and
+`omp_set_num_threads` succeeds, and both do exactly what they are asked. They are
+asked about a process that has an OpenMP runtime, which it does. Nobody asked
+about the kernel.
+
+`npu-sim` did **not** link libgomp, and that is the one place the fault was
+visible from outside without a disassembler: the linker's `--as-needed` dropped a
+library nothing referenced. It looked like a fact about npu-sim rather than a
+fact about the kernels, and nothing was reading it.
+
+### What it cost, which is worse than the missing speedup
+
+`unittests/Simulator/DeterminismTest.cpp` is Section 10.3's requirement in a
+test: the same input under one thread and under the maximum thread count must
+produce bitwise equal output buffers. It ran two single threaded runs and
+compared them. **It passed for three phases while asserting nothing.**
+
+Its own comment header says, about the case where OpenMP is absent, that "a test
+that silently becomes vacuous is worse than no test". The file was right and the
+mechanism it named was not the one that got it. It guarded the case where CMake
+cannot find OpenMP, which is loud, and it had no guard at all for the case where
+CMake finds OpenMP and the flag does not arrive, which is silent.
+
+`docs/PHASE_STATE.md` at P11 recorded that the determinism assertion "asserts at
+full strength everywhere now, since the image has OpenMP". The CI image does have
+OpenMP. The kernels did not.
+
+### The fix, and why the third part is the one that matters
+
+1. **`add_compile_options` at directory scope**, which is where
+   `-Werror=switch` in the same file already lives for exactly this reason: a
+   directory scope option applies to every target created after it, object
+   library included. `separate_arguments` first, because `OpenMP_CXX_FLAGS` is
+   one string and is more than one flag on some compilers. The
+   `target_link_libraries` line stays; putting the runtime on a consumer's link
+   line is a different job and this project needed both all along.
+2. **`nbin::kernelsUseOpenMP()` and `nbin::kernelThreadCount()`**, defined in
+   `Kernels.cpp`, declared in the public header, and exposed on a command line as
+   `npu-sim --kernel-info`. They answer for the translation unit that has the
+   parallel region in it. That is the question no caller could previously ask,
+   because `_OPENMP` is a property of a translation unit and every unit that
+   asked was answering correctly about itself.
+3. **`Determinism.TheKernelsAgreeWithThisTestAboutOpenMP`**, which compares this
+   test's `_OPENMP` against the kernels' answer and fails when they differ. The
+   rehearsal is below and it is the reason this defect cannot recur silently.
+
+### The rehearsal, with the prediction written first
+
+**Predicted:** removing the two new lines from `lib/Simulator/CMakeLists.txt`
+turns the new test red naming the object library, and leaves the two beneath it
+**green**, because green is what they were in exactly this state for three
+phases.
+
+**Result:** exactly that.
+
+```
+[  FAILED  ] Determinism.TheKernelsAgreeWithThisTestAboutOpenMP
+  Value of: nbin::kernelsUseOpenMP()
+    Actual: false
+  Expected: true
+  this test was compiled with OpenMP and lib/Simulator/Kernels.cpp was not ...
+[       OK ] Determinism.OneThreadAndMaxThreadsAgreeBitwise
+[       OK ] Determinism.TheCycleCountDoesNotDependOnTheThreadCount
+[          ] OpenMP is on and reports 28 threads available, and the kernels report 1.
+```
+
+The last line is the whole defect in one sentence, printed by the test that could
+not see it. `npu-sim --kernel-info` says `kernel openmp: no` in the same tree.
+
+### The second fault, which did not exist until the first was fixed
+
+With the kernel finally parallel, five of the seven models ran **slower than
+serial** at twenty eight threads:
+
+```
+model                  1t s    28t s   x28    (uncapped team)
+conv_bn_relu_stack   0.0035   0.0094  0.36
+depthwise_separable  0.0016   0.0113  0.14
+dilated_stack        0.0029   0.0098  0.30
+inception_block      0.0034   0.0175  0.19
+lenet                0.0224   0.0186  1.20
+lenet_batched        0.0847   0.0301  2.84
+resnet_block         0.0045   0.0128  0.35
+```
+
+Seven times slower on `depthwise_separable`. The collapsed loop has
+`batch * outputChannels` iterations; that model's two convolutions are depthwise
+at batch 1, so they have **eight and sixteen** iterations and were being handed
+twenty eight threads each. Every thread past the iteration count has nothing to
+run and still arrives at the region's entry and its closing barrier, and on this
+host that barrier across twenty eight logical processors of two different kinds
+costs a few milliseconds. A few milliseconds against a simulation whose whole
+arithmetic is a fraction of one.
+
+**The cap is not a heuristic and carries no tuned constant.**
+`num_threads(min(batch * outputChannels, omp_get_max_threads()))` with
+`if (teamSize > 1)`. It is the number of independent output tiles the instruction
+has, which is a fact about the instruction rather than about the machine, and a
+threshold measured in milliseconds on a 14700K would have been the opposite kind
+of thing. Neither clause can move a bit: neither changes which iterations exist,
+what any one of them computes, or the order of the reductions inside it.
+
+With the cap:
+
+```
+model                  1t s     2t s     4t s     8t s    28t s   x28   bytes
+conv_bn_relu_stack   0.0035   0.0023   0.0017   0.0015   0.0015  2.36   equal
+depthwise_separable  0.0016   0.0014   0.0013   0.0015   0.0019  0.86   equal
+dilated_stack        0.0029   0.0021   0.0016   0.0014   0.0014  2.07   equal
+inception_block      0.0034   0.0023   0.0021   0.0020   0.0019  1.77   equal
+lenet                0.0233   0.0139   0.0096   0.0072   0.0074  3.17   equal
+lenet_batched        0.0902   0.0511   0.0322   0.0251   0.0319  2.83   equal
+resnet_block         0.0045   0.0028   0.0021   0.0018   0.0017  2.70   equal
+```
+
+**0.86 to 3.17 times, geometric mean 2.10**, and byte identical output at every
+thread count on every model. `depthwise_separable` is still below one and it is
+reported rather than tuned away: its whole simulation is 12800 multiply
+accumulates inside a process that takes longer than that to start, and a work
+threshold that fixed a three tenths of a millisecond row would be the tuned
+constant the cap exists to avoid.
+
+### Why this phase was the one that found it
+
+Because it is the first phase whose job was to **measure** the parallelism rather
+than to have it. P7 wrote the pragma and the test, both correct. P8 through P11
+ran the test, which passed. Nothing between P7 and P12 had a reason to ask how
+fast the simulator was, so nothing did, so the one observable that would have
+disagreed was never observed.
+
+The lesson goes on the pile with D-0040 through D-0043, and it is the same shape
+a fourth time: **a value arrived through a channel that loses information, and
+the code treated it as though it had not.** Here the value is "was this compiled
+with OpenMP", the channel is CMake's distinction between a target and the object
+library it is built from, and the two readers of that value never compared notes.
+What is new is where it happened. The previous four were in scripts and tests.
+This one was in the build, which is the layer everything else takes on trust, and
+the only reason it surfaced at all is that somebody timed something.
+
+## 2026-09-04 Phase P12: the allocator's growth, fitted, at the sizes the gate names
+
+### The axis was wrong and the numbers were right
+
+Section 13.1 asks for a compile time benchmark "at sizes 500, 1000, 2000, and
+5000", and the P12 gate repeats it as "500, 1000, 2000, and 5000 **buffers**".
+`experiments/compile_time_benchmark.py` has been committed since P5 and read its
+`--sizes` as operation counts. The chain it generates allocates one buffer per
+two operations, so the committed P5 curve was measured at **249, 499, 999 and
+2499 buffers** under a table whose first column said 500, 1000, 2000 and 5000.
+
+The P5 measurement was not wrong about anything it claimed; the exponent it
+reported is the exponent of the curve it measured, and a growth exponent is a
+slope, so relabelling the axis by a constant factor of two does not move it. What
+was wrong was the label. `--size-unit operations` keeps the P5 table reproducible
+from this script, because a correction that made an earlier measurement
+irreproducible would be a second fault rather than a fix for the first.
+
+### The curve, at the gate's sizes
+
+```
+  size     ops   buffers     pass s    total s     step   residual
+   500    1002       500     0.0047     0.0209             +0.0377
+  1000    2002      1000     0.0094     0.0370     1.00    -0.0343
+  2000    4002      2000     0.0202     0.0696     1.10    -0.0344
+  5000   10002      5000     0.0593     0.1750     1.18    +0.0311
+```
+
+Best of five per size, on the 14700K under WSL2, in an assertions enabled build.
+
+- **Fitted growth exponent 1.1038**, r squared 0.9987, worst residual +0.0377 in
+  log space.
+- **References at these exact sizes**: n is 1.0000, n log n is **1.1365**, n
+  squared is 2.0000.
+- **The ceiling is 1.5683**, the midpoint between the n log n reference and the
+  quadratic one.
+
+**The fit is below the n log n reference**, which is the strongest form of "met"
+this clause has: O is an upper bound, so growing more slowly than n log n is not
+a failure, and the check is one sided for that reason.
+
+### What a fitted exponent is worth here, and what it is not
+
+Three things about that number, and the third is the one a reader should hold on
+to.
+
+**It is fitted over the whole curve rather than stepped between adjacent rows.**
+A step is one number out of two measurements and inherits both of their noise.
+The steps above rise from 1.00 to 1.18 and the fit is 1.10 with a residual
+pattern that is convex, low in the middle and high at the ends, which is the
+shape a genuinely superlinear term leaves. The residuals are printed per point
+because an r squared of 0.9987 would otherwise let a reader believe the curve is
+a power law, and it is not exactly one.
+
+**"Consistent with O(n log n)" is a comparison against arithmetic done at these
+sizes.** The effective exponent of `n log n` is not a constant: it is 1.1365 over
+500 to 5000 and smaller a decade up, and a check written against a figure from
+the wrong decade is a check written against nothing. The three references are
+computed by the same least squares over the same four sizes, and the base of the
+logarithm does not matter, because changing it multiplies every value by a
+constant and moves the intercept rather than the slope. Both are asserted in
+`test/Python/test_compile_time_benchmark.py`.
+
+**A whole pass measurement cannot isolate the sweep line, and this one does not
+claim to.** `NPUAllocateScratchpad` is liveness, then the sweep line, then offset
+assignment, and P5 established that the linear liveness term dominates at every
+size measured while the genuinely quadratic offset assignment scan does not. So
+the exponent above is the pass' exponent. What it can do is exactly what Section
+13.1 asks a curve at four sizes to do: separate the sweep line from the naive
+nested formulation, which is O(instructions times buffers) recomputed inside the
+spill loop and would sit near 2. It does that with 0.46 of margin, which is why
+the ceiling is placed between the two hypotheses and not at either of them. The
+sweep line's **correctness** is held elsewhere, by the property test in
+`AllocatorTest.cpp` against a brute force recomputation; between the two the
+claim is covered from both directions, and neither one of them alone is a proof
+of a complexity class and this file does not call either one that.
+
+### The suite, re-measured on a quiet machine
+
+**175 cells, 3.43 minutes, 1.17 seconds per cell**, against a budget of 90
+minutes. It was 1.27 seconds at P11 with the same external tools running inside
+the same suite, so the factor in hand went from twenty four to twenty six. The
+difference is the kernel and nothing else.
+
+**Serialised, with nothing else running, and that is a requirement rather than
+tidiness.** P11's handoff recorded that its first re-record died at cell 74 on
+the `--mlir-timing` cross check with a gap of 0.2157 ms against a bound of 0.2000
+while SCALE-Sim was running in another process, and that D-0043's bound is
+principled **and** load sensitive. This phase makes the machine busier by design,
+so every measurement run here was taken alone.
+
+**The worst gap this run was 0.1856 ms against the 0.2000 bound.** That is inside
+it and it is closer to it than P11's two quiet runs, which measured 0.1577 and
+0.1177. One run is not a trend and this is not being reported as one; it is being
+reported because a margin that narrowed from 0.042 ms to 0.014 ms while this
+phase was putting twenty eight threads into the same machine is the kind of
+coincidence that should be written down before somebody meets it as a red run.
+The compile and the simulation are separate processes and run in sequence within
+a cell, so there is no mechanism here that ought to couple them; that is an
+argument and not a measurement, and P13 has the next data point.
+
+### The inertness proof
+
+**A diff of files, not a claim about them.** The 175 committed cells were copied
+before the run and compared field by field after it.
+
+```
+cells compared:  175
+leaf fields:     95614
+
+moved, and permitted to:
+  ci95_high_ms   1813    ci95_low_ms   1813
+  iqr_ms         1813    median_ms     1813
+  content_hash    175    git_sha        175    timestamp   175
+
+MOVED AND FORBIDDEN: 0
+```
+
+Seven field names moved out of 95614 leaves, and every one is a wall clock or a
+provenance record. The four `_ms` fields are the timing object Section 16.1
+requires, on 1813 pass instances. `n_trials`, in the same object, did not move.
+`content_hash` is a sha256 over the compiler sources and the cost model
+constants, so it **had** to move, and it moving while everything underneath it
+holds still is the claim rather than a counterexample to it.
+
+Nothing else moved. Not a cycle count, a DRAM byte read or written, a scratchpad
+element count, an instruction count, a MAC count, an effective MAC count, a
+utilization, a delta, an overlap fraction, an energy figure, an area figure, a
+roofline verdict or a SCALE-Sim cycle. **All 21 golden tensors are byte
+identical**, and `git status` on `test/baseline/golden` reporting nothing is the
+shortest way to see it.
+
+**That claim would have been true at P11 for an uninteresting reason.** The
+kernel was serial before and after, so a comparison across P11's re-record was
+comparing two serial runs, in the same way the determinism test was. It is worth
+something here because the convolution really did go parallel between the
+recorded numbers and these ones. D-0047 is what makes the P12 inertness statement
+a measurement instead of a tautology.
+
+The three external tools were re-run against the new cells before the baseline
+was recorded and none of them moved: the roofline still finds every cell at or
+above its bound with the same tightest layer at 0.0006 headroom, SCALE-Sim still
+reports -87.14 percent as its worst whole model divergence at coverage 0.711, and
+Accelergy still reports 49.2860 pJ per MAC.
+
+### Proof of failure, for the two new gates
+
+Both were driven to their failure branches rather than argued about.
+
+**The reduction moved into the parallel region**, which is the fault Section 10.3
+forbids by name. The outer pragma was removed and
+`#pragma omp parallel for reduction(+ : accumulator)` put on the input channel
+loop, which is the shortest way to write the mistake somebody would actually
+make. `experiments/kernel_threads.py` reported **DIFFER on all seven models** and
+exited **1**; `Determinism.OneThreadAndMaxThreadsAgreeBitwise` went red in the
+same tree. Both gates see it, which is what a second gate is for. Restored, tree
+clean.
+
+**`compile_time_benchmark.py --check`** exits 1 with one size, naming what to do
+about it, and 1 when the fit reaches the ceiling. The ceiling branch is driven in
+`test/Python/test_compile_time_benchmark.py` rather than on the command line,
+because making the real allocator quadratic is not a fault injection, it is a
+different program; the test hands the same function a synthetic quadratic curve
+and asserts it fails, and a synthetic n log n curve and asserts it passes. That
+test runs in every CI job that runs pytest, so the **discrimination** is checked
+everywhere even though the **measurement** is not.
+
+### No CI step was activated, and the trigger is written down
+
+The growth benchmark is a wall clock measurement and the runner pool is
+heterogeneous. A fitted exponent is a slope within one run on one host, so it is
+not the forbidden comparison of a wall clock across hosts, and gating it in CI
+would be defensible. It is still not being switched on here, for two reasons and
+against one.
+
+- The P12 gate asks for the exponent to be **reported** and consistent, and it is
+  reported, with `--check` runnable and run, in the verification matrix.
+- A four vCPU shared runner measuring a five millisecond pass at the smallest
+  size has a noise floor this developer machine does not, and a gate that goes
+  red for a reason nobody can act on is worse than no gate. Section 19.0's rule
+  is that silence and success must not look alike; a flaky gate breaks the same
+  rule from the other side, because a red nobody believes is a red nobody reads.
+- Against: P13 adds tiling, and the P5 entry already predicted that "if P13's
+  tiling pass makes functions an order of magnitude longer, this benchmark is
+  already committed and will say so".
+
+**The trigger is P13.** When tiling lands and the functions get longer, the
+crossover with the quadratic offset assignment scan moves toward the measured
+range, and that is the phase where a gate on this curve starts being able to
+catch something. Switch it on then, under `pull_request` and `push` to `phase/**`
+like every other step, and rehearse it red first by asking for `--sizes 500`,
+which is the branch with no fit.
+
+`experiments/kernel_threads.py` is not a CI step either, and the reason is
+different: its gate is the byte comparison, and the byte comparison already runs
+in CI as `Determinism.OneThreadAndMaxThreadsAgreeBitwise`, in process, on a
+synthetic convolution, **at full strength for the first time** now that the
+kernels compile with OpenMP. The script's contribution over that is the seven
+real models, which is worth a nightly rather than a per push step. Trigger: the
+first phase that changes the convolution kernel's loop nest, which is P13's
+tiling or P14's integer kernels.

@@ -34,14 +34,27 @@
 // restructuring is explicitly rejected: it would move every golden for a host
 // speedup.
 //
+// **Whether that parallel region exists in a given build is a question about
+// this file's compile line, and the answer is `kernelsUseOpenMP()` at the
+// bottom.** It was written at P7 and first compiled at P12: the OpenMP usage
+// requirement had been attached to the `NPUSimulator` target and not to the
+// object library these sources compile in, so `-fopenmp` reached every consumer
+// of the library and never reached the library. D-0047, and
+// `lib/Simulator/CMakeLists.txt` carries the fix and the reason.
+//
 //===----------------------------------------------------------------------===//
 
 #include "Kernels.h"
 
 #include "NPU/Simulator/CostModel.h"
+#include "NPU/Simulator/Simulator.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -724,8 +737,31 @@ KernelCost kernelCONV2D(Machine &machine, const Instruction &instruction) {
   // and no atomics, and the reduction loops below stay strictly sequential and
   // in their original order because the accumulation order determines the last
   // bits and the golden files depend on it.
+  //
+  // **The team is capped at the number of output tiles, and that cap carries no
+  // tuned constant.** The collapsed loop has exactly `batch * outputChannels`
+  // iterations, so a team larger than that has threads with no iteration to
+  // run. They are not free: every one of them still arrives at the region's
+  // entry and its closing barrier, and on a host with many logical processors
+  // that is most of what a small convolution's parallel region costs. Measured
+  // at P12 on 28 logical processors, an uncapped team made five of the seven
+  // suite models **slower than serial**, by as much as seven times on
+  // `depthwise_separable`, whose two convolutions have eight and sixteen output
+  // channels at batch 1 and were being handed twenty eight threads each.
+  //
+  // `if (teamSize > 1)` is the same argument at its limit: a convolution with
+  // one output tile has no parallelism to find and forming a team to discover
+  // that costs more than the tile.
+  //
+  // **Neither clause can move a bit.** They change how many threads run the
+  // iterations and never which iterations exist, what any one of them computes,
+  // or the order of the reductions inside it. That is the whole reason a cap is
+  // an acceptable answer here and an im2col restructuring is not.
 #ifdef _OPENMP
-#pragma omp parallel for collapse(2)
+  const int64_t outputTiles = batch * outputChannels;
+  const int teamSize = static_cast<int>(std::max<int64_t>(
+      1, std::min<int64_t>(outputTiles, omp_get_max_threads())));
+#pragma omp parallel for collapse(2) num_threads(teamSize) if (teamSize > 1)
 #endif
   for (int64_t n = 0; n < batch; ++n) {
     for (int64_t f = 0; f < outputChannels; ++f) {
@@ -974,4 +1010,29 @@ Port portFor(Opcode opcode) {
 }
 
 } // namespace detail
+
+//===----------------------------------------------------------------------===//
+// What this translation unit was compiled with.
+//===----------------------------------------------------------------------===//
+//
+// Both answers are read here and nowhere else, which is the point. Every other
+// file in this project that asks about OpenMP is asking its own preprocessor,
+// and between P7 and P12 its own preprocessor and this one disagreed. D-0047.
+
+bool kernelsUseOpenMP() {
+#ifdef _OPENMP
+  return true;
+#else
+  return false;
+#endif
+}
+
+int kernelThreadCount() {
+#ifdef _OPENMP
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
 } // namespace nbin

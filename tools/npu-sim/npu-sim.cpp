@@ -73,6 +73,22 @@ cl::opt<bool> singlePort(
 cl::opt<bool> quiet("quiet", cl::desc("Do not print the statistics"),
                     cl::init(false));
 
+// D-0047's answer, asked from outside the process.
+//
+// Whether the convolution kernel of Section 10.3 has a parallel region in it is
+// a property of one translation unit's compile line, and between P7 and P12
+// this project had no way to ask that question that did not answer it from the
+// asker's own preprocessor. Every asker had OpenMP and the kernels did not.
+// `nbin::kernelsUseOpenMP` is defined in `Kernels.cpp` and this flag is what
+// puts it on a command line, so a benchmark harness, a CI step or a person
+// wondering why a simulation is slow gets the kernels' answer rather than their
+// own. It takes no program and runs nothing.
+cl::opt<bool> kernelInfo(
+    "kernel-info",
+    cl::desc("Print whether this build's kernels have OpenMP, and the thread "
+             "count they would use, then exit"),
+    cl::init(false));
+
 // `--json-stats` and not `--stats-json`, which is the name this flag wanted and
 // cannot have: LLVM's Support library registers `--stats-json` itself, for the
 // `llvm::Statistic` counters, and every tool that links Support inherits it. The
@@ -149,6 +165,16 @@ json::Object statsAsJson(const nbin::Stats &stats, bool reachedHalt,
 int main(int argc, char **argv) {
   InitLLVM lifetime(argc, argv);
   cl::ParseCommandLineOptions(argc, argv, "npu-sim: run a .nbin binary\n");
+
+  // Before the program is read, because it needs no program and because a
+  // person asking this question is usually asking it about a build rather than
+  // about a run.
+  if (kernelInfo) {
+    outs() << "kernel openmp: " << (nbin::kernelsUseOpenMP() ? "yes" : "no")
+           << "\n";
+    outs() << "kernel threads: " << nbin::kernelThreadCount() << "\n";
+    return 0;
+  }
 
   ErrorOr<std::unique_ptr<MemoryBuffer>> buffer =
       inputFilename == "-" ? MemoryBuffer::getSTDIN()

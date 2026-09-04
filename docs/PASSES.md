@@ -1308,5 +1308,6 @@ Section 12's negative test rule.
 | `test/Dialect/NPUISA/alloc-multiblock.mlir` | the multi block, unmeasurable size and malformed budget refusals |
 | `test/Dialect/NPUISA/alloc-unknown-option.mlir` | all three option refusals at once |
 | `unittests/Dialect/NPUISA/AllocatorTest.cpp` | Section 17.2's property test, the placement invariant over the same randomized sets, and every tie break |
-| `experiments/compile_time_benchmark.py` | the growth curve at 500, 1000, 2000 and 5000 operations |
+| `experiments/compile_time_benchmark.py` | the growth curve at 500, 1000, 2000 and 5000 **buffers**, and the fitted exponent `--check` gates on. `--size-unit operations` is the axis P5 measured, kept so that entry stays reproducible |
+| `test/Python/test_compile_time_benchmark.py` | the fit and the ceiling, against curves whose exponent is known before the code runs: a pure power law is recovered exactly, an n log n curve passes, and a quadratic one fails |
 | `experiments/allocator_fragmentation.py` | the fragmentation ratio per model under both strategies |

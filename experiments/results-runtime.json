@@ -3,8 +3,8 @@
   "cells_measured": 175,
   "cells_total": 175,
   "run_order_seed": 20260901,
-  "seconds_per_cell": 1.266979192828585,
-  "suite_seconds": 221.72135874500236,
-  "timestamp": "2026-09-02T21:25:38.591023+00:00",
-  "worst_timing_gap_ms": 0.11769400000000002
+  "seconds_per_cell": 1.1746184769771442,
+  "suite_seconds": 205.55823347100022,
+  "timestamp": "2026-09-04T00:58:47.531706+00:00",
+  "worst_timing_gap_ms": 0.185556
 }

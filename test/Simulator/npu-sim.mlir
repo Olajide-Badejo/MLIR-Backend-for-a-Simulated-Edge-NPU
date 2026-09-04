@@ -22,6 +22,12 @@
 //             numbers when the counts disagree.
 //   SIZE      the input file's size against the declared region, likewise.
 //   OUTCOUNT  one --output per declared region, for the same reason.
+//   KERNEL    --kernel-info answers D-0047 from outside the process, needs no
+//             program, and exits 0. The value is not asserted, because whether
+//             a build has OpenMP is a property of the machine it was configured
+//             on and CI runs both shapes; what is asserted is that the tool
+//             answers in the two words a caller parses, so a rename is caught
+//             here rather than by a harness quietly reading "no" forever.
 //
 // And the claim that needs no CHECK line to state but does need one to prove:
 // **all** outputs are written, not just the first. The two output files below
@@ -49,6 +55,10 @@
 
 // RUN: not npu-sim %t.nbin --input %t.in --output %t.out0 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=OUTCOUNT
+
+// No program argument at all, which is the point: it reports a property of the
+// build rather than of a run.
+// RUN: npu-sim --kernel-info | FileCheck %s --check-prefix=KERNEL
 
 // STATS:      instructions: 6
 // STATS-NEXT: cycles:
@@ -84,6 +94,9 @@
 
 // OUTCOUNT: error
 // OUTCOUNT-SAME: declares 2 output regions and 1 --output arguments were given
+
+// KERNEL:      kernel openmp: {{yes|no}}
+// KERNEL-NEXT: kernel threads: {{[0-9]+}}
 
 func.func @two_outputs(%x: tensor<2x4x4xf32>)
     -> (tensor<2x4x4xf32>, tensor<2x4x4xf32>) {

@@ -2659,3 +2659,105 @@ dependent code to that tree invalidates the measurement as surely as it would
 invalidate a recorded cycle count. **The prose beside a threshold is part of the
 threshold**, and when it claims a property the code no longer has it is wrong in
 the way a stale comment is never merely cosmetic.
+
+### D-0047 the convolution kernel was never compiled with OpenMP, and the test that proves it is bitwise stable was comparing two serial runs
+
+- **Found:** 2026-09-04, phase P12, by measuring a speedup that was not there.
+  The first `experiments/kernel_threads.py` run reported 0.98 to 1.03 times at
+  twenty eight threads against one, on all seven models. The models are small
+  and that is exactly what a small model looks like, which is why the next step
+  was `nm` rather than a shrug.
+- **Status:** resolved 2026-09-04.
+- **Reproduce**, at any commit from `078b78d` to `d67bb3c`:
+
+  ```
+  $ grep -A4 'Kernels.cpp.o: CXX' build/build.ninja | grep -c fopenmp
+  0
+  $ nm -C build/lib/Simulator/CMakeFiles/obj.NPUSimulator.dir/Kernels.cpp.o \
+      | grep -ci 'GOMP\|omp_'
+  0
+  $ ldd build/bin/npu-sim | grep -c gomp
+  0
+  $ cmake -S . -B build | grep OpenMP
+  -- OpenMP: found 4.5. The convolution kernel parallelises over the batch and
+     output channel dimensions; the reductions stay sequential ...
+  $ ./build/bin/NPUSimulatorTests --gtest_filter='Determinism*'
+  [          ] OpenMP is on and reports 28 threads available.
+  [       OK ] Determinism.OneThreadAndMaxThreadsAgreeBitwise
+  ```
+
+  Five lines saying the kernel is parallel, and an object file with no OpenMP
+  in it.
+
+- **What was wrong.** `lib/Simulator/CMakeLists.txt` wired OpenMP with one line,
+  `target_link_libraries(NPUSimulator PUBLIC OpenMP::OpenMP_CXX)`.
+  `add_mlir_library` compiles the four sources of `lib/Simulator` in an object
+  library named `obj.NPUSimulator` and then assembles `NPUSimulator` from the
+  objects, so a usage requirement attached to `NPUSimulator` reaches **everything
+  that links it** and does not reach **what it is made of**. The imported
+  target's `-fopenmp` therefore landed on every consumer and on none of the
+  kernels. `#ifdef _OPENMP` around the convolution's `parallel for` was false in
+  every build in every environment from P7 to P12.
+
+- **The half that makes it a defect worth an entry rather than a missing flag.**
+  `unittests/Simulator/DeterminismTest.cpp` is Section 10.3's assertion that one
+  thread and the maximum produce bitwise equal buffers. It links `NPUSimulator`,
+  so it **did** receive `-fopenmp`, so its own `_OPENMP` was defined, so it took
+  the branch that prints a thread count and calls `omp_set_num_threads(1)` and
+  then `omp_set_num_threads(28)`. Both calls succeeded. Both runs were single
+  threaded, because the kernel between them had no parallel region. The test
+  passed for three phases while asserting nothing, and its comment header said in
+  as many words that a test which silently becomes vacuous is worse than no test.
+
+  Nothing local could see it. `_OPENMP` is a property of a translation unit, and
+  every translation unit that asked the question was answering it correctly about
+  itself. The two that disagreed never compared answers.
+
+- **This is the fourth appearance of P10's shape and the first one inside the
+  build.** D-0040 through D-0043 were each a value that arrived through a channel
+  which loses information, treated as though it had not. Here the lost
+  information is *which target a compile option reached*, the channel is CMake's
+  distinction between a target and the object library it is built from, and the
+  code that treated it as exact was a `#ifdef` in one file and an
+  `omp_get_max_threads()` in another. `docs/PHASE_STATE.md` at P11 wrote that the
+  determinism test "asserts at full strength everywhere now". It did not, and it
+  never had.
+
+- **The fix, in three parts, and the third is the one that matters.**
+
+  1. `add_compile_options` at directory scope in `lib/Simulator/CMakeLists.txt`,
+     which is where `-Werror=switch` already lives for the same reason: a
+     directory scope option applies to every target created after it, including
+     the object library. The `target_link_libraries` line stays, because putting
+     the runtime on a consumer's link line is a different job and this project
+     needed both all along.
+  2. `nbin::kernelsUseOpenMP()` and `nbin::kernelThreadCount()`, defined in
+     `Kernels.cpp` and declared in `NPU/Simulator/Simulator.h`. They answer for
+     the translation unit that has the parallel region in it, which is the one
+     question no caller could previously ask.
+  3. `Determinism.TheKernelsAgreeWithThisTestAboutOpenMP`, which compares this
+     test's `_OPENMP` against the kernels' answer and fails when they differ. It
+     is red at every commit from P7 to P12 and green after the CMake fix, and it
+     is the assertion that makes the two beneath it mean something.
+     `npu-sim --kernel-info` is the same answer on a command line, so a harness
+     or a person can ask it without linking anything.
+
+- **What it did not move, which is the P12 claim.** With the parallel region
+  compiled for the first time, `scripts/regression-baseline.sh --check` reports
+  no drift across 42 cells and 21 golden tensors: not one cycle count, DRAM byte
+  count, instruction count or golden byte. That is the inertness the phase is
+  required to have, and it is now evidence rather than an expectation, because
+  the thing it is evidence about finally happens.
+
+- **A second, smaller fault the fix exposed**, and it is recorded here rather
+  than as its own entry because it did not exist until the first one was fixed:
+  an uncapped team made five of the seven suite models **slower than serial** at
+  twenty eight threads, by as much as seven times on `depthwise_separable`, whose
+  convolutions have eight and sixteen output channels and were being handed
+  twenty eight threads each. The collapsed loop has `batch * outputChannels`
+  iterations, so every thread past that count has no iteration to run and still
+  pays for the region's entry and its closing barrier.
+  `num_threads(min(tiles, max))` with `if (teamSize > 1)` is the fix and it
+  carries no tuned constant: it is the number of independent output tiles the
+  instruction has. Neither clause can move a bit, because neither changes which
+  iterations exist, what one computes, or the order of the reductions inside it.
