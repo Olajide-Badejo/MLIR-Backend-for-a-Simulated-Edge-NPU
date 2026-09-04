@@ -234,19 +234,40 @@ function's arguments, the npuisa.const results, and the allocator's
 npuisa.spill_slot allocations, and nothing else may live off chip
 ```
 
-**A sub region of an argument is a DRAM value the encoder cannot name.** Whether
-that is a small change to how an address is resolved, or a change to what the
-binary format can express, is the question that has to be answered **before** the
-lowering patterns are written, because the answer decides whether the per slice
-convention is available at all. `npuisa.spill_slot` is the precedent to read
-first: it is the existing case of a DRAM value that does not exist until after
-lowering, and whatever registers it in the map is the mechanism a tile slice
-would want. **If it turns out to need a format change, that collides with P14's
-gate, which requires `Program::kVersion` unmoved**, and the decision is above a
-phase.
+**That question is now answered and the answer is the second one.** The address
+lookup is the small part and it is not the blocker. **The binary format cannot
+express a buffer written in pieces at all**, which is what a tiled program does
+by construction, and the full account with all four refusals is **D-0050**.
 
-**Nothing of the three is started**, and all three are described here rather than
-left for the next session to rediscover by running the same three commands.
+Three facts, in the order they bite:
+
+- `Operand` already carries `address`, `shape` **and a stride per dimension**, so
+  a DRAM sub region is `base + byteOffset` with the parent's strides and needs no
+  new field. Teaching `dramAddressOf` the view chain walk that
+  `scratchpadAddressOf` already does through `npuisa::computeBufferRange` is the
+  authorised change, and it is necessary but nowhere near sufficient.
+- `Instruction` has `resultShape` and **no `resultStrides`**. `setResult` builds a
+  full `Operand`, strides included, and copies four of its five fields. Every
+  spatially tiled convolution needs the fifth.
+- **The validation model assumes a buffer is written whole by one instruction.**
+  ISA checks 8 and 9, `operand-defined` and `operand-extent`, ask whether a
+  consumer's need fits the count written to the buffer it reads. **A contiguous
+  channel tile is refused by that rule too**, which is the measurement that
+  settles the scope: the blocker is the write model and not the layout.
+
+**P13 stopped here rather than proceeding**, because the fix needs a
+`Program::kVersion` bump: it reseeds the fuzz corpus, re-records the binary
+stability test, and moves the baseline P14's gate is written around, in the phase
+immediately before it. Checks 8 and 9 are **declared** ISA checks besides,
+mirrored into `docs/ISA_MANUAL.md` and `docs/ISA_OPCODES.json` and kept in step
+by `check-isa-staleness.sh`, so changing what they mean changes the declared ISA
+rather than an implementation detail. That is an owner decision rather than a
+phase's. **Nothing miscompiles in the meantime**: the encoder's validator refuses
+and says so.
+
+**The lowering patterns were deliberately not written.** A compiler that emits
+programs its own encoder refuses is a worse state than one that does not emit
+them, and the tiling pass being in no `-O` level already keeps the suite green.
 
 ## The numbers the next session needs and should not re-derive
 

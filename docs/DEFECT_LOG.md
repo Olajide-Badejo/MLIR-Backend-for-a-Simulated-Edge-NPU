@@ -28,6 +28,12 @@ the fix is a change to a gate and a red at a gate is not answered by
 widening it. The entry carries the reproduction and the proposed
 precondition.
 
+**D-0050**, the binary format cannot express a buffer written in pieces, so a
+tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
+`Program::kVersion` bump, which P14's gate forbids by name and which the
+format's own design claim says should never be needed. An owner level conflict
+between three documents rather than a phase's call.
+
 ## Resolved
 
 ### D-0001 lit exits nonzero on a genuinely empty test suite
@@ -3018,3 +3024,115 @@ the way a stale comment is never merely cosmetic.
   gone before anybody read it and the session recorded it as unexplained.
   Capturing the whole failure is what turned a flake into an entry, and the
   cost of not doing it the first time was a second run of everything.
+
+### D-0050 the binary format cannot express a buffer written in pieces, so a tiled program cannot be encoded
+
+- **Found:** 2026-09-05, phase P13, by trying to encode a tiled program rather
+  than by reading the format. The four things it took are below and each was a
+  separate refusal.
+- **Status:** **open, and escalated rather than fixed.** The fix needs a
+  `Program::kVersion` bump, which reseeds the fuzz corpus and re-records the
+  binary stability test, in the phase immediately before the one whose gate is
+  written around that constant not moving. That makes it an owner decision
+  rather than a phase's call, and P13 stopped at it deliberately.
+
+- **Reproduce, and the order matters because each refusal hides the next.**
+
+  1. A `memref.subview` of a DRAM argument, as the source of a `dma_load`,
+     **parses, verifies and allocates**. `npu-translate` then refuses it:
+
+     ```
+     error: this DRAM buffer has no address in the DRAM map. The map holds the
+     function's arguments, the npuisa.const results, and the allocator's
+     npuisa.spill_slot allocations, and nothing else may live off chip
+     ```
+
+     That one is small and is not the problem. `dramAddressOf` is a map lookup
+     while `scratchpadAddressOf` walks the view chain through
+     `npuisa::computeBufferRange` and returns a base and an offset. Teaching the
+     DRAM side the same walk is the change that was authorised, and it needs no
+     format change: `Operand` already carries `address`, `shape` **and a stride
+     per dimension**, so a sub region is `base + byteOffset` with the parent's
+     strides, and `addressedByteSpan` already computes the span of a
+     non contiguous view.
+
+  2. **A tile writes into a sub region of a larger buffer, and the result side
+     of an instruction has no strides.** `Instruction` carries `resultSpace`,
+     `resultElementType`, `resultAddress` and `resultShape`, and no
+     `resultStrides`. `FunctionEncoder::setResult` builds a full `Operand`,
+     strides included, and then copies four of its five fields. So a strided
+     write is not representable, and every spatially tiled convolution needs
+     one.
+
+  3. **Deeper, and this is the finding: the validation model assumes a buffer is
+     written whole by one instruction.** ISA checks 8 and 9,
+     `operand-defined` and `operand-extent`, ask whether a consumer's need fits
+     "the element count actually written to the buffer it reads". A tiled
+     program writes one buffer in pieces by construction, so the count at the
+     base address is one tile's and the consumer wants all of them:
+
+     ```
+     error: the encoder produced a program that does not validate:
+     operand-extent: operand 0 reads 2048 bytes from 0 and the buffer written
+     there ends at 512 (instruction 3)
+     ```
+
+  4. **It is not fixed by strides alone**, which is the measurement that settles
+     the scope. Channel tiling at batch 1 produces a **contiguous** sub region,
+     because the channel axis is dimension 1 and everything under it is whole,
+     so the strides a tile carries differ from the contiguous ones only on a
+     dimension of extent one. That case needs no `resultStrides` at all, and it
+     is refused anyway, by the same check, at 1024 bytes written against 2048
+     read. **So the blocking constraint is the write model and not the layout.**
+
+- **What is right about the current behaviour, and it is worth saying.** Nothing
+  miscompiles. The encoder's own validator catches the inconsistency and
+  `npu-translate` prints `this is a defect in the encoder rather than in the
+  input, and no file has been written`. A format that could not express this and
+  emitted a wrong program quietly would be far worse than one that refuses.
+
+- **Why it is an owner level conflict rather than a phase's decision.** Three
+  documents disagree once this is known.
+
+  - **The format's own claim is narrower than it first looks, and it is quoted
+    rather than paraphrased here, because overstating a conflict is the exact
+    mistake D-0048 was about.** `Program.h` says the element types are present
+    from version one "together with `requantMultiplier` and `requantShift`, and
+    those specific fields **and nothing broader** are what let Phase P14 land
+    without bumping `kVersion`". So the format does **not** promise that version
+    1 carries every field any later phase might need. It promises P14's fields
+    specifically, and about those it is right.
+  - **P14's gate requires `Program::kVersion` unmoved**, with
+    `test_binary_stability` green to prove it, on the grounds that the
+    requantization fields have been present since version 1. A P13 bump would
+    not contradict that clause, because P14 would still move nothing. What it
+    would do is change the baseline the clause is measured against, and reseed
+    the fuzz corpus and re-record the binary stability test inside a phase whose
+    own gate says the goldens are byte identical.
+  - Checks 8 and 9 are **declared** ISA checks in
+    `include/NPU/Encoding/NPUISADescription.td`, numbered, and mirrored into
+    `docs/ISA_MANUAL.md` and `docs/ISA_OPCODES.json` with
+    `scripts/check-isa-staleness.sh` keeping the three in step. Changing what
+    they mean is changing the declared ISA, not an implementation detail, and
+    the fuzz corpus is seeded against the current one.
+
+- **What a fix would have to be**, recorded so the decision has something
+  concrete to weigh rather than a direction.
+
+  - `resultStrides` on `Instruction`, written and read symmetrically with the
+    operand strides that already exist, and `setResult` keeping the fifth field
+    it currently drops.
+  - `operand-defined` and `operand-extent` tracking **written ranges** per
+    buffer rather than a single count per address, so that N disjoint writes
+    covering a buffer satisfy a consumer that reads all of it. That is strictly
+    more precise than the present rule and would still refuse the reshape case
+    this file already records, where a short reshape writes fewer elements than
+    its consumer reads.
+  - A `kVersion` bump, the fuzz corpus reseeded, and `test_binary_stability`
+    re-recorded against the new version.
+
+- **What P13 did instead.** Stopped. The tiling pass stays implemented and in no
+  `-O` level, the lowering patterns are not written, and no `kVersion` moved.
+  Writing the patterns without the write model would have produced a compiler
+  that emits programs the encoder refuses, which is a worse state than one that
+  does not emit them.
