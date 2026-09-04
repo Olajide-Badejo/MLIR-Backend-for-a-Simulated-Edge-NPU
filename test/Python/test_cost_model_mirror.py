@@ -166,6 +166,59 @@ def test_the_convolution_charge_composes_from_the_gemm_charge() -> None:
     assert cost_model.conv2d_charge(1, 8, 8, 8, 8, 3, 3, 3, peak).macs == 0
 
 
+def fold_count(reduction: int, columns: int) -> int:
+    """How many weight tiles a ``reduction`` by ``columns`` matrix folds into.
+
+    Written out rather than taken from the model, because a test that asked the
+    model how many folds it thought there were would agree with itself.
+    """
+    dim = cost_model.ARRAY_DIM
+    return -(-reduction // dim) * -(-columns // dim)
+
+
+@pytest.mark.parametrize(
+    "rows,reduction,columns",
+    [
+        (64, 16, 16),
+        (64, 32, 16),
+        (196, 27, 6),
+        (1024, 9, 1),
+        (64, 72, 8),
+        (16, 256, 120),
+    ],
+)
+def test_the_weight_preload_is_charged_once_per_fold(
+    rows: int, reduction: int, columns: int
+) -> None:
+    """The mirror's half of ``CostModel.TheWeightPreloadIsChargedOncePerFold``.
+
+    D-0045 recorded that this charge amortises the sixteen cycle pipeline fill
+    across a whole instruction "no matter how many times the array is actually
+    refilled". It does not, and the arithmetic is short enough to state: at the
+    f32 peak the array's area and the peak are the same number, so
+    ``utilization * peak`` is exactly ``tile_rows * tile_columns`` and a tile's
+    charge reduces to ``rows + WEIGHT_PRELOAD_CYCLES`` whether the tile is whole
+    or partial. With ``folds`` tiles the fill is charged ``folds`` times.
+
+    Both accountings are asserted, not only the right one, because they agree
+    whenever there is exactly one fold and every shape small enough to check by
+    hand has exactly one fold.
+    """
+    peak = cost_model.PEAK_MACS_PER_CYCLE_F32
+    charge = cost_model.gemm_charge(rows, reduction, columns, peak)
+    folds = fold_count(reduction, columns)
+
+    per_fold = folds * (rows + cost_model.WEIGHT_PRELOAD_CYCLES)
+    once_per_instruction = folds * rows + cost_model.WEIGHT_PRELOAD_CYCLES
+
+    assert charge.cycles == pytest.approx(per_fold, rel=1e-12)
+    if folds > 1:
+        assert charge.cycles > once_per_instruction
+        assert charge.cycles - once_per_instruction == pytest.approx(
+            (folds - 1) * cost_model.WEIGHT_PRELOAD_CYCLES, rel=1e-12
+        )
+
+
 @pytest.mark.parametrize(
     "cell",
     [

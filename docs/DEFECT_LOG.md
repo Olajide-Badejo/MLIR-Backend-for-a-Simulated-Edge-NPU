@@ -2401,11 +2401,18 @@ None.
 - **Found:** 2026-09-02, phase P11, by the SCALE-Sim cross validation. This is
   the defect that cross validation exists to find, and it was found by the tool
   rather than by reading the code.
-- **Status:** open, deliberately. **Not fixed in P11**, for the reason Section
-  16.5 states for the same situation with ZigZag: do not silently retune a model
-  against an external tool, because it invalidates every ablation and every
-  number already recorded. P13 revisits the charge with tiling, and this entry is
-  the reproduction it starts from.
+- **Status:** **withdrawn 2026-09-04, phase P13. The cost model does not do what
+  this entry says it does.** The heading and the body below are left exactly as
+  P11 wrote them, because this file is an audit trail and an entry rewritten to
+  be right is an entry that cannot be learned from. What was wrong with it, and
+  how it was found, is **D-0048**. Read that entry with this one.
+
+  It was open deliberately at P11, for the reason Section 16.5 states for the
+  same situation with ZigZag: do not silently retune a model against an external
+  tool, because it invalidates every ablation and every number already recorded.
+  That restraint was right and it is the reason nothing was broken by this. P13
+  was handed the charge to change and measured it before changing it, which is
+  D-0047's practice applied to D-0047's own successor phase.
 - **Reproduce.** `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`:
 
   ```
@@ -2761,3 +2768,159 @@ the way a stale comment is never merely cosmetic.
   carries no tuned constant: it is the number of independent output tiles the
   instruction has. Neither clause can move a bit, because neither changes which
   iterations exist, what one computes, or the order of the reductions inside it.
+
+### D-0048 D-0045 named a mechanism the cost model does not have, and quoted a cell it does not match
+
+- **Found:** 2026-09-04, phase P13, by measuring the charge before changing it.
+  P13's brief was to fix D-0045 under the full declare then re-record
+  governance, on the understanding that fixing it changes the cost model. It
+  does not, because there is nothing there to fix.
+- **Status:** resolved 2026-09-04. **The cost model is unchanged.** What was
+  wrong was an entry in this file and the reading of the divergence
+  decomposition that rested on it. D-0045 is marked withdrawn and its body is
+  left exactly as P11 wrote it.
+
+- **Reproduce, part one: the arithmetic.** D-0045 says `gemmCharge` "computes
+  `delta = m / (m + kWeightPreloadCycles)` **once per instruction** and applies
+  it to every tile, so the sixteen cycle pipeline fill is amortised across the
+  whole layer no matter how many times the array is actually refilled". The
+  premise is true and the conclusion does not follow from it.
+
+  At the f32 peak the array's area and the peak are the same number, which
+  `FrozenConstants.TheCostModelsNumbers` already asserts:
+  `kPeakMacsPerCycleF32 == kArrayDim * kArrayDim`. So for any tile, whole or
+  partial, `utilization * peak` is exactly `tileRows * tileColumns`, and the
+  tile's charge reduces:
+
+  ```
+  tileMacs / (utilization * delta * peak)
+      = (m * rows * columns) / (rows * columns * delta)
+      = m / delta
+      = m + kWeightPreloadCycles
+  ```
+
+  With `T` folds the instruction is charged `T * (m + kWeightPreloadCycles)`.
+  That is the fill counted `T` times, once per refill, which is what a weight
+  stationary array does and what SCALE-Sim charges. Applying the same
+  **fraction** to every tile is not the same thing as counting the fill once,
+  and the entry reasoned from the first to the second.
+
+  Checked numerically as well as symbolically, over every combination of
+  `m` in {1, 2, 7, 16, 64, 196, 1024}, `k` in {1, 8, 16, 17, 72, 144, 256} and
+  `n` in {1, 6, 8, 16, 17, 120, 256}: **343 shapes, and the charge equals the
+  explicit per fold accounting on all 343.** It differs from the once per
+  instruction accounting on every shape with more than one fold, by exactly
+  `(folds - 1) * kWeightPreloadCycles`. On D-0045's own `72 by 8` shape at
+  `m = 64` that is 400 cycles against 336.
+
+- **Reproduce, part two: the cell.** D-0045 names
+  `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`, and quotes
+  SCALE-Sim at **1465 cycles, overall utilization 0.098**. The committed result
+  for that cell and that layer says something else, and has since P11:
+
+  ```
+                                          scalesim   utilization   stalls
+  resnet_block-O2-default-n1  node_conv2d      549        0.2623        0
+  resnet_block-O2-tight-n1    node_conv2d     1465        0.0983      916
+  ```
+
+  **1465 is the same layer at the tight budget, and 1465 minus 916 is 549.** The
+  entry crossed a tight budget SCALE-Sim reading with a default budget
+  analytical one. This project's 478 is the default budget figure, and it is a
+  DMA bound charge rather than a compute one: the layer's
+  `analytical_compute_cycles` is 404, of which 400 is the array and 4 is the
+  issue overhead. So the entry compared 478 DMA bound cycles against 1465
+  cycles of which 916 is SCALE-Sim waiting on memory, and attributed the whole
+  difference to the weight preload.
+
+  The 916 is not an anomaly of one layer. Across the 550 layer rows of the
+  committed suite, **66 carry SCALE-Sim stall cycles and every one of the 66 is
+  a tight budget cell**; the default budget cells carry none at all. Their
+  median divergence is -72.42 percent against +11.59 percent for the 484 that
+  do not stall.
+
+- **Why neither the decomposition nor the headline moved because of it.** The
+  stall term enters `decompose()` twice with opposite signs and cancels.
+  `array_fragmentation` is `analytical_compute - (matched_total - stalls)`, so
+  the stalls enter it positively; `double_buffering` is
+  `max(0, dma - compute) - stalls`, so they enter it negatively. Summed over the
+  suite the stalls are 107206 cycles against terms of plus 442289 and minus
+  435825. That sign structure is a large part of why the two dominant terms are
+  nearly equal and opposite, and it is worth stating beside the near
+  cancellation rather than leaving the reader to find it: the cancellation is
+  partly a property of how the terms are written and not only of the physics.
+  The decomposition still sums to the total with a residual of zero, because it
+  is a partition and the residual is defined as the remainder.
+
+- **What the array fragmentation term actually is, restated.** With the stalls
+  removed on SCALE-Sim's side the term is budget independent, which is what it
+  was designed to be: `resnet_block`'s `node_conv2d` contributes 404 minus 549
+  at both budgets. The two tools do disagree about the compute time of the same
+  36864 multiply accumulates, by a factor of 1.36 on that layer and by as much
+  as 8.65 on `dilated_stack`'s `conv1`. **That disagreement is real and it is
+  unexplained.** What is now known is that the weight preload is not it, because
+  both tools charge it once per fold. Naming the mechanism is left open below
+  rather than guessed at, which is the state D-0045 should have been left in.
+
+- **What was wrong, in one sentence.** An entry stated a mechanism that was
+  inferred from reading one line of the code rather than from evaluating it, and
+  supported it with a pair of numbers taken from two different cells.
+
+- **It is the sixth appearance of P10's shape and the second in a claim rather
+  than in code.** D-0040 through D-0043 were each a value that arrived through a
+  channel which loses information, treated as though it had not. D-0047 was a
+  build property that no reader could observe from inside the process that cared
+  about it, and the test that asserted it had been vacuous for three phases.
+  This one is nearer to D-0047 than to the other four: the claim was checkable
+  from inside the artefact the whole time, in six lines of arithmetic, and
+  nothing ever asked. **The frozen constants test could not have caught it**,
+  and that is the part worth carrying: `FrozenConstants.TheCostModelsNumbers`
+  pins `kWeightPreloadCycles` at 16.0 and says nothing about where the 16 is
+  charged, so the accounting was never under any assertion at all.
+
+- **The fix is a test, in the pattern P9 named.**
+  `CostModel.TheWeightPreloadIsChargedOncePerFold` in
+  `unittests/Simulator/CostModelTest.cpp` and
+  `test_the_weight_preload_is_charged_once_per_fold` in
+  `test/Python/test_cost_model_mirror.py` assert the per fold accounting **and
+  assert it apart from the once per instruction accounting**, which is the half
+  that matters: the two agree whenever there is exactly one fold, and every
+  shape small enough to check by hand has exactly one fold. Both go red if a
+  later phase changes the accounting, whether deliberately or by reverting to
+  the model D-0045 described.
+
+- **Rehearsed by injecting the defect D-0045 claimed was there.** The prediction
+  was written first: pull `delta` out of the per tile divisor and add
+  `kWeightPreloadCycles` once at the end of `gemmCharge`, and the new test goes
+  red on the four multi fold cases while `FrozenConstants.TheCostModelsNumbers`
+  stays **green**, because no constant moved. That is exactly what happened.
+  The test named each shape and printed the difference: 16 cycles on `64 by 32
+  by 16`, 64 on D-0045's `64 by 72 by 8`, and 2032 on the `16 by 256 by 120`
+  tail of a fully connected layer, each of them `(folds - 1) * 16`. The two
+  single fold cases stayed green, which is the reason the discriminating
+  assertion is there. `test_the_mirror_reproduces_the_machines_own_numbers` went
+  red in the same tree, because the machine moved and the Python mirror did not;
+  the mirror's own copy of the per fold assertion stayed green, since it tests
+  the mirror rather than the machine, and the mirror against machine test is
+  what couples the two. Restored, tree clean.
+
+- **What this changes about P13's brief.** P13 was handed a cost model change
+  and the full declare then re-record sequence to run for it. **None of that
+  sequence runs, because no charge moves.** No entry goes in
+  `docs/BREAKING_CHANGES.md`, no baseline is re-recorded for this reason, and
+  the pre-registered band of `p11-scalesim-divergence.md` is not re-versioned
+  against new constants, because the constants and the accounting are both
+  exactly what they were. Section 16.5's rule against retuning a model to match
+  an external tool is what P11 obeyed when it left this open, and it is the same
+  rule that says not to change the charge now on the strength of a diagnosis
+  that does not survive being checked.
+
+- **What is still open, and it is the real question D-0045 was reaching for.**
+  The two tools disagree about the compute time of the same MAC count, widest on
+  `dilated_stack` at 8.65 times and on `inception_block`'s 5 by 5 at 6.14, and
+  in the other direction on the 1 by 1 convolutions where this project charges
+  as much as 4.3 times what SCALE-Sim does. The dilation approximation already
+  has its own term and its own second SCALE-Sim run, so it is accounted for
+  separately and is not the answer. Whatever the mechanism is, it is not the
+  weight preload, and the next phase to look at it should start by measuring the
+  charge rather than by reading it.
