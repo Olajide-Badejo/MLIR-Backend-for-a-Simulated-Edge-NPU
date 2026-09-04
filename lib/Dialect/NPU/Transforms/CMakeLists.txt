@@ -13,6 +13,7 @@ add_mlir_dialect_library(MLIRNPUTransforms
         FoldBatchNorm.cpp
         FuseBias.cpp
         FuseOps.cpp
+        TileToScratchpad.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include/NPU/Dialect/NPU/Transforms
@@ -29,4 +30,15 @@ add_mlir_dialect_library(MLIRNPUTransforms
         MLIRTensorDialect
         MLIRTransforms
         MLIRTransformUtils
+        # -npu-tile-to-scratchpad consumes TilingInterface through the upstream
+        # scf tiling driver and unrolls the loops it generates, and it scores
+        # candidates with the simulator's own cost model rather than a second
+        # copy of it. Both dependencies are the point rather than an accident:
+        # Section 5.5 puts the constants in one home and says the tiling pass is
+        # what scores against it.
+        MLIRSCFDialect
+        MLIRSCFTransforms
+        MLIRSCFUtils
+        MLIRTilingInterface
+        NPUCostModel
         )

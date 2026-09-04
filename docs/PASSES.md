@@ -77,13 +77,45 @@ they land.
 | `-symbol-dce` | O2 | yes | P9 | upstream, wired in |
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
+| `-npu-tile-to-scratchpad` | none yet | yes, when it joins one | P13 | implemented, **not in an `-O` level** |
 
 **Eight ablatable, and Section 12's eleven is that plus three.**
-`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` are
-excluded from P9 by name in the roadmap and arrive at P13; `-npu-calibrate` is
-never in a default `-O` level. Nothing below claims a row for any of them,
-because a level that named a pass nothing implements would give Section 16.2's
-ablation table a row it could not fill.
+`-npu-assign-layout` and `-npu-double-buffer` are excluded from P9 by name in
+the roadmap and are still to come; `-npu-calibrate` is never in a default `-O`
+level. Nothing below claims an ablation row for any of them, because a level
+that named a pass nothing implements would give Section 16.2's ablation table a
+row it could not fill.
+
+**`-npu-tile-to-scratchpad` is implemented and is deliberately in no level yet**,
+which is why the table's last row says so twice. The pass is complete against
+its own contract: it fires only when an operation's working set exceeds the
+budget, it enumerates the mapping space exhaustively and scores on Section 5.5's
+makespan through the simulator's own cost model, it declines rather than
+splitting an fp32 reduction, and no `scf` operation survives it.
+
+**What it is waiting for is the lowering.** `-npu-lower-to-npuisa` converts
+`npu` operations on tensors to `npuisa` instructions on memrefs and has no
+pattern for the `tensor.extract_slice` and `tensor.insert_slice` a tiled program
+is stitched from, so a tiled function does not currently lower at all. Wiring
+this pass into `-O2` before that pattern exists would take every model in the
+suite from compiling to not compiling, at every budget where a working set is
+tight enough to trigger it. The ablatable set therefore stays at eight, the
+suite stays at 175 cells, and Section 2's arithmetic is not re-derived until the
+commit that puts all three P13 passes into a level.
+
+**There is a second thing the lowering has to change and it is the one that
+decides whether tiling is worth anything.** Today the conversion loads each DRAM
+function argument into the scratchpad **once, whole**, which is Section 8's
+boundary invariant as it currently stands. Under that arrangement a tiled
+program's slices are views of buffers that are already resident, so tiling
+splits the compute instruction and leaves the scratchpad footprint exactly where
+it was. For tiling to relieve pressure, the slice of a DRAM value has to be what
+enters the scratchpad, so that a tile's operands are separately allocated and
+live only across that tile and the sweep line sees a peak near one tile's
+working set rather than the whole operation's. That is consistent with Section
+8, which counts one load per DRAM value entering the scratchpad and under tiling
+the values are the slices, but it is a real change to the conversion and to
+`test/Dialect/NPUISA/dma-boundaries.mlir`, and it is the next piece of P13.
 
 ---
 

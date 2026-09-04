@@ -206,4 +206,138 @@ def NPUFuseOps : Pass<"npu-fuse-ops", "::mlir::func::FuncOp"> {
   ];
 }
 
+def NPUTileToScratchpad
+    : Pass<"npu-tile-to-scratchpad", "::mlir::func::FuncOp"> {
+  let summary = "Splits a convolution or matmul whose working set exceeds the "
+                "scratchpad budget.";
+  let description = [{
+    Section 13.2, at `-O2`. Spilling a whole tensor to DRAM and reloading it is
+    one response to a scratchpad that is too small; splitting the operation so
+    each piece fits is the other, and it is the one that matters for an edge
+    accelerator.
+
+    **The working set is input plus weight plus bias plus output bytes at the
+    current element type**, and the pass fires only when that exceeds the
+    budget. An operation that already fits is left alone, which is why an
+    ablation row for this pass is zero on a model whose every instruction fits,
+    and why that zero means something different from a pass that could not
+    match. The count is a statistic rather than an inference.
+
+    **Parallel dimensions only.** The `TilingInterface` implementations decline
+    a tile that splits the input channel, the kernel window or a matmul's inner
+    dimension, because under fp32 addition is not associative and re associating
+    the accumulation moves every golden file. Section 13.2 permits that only
+    behind `allow-reduction-tiling` with a documented deterministic accumulation
+    order and its own golden set, which this pass does not offer. **If a value
+    can only be made to fit by splitting an fp32 reduction, the pass declines
+    with a counted remark and the allocator's spilling remains the fallback.
+    Declining is a result, not a failure.**
+
+    **Tile selection is a search over an explicit mapping, not a greedy rule.**
+    A mapping is the per dimension temporal tile factor for each parallel
+    dimension, the spatial factors the 16 by 16 array imposes, and a loop
+    permutation. With one buffer level and factors restricted to divisors of the
+    problem shape, the space for the layer sizes in this suite is small enough
+    to **enumerate exhaustively** with capacity pruning, which is what makes the
+    result optimal *with respect to the stated cost model* rather than merely
+    good. `strategy=fixed` keeps the halving rule and `strategy=largest-fit`
+    keeps the greedy, as named baselines whose regret against the exhaustive
+    optimum is worth reporting.
+
+    **Candidates are scored on the two port makespan of Section 5.5, not on DRAM
+    bytes**, because under a bandwidth rich, compute poor operating point the
+    byte minimal tiling can be strictly worse. With `T` tiles the achievable
+    total is `T * max(perTileDma, perTileCompute) + min(perTileDma,
+    perTileCompute)`, because the first fill and the last drain cannot overlap.
+    That is Section 5.5's own formula and every constant in it comes from
+    `CostModel.h`, so this project has exactly one cost function rather than a
+    modelled one and a heuristic one that can disagree.
+
+    **Ties break by output channel, then height, then width, then batch.**
+
+    **The loop permutation is recorded and not searched, and the reason is
+    stated rather than left as a gap.** The emitted program has no loops: the
+    ISA has no branches, so the tiles are fully unrolled inside this pass. The
+    makespan above is a function of the per tile costs and the tile count, and
+    every permutation of one factorisation produces the same multiset of tiles,
+    so the cost model as written cannot distinguish two permutations.
+    Enumerating them would be enumerating ties. The mapping records the domain
+    order so the exported form is complete and so a later cost model that does
+    distinguish them has somewhere to put the answer.
+
+    **Double buffering doubles the prefetched operand's share of the working
+    set**, per Section 13.2, because a tiling that fits only without double
+    buffering silently defeats the pass that adds it. `double-buffer` tells the
+    search which world it is sizing for; it inserts no prefetch, which is
+    `-npu-double-buffer`'s job and runs later.
+
+    **The halo boolean is Section 13.3's third arm and its limits are stated
+    here.** `halo=recompute` allows the two output spatial axes to be split, so
+    adjacent tiles re-read the overlapping input rows and the halo is paid for,
+    per tile, in DMA. `halo=cache` refuses to split those axes, so no halo is
+    created and none is re-read; the fit has to come from batch, group and
+    output channel instead, and the pass declines where it cannot.
+
+    **What `halo=cache` is not**, said plainly because the difference decides how
+    the third arm may be reported: it is not a scratchpad resident halo carried
+    from one tile to the next. That would need a transfer whose source is the
+    previous tile's buffer and a cost model term for a partially reused operand,
+    and this machine has neither. The boolean is therefore the choice between
+    **paying** the halo and **not creating** one, which is the cheap version
+    Section 13.3 asks for, and any comparison reported from it says so.
+
+    **`scf` is generated and then fully unrolled here, and the pass asserts none
+    survives.** Tiled loops are emitted with `scf.for` through the upstream
+    `tileUsingSCF`, which is what consuming `TilingInterface` means, and then
+    unrolled completely because the ISA has no branches. An `scf` operation
+    reaching the lowering is a diagnostic naming it, and
+    `test/Transforms/tile-to-scratchpad.mlir` carries the lit assertion the P13
+    gate asks for.
+
+    The chosen mapping is recorded on each tile as `npu.tiling_choice`, so a
+    reader can see what the search decided rather than inferring it from the
+    shapes, and so the cross validation of Section 16.5 can compare cost under
+    the same mapping rather than two totals from two different mappers.
+  }];
+
+  let options = [
+    Option<"budget", "budget", "int64_t", "1048576",
+           "The scratchpad budget in bytes an operation's working set is "
+           "measured against. The default is the allocator's own default, so "
+           "the two passes agree about the machine when neither is told "
+           "otherwise.">,
+    Option<"strategy", "strategy", "std::string", "\"exhaustive\"",
+           "How the tile factors are chosen: 'exhaustive', every combination "
+           "of divisors scored on the Section 5.5 makespan; 'fixed', the "
+           "halving rule; or 'largest-fit', the greedy. The last two are named "
+           "baselines. An unknown value is a diagnostic naming it and listing "
+           "the accepted values.">,
+    Option<"halo", "halo", "std::string", "\"recompute\"",
+           "Section 13.3's third arm: 'recompute' allows the output spatial "
+           "axes to be split and the overlapping input rows to be re-read per "
+           "tile; 'cache' refuses to split them so that no halo is created. An "
+           "unknown value is a diagnostic naming it.">,
+    Option<"doubleBuffer", "double-buffer", "bool", "false",
+           "Size the working set for double buffering, which doubles the "
+           "prefetched operand's share.">,
+  ];
+
+  let statistics = [
+    Statistic<"tiledOps", "tiled-ops", "Operations split into tiles">,
+    Statistic<"tilesEmitted", "tiles-emitted", "Tiles the split produced">,
+    Statistic<"alreadyFitting", "already-fitting",
+              "Operations whose working set was already inside the budget">,
+    Statistic<"declinedOps", "declined",
+              "Operations over budget that no permitted tiling fits, left for "
+              "the allocator to spill">,
+  ];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::npu::NPUDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+  ];
+}
+
 #endif // NPU_PASSES
