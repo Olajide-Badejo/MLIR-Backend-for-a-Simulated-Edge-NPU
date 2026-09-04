@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "f7b32baaf063d6828b9f435b4bc16227cd5d3068",
+  "git_sha": "9325b3bd68e292b5f8f12701085d18b8481f68a8",
   "levels": [
     0,
     1,
@@ -1158,7 +1158,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 26,
+      "passed": 28,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1186,7 +1186,9 @@
         "NPU :: Transforms/fold-batchnorm.mlir",
         "NPU :: Transforms/fuse-bias.mlir",
         "NPU :: Transforms/fuse-ops.mlir",
-        "NPU :: Transforms/level-passes.mlir"
+        "NPU :: Transforms/level-passes.mlir",
+        "NPU :: Transforms/tile-to-scratchpad-declines.mlir",
+        "NPU :: Transforms/tile-to-scratchpad.mlir"
       ]
     },
     "dash-lint": {
