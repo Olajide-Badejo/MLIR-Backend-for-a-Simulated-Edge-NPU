@@ -192,29 +192,61 @@ tiled function does not lower at all. `npu-opt --npu-tile-to-scratchpad
 --npu-lower-to-npuisa` reports `failed to legalize unresolved materialization`
 on the destination argument. That is the first change and it is the smaller one.
 
-**The second decides whether tiling is worth anything, and it is worth stating
-before somebody writes the first one and expects a result.** The conversion today
-loads each DRAM function argument into the scratchpad **once, whole**, and
-records it in `LoweringState::argumentBuffers` so every consumer reads the same
-resident buffer. Under that arrangement a tiled program's slices are views of
-buffers that are **already resident**, so tiling splits the compute instruction
-into more, smaller instructions and leaves the scratchpad footprint exactly where
-it was. The allocator would see the same buffers, the sweep line would find the
-same peak, and the ablation row would show instructions moving and cycles moving
-and pressure not moving at all.
+**The second decides whether tiling is worth anything, and it is now a
+measurement rather than an argument.** The conversion today loads each DRAM
+function argument into the scratchpad **once, whole**, and records it in
+`LoweringState::argumentBuffers` so every consumer reads the same resident
+buffer. Under that arrangement a tiled program's slices are views of buffers
+that are **already resident**. Measured by writing the same two tile convolution
+both ways by hand and running `-npu-allocate-scratchpad` over each:
 
-For tiling to relieve pressure, **the slice of a DRAM value has to be what enters
-the scratchpad**: a tile's operands separately allocated, loaded per tile, and
-dead after it, so the sweep line peak falls toward one tile's working set. That
-is consistent with Section 8, which counts one `dma_load` per DRAM value entering
+| Arrangement | Sweep line peak |
+|---|---|
+| whole arguments resident, tiles as views of them | **4224 bytes** |
+| the slice is what enters the scratchpad | **1728 bytes** |
+
+**4224 is the untiled working set to the byte**, which is the whole point: under
+the first arrangement the allocator sees the same three buffers it always saw and
+the peak cannot move, so tiling would split one compute instruction into several
+and report instructions moving, cycles moving and pressure standing still. Under
+the second, each tile's operands are their own allocations and are dead after the
+tile that used them, so the second tile reuses the first tile's offsets and the
+peak is one tile's working set rather than the whole layer's. **A 2.44 times
+reduction on a two tile example**, and it is the arrangement rather than the tile
+count that decides it.
+
+So **the slice of a DRAM value has to be what enters the scratchpad**. That is
+consistent with Section 8, which counts one `dma_load` per DRAM value entering
 the scratchpad and under tiling the values are the slices rather than the whole
-arguments, but it is a real change to the conversion and to
+arguments, and Section 8 already names tiling as one of exactly three permitted
+DMA producers. It is a real change to the conversion and to
 `test/Dialect/NPUISA/dma-boundaries.mlir`, which pins that invariant at exactly
 that point.
 
-**Neither change is started and neither is hard to describe**, which is why they
-are described here rather than left for the next session to rediscover by running
-the same two commands.
+**There is a third thing in the way and it was found by trying it rather than by
+reading.** A strided `dma_load` whose source is a `memref.subview` of a DRAM
+argument **parses, verifies and allocates cleanly**, and then `npu-translate`
+refuses it:
+
+```
+error: this DRAM buffer has no address in the DRAM map. The map holds the
+function's arguments, the npuisa.const results, and the allocator's
+npuisa.spill_slot allocations, and nothing else may live off chip
+```
+
+**A sub region of an argument is a DRAM value the encoder cannot name.** Whether
+that is a small change to how an address is resolved, or a change to what the
+binary format can express, is the question that has to be answered **before** the
+lowering patterns are written, because the answer decides whether the per slice
+convention is available at all. `npuisa.spill_slot` is the precedent to read
+first: it is the existing case of a DRAM value that does not exist until after
+lowering, and whatever registers it in the map is the mechanism a tile slice
+would want. **If it turns out to need a format change, that collides with P14's
+gate, which requires `Program::kVersion` unmoved**, and the decision is above a
+phase.
+
+**Nothing of the three is started**, and all three are described here rather than
+left for the next session to rediscover by running the same three commands.
 
 ## The numbers the next session needs and should not re-derive
 
