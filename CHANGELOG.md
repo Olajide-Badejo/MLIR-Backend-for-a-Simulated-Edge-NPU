@@ -6,6 +6,66 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P13: tiling, double buffering, layout (in progress)
+
+**This phase is incomplete and the section says so first**, because a changelog
+that reads as though a phase finished is worse than no entry. Three of the four
+deliverables have not started: `-npu-tile-to-scratchpad`, `-npu-double-buffer`
+and `-npu-assign-layout` do not exist, no `-O` level names them, the ablatable
+set is still eight and the suite is still 175 cells. **No simulated number moved
+on this branch**: all 21 golden tensors are byte identical, every cell field in
+the regression baseline is unchanged, and `git diff main..HEAD` touches no cost
+model file at all.
+
+- **D-0048: D-0045 was not a defect in the cost model.** P13 was handed the
+  charge to change and measured it first. The entry says `gemmCharge` amortises
+  the sixteen cycle weight preload across a whole instruction "no matter how many
+  times the array is actually refilled"; it does not, and the arithmetic is six
+  lines. At the f32 peak the array's area and the peak are the same number, so a
+  tile's charge reduces to `rows + WEIGHT_PRELOAD_CYCLES` whether the tile is
+  whole or partial, and with `T` folds the fill is charged `T` times. **Applying
+  the same fraction to every tile is not the same operation as counting the fill
+  once**, and the entry moved from the first to the second in one sentence.
+  Verified over 343 shape combinations. **The cost model is unchanged**, so the
+  declare then re-record sequence that was to govern the change does not run.
+- **D-0045's reproduction crossed two budgets.** It names
+  `resnet_block-O2-default-n1`, layer `node_conv2d`, and quotes SCALE-Sim at 1465
+  cycles; the committed result for that cell says 549 with no stall cycles, and
+  1465 is the same layer at the **tight** budget where SCALE-Sim reports 916
+  stall cycles. 1465 minus 916 is 549. Both pairs reconcile against the same MAC
+  count, which is why the crossing was invisible. Of the 550 layer rows in the
+  suite, 66 carry stall cycles and every one is a tight budget cell.
+- **The frozen constants test could not have caught it, and now something can.**
+  `FrozenConstants.TheCostModelsNumbers` pins `WEIGHT_PRELOAD_CYCLES` at 16.0 and
+  says nothing about where the 16 is charged. `CostModel.TheWeightPreloadIsChargedOncePerFold`
+  and `test_the_weight_preload_is_charged_once_per_fold` assert the per fold
+  accounting **and assert it apart from** the once per instruction accounting,
+  which is the half that matters: the two agree whenever there is exactly one
+  fold, and every shape small enough to check by hand has exactly one fold.
+- **`TilingInterface` generates tiles for the windowed operations now**, over the
+  parallel dimensions only. P1 implemented the introspection half and declined
+  the halo arithmetic by name, on the grounds that a wrong tile is worse than no
+  tile; this is that arithmetic, for the convolution, both pools and the matmul,
+  and it lands before the pass that will consume it. **A tile that splits the
+  reduction is declined**, because under fp32 addition is not associative and
+  Section 13.2 permits that only behind `allow-reduction-tiling` with its own
+  golden set. Declining is a result rather than a failure and the fallback is the
+  allocator's spilling.
+- **The property that makes a parallel tile exact is asserted rather than
+  described.** For every output position of every tile, the window touches the
+  same input positions it touched untiled, and the positions lying outside the
+  input are the same ones. The second half is what an average pool depends on,
+  since it divides by the number of elements that actually contributed rather
+  than by the window area. Checked over five window shapes, every tile size that
+  divides the output, and every offset.
+- **ZigZag is installed, pinned and wired into the external tools policy, and
+  unused.** `zigzag-dse` 3.8.5, four seconds, nothing in the lock file moved. It
+  joins `EXTERNAL_TOOLS` rather than sitting beside it, so every consumer follows
+  with no further edits, and the CI step that asserts the tools are absent now
+  asserts all three. The old step body was shown printing "confirmed absent" in
+  an image that has ZigZag in it, which is the reason the widening is a change
+  and not tidying.
+
 ### Phase P12: performance
 
 **Nothing in this phase changes a simulated number, and that is the phase's

@@ -434,6 +434,27 @@ useful thing this comparison produced: the suite wide headline of plus 110
 thousand cycles is the small remainder of two large effects pointing in opposite
 directions, and quoting it without them would be quoting an accident.
 
+**Read at P13, and the reading is about how the terms are written rather than
+about their values.** SCALE-Sim's stall cycles enter both dominant terms with
+opposite signs: `array_fragmentation` is
+`analytical_compute - (matched_total - stalls)` and `double_buffering` is
+`max(0, dma - compute) - stalls`. They cancel in the total, exactly, by
+construction. Both subtract the same stalls for a good reason, which is that
+memory time has to be charged once rather than twice, and that double count is
+the one `decompose`'s own comment records fixing. **So part of the equal and
+opposite character above is bookkeeping and not physics**, and a reader taking
+the near cancellation as a physical coincidence is taking more from it than it
+carries.
+
+**The stalls do not account for the size of either term.** The suite total is
+107206 cycles against 442289 and 435825, under a quarter of either. What they do
+account for is the whole of the tight budget cells' extra divergence: of the 550
+layer rows, **66 carry stall cycles and every one of the 66 is a tight budget
+cell**, and the 308 default budget rows carry none at all. Median divergence with
+stalls is -72.42 percent against +11.59 percent without. That is why a layer's
+gap can read as a factor of three at one budget and 1.36 at the other while the
+analytical charge does not move at all. See D-0048.
+
 ### Rank fidelity, which Section 16.3 asks for beside the absolute error
 
 | Ordering | Kendall tau b | Pairwise accuracy | n |
@@ -486,15 +507,34 @@ predicted 5 to 20.
 > **above 25 percent is a defect requiring a root cause**, and I predict no layer
 > reaches it at the default budget with both ports enabled
 
-**The root cause is D-0045** and it is the same one on every layer in that band:
-this project charges the array's weight preload **once per instruction** and
-SCALE-Sim charges it **per fold**. `resnet_block`'s 3 by 3 convolution presents a
-72 by 8 weight matrix to a 16 by 16 array, five row tiles each occupying half the
-columns, and the two accounts of the resulting fills differ by about a factor of
-three. The defect is recorded with a reproduction and **is not fixed here**,
-because retuning a cost model against an external tool invalidates every ablation
-already recorded; Section 16.5 states that rule for ZigZag and it is the same
-rule.
+**The root cause was recorded as D-0045**, and it is the same one on every layer
+in that band: this project charges the array's weight preload **once per
+instruction** and SCALE-Sim charges it **per fold**. `resnet_block`'s 3 by 3
+convolution presents a 72 by 8 weight matrix to a 16 by 16 array, five row tiles
+each occupying half the columns, and the two accounts of the resulting fills
+differ by about a factor of three. The defect is recorded with a reproduction and
+**is not fixed here**, because retuning a cost model against an external tool
+invalidates every ablation already recorded; Section 16.5 states that rule for
+ZigZag and it is the same rule.
+
+> **Withdrawn at P13. The paragraph above is left standing because this page is
+> what P11 reported and an answer edited after the fact is not an answer.**
+> D-0045 is not a defect in the cost model. The charge already applies the
+> preload once per fold: at the f32 peak the array's area and the peak are the
+> same number, so a tile's charge reduces to `rows + WEIGHT_PRELOAD_CYCLES`
+> whether the tile is whole or partial, and with `T` folds the fill is charged
+> `T` times. Verified over 343 shape combinations. The `1465` quoted for
+> `resnet_block-O2-**default**-n1` is that layer's number at the **tight**
+> budget, where SCALE-Sim reports 916 stall cycles; the committed default budget
+> figure is 549 and 1465 minus 916 is 549.
+>
+> **So this clause of the prediction is still answered wrong and its root cause
+> is again open**, which is the honest state rather than a resolved one. The
+> `experiments/predictions/p11-scalesim-divergence.md` file is not edited, per
+> its own rule. The two tools do disagree about the compute time of the same MAC
+> count, by 8.65 times on `dilated_stack`'s `conv1` and 4.34 times the other way
+> on `inception_block`'s 1 by 1, and whatever that is, it is not the weight
+> preload. See D-0048.
 
 > 1. **SCALE-Sim assumes optimistically high bandwidth on 1 by 1 convolutions**,
 >    so its counts come out low there. `inception_block` and `resnet_block` are

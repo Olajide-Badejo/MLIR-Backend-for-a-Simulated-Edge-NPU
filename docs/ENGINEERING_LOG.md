@@ -5256,3 +5256,267 @@ kernels compile with OpenMP. The script's contribution over that is the seven
 real models, which is worth a nightly rather than a per push step. Trigger: the
 first phase that changes the convolution kernel's loop nest, which is P13's
 tiling or P14's integer kernels.
+
+## 2026-09-04 Phase P13: the defect that was handed forward twice did not exist
+
+### The brief, and why it changed in the first hour
+
+P13 was briefed to fix D-0045 under the full declare then re-record governance:
+an entry in `docs/BREAKING_CHANGES.md` in its own commit, the `CostModel.h`
+change with its Python mirror, the divergence terms re-measured, a baseline
+re-record in its own commit, and the pre-registered band of
+`p11-scalesim-divergence.md` re-versioned against the new constants because
+Section 16.3 requires it. Every one of those steps is conditional on a charge
+moving, and none of them ran, because the charge is already what D-0045 says it
+is not.
+
+**The practice that found it is D-0047's, applied to D-0047's own successor
+phase**: measure the thing before changing it. The difference here is that the
+measurement took six lines of arithmetic rather than `nm` on an object file.
+
+### The arithmetic
+
+D-0045 says `gemmCharge` "computes `delta = m / (m + kWeightPreloadCycles)`
+**once per instruction** and applies it to every tile, so the sixteen cycle
+pipeline fill is amortised across the whole layer no matter how many times the
+array is actually refilled". The premise is true. The conclusion does not follow
+from it, and that is why the claim survived somebody reading the code: the line
+it describes is exactly the line that is there.
+
+`FrozenConstants.TheCostModelsNumbers` already asserts that the f32 peak is the
+array's area, `kPeakMacsPerCycleF32 == kArrayDim * kArrayDim`. So for any tile,
+whole or partial, `utilization * peak` is exactly `tileRows * tileColumns`, and
+the tile's charge reduces:
+
+```
+tileMacs / (utilization * delta * peak)
+    = (m * rows * columns) / (rows * columns * delta)
+    = m / delta
+    = m + kWeightPreloadCycles
+```
+
+With `T` folds the instruction is charged `T * (m + kWeightPreloadCycles)`. That
+is the fill counted `T` times, once per refill, which is what a weight
+stationary array does and what SCALE-Sim charges. **Applying the same fraction
+to every tile is not the same operation as counting the fill once**, and the
+entry moved from the first to the second in one sentence.
+
+Checked numerically as well, over every combination of `m` in
+{1, 2, 7, 16, 64, 196, 1024}, `k` in {1, 8, 16, 17, 72, 144, 256} and `n` in
+{1, 6, 8, 16, 17, 120, 256}. **343 shapes, and the charge equals the explicit per
+fold accounting on all 343.** It differs from the once per instruction
+accounting on every shape with more than one fold, by exactly
+`(folds - 1) * kWeightPreloadCycles`. On D-0045's own `72 by 8` weight matrix at
+`m = 64`, five folds, that is 400 cycles against 336.
+
+### The reproduction does not reproduce either, and the reason is the budget
+
+D-0045 names `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`, and
+quotes SCALE-Sim at **1465 cycles, overall utilization 0.098**. The committed
+result for that cell and that layer says something else, and has since P11:
+
+```
+                                          scalesim   utilization   stalls
+resnet_block-O2-default-n1  node_conv2d        549        0.2623        0
+resnet_block-O2-tight-n1    node_conv2d       1465        0.0983      916
+```
+
+**1465 is the same layer at the tight budget, and 1465 minus 916 is 549.** The
+entry crossed a tight budget SCALE-Sim reading with a default budget analytical
+one. Both pairs are internally consistent, which is what made the mistake
+invisible: `36864 / (1465 * 256)` is 0.0983 and `36864 / (549 * 256)` is 0.2623,
+so each pair reconciles against the same MAC count and `check_the_same_arithmetic`
+passes on both.
+
+This project's own 478 is a **DMA bound** figure rather than a compute one. The
+layer's `analytical_compute_cycles` is 404, of which 400 is the array and 4 is
+the issue overhead; 478 is what the layer costs on the port that binds it, which
+at the default budget is the transfer. So the entry compared 478 cycles of mostly
+DMA against 1465 cycles of which 916 is SCALE-Sim waiting on memory, and
+attributed the whole difference to the weight preload.
+
+The 916 is not one layer's anomaly. Across the 550 layer rows of the committed
+suite, **66 carry SCALE-Sim stall cycles and every one of the 66 is a tight
+budget cell**; the 308 default budget rows carry none at all. Their median
+divergence is -72.42 percent against +11.59 percent for the 484 that do not
+stall, and the suite's total stall is 107206 cycles.
+
+### What this says about the decomposition, which is the part worth carrying
+
+The stall term enters `decompose()` **twice, with opposite signs**.
+`array_fragmentation` is `analytical_compute - (matched_total - stalls)`, so the
+stalls enter it positively; `double_buffering` is
+`max(0, dma - compute) - stalls`, so they enter it negatively. They cancel in the
+total, exactly, by construction.
+
+That is worth stating beside the near cancellation the P11 report leads with.
+`docs/NUMBERS.md` records double buffering at +442289 and array fragmentation at
+-435825 and calls the near equality "the single most useful thing this comparison
+produced". It is still a real finding, and the sign structure is part of it: the
+cancellation is partly a property of how the two terms are written and not only
+of the physics. Neither term is wrong. Both subtract the same stall count so that
+memory time is charged once rather than twice, which is the double count the
+first version of `decompose` made and its comment records.
+
+**The stalls are not the size of either term.** 107206 against 442289 and 435825
+is under a quarter, so removing them would not collapse either column. What they
+are is the whole of the tight budget cells' extra divergence, and they are the
+reason a layer's gap looks like a factor of three at one budget and 1.36 at the
+other while the analytical charge does not move at all.
+
+### What is still open, and it is the question D-0045 was reaching for
+
+The two tools do disagree about the compute time of the same MAC count, with the
+stalls already removed on SCALE-Sim's side. The widest rows:
+
+```
+model               layer          macs    this project   SCALE-Sim   ratio
+dilated_stack       conv1          5670           140.0        1211    8.65
+dilated_stack       conv0         36036           481.0        3672    7.63
+inception_block     node_conv2d_2 25600          1044.0        6407    6.14
+conv_bn_relu_stack  conv1         36864           404.0        1465    3.63
+inception_block     node_conv2d    2048           473.0         109    0.23
+```
+
+The last row is the other direction and is the 1 by 1 convolution the P11
+prediction got right about the mechanism: this project charges 4.34 times what
+SCALE-Sim does there. The dilation approximation already has its own term and its
+own second SCALE-Sim run at the true tap extent, so it is accounted for
+separately and is not the answer to the `dilated_stack` rows either.
+
+**Whatever the mechanism is, it is not the weight preload**, because both tools
+charge that once per fold. The next phase to look at it should start by measuring
+the charge rather than by reading it, which is the whole of what this session
+adds to the question.
+
+### The two assertions, and why the frozen constants test could not have caught it
+
+`FrozenConstants.TheCostModelsNumbers` pins `kWeightPreloadCycles` at 16.0 and
+says nothing about where the 16 is charged. **The accounting was never under any
+assertion at all**, which is why a claim that contradicted it could stand for two
+phases in the file that exists to be the audit trail.
+
+`CostModel.TheWeightPreloadIsChargedOncePerFold` and
+`test_the_weight_preload_is_charged_once_per_fold` assert the per fold accounting
+**and assert it apart from the once per instruction accounting**. The second half
+is the one that matters: the two accountings agree whenever there is exactly one
+fold, and every shape small enough to check by hand has exactly one fold. A test
+that only asserted the right answer would pass against the wrong model on every
+example a reader would think to write down.
+
+### The rehearsal, prediction written first
+
+*Predicted:* pull `delta` out of the per tile divisor and add
+`kWeightPreloadCycles` once at the end of `gemmCharge`, which is the model
+D-0045 describes, and the new test goes red on the four multi fold cases while
+`FrozenConstants.TheCostModelsNumbers` stays **green**, because no constant
+moved.
+
+*Result:* exactly that. The test named each shape and printed the difference:
+16 cycles on `64 by 32 by 16`, 16 on `196 by 27 by 6`, 64 on D-0045's
+`64 by 72 by 8`, and 2032 on the `16 by 256 by 120` tail of a fully connected
+layer, each of them `(folds - 1) * 16`. The two single fold cases stayed green,
+which is the reason the discriminating assertion is there.
+
+`test_the_mirror_reproduces_the_machines_own_numbers` went red in the same tree,
+because the machine moved and the Python mirror did not. **The mirror's own copy
+of the per fold assertion stayed green**, since it tests the mirror rather than
+the machine, and that asymmetry is worth recording: the mirror against machine
+test is what couples the two, and neither per fold assertion alone would have
+noticed a change made on only one side. Restored, tree clean.
+
+### The halo arithmetic P1 declined to write
+
+Section 7.2 has `TilingInterface` implemented at P1 and consumed at P13 so that
+an interface bug and a policy bug cannot be mistaken for each other. P1 wrote the
+introspection half for every operation and the generation half for the
+elementwise ones, and returned failure on the windowed ones with a comment saying
+the halo arithmetic belonged with the phase that would exercise it, because a
+wrong tile is worse than no tile.
+
+That arithmetic is now here, for the convolution, both pools and the matmul,
+**over the parallel dimensions only**. It landed before the pass that consumes
+it, which is the order this phase's commits are in.
+
+**Section 13.2's restriction lives in the interface rather than in the pass.**
+The interface is what knows whether a tile of the domain is expressible; a pass
+that had to know it would be a second copy of the same judgement. A tile that
+splits the input channel, the kernel window or a matmul's inner dimension is
+declined, because under fp32 addition is not associative and re associating the
+accumulation moves every golden file. Declining is a result rather than a
+failure and the fallback is the allocator's spilling, which is Section 13.2's own
+wording.
+
+**The exactness property is asserted rather than described**, and it is what lets
+the P13 gate ask for goldens byte identical rather than for a tolerance. For
+every output position of every tile, the window touches the same input positions
+it touched untiled, and the positions lying outside the input are the same ones.
+The second half is the one an average pool depends on: it divides by the number
+of elements that actually contributed rather than by the window area, so a tile
+that turned a real element into a padded one would move a divisor rather than
+only a sum. `Conv2DEveryTileReadsTheSamePositionsAsTheWhole` checks both over
+five window shapes, every tile size that divides the output and every offset,
+and it reads the slice offset off the operation the model built rather than
+deriving it from the pads the model reported, so the two halves of the model have
+to agree with each other rather than each with itself.
+
+**One assertion moved with the level and one lifetime bug was found by the
+harness.** `WindowedTileGenerationIsDeclinedRatherThanGuessed` asked for every
+domain extent to be one, which splits the reduction as well as the parallel
+dimensions, so it would have gone on passing against the new model for a reason
+it did not state. It is rewritten rather than deleted, and both halves are now
+asserted. Separately, the sweep parses five modules in one test and the first
+version kept a tile alive across a reparse, which destroys values that still have
+uses; MLIR asserted on it immediately, which is the kind of harness failure worth
+having.
+
+### ZigZag, installed and wired but not yet used
+
+Section 16.5 blocks the cross check on an install, so it was started before
+anything else in the phase, as Section 23 has the project do for P11's tools.
+`zigzag-dse` 3.8.5, which imports as `zigzag`, four seconds of wall clock against
+the two minutes P11's six installs took. Nothing in `requirements-lock.txt`
+moved: seven pins resolved as already satisfied and five packages arrived that no
+committed result was measured under and nothing in this repository imports.
+
+**Section 16.5 asks for the 3.11 floor to be reconciled with the recorded build
+environment, and it resolves the other way from the one that section
+anticipates.** This environment is 3.14.4, which is above the floor rather than
+below it, so there is nothing to reconcile: the wheel is `py3-none-any` and
+installed with no build step of its own. The floor `zigzag-dse` sets is the
+reason `requires-python` has said 3.11 since P0, and this is the first phase in
+which the tool that set it is present. The other trap Section 16.5 names, that
+`pip install timeloop` fetches an unrelated periodic task scheduling library, is
+not one this project can fall into: it installs no Timeloop at all.
+
+It goes in `EXTERNAL_TOOLS` rather than beside it, so every consumer of that
+table follows with no further edits. That is D-0046's fix used rather than worked
+around. `test_the_real_table_is_the_two_tools_this_project_installs` went red on
+the addition, which is what it is for.
+
+**The CI assertion was widened and rehearsed four ways with the prediction
+written first.** This machine, all three present: exits 1 naming `scalesim`. The
+CI shape, all three absent: exits 0. Only ZigZag present: exits 1 naming
+`zigzag`. And the fourth, which is the one that makes the change worth making:
+the **old** step body against that third shape printed "confirmed absent" in an
+image that has ZigZag in it. That is the silence Section 19.0 forbids, arriving
+through the one tool the assertion did not name.
+
+### One flake, observed once and not reproduced
+
+`test_the_opt_out_records_a_null_and_a_reason` failed once during the first full
+battery run of this session and has not failed since: green alone, green with its
+own file, and green in two subsequent full suite runs at 1082 passed and 18
+skipped. **It is recorded rather than dismissed**, because the test asserts
+`run_benchmarks.main(...) == 0` and the harness returns 1 on a finding, and one
+of the findings it can produce is D-0043's `--mlir-timing` cross check, whose
+bound is principled and **load sensitive**. A full suite run is the heaviest load
+this repository puts on the machine.
+
+That is a hypothesis and not a measurement, because the failure text was not
+captured; the battery script tailed three lines and the reason was above them.
+**The lesson is the script's, and it is fixed by capturing the failure rather
+than by rerunning until it is green.** P12's handoff said to read a red at that
+bound as the next data point rather than as noise, and this session cannot say
+whether it was one. Recorded here so P14 can, and the flake governance of Section
+17.9 at P15 is where a test that does this twice belongs.

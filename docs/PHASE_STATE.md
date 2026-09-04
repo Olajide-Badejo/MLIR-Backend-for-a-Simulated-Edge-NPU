@@ -18,51 +18,305 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P12, performance.** Branch `phase/p12-performance`, cut from `main` at
-`d67bb3c`, which is the P11 merge. Six commits. **Not pushed.**
+**P13, tiling, double buffering and layout. Incomplete, and this handoff says so
+first.** Branch `phase/p13-tiling`, cut from `main` at `2f59429`, which is the
+P12 merge. Four commits. **Not pushed.** **The gate is not met**, three of the
+four deliverables have not started, and the reason the phase stopped where it did
+is the first commit.
 
 | Commit | Subject |
 |---|---|
-| `a182724` | `fix(simulator): the convolution kernel was never compiled with OpenMP` |
-| `4ebdfe3` | `perf(experiments): the allocator's fitted growth exponent, at the sizes 13.1 names` |
-| `dcf913f` | `perf(experiments): the kernel's thread scaling, and its bitwise check on real models` |
-| `d93d48d` | `record: the suite and the baseline with the kernel actually parallel, one run each` |
-| tip | `docs: hand off P12, with the phase that was a measurement and turned out to be a repair` |
+| `b2b63df` | `test(simulator): the weight preload is already charged once per fold, and D-0045 is not a defect` |
+| `6d662f2` | `build(external): zigzag joins the external tools, on the terms the other two are on` |
+| `f7b32ba` | `feat(dialect): the halo arithmetic P1 declined to write, over the parallel dimensions` |
+| `d8532a0` | `record: the baseline at the tip, and it moves fifteen test names and nothing else` |
 
-**The commit order carries meaning and the first commit is the phase.** P12 was
-briefed as a measurement: prove the sweep line's growth, parallelise the
-convolution kernel, confirm the suite runtime, and keep the whole thing
-numerically inert. The kernel already had its `#pragma omp parallel for
-collapse(2)`, written at P7. It had never been compiled. `a182724` is that
-repair, and everything after it measures a machine that only started doing the
-thing this phase was supposed to measure once `a182724` landed.
+**The commit order carries meaning and the first commit is the phase.** P13 was
+briefed to fix D-0045 under the full declare then re-record governance, on the
+stated understanding that fixing it changes the cost model. `b2b63df` is the
+measurement that says there is nothing there to fix: the charge already does what
+the entry says it does not, and the entry's own reproduction quotes a cell the
+committed results contradict. Everything the governance sequence would have
+governed is therefore not done, deliberately, and the rest of the phase was
+re planned around that.
 
-**No intermediate commit is red.** That is different from P11 and it is not a
-virtue, it is a consequence: nothing here declares a numeric movement, because
-nothing here moves a number.
+`f7b32ba` is the deliverable that did land and it is the one the rest of the
+phase blocks on: the halo arithmetic for tiling every windowed operation in the
+dialect, which P1 declined to write and named the reason for. It lands **before**
+the pass that consumes it, which is the ordering the phase's own commit rule
+asks for.
 
 ## Gate status
 
-**Met.** Clause by clause, with the proof beside each.
+**Not met.** Clause by clause, with what stands and what has not started.
 
 | Clause | Status |
 |---|---|
-| Allocator runtime measured at 500, 1000, 2000 and 5000 **buffers** | met, and the unit is P12's correction. P5 measured the same four numbers as **operations**, and the chain allocates one buffer per two operations, so the committed P5 curve was taken at 249, 499, 999 and 2499. `--size-unit operations` keeps that table reproducible |
-| The **fitted** growth exponent reported | met. **1.1038**, least squares of log time on log size over all four points, r squared 0.9987, worst residual +0.0377 in log space, with the residual printed per point and the consecutive steps beside it |
-| Consistent with O(n log n) | met, and it is a comparison rather than an opinion. The n log n reference **computed at these exact sizes** is 1.1365 and the fit is **below** it, which is the strongest form the clause admits because O is an upper bound. Linear is 1.0000 and quadratic is 2.0000 at the same sizes; `--check` fails at their midpoint, 1.5683 |
-| Bitwise equal outputs at one thread and at full thread count | met, twice over. `Determinism.OneThreadAndMaxThreadsAgreeBitwise` in process on a synthetic convolution, **for the first time meaningfully**, and `experiments/kernel_threads.py` on all seven models at 1, 2, 4, 8 and 28 threads, byte identical on every row |
-| Goldens byte identical, exactly | met. All 21, `git status` on `test/baseline/golden` empty after a re-record. `GOLDEN_TOLERANCE` is zero |
-| The 90 minute suite budget re-measured and still met | met. **175 cells, 3.43 minutes, 1.17 seconds per cell**, one run, serially, on a quiet machine. `run_benchmarks.py` exits 1 over budget and the branch is rehearsed at P10 |
-| The run fails if it is not | met, unchanged from P10. `--budget-minutes 0` drives it and the nightly step turns the nonzero exit into an error naming both readings a red run can have |
-| **No naive baseline ratio** | met by not doing it. No naive allocator was written, none is compared against, and no benchmark only flag was added to build one. The report sections this phase touches quote the fitted exponent and the references, which is a comparison against arithmetic rather than against a strawman |
-| Numerically inert: goldens byte identical | met, above |
-| Cycles, DRAM bytes and instruction counts unmoved | met. 175 cells, **95614 leaf fields**, seven field names moved and every one is a wall clock or provenance: `median_ms`, `iqr_ms`, `ci95_low_ms`, `ci95_high_ms`, `timestamp`, `git_sha`, `content_hash`. Zero forbidden movers |
-| Only host wall clock changes | met, and `content_hash` moving is the evidence rather than the exception: it is a sha256 over the compiler sources and the cost model constants, so a phase that changed `Kernels.cpp` must move it, and it moving while every number under it holds still is the claim |
-| `CHANGELOG.md` says so explicitly | met. The P12 section opens with it, in the words "a speedup reported below is a statement about how long a developer waits, and it must not be read as the modelled accelerator having become faster" |
-| The cost model untouched, D-0045 left to P13 | met. `git diff main..HEAD` touches no file under `lib/Simulator/CostModel.cpp`, `include/NPU/Simulator/CostModel.h` or `python/npu_frontend/cost_model.py`. `content_hash` includes `cost_model.VALUES` and the constants inside it did not move |
-| The roofline, the regression bound most likely to notice | met and re-run. 175 cells, 550 layers, every cell at or above its bound, tightest layer unchanged at 0.0006 headroom |
+| Goldens byte identical for the tiling work, exactly | **stands, and it is not yet evidence.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty. Nothing consumes the tiling interface yet, so nothing could have moved them. The claim becomes evidence at the commit that adds `-npu-tile-to-scratchpad` |
+| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **not reached.** Neither pass exists. No entry was written, and writing one before the pass would be declaring a movement nobody has measured |
+| No `scf` operation reaches the lowering, asserted by a lit test | **not started.** No pass emits `scf` yet |
+| A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **not started**, and the numbers it will have to reproduce are recorded below so the next session does not have to re-derive them |
+| The tight budget question answered per model with all three arms of Section 13.3 | **not started.** This is the phase's reason to exist and none of the three arms has been run |
+| The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **not started** |
+| The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started.** The tool is installed, pinned, recorded and wired into the external tools policy; there is no mapping to export yet, because mappings are what the tiling pass produces |
 
-## D-0047, which is the phase
+**Two clauses of the brief around the gate are answered rather than pending, and
+both are answered in the negative.** The D-0045 governance sequence does not run,
+because no charge moves. The Section 2 carve out is **not** re-derived to 217
+cells, because no ablatable pass landed and a re-derivation to a cell count the
+suite does not have would be worse than the stale one that is at least honest
+about which phase it belongs to.
+
+## D-0048, which is the phase
+
+**D-0045 named a mechanism the cost model does not have, and quoted a cell it
+does not match.** The full entry with both reproductions is in
+`docs/DEFECT_LOG.md`; D-0045 itself is marked withdrawn with its body left
+exactly as P11 wrote it, because this project's audit trail is worth more than a
+tidy file.
+
+**The arithmetic.** D-0045 says `gemmCharge` computes
+`delta = m / (m + kWeightPreloadCycles)` once per instruction and applies it to
+every tile, so the fill is amortised across the whole layer however many times
+the array is refilled. The premise is true and the conclusion does not follow.
+`FrozenConstants.TheCostModelsNumbers` already asserts the f32 peak is the
+array's area, so `utilization * peak` is exactly `rows * columns` for any tile
+and the tile's charge reduces to `m / delta`, which is
+`m + kWeightPreloadCycles`. With `T` folds the instruction is charged `T` times
+that, which is the fill counted once per refill. **Applying the same fraction to
+every tile is not the same operation as counting the fill once.** Verified over
+343 shape combinations: the charge equals the explicit per fold accounting on all
+343, and differs from the once per instruction accounting on every shape with
+more than one fold by exactly `(folds - 1) * 16`.
+
+**The reproduction, and it is a budget confusion.** D-0045 names
+`resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`, and quotes
+SCALE-Sim at 1465 cycles and utilization 0.098. The committed result for that
+cell and layer says 549 and 0.2623 with **zero stall cycles**, and has since P11.
+1465 and 0.0983 is the same layer at the **tight** budget, where SCALE-Sim
+reports **916 stall cycles**, and 1465 minus 916 is 549. Both pairs reconcile
+against the same MAC count, which is why `check_the_same_arithmetic` passes on
+both and the crossing was invisible.
+
+**This project's 478 is a DMA bound figure**, not a compute one. That layer's
+`analytical_compute_cycles` is 404, of which 400 is the array and 4 the issue
+overhead. So the entry compared 478 cycles of mostly transfer against 1465 of
+which 916 is SCALE-Sim waiting on memory.
+
+**The stalls are a tight budget phenomenon and they are recorded here because
+they are the number the next session needs.** Of the 550 layer rows in the
+committed suite, **66 carry SCALE-Sim stall cycles and all 66 are tight budget
+cells**; the 308 default budget rows carry none. Median divergence with stalls is
+-72.42 percent against +11.59 percent without. Suite total stall: 107206 cycles.
+
+**What that says about the decomposition, which is the transferable part.** The
+stall term enters `decompose()` twice with opposite signs:
+`array_fragmentation` is `analytical_compute - (matched_total - stalls)` and
+`double_buffering` is `max(0, dma - compute) - stalls`. They cancel exactly in
+the total. `docs/NUMBERS.md` leads on those two terms being nearly equal and
+opposite at +442289 and -435825 and calls it the most useful thing the comparison
+produced. It still is, and the sign structure is part of it: **the cancellation
+is partly a property of how the terms are written and not only of the physics.**
+Neither term is wrong; both subtract the same stalls so memory time is charged
+once rather than twice, which is the double count `decompose`'s own comment
+records fixing.
+
+**What is still open is the question D-0045 was reaching for.** With the stalls
+removed on SCALE-Sim's side the two tools still disagree about the compute time
+of the same MAC count, by 8.65 times on `dilated_stack`'s `conv1`, 7.63 on its
+`conv0`, 6.14 on `inception_block`'s 5 by 5, and 4.34 times in the **other**
+direction on `inception_block`'s 1 by 1. The dilation approximation has its own
+term and its own second SCALE-Sim run, so it is accounted for separately and is
+not the answer. **Whatever the mechanism is, it is not the weight preload**,
+because both tools charge that once per fold.
+
+**Why the frozen constants test could not have caught it, which is the lesson.**
+`FrozenConstants.TheCostModelsNumbers` pins `kWeightPreloadCycles` at 16.0 and
+says nothing about where the 16 is charged, so **the accounting was never under
+any assertion at all**. That is D-0047's shape one layer over: a property nobody
+could observe from inside the artefact, and two readers who never compared notes.
+The fix is two assertions in the P9 pattern,
+`CostModel.TheWeightPreloadIsChargedOncePerFold` and
+`test_the_weight_preload_is_charged_once_per_fold`, and both assert the per fold
+accounting **and assert it apart from** the once per instruction accounting,
+because the two agree whenever there is exactly one fold and every shape small
+enough to check by hand has exactly one fold.
+
+## What P13 has, in one place
+
+- **The cost model is untouched.** `git diff main..HEAD` touches no file under
+  `lib/Simulator/`, `include/NPU/Simulator/` or `python/npu_frontend/cost_model.py`.
+  No `docs/BREAKING_CHANGES.md` entry, no band re-versioning, no re-record for a
+  numeric reason.
+- **The `TilingInterface` generation half is complete for the operations that
+  matter**, over the parallel dimensions only: convolution, both pools, matmul.
+  A tile that splits the reduction is declined, which is Section 13.2's rule
+  living in the interface rather than in the pass. Transpose, concat and
+  batch_norm still have the introspection half only, and none of the three is
+  what a scratchpad budget runs out on.
+- **The exactness property is asserted rather than described.** For every output
+  position of every tile, the window touches the same input positions it touched
+  untiled, and the positions lying outside the input are the same ones. The
+  second half is what an average pool's divisor depends on.
+  `Conv2DEveryTileReadsTheSamePositionsAsTheWhole` checks both over five window
+  shapes, every tile size that divides the output, and every offset.
+- **ZigZag is installed, pinned and wired**, and unused. `zigzag-dse` 3.8.5,
+  imports as `zigzag`, four seconds of wall clock, nothing in
+  `requirements-lock.txt` moved. Recorded in ADR 0003 by version rather than by
+  git sha, which is the exception that document already carves out for a package
+  index install.
+- **The suite is still 175 cells and the ablatable set is still 8.** Nothing in
+  this branch adds an `-O` level pass.
+
+## The numbers the next session needs and should not re-derive
+
+**The tight budget spilling numbers a tiling disabled ablation row has to
+reproduce to the cycle**, read out of the committed cells at `-O2`:
+
+| Model | instructions, default to tight | cycles, default to tight | spills, buffers and DMA |
+|---|---|---|---|
+| `lenet` | 25 to 25 | 17766.25 to 17766.25 | 0, 0 |
+| `depthwise_separable` | 12 to 12 | 1324 to 1324 | 0, 0 |
+| `resnet_block` | **14 to 17** | **1626 to 2018.0** | **1, 3** |
+| `inception_block` | **14 to 22** | **2398.5 to 3799.0** | **3, 8** |
+| `conv_bn_relu_stack` | 15 to 15 | 1160.5 to 1160.5 | 0, 0 |
+| `dilated_stack` | 12 to 12 | 1234.0625 to 1234.0625 | 0, 0 |
+| `lenet_batched` | 25 to 25 | 20000 to 20000 | 0, 0 |
+
+**Only two models spill at their tight budget**, which is ADR 0008's own finding
+and is the whole population the three arm experiment has to say something about
+at a budget below the peak. ADR 0010 records that the remaining five do not
+allocate at batch 4 under their recorded tight budget at all, and names tiling as
+the remedy, so P13 is also the phase that can make those six cells exist.
+
+**Where the counts are hardcoded and will have to move together** when three
+ablatable passes land and the suite goes from 175 to 217:
+`test/Python/test_benchmarks.py` at the assertions for 8, 63, 112, 175 and the
+`checked == 112` and `cells_total == 175` ones; `docs/NUMBERS.md`'s cell count
+table; `report/generated/macros.tex` through `results_to_tex.py`;
+`test/Pipeline/opt-levels.mlir`'s flat `-O2` pass argument list and its
+`DESCRIBE` sequence; `test/Pipeline/pass-stats.mlir`'s ordered name list;
+`docs/PASSES.md`'s pass table and its "eight ablatable" paragraph. **No
+arithmetic in `run_benchmarks.py` changes**: it reads the ablatable set out of
+the driver at run time and the 63 and 112 are computed, never written down.
+
+## The Section 2 carve out, for the owner
+
+**Unchanged from P12 and repeated because it is still open.** The measured figure
+is **1.17 seconds per cell**, over 175 cells in 3.43 minutes, serially, on the
+14700K under WSL2. Section 2 still says 15 seconds and 238 cells while the
+repository says 1.17 and 175, and a reader comparing them finds a disagreement
+rather than a correction. The suggested replacement paragraph is in P12's handoff
+below and it is unchanged.
+
+**The ablatable set is still 8 and the suite is still 175 cells.** P12's handoff
+said the arithmetic needs re-deriving to 11 and 217 in the commit that adds the
+three passes rather than after it. That commit has not happened, so the
+re-derivation has not either, and doing it in advance would put a cell count in a
+document that the suite would contradict.
+
+## Verification output
+
+Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
+`~/npu-venv`.
+
+**Two whole categories were deliberately not run, and the reason is the same for
+both.** `run_benchmarks.py`, `roofline.py`, `scalesim_export.py`,
+`accelergy_energy.py`, `kernel_threads.py` and `compile_time_benchmark.py` all
+measure the compiled suite, and **this branch changes nothing the suite
+measures**: no `-O` level gained a pass, no charge moved, the cell count is P12's
+175 and the committed results are P12's. Re-running them would produce P12's
+numbers with a new timestamp and would spend the one thing a measurement of a
+load sensitive bound cannot get back, which is a quiet machine.
+`regression-baseline --check` is the gate that would have caught it if that were
+wrong, and it reports no drift over 42 cells and 21 golden tensors.
+
+| Command | Result |
+|---|---|
+| `ninja -C build -j6` | clean, no warnings |
+| `ninja -C build-ndebug -j6` | clean, no warnings |
+| `ninja -C build check-npu` | 26 discovered, 26 passed |
+| `build/bin/NPUInterfaceTests` | 23 passed |
+| `build/bin/NPUTilingTests` | **20 passed**. 12 at P12, plus the eight tiled implementation tests |
+| `build/bin/NPUAllocatorTests` | 29 passed |
+| `build/bin/NPUEncodingTests` | 76 passed, 1 skipped |
+| `build/bin/NPUSimulatorTests` | **56 passed**, 1 skipped. 55 at P12, plus the per fold assertion |
+| `build-ndebug/bin/NPUSimulatorTests` | 56 passed, 1 skipped |
+| `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1082 passed, 18 skipped**. 1076 at P12, plus the six parametrized cases of the mirror's per fold assertion |
+| `mypy` | no issues found in 26 source files |
+| `black --check .` | 66 files unchanged |
+| `ruff check .` | all checks passed |
+| `bash scripts/dash-lint.sh` | `dash-lint: clean` |
+| `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
+| `reuse lint` | compliant, 478 of 478 files |
+| `pre-commit run` | all twelve hooks passed, on every commit of this branch |
+| `python scripts/build-model-ir.py` | 84 IR files written |
+| `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
+| `bash scripts/check-isa-staleness.sh build` | up to date |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
+| `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
+| `bash scripts/regression-baseline.sh --check` | **no drift**, 42 cells, 21 golden tensors, exit 0 |
+| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.1** PASS against 85, branch 75.7; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0 |
+| the whole suite in the CI shape, now four differences rather than three | **1069 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3` |
+| `regression-baseline --check` in the CI shape | **no drift**, with both environments named, the count difference printed, and three oracle distances reported as inside D-0039's band rather than as silence |
+| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, and the message now lists **all three** tools |
+| `git status --short` | empty |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case insensitive with word boundaries |
+| the same diff grepped for em and en dashes | 0 matches |
+| `git diff main..HEAD` over `lib/Simulator`, `include/NPU/Simulator` and the Python mirror | **empty**, which is this branch's claim about the cost model rather than a statement about it |
+
+**The CI shape has a fourth difference from P13 and the recipe above carries
+it.** `zigzag` is a third module the image does not have, so the shim's meta path
+finder blocks three roots rather than two. The prediction for the suite row was
+written before the run: 1069 passed and 31 skipped, which is P12's 1063 and 31
+plus the six new mirror cases, since those need no external tool and run in both
+shapes and the one renamed test moves neither count. **The run measured exactly
+that.**
+
+**The branch is 1349 insertions and 38 deletions over 11 files**, of which 448
+are the tiled implementations and 498 are the tests that check them.
+
+**C++ coverage moved from 86.4 to 86.1 and branch from 76.8 to 75.7**, both still
+above the 85 the gate checks, and the margin is now 1.1 points rather than 1.4.
+It is named here rather than left as an unexplained dip. The 448 new lines are
+mostly covered, and what is not is the decline paths: `constantsOf` returning
+nothing on a dynamic offset, and `windowSlice` refusing a tile whose every window
+lies in the padding. **Neither is reachable from a test**, because every
+iteration domain in this dialect is static and the verifier's rule that a pad is
+smaller than its kernel makes the second impossible for a well formed operation.
+They are guards against a caller this dialect does not currently have, and the
+alternative to an uncovered guard there is an unguarded assumption.
+
+## What P12 measured, and still holds
+
+`docs/NUMBERS.md` is the ledger. **Every figure below is P12's and nothing on
+this branch re-measured any of them**, because no ablatable pass landed and the
+suite is the same 175 cells. Five things worth repeating here.
+
+- **The suite is 1.17 seconds per cell, 3.43 minutes for 175 cells**, against 90.
+  It was 1.27 at P11 with the same tools inside the same suite, and the
+  difference is the kernel. The factor in hand went from twenty four to twenty
+  six. **This is a host wall clock and nothing else.**
+- **Thread scaling is 0.86 to 3.17 times, geometric mean 2.10**, byte identical
+  at every thread count on every model. `depthwise_separable` is the row below
+  one and it stays reported: 12800 multiply accumulates inside a process that
+  takes longer than that to start has no arithmetic left for a thread to win.
+- **The fitted exponent is 1.1038 against an n log n reference of 1.1365 at the
+  same sizes**, so the curve is **below** n log n rather than merely near it.
+- **The inertness proof is a diff and not a claim.** 95614 leaf fields over 175
+  cells, seven movers, all wall clock or provenance, zero forbidden. 21 golden
+  tensors byte identical. That claim would have been true at P11 for the
+  uninteresting reason that the kernel was serial at both ends; it is worth
+  something here because the kernel really went parallel in between.
+- **The worst `--mlir-timing` gap was 0.1856 ms against D-0043's 0.2000 bound**,
+  measured with nothing else on the machine. P11's two quiet runs measured 0.1577
+  and 0.1177. Inside the bound, and closer to it than either. Recorded as an
+  observation and not as a trend, because one run is not one.
+
+
+## D-0047, which was P12's phase
 
 **The convolution kernel was never compiled with OpenMP, in any build, in any
 environment, from P7 to P12.** `lib/Simulator/CMakeLists.txt` had one line of
@@ -105,157 +359,6 @@ independent output tiles the instruction has. That carries no tuned constant and
 cannot move a bit, because neither the cap nor the `if` clause changes which
 iterations exist, what one computes, or the order of the reductions inside it.
 
-## What P12 measured, in one place
-
-`docs/NUMBERS.md` is the ledger. Five things worth repeating here.
-
-- **The suite is 1.17 seconds per cell, 3.43 minutes for 175 cells**, against 90.
-  It was 1.27 at P11 with the same tools inside the same suite, and the
-  difference is the kernel. The factor in hand went from twenty four to twenty
-  six. **This is a host wall clock and nothing else.**
-- **Thread scaling is 0.86 to 3.17 times, geometric mean 2.10**, byte identical
-  at every thread count on every model. `depthwise_separable` is the row below
-  one and it stays reported: 12800 multiply accumulates inside a process that
-  takes longer than that to start has no arithmetic left for a thread to win.
-- **The fitted exponent is 1.1038 against an n log n reference of 1.1365 at the
-  same sizes**, so the curve is **below** n log n rather than merely near it.
-- **The inertness proof is a diff and not a claim.** 95614 leaf fields over 175
-  cells, seven movers, all wall clock or provenance, zero forbidden. 21 golden
-  tensors byte identical. That claim would have been true at P11 for the
-  uninteresting reason that the kernel was serial at both ends; it is worth
-  something here because the kernel really went parallel in between.
-- **The worst `--mlir-timing` gap was 0.1856 ms against D-0043's 0.2000 bound**,
-  measured with nothing else on the machine. P11's two quiet runs measured 0.1577
-  and 0.1177. Inside the bound, and closer to it than either. Recorded as an
-  observation and not as a trend, because one run is not one.
-
-## Verification output
-
-Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
-`~/npu-venv`. **Every measurement run was taken serially with nothing else on the
-machine**, which D-0043's load sensitive bound requires and which this phase in
-particular has to say out loud, because this phase is the one that put twenty
-eight threads into that machine.
-
-| Command | Result |
-|---|---|
-| `ninja -C build -j6` | clean, no warnings |
-| `ninja -C build-ndebug -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 26 discovered, 26 passed |
-| `build/bin/NPUInterfaceTests` | 23 passed |
-| `build/bin/NPUTilingTests` | 12 passed |
-| `build/bin/NPUAllocatorTests` | 29 passed |
-| `build/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `build/bin/NPUSimulatorTests` | **55 passed**, 1 skipped. 54 at P11, plus the D-0047 assertion |
-| `build-ndebug/bin/NPUSimulatorTests` | 55 passed, 1 skipped, and the kernels report 28 threads there too |
-| `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **1076 passed, 18 skipped**. 1029 at P11, plus 47 |
-| `mypy` | no issues found in 26 source files |
-| `black --check .` | 66 files unchanged |
-| `ruff check .` | all checks passed |
-| `bash scripts/dash-lint.sh` | `dash-lint: clean` |
-| `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 478 of 478 files |
-| `pre-commit run --all-files` | all twelve hooks passed |
-| `python scripts/build-model-ir.py` | 84 IR files written |
-| `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
-| `bash scripts/check-isa-staleness.sh build` | up to date |
-| `python scripts/gen-design-decisions.py --check` | index up to date |
-| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
-| `npu-sim --kernel-info` | `kernel openmp: yes`, `kernel threads: 28` |
-| `nm` on `obj.NPUSimulator.dir/Kernels.cpp.o` | **5** OpenMP symbols, 0 before this branch |
-| `ldd build/bin/npu-sim` | links `libgomp.so.1`, which it did not before this branch |
-| `python experiments/compile_time_benchmark.py --check` | **fitted exponent 1.1038** against a ceiling of 1.5683, exit 0 |
-| `python experiments/compile_time_benchmark.py --size-unit operations --check` | **1.0605**, reproducing the P5 curve to the millisecond, exit 0 |
-| `python experiments/kernel_threads.py --check` | **byte identical at every thread count**, 0.86 to 3.17 times, exit 0 |
-| `python experiments/roofline.py` | 175 cells, 550 layers, every cell at or above its bound, tightest 0.0006, exit 0 |
-| `python experiments/scalesim_export.py` | 175 cells, worst whole model divergence **-87.14%**, unchanged, exit 0 |
-| `python experiments/accelergy_energy.py` | 175 cells, per MAC **49.286 pJ**, unchanged, exit 0 |
-| `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
-| `python experiments/run_benchmarks.py --force` | **175 cells, 3.43 minutes, 1.17 s per cell**, worst clock gap 0.1856 ms, inside the budget, exit 0 |
-| `bash scripts/regression-baseline.sh --check` | **no drift**, 42 cells, 21 golden tensors, exit 0 |
-| the field by field inertness diff, 175 cells before against after | **95614 leaves, 7 movers, all wall clock or provenance, 0 forbidden** |
-| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.4** PASS, branch 76.8; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0 |
-| the whole suite in the CI shape, all three differences modelled | **1063 passed, 31 skipped, 0 failed**, mypy clean, `coverage.sh` PASS at **93.4313 / 16.1191 / 62.0669**. The skip count is CI's exactly |
-| `regression-baseline --check` in the CI shape | **no drift**, with both environments named and the count difference printed |
-| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, which is the third branch of `tools.py`'s policy |
-| `git status --short` | empty |
-| `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case sensitive with word boundaries |
-| the same diff grepped for em and en dashes | 0 matches |
-
-**The suite grew from 1029 pytest tests at P11 to 1076**, in two new files:
-`test_compile_time_benchmark.py` and `test_kernel_threads.py`. One C++ test was
-added, `Determinism.TheKernelsAgreeWithThisTestAboutOpenMP`, and one lit RUN line
-for `npu-sim --kernel-info`. **No existing test changed its result**, and the
-baseline re-record touches `git_sha`, the two suite counts and the added test
-names, and nothing else.
-
-**Python coverage on `experiments/` widened from 0.45 points of headroom to
-4.07.** The threshold stays at 58. The two new test files cover the two
-experiment modules that had none, which is why a phase that added roughly 230
-statements to a tree gated on a ratio raised the ratio.
-
-| Tree | CI shape | Developer machine | Threshold |
-|---|---|---|---|
-| `python/npu_frontend` | 93.4313 | 93.4313 | **93** |
-| `scripts` | 16.1191 | 16.1191 | **16** |
-| `experiments` | **62.0669** | **74.5156** | **58** |
-
-**C++ coverage moved from 86.5 to 86.4 and branch from 76.9 to 76.8**, both above
-their thresholds. The 0.1 is `npu-sim --kernel-info`, whose two lines are covered
-by a lit test rather than by the gcov instrumented unit test binaries. It is
-named here rather than left as an unexplained dip.
-
-## The Section 2 carve out, for the owner
-
-**Section 2 says the per cell cost is "budgeted at 15 seconds per cell as a
-planning figure" and that "the 15 second per cell figure is itself replaced by
-the measured value at P10".** The specification file lives outside this
-repository and the standing rule is that it is not edited from here, so the
-replacement is recorded rather than applied. **This is the one item of P10's gate
-that needs a hand other than this branch's.**
-
-- **The measured figure is 1.17 seconds per cell**, over 175 cells in 3.43
-  minutes, serially, on the 14700K under WSL2. Recorded in
-  `experiments/results-runtime.json` and quoted in `docs/NUMBERS.md`. It was 1.27
-  at P11 and the difference is D-0047: the convolution kernel is genuinely
-  parallel from P12 and was not before. **That is a host wall clock and no
-  simulated number moved with it.**
-- **It was 0.60 seconds at P10 and that difference is P11's external tools**,
-  which now run inside the same suite: a SCALE-Sim invocation and, on the dilated
-  cells, two, plus one Accelergy invocation per distinct scratchpad budget. The
-  suite finishes in under four minutes against ninety, so the factor in hand has
-  gone fifty, twenty four, twenty six. The figure below is the one to quote.
-- **Section 2's arithmetic needs two further corrections**, and they change the
-  cell count rather than the cost:
-  - it multiplies **11** ablatable passes; there are **8**, because
-    `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
-    arrive at P13 and no `-O` level names them yet;
-  - it takes budget and batch as a free cross product; they are not, per
-    `docs/adr/0010`, so the benchmark cells are 63 rather than 84.
-- **Suggested replacement text**, for the paragraph beginning "That 90 minutes is
-  derived rather than guessed":
-
-  > **Benchmark cells:** 7 models times 3 levels times 3 budget and batch
-  > combinations equals **63**; the budget and the batch are not independent
-  > axes, because a tight budget is the smallest budget at which one program
-  > allocates and the same model at a larger batch is a different program.
-  > **Ablation cells:** 8 ablatable `-O2` passes times 7 models times 2 budgets
-  > equals **112**. Total **175 cells**. Measured at Phase P12 at **1.17 seconds
-  > per cell** serially, which is 3.43 minutes for the whole suite including the
-  > external cross validation tools, so **the stated budget of 90 minutes stands
-  > with a factor of twenty six in hand**. The headroom is what pays for running
-  > the cells serially, which the per cell timing objects of Section 16.1
-  > require. It was 1.27 seconds at P11, before the convolution kernel was
-  > compiled with OpenMP, and 0.60 at P10, before SCALE-Sim and Accelergy ran
-  > inside the suite. Both differences are host wall clock and neither moved a
-  > simulated number.
-
-**The ablatable set goes from 8 to 11 at P13**, when `-npu-assign-layout`,
-`-npu-tile-to-scratchpad` and `-npu-double-buffer` arrive and an `-O` level names
-them. That takes the ablation cells from 112 to 154 and the total from 175 to
-217, so the paragraph above needs re-deriving in the P13 commit that adds them
-rather than after it.
 
 ## What P11 measured, and still holds
 
@@ -362,6 +465,50 @@ and the timing object**, which is the same distinction made executable.
 
 ## Activation proofs and rehearsal recipes
 
+### What P13 activates, which is nothing, and the two triggers that did not fire
+
+**This branch activates no CI job and no CI step.** It widens one existing step's
+assertion, which is not the same thing: the `external cross validation` step
+still prints that it is off and still asserts the tools are absent, and what
+changed is that it now asserts three rather than one.
+
+**That widening was rehearsed four ways with the prediction written first**, and
+the fourth is the one that made it worth doing.
+
+| Shape | Predicted | Result |
+|---|---|---|
+| this machine, all three modules present | exits 1 naming `scalesim`, the first the loop reaches | exactly that |
+| the CI shape, all three absent | exits 0, "confirmed absent" | exactly that |
+| only ZigZag present | exits 1 naming `zigzag` | exactly that |
+| the **old** step body, against that same shape | it names only `scalesim`, so it cannot see this one | **it printed "confirmed absent" in an image that has ZigZag in it** |
+
+The last row is the silence Section 19.0 forbids, arriving through the one tool
+the assertion did not name. It is not hypothetical: `zigzag` is in
+`EXTERNAL_TOOLS` now, so `missing_tools` reports it and `require_external_tools`
+would fail on it, and a step that told the log the tools were absent while one of
+them was importable would be wrong in the direction that matters.
+
+> **Trigger, carried forward unchanged: the commit that adds
+> `-npu-tile-to-scratchpad`.** P12 recorded the trigger for wiring
+> `experiments/compile_time_benchmark.py --check` into `ci.yml` as "P13, because
+> tiling makes functions longer, which moves the crossover with the genuinely
+> quadratic offset assignment scan toward the measured range". **Tiling has not
+> landed on this branch, so functions are not longer**, and switching the gate on
+> now would gate on a curve nothing has moved. Rehearse it red first with
+> `--sizes 500`, which is the branch that has no fit and exits 1 naming what to
+> do about it; then switch it on in the `build-and-test` job, under
+> `pull_request` and `push` to `phase/**` like every other step, positioned after
+> `check-reachability full` and before `regression-baseline --check`, which is
+> documented as running last because it needs everything the job has.
+
+> **Trigger, also unfired: `experiments/kernel_threads.py` into `nightly.yml`.**
+> P12 recorded it as "the first phase that changes the convolution kernel's loop
+> nest, which is P13's tiling or P14's integer kernels". **This branch does not
+> touch the kernel**, so the table it would measure is P12's. It fires with the
+> same commit as the one above, because a tiled convolution has a smaller output
+> tile per instruction and more instructions, and the kernel's team cap is
+> `batch * outputChannels`.
+
 ### 0. Reproducing the CI image locally, which is now a standing recipe
 
 *Added at P11 after D-0046.* This project has to stay green in **two**
@@ -373,9 +520,12 @@ row two tests off.
 
 Three things, and all three are needed:
 
-1. **`import scalesim` and `import accelergy` must fail.** A `sitecustomize.py`
-   on `PYTHONPATH` installing a meta path finder that raises
-   `ModuleNotFoundError` for those two roots.
+1. **`import scalesim`, `import accelergy` and `import zigzag` must fail.** A
+   `sitecustomize.py` on `PYTHONPATH` installing a meta path finder that raises
+   `ModuleNotFoundError` for those three roots. **`zigzag` is the third from
+   P13**, and a shim that blocked only the first two would model an image the
+   CI one is not, in the direction that makes the suite look smaller than it
+   is.
 2. **The `accelergy` binary must not be on `PATH`**, and everything else must
    be. The `PATH` is the venv's `bin` **minus** those entry points, not a `PATH`
    without the venv: the image has `gcovr`, `pytest` and `python3`, and the
@@ -600,141 +750,113 @@ with the staleness check red beside it. Both restored.
 **Which trigger these need:** none. They are pytest tests and run in every job
 that runs pytest.
 
+## The external tool install, recorded
+
+Started before anything else in the phase, because Section 23 says P11 blocks on
+it entirely. **Total wall clock under two minutes**, and then it cost most of a
+session anyway for reasons unrelated to download time.
+
+| Step | Seconds |
+|---|---|
+| clone and install SCALE-Sim | 35 |
+| clone and install Accelergy | 11 |
+| the four plug ins, first pass | 44, two of them failing |
+| `accelergy-table-based-plug-ins` with `--no-build-isolation` | 1 |
+| CACTI submodule, `make -j4`, and the plug in install | 9 |
+
+Every install used a constraints file built from `requirements-lock.txt`, so no
+external tool could move a pin the 175 committed results were measured under.
+**Nothing in the lock file moved.**
+
+Three deviations, each recorded where it belongs rather than absorbed:
+
+- `accelergy-table-based-plug-ins` imports `yaml` in its `setup.py`, which pip's
+  isolated build environment does not have. Installed with
+  `--no-build-isolation`. `docs/adr/0003-resolved-tool-matrix.md`.
+- `accelergy-cacti-plug-in` copies a built CACTI binary its clone does not
+  contain. Submodule initialised and `make` run first. Same record.
+- **SCALE-Sim does not run under numpy 2**, so its install is patched.
+  D-0044, and `scalesim_installed_tree_sha256` in every manifest.
+
+And one deviation from the specification itself: Section 16.3 says to read the
+example topologies from the **installed path** of the pinned version, and the
+pinned version's wheel ships the package without its `topologies/` or `layouts/`
+directories. They are read from the pinned source clone instead, and
+`test_the_column_order_is_the_pinned_versions_own` reads the real file and
+asserts the exporter's header still matches it, so the rule that matters is
+enforced from the pinned source rather than dropped.
+
+### ZigZag, installed at P13, and it took four seconds
+
+Started before anything else in the phase, for the reason Section 23 gives and
+P11 followed: Section 16.5 blocks the cross check on it entirely.
+
+| Step | Seconds |
+|---|---|
+| `pip install zigzag-dse` into `~/npu-venv`, wheel and five new dependencies | 4 |
+
+**`zigzag-dse` 3.8.5, which imports as `zigzag`.** Section 16.5 pins that package
+name, records that it is not the same name as the project, and warns that
+`pip install timeloop` fetches an unrelated periodic task scheduling library
+rather than the accelerator modelling tool. This project installs no Timeloop, so
+that trap is one it cannot fall into.
+
+**Recorded by version rather than by git sha**, which is the exception ADR 0003
+already carves out for anything installed from a package index. There is no clone
+and no sha to name, and a version that resolves on the index is the stronger
+record for a tool that has one.
+
+**Nothing in `requirements-lock.txt` moved**, checked the same way P11 checked
+it. Seven pins resolved as already satisfied. Five packages arrived, `cerberus`,
+`dill`, `multiprocessing_on_dill`, `seaborn` and `typeguard`, none of which any
+committed result was measured under and none of which anything in this repository
+imports.
+
+**One deviation from Section 16.5 itself, and it resolves the easy way.** That
+section says ZigZag requires Python 3.11 or newer and that the requirement must
+be reconciled against the recorded build environment. This environment is 3.14.4,
+which is **above** the floor rather than below it, so there is nothing to
+reconcile: the wheel is `py3-none-any` and installed with no build step. The
+floor `zigzag-dse` sets is why `requires-python` has said 3.11 since P0, and P13
+is the first phase in which the tool that set it is present.
+
+
 ## Defects
 
-**One new at P12, and it is in the build, which is a first.** Every defect this
-project has found before this one was in code, in a test, or in a claim about
-one. This one was in a CMake usage requirement, which is the layer everything
-else takes on trust.
+**One new at P13, and it is in this file's sibling.** Every defect before D-0047
+was in code, in a test, or in a claim about one; D-0047 was in the build. This
+one is in the **defect log itself**, which is the document the project relies on
+to be right about what is wrong with it.
 
-- **D-0047**, the convolution kernel was never compiled with OpenMP, and the test
-  that proves it is bitwise stable was comparing two serial runs. The OpenMP
-  usage requirement was attached to `NPUSimulator` and `add_mlir_library`
-  compiles that library's sources in `obj.NPUSimulator`, so `-fopenmp` reached
-  every consumer of the library and never reached the library. From P7 to P12 the
-  `parallel for` of Section 10.3 was preprocessed away while the configure log
-  said it was there, and `DeterminismTest.cpp`, which links the simulator and
-  therefore did have OpenMP, printed a thread count of 28 and compared two single
-  threaded runs. **Resolved**, in three parts, with a rehearsal that turns the
-  fault back on and shows which test goes red. `docs/DEFECT_LOG.md` carries the
-  reproduction and the second, smaller fault the fix exposed.
+- **D-0048**, D-0045 named a mechanism the cost model does not have and quoted a
+  cell it does not match. **Resolved 2026-09-04, and the cost model is
+  unchanged**: what was wrong was an entry and the reading of the divergence
+  decomposition that rested on it. The full account is in the section above and
+  the reproductions are in `docs/DEFECT_LOG.md`. **D-0045 is marked withdrawn
+  with its body left exactly as P11 wrote it**, because an entry rewritten to be
+  right is an entry nobody can learn from.
 
-  **It is the fourth appearance of P10's shape and the first inside the build.**
-  D-0040 through D-0043 were each a value that arrived through a channel which
-  loses information, treated as though it had not. Here the value is "was this
-  compiled with OpenMP", the channel is CMake's distinction between a target and
-  the object library it is built from, and the two readers of that value never
-  compared notes. **What is new is that nothing about it was observable from
-  inside the process that cared.** `_OPENMP` is a property of a translation unit
-  and every unit that asked was answering correctly about itself.
+  **It is the sixth appearance of P10's shape and the second in a claim rather
+  than in code.** D-0040 through D-0043 were each a value that arrived through a
+  channel which loses information, treated as though it had not. D-0047 was a
+  build property no reader could observe from inside the process that cared, with
+  a test that had been vacuous for three phases. This one is nearer D-0047 than
+  the other four: **the claim was checkable from inside the artefact the whole
+  time, in six lines of arithmetic, and nothing ever asked.** The frozen
+  constants test pins the value and says nothing about the accounting, so the
+  accounting was under no assertion at all.
 
-  **It was found by measuring before changing anything**, which is the practice
-  worth carrying rather than the fault worth remembering. A table of speedups
-  between 0.98 and 1.03 on seven small models is what small models look like, and
-  the reading that made the difference was `/usr/bin/time -v` reporting 98 percent
-  of one CPU at `OMP_NUM_THREADS=28`.
+  **The practice that found it is D-0047's, applied to D-0047's own successor
+  phase**: measure the thing before changing it. The difference is that here the
+  measurement was arithmetic rather than `nm` on an object file, which makes it
+  cheaper and therefore less excusable to have skipped.
 
-### The two from P11, one open and one resolved
+### The two from P11, both now closed
 
-**Neither is in this project's own code.** One is in an external tool and one is
-in this project's cost model, found by the external tool, which is what cross
-validation is for.
-
-- **D-0044**, SCALE-Sim v3 does not run under numpy 2, and reports a missing
-  input file by exiting **zero**. Three `int(max(...))` casts over numpy arrays,
-  failing on the tool's own shipped example, on every upstream branch at the
-  pinned sha. `scripts/patch-scalesim.py` is the three expression fix, applied by
-  hand and never as a side effect of running a benchmark, and every manifest
-  records `scalesim_installed_tree_sha256` beside the upstream sha so the record
-  says the tool was modified. **The second half is the one to remember**:
-  `scale_sim.set_params` calls the builtin `exit()` on an input error, which is
-  status zero, and Accelergy's own shipped example crashes and exits zero too.
-  Neither wrapper in this project reads an exit status; both check the outputs.
-  That is D-0040 through D-0043's shape arriving from outside the repository.
-- **D-0045**, the cost model charges the array's weight preload once per
-  instruction and SCALE-Sim charges it per fold. **Found by the cross
-  validation**, not by reading the code, on `resnet_block`'s 3 by 3 convolution:
-  478 cycles here against 1465 there for the same 36864 multiply accumulates,
-  reconciled by `check_the_same_arithmetic` before being compared. It is the
-  dominant term in the fragmentation column and the root cause of every layer in
-  the above 25 percent band. **Open, deliberately.** Retuning a cost model
-  against an external tool invalidates every ablation already recorded, which is
-  the rule Section 16.5 states for ZigZag; P13 gets the reproduction.
-
-### The three from P10, which are fixed and stay recorded
-
-Three, all found by that branch and fixed in it. **Two were found by CI, on the
-two pushes it had, and neither could have been found locally**: one varied the
-checkout depth and the other varied who owns the workspace, and nothing on a
-developer machine varies either.
-
-- **D-0040**, seven tests marked `slow` at P3 that CI has never run. **Found by a
-  prediction that was wrong**, while rehearsing the step that turns them on. It
-  is D-0037's mirror inverted: D-0037 was a result that depends on what is lying
-  around locally and is invisible in CI; this is a *test* that only ever ran
-  locally, so any environment dependent failure in it had exactly one place to
-  hide and that was the only place nobody looked.
-- **D-0041**, the first CI run of this phase's tests asked questions a shallow
-  checkout cannot answer. **Found by CI**, run 33559636835: eight failures, all
-  in P10 test files, all green locally. `actions/checkout` fetches one commit by
-  default and P10 is the first phase whose tests resolve historical shas. The fix
-  is `fetch-depth: 0` on the three jobs that run the suite **and** a refusal in
-  this project's own code, which is the half that mattered more: `landing_sha`
-  was returning the graft commit, a sha that looks like an answer and is not, and
-  a result naming it would have satisfied the ancestor test while recording the
-  wrong provenance. No checkout option prevents that one.
-- **D-0042**, a git fatal read as an answer, and a probe that could not have told
-  either way. **Found by CI**, run 33571635111, on the commit that fixed D-0041:
-  same tests red, evidence moved, the history now fetched and the commits now
-  present, and the tests still calling them absent. The workspace is owned by the
-  runner user and the job runs as root in a container, so git refused the
-  repository as dubiously owned and exited 128, which this project read as "no".
-  `rev-parse --is-shallow-repository` prints its fatal to **stdout**, so D-0041's
-  day old guard passed and let everything downstream run. Two parts to the fix,
-  and the second is the one that made the first possible: every git call goes
-  through one runner that raises unless the exit code is genuinely an answer, and
-  `commit_exists` moved off `cat-file -e`, which returns 128 for an absent object
-  **and** for an unreadable repository and cannot separate them at all.
-- **D-0043**, a bound between two clocks that ignored the quantum of the coarser
-  one. **Found by CI**, run 33575891610, which is also the run where
-  `build-and-test` went green including every D-0041 and D-0042 test, so those
-  two are proven in CI. `--mlir-timing` prints seconds to four decimals, the
-  instrumentation records microseconds, and the comparison treated both as exact;
-  it failed on a 1.7 microsecond margin between a one decimal figure and a six
-  decimal one. Every bound now derives its quantum from the text actually parsed,
-  and **the per pass bound got tighter**, from a loosely chosen 0.15 ms to a
-  derived 0.05 ms. Reproduced locally against `build-coverage` at one run in ten.
-
-**No defect was found in the compiler.** Every failure this phase produced was in
-the measuring apparatus or in a claim about it, which is what a measurement phase
-should expect and is worth saying rather than leaving as an absence.
-
-**The four are one lesson told four ways, and it is worth stating because the
-project already knew it.** D-0040 was a test that only ever ran in one
-environment. D-0041 was a helper that answered a question it could not observe.
-D-0042 was the same helper answering a different unobservable question, one day
-later, through a probe that could not have distinguished the cases even had the
-exit codes been read correctly. D-0043 is a comparison that ignored the precision
-of one of its two operands.
-
-All four are the same shape: **a value arrived through a channel that loses
-information, and the code treated it as though it had not.** Section 16.1 spends
-a paragraph forbidding exactly this for result fields, which is why
-`instruction_count` is an integer and every wall clock is an object carrying an
-interval that says how uncertain it is, and why `values_of` refuses to average a
-`null`. **The schema had the discipline and the code around it kept not having
-it.** That is the part worth carrying into P11, which shells out to two more
-tools and parses their output: whatever reads an external tool's numbers has to
-carry that tool's precision alongside them.
-
-**D-0047 makes it five, and it moves the lesson down a layer.** The four above
-are all in code somebody could read. D-0047 is in the build, where the lost
-information is which target a compile option reached, and the two files that
-disagreed about it were both correct about themselves. **The practice that found
-it is the transferable part**: measure the thing before changing it, and when the
-measurement is the number you would have predicted anyway, ask the machine a
-question with a yes or no answer. `nm` and `ldd` settled in one line what a table
-of speedups could not settle at all.
+- **D-0044**, SCALE-Sim v3 does not run under numpy 2 and reports a missing input
+  file by exiting zero. Unchanged, and `scripts/patch-scalesim.py --check` still
+  reports every edit in place.
+- **D-0045**, **withdrawn at P13**. See D-0048.
 
 ## The prediction, adjudicated
 
@@ -777,97 +899,110 @@ Claim 3 being wrong is the more useful of the two: it is Section 16.2's stated
 reason for requiring ablation rows at every budget, arriving as evidence rather
 than as a rule this project took on trust.
 
+**P13 adds one clause to this table and it is not in the entry.** The P11
+entry's fourth row, that no layer exceeds 25 percent at the default budget
+with both ports on, was answered wrong at P11 and D-0045 was recorded as the
+root cause the clause demands. **That root cause is withdrawn at P13**, so
+the row is still answered wrong and the reason for it is again open. See
+D-0048. The prediction file itself is not edited, which is the rule, and this
+correction lives here and in `docs/NUMBERS.md` rather than in it.
+
 ## Open questions
 
-Eleven, and three are new at P12.
+Twelve, and three are new at P13. One from P12 is answered.
+
+**What the two tools actually disagree about, now that it is not the weight
+preload.** This is D-0048's remainder and it is the phase's largest open
+question. With the stalls removed, `dilated_stack`'s `conv1` still reads 8.65
+times higher on SCALE-Sim and `inception_block`'s 1 by 1 reads 4.34 times higher
+here. The dilation approximation is already its own term measured by a second
+SCALE-Sim run at the true tap extent, so it is not the answer to the first. **The
+next phase to look at it should measure the charge rather than read it**, which
+is the whole of what P13 adds to the question.
+
+**Whether the near cancellation in the divergence decomposition should be
+reported differently.** The two dominant terms both carry SCALE-Sim's stall count
+with opposite signs, so part of their equal and opposite character is
+bookkeeping. Nothing about the decomposition is wrong and the residual is still
+exactly zero; what is open is whether `docs/NUMBERS.md` should say so beside the
+headline, because a reader who takes the near cancellation as a physical
+coincidence is taking more from it than it carries.
+
+**One flake, observed once and not reproduced.**
+`test_the_opt_out_records_a_null_and_a_reason` failed once during this session's
+first full battery run and has not failed since: green alone, green with its own
+file, and green in two subsequent full suite runs at 1082 passed and 18 skipped.
+It asserts `run_benchmarks.main(...) == 0`, and the harness returns 1 on a
+finding, one of which is D-0043's `--mlir-timing` cross check whose bound is
+principled and **load sensitive**. That is a hypothesis and not a measurement:
+**the failure text was not captured**, because the battery script tailed three
+lines and the reason was above them. The lesson is the script's. P12's handoff
+asked for a red at that bound to be read as the next data point rather than as
+noise, and this session cannot say whether it was one.
+
+**The `--mlir-timing` gap has no new quiet measurement.** P11's quiet runs
+measured 0.1577 and 0.1177 against D-0043's 0.2000 bound and P12's measured
+0.1856. **P13 adds no fourth point**, because the fourth point comes from
+`run_benchmarks.py --force` and this branch had no reason to run it: no
+ablatable pass landed, so the suite is the same 175 cells P12 recorded. The next
+session that runs the suite gets the point. **Do not respond to a red at that
+bound by widening it.**
+
+**The allocator growth benchmark is still not wired into CI**, and the trigger it
+is waiting for has not fired. P12 recorded the trigger as "P13, because tiling
+makes functions longer". Tiling has not landed, so functions are not longer, and
+switching the gate on now would gate on a curve nothing has moved. **The trigger
+carries forward unchanged to the commit that adds `-npu-tile-to-scratchpad`**,
+with the same recipe: rehearse it red first with `--sizes 500`, then switch it on
+under `pull_request` and `push` to `phase/**` like every other step in `ci.yml`,
+in the `build-and-test` job, before the `regression-baseline --check` step that
+runs last.
+
+**The kernel's team cap and the thread scaling table are unmeasured against
+tiling**, for the same reason. `experiments/kernel_threads.py` was not re-run,
+because the convolution kernel's loop nest did not change on this branch and the
+instruction shapes it would measure are P12's. Its own trigger, the first phase
+that changes the kernel's loop nest, has also not fired.
 
 **How many other compile options do not reach the sources they were written
-for.** D-0047 was one line of CMake that had been wrong for five phases with no
-observable consequence except a missing speedup and a vacuous test. `lib/Encoding`
-and `lib/Dialect` are built by the same `add_mlir_library`, and this branch
-checked only the one it was already looking at. **Nothing suggests another is
-wrong**, and that is exactly what was true of this one. A cheap answer exists and
-was not taken here because it is not P12's phase: read `build.ninja` for the
-options each object library actually receives and compare against what its
-`CMakeLists.txt` intends. The one thing that would make it unnecessary is a
-project wide habit of asserting build properties from inside the artefact, which
-is what `kernelsUseOpenMP()` is for one file.
+for.** Unchanged from P12. Nothing suggests another is wrong, and that is exactly
+what was true of D-0047.
 
-**The `--mlir-timing` gap margin narrowed and one run is not a trend.** P11's
-quiet runs measured 0.1577 and 0.1177 ms against D-0043's 0.2000 bound; P12's
-measured 0.1856 on a machine with nothing else on it. There is no mechanism that
-ought to couple a parallel simulation to a compile timing, because they are
-separate processes run in sequence within a cell. That is an argument rather than
-a measurement, and P13 has the next data point. **Do not respond to a red run at
-that bound by widening it.**
+**Whether the thread scaling table should be recorded per host.** Unchanged.
 
-**Whether the thread scaling table should be recorded per host or left as one
-machine's number.** `experiments/kernel_threads.py` writes JSON carrying the host
-context, and nothing consumes it: the numbers live in `docs/NUMBERS.md` labelled
-as the 14700K's. The nightly runner would give a second point on a four vCPU
-machine and the honest expectation is that it is close to 1.0, which is worth
-recording precisely because it is unflattering. Left open rather than guessed at,
-and the trigger for wiring it is in the activation section.
-
-**D-0045 is open and P13 inherits it, and P12 deliberately did not touch it.**
-The weight preload accounting is optimistic for narrow deep GEMMs, which is most
-of this suite. Every performance claim taken from `simulated_cycles`,
-`effective_macs` or `utilization` carries that, and `docs/DEFECT_LOG.md` says so
-rather than a report footnote saying it. **A performance phase that changed a
-charge would have made its own inertness claim unfalsifiable**, which is why the
-cost model is untouched on this branch and why `git diff main..HEAD` is the
-proof.
-
-**SCALE-Sim runs from a patched install and there is no upstream fix.** The three
-expression numpy 2 patch is applied by hand and recorded by tree hash. The
-question for a later phase is whether to carry the patch upstream, pin a
-container with an older interpreter, or wait: none is obviously right, and the
-tree hash makes the current arrangement honest rather than tidy.
+**SCALE-Sim runs from a patched install and there is no upstream fix.**
+Unchanged.
 
 **The fp32 MAC coefficient fails Section 16.4's sanity check at 10.71 times.**
-The cause is identified and is not this project, and the measured value is pinned
-so that it moving is a failure. What is still open is whether an fp32 array is
-the right thing to model at all: at P14 the integer kernels arrive and the
-published int8 multiply is 0.2 pJ against 3.7, so the energy story changes shape
-rather than scale.
+Unchanged, and P14's integer kernels are where the energy story changes shape.
 
-**The clock is 1 ns and this project has no other reason to have one.** It was
-needed because Accelergy's tables are indexed by cycle time, it was chosen before
-looking at what it did to the sanity check, and it is recorded as an assumption.
-A later phase that pins a clock for another reason should reconcile the two
-rather than discover them separately.
+**The clock is 1 ns and this project has no other reason to have one.**
+Unchanged.
 
 **The external tools do not run in CI and the committed numbers are the only
-record of them.** The step is off, says so in the run log, and asserts the tools
-are absent so that it cannot quietly become a second copy of a step that is on.
-The trigger to switch it on is the CI image gaining the tools, which is a P0
-shaped decision.
+record of them.** Unchanged, and **ZigZag joins that story rather than changing
+it**: the CI step now asserts all three absent instead of one, which was
+rehearsed four ways.
 
-**The measured per cell cost has not reached Section 2.** This is the carve out
-above and it is the only part of the P10 and P11 gates this branch cannot close
-by itself. Until the owner applies it, Section 2 says 15 seconds and 238 cells
-while the repository says 1.27 seconds and 175, and a reader comparing them finds
-a disagreement rather than a correction.
+**The measured per cell cost has not reached Section 2.** Unchanged, and it is
+still the only part of the P10 and P11 gates no branch can close by itself.
 
 **`lenet_batched`'s tight budget cell at batch 1 does not exist, and would not
-have been tight if it did.** Its recorded tight budget is 200832 against a batch
-1 peak of 194592, so the cell would be a second copy of its default budget cell
-wearing the tight label. ADR 0010 excludes it under the same rule that excludes
-the six failures, and this is the one case where the rule does something other
-than avoid a crash. Worth a look when P13 re-measures.
+have been tight if it did.** Unchanged and still worth a look when P13 re-measures
+the budgets, which it has not yet done: ADR 0008's fraction becomes a live knob
+only when tiling gives the compiler a way to fit an instruction whose operands
+exceed the budget, and that is still ahead.
 
 **The declared Python floor and the checkable one still differ by a minor
-version.** `requires-python` says 3.11, mypy cannot go below 3.12. Unchanged by
-this branch and unchanged in its consequences.
+version.** Unchanged in its consequences, and P13 adds the observation that the
+floor exists because of `zigzag-dse`, which is now installed for the first time
+and clears it at 3.14.4.
 
 **The NDEBUG and sanitizer directories still cannot build anything that links
-MLIR**, D-0031, ADR 0009. Unchanged. Note that P10's instrumentation is in
-`lib/Pipeline`, which links MLIR, so it is not covered by the `ndebug` job; that
-is the existing limit rather than a new one.
+MLIR.** D-0031, ADR 0009. Unchanged.
 
-**Section 17.3a's fifth metamorphic relation still cannot be written.** `Pad` is
-refused by name and `Slice` has no converter, and a test asserts the reason is
-still true.
+**Section 17.3a's fifth metamorphic relation still cannot be written.**
+Unchanged.
 
 ## The frozen v1 fallback
 
@@ -882,152 +1017,108 @@ is a fact somebody eventually does not know.
 
 **Nothing in this project may ever write to that directory.** No phase, no
 script, no tool, not once. It may be read, and only through a command that cannot
-write. **Only the owner may retire it.**
-
-The reason it exists on top of git history is that the two protect against
-different failures. History protects against a bad commit. A second directory
-protects against everything else, because if this rebuild goes wrong at any
-point, deleting `~/npu-mlir-v2` returns the machine exactly to its pre build
-state with no reasoning about reflogs required. That guarantee holds only while
-the frozen copy is untouched.
-
-## The external tool install, recorded
-
-Started before anything else in the phase, because Section 23 says P11 blocks on
-it entirely. **Total wall clock under two minutes**, and then it cost most of a
-session anyway for reasons unrelated to download time.
-
-| Step | Seconds |
-|---|---|
-| clone and install SCALE-Sim | 35 |
-| clone and install Accelergy | 11 |
-| the four plug ins, first pass | 44, two of them failing |
-| `accelergy-table-based-plug-ins` with `--no-build-isolation` | 1 |
-| CACTI submodule, `make -j4`, and the plug in install | 9 |
-
-Every install used a constraints file built from `requirements-lock.txt`, so no
-external tool could move a pin the 175 committed results were measured under.
-**Nothing in the lock file moved.**
-
-Three deviations, each recorded where it belongs rather than absorbed:
-
-- `accelergy-table-based-plug-ins` imports `yaml` in its `setup.py`, which pip's
-  isolated build environment does not have. Installed with
-  `--no-build-isolation`. `docs/adr/0003-resolved-tool-matrix.md`.
-- `accelergy-cacti-plug-in` copies a built CACTI binary its clone does not
-  contain. Submodule initialised and `make` run first. Same record.
-- **SCALE-Sim does not run under numpy 2**, so its install is patched.
-  D-0044, and `scalesim_installed_tree_sha256` in every manifest.
-
-And one deviation from the specification itself: Section 16.3 says to read the
-example topologies from the **installed path** of the pinned version, and the
-pinned version's wheel ships the package without its `topologies/` or `layouts/`
-directories. They are read from the pinned source clone instead, and
-`test_the_column_order_is_the_pinned_versions_own` reads the real file and
-asserts the exporter's header still matches it, so the rule that matters is
-enforced from the pinned source rather than dropped.
+write. **Only the owner may retire it.** Nothing on this branch went near it.
 
 ## Next phase
 
-**P13, tiling, double buffering and layout.** Section 13.2 consuming the
-`TilingInterface` that P1 implemented, `-npu-double-buffer` over the tokens
-running **before** allocation per Section 5.1, `-npu-assign-layout` with the
-inverse transpose fold, and the ZigZag cross check.
+**P13, continued. Not P14.** The gate is not met and four of the six deliverables
+have not started. What follows is the plan as it stands after D-0048, which is
+different from the plan P12 handed over, and the differences are the point.
 
-**What P12 leaves on P13's desk.**
+**What is deleted from the brief P12 wrote.**
 
-- **D-0045 is now yours and P12 did not touch it.** The array's weight preload is
-  charged once per instruction here and per fold by SCALE-Sim, worth about a
-  factor of three on a narrow deep convolution, and it is the dominant term in
-  the fragmentation column. P12 was required not to touch the cost model, because
-  a performance phase that changed a charge would have made its own inertness
-  claim unfalsifiable. `git diff main..HEAD` touches no cost model file.
-- **The roofline still cannot fail against this cost model, and P13 is the phase
-  that changes that.** `effective_macs` is defined as `cycles * peak`, so the
-  compute branch is the kernel's own cycle count. Tiling is the first change that
-  produces a charge no longer built from the traffic it moves.
-- **The suite has more headroom than it did, and none of it is yours to spend on
-  a slower measurement.** 1.17 seconds per cell against 1.27, a factor of twenty
-  six against ninety minutes. The gain is a host wall clock and P13 adds cells if
-  it adds an ablatable pass: `-npu-assign-layout`, `-npu-tile-to-scratchpad` and
-  `-npu-double-buffer` all arrive at P13, so the ablatable set goes from 8 to 11
-  and the ablation cells from 112 to 154, which is 217 cells rather than 175.
-  Section 2's arithmetic and the carve out above both need re-deriving in that
-  commit rather than after it.
-- **`--mlir-timing` gap watch.** D-0043's bound is 0.2000 ms, principled and load
-  sensitive. P11's quiet runs measured 0.1577 and 0.1177; P12's measured 0.1856
-  on a machine with nothing else on it. The margin narrowed while this phase put
-  twenty eight threads into the machine. There is no mechanism that ought to
-  couple them, because the compile and the simulation are separate processes run
-  in sequence within a cell, and that is an argument rather than a measurement.
-  **Serialise your measurement runs and say so**, and if a run goes red at that
-  bound, read it as the third data point rather than as noise.
-- **The allocator growth benchmark is committed and P13 is the phase it starts
-  being able to catch something.** P5 predicted it: "if P13's tiling pass makes
-  functions an order of magnitude longer, this benchmark is already committed and
-  will say so". The offset assignment scan is genuinely quadratic and its
-  crossover is beyond 5000 buffers today. Longer functions move it toward the
-  measured range. `--check` is written, rehearsed red, and **not wired into CI**;
-  the trigger and the recipe are in the activation section above.
-- **The kernel's team cap is `batch * outputChannels` and tiling changes both.**
-  A tiled convolution has a smaller output tile per instruction and more
-  instructions, so the collapsed loop shortens and the number of parallel regions
-  grows. That is a wall clock question and not a numeric one, but it is the
-  quantity `experiments/kernel_threads.py` measures, so re-run it and record the
-  table beside P12's rather than assuming the 2.10 geometric mean survives.
-- **Every P12 field is filled in all 175 cells from one run and a P13 run must
-  keep them filled.** Unchanged from P11: the suite writes them from one run, a
-  cell reused from disk raises, and `results_to_tex.py` refuses a table whose
-  rows come from more than one commit.
-- **Tiling is an exact transformation and its gate says goldens byte identical,
-  exactly.** P12's inertness diff is the shape of proof that clause wants, and
-  the throwaway that produced it is worth writing again rather than reaching for
-  `git diff`: 95614 leaf fields classified, seven permitted movers named in
-  advance, zero forbidden. Any movement from layout or double buffering is inside
-  1e-6 and goes in `docs/BREAKING_CHANGES.md` **before** the commit that causes
-  it.
+- **The D-0045 governance sequence does not run.** No `docs/BREAKING_CHANGES.md`
+  declaration, no `CostModel.h` change, no divergence re-measure driven by a
+  constant that moved, no baseline re-record for a numeric reason, no
+  re-versioning of `p11-scalesim-divergence.md`'s band against new constants.
+  All of it was conditional on a charge moving and no charge moves. Section
+  16.5's rule against retuning a model to match an external tool is what P11
+  obeyed when it left D-0045 open, and it is the same rule that says not to
+  change the charge now on a diagnosis that does not survive being checked.
+- **The divergence terms are not re-measured for D-0045's sake.** What is worth
+  re-reading is the decomposition's prose, not its arithmetic.
+
+**What is unchanged and is the critical path.**
+
+1. **`-npu-tile-to-scratchpad`**, Section 13.2. The interface half is done and
+   proven, so this is policy: the working set as input plus weight plus bias plus
+   output bytes at the current element type, firing only when it exceeds the
+   budget; the mapping as a first class object with per dimension temporal
+   factors, spatial factors bound to the 16 by 16 array and a permutation;
+   exhaustive enumeration over divisors with capacity pruning, which is what
+   makes the result optimal **with respect to the stated cost model** rather than
+   merely good; `strategy=fixed` and `strategy=largest-fit` kept as named
+   baselines with their regret reported as an ablation row. **Score on the two
+   port makespan of Section 5.5, not on DRAM bytes**, and double the prefetched
+   operand's working set when double buffering is on, or a tiling that fits only
+   without double buffering silently defeats it. Ties break by output channel,
+   then height, then width, then batch.
+2. **`-npu-double-buffer`**, over the tokens, **before allocation** per Section
+   5.1, because the allocator has to see the doubled working set or it places a
+   program that cannot fit and spills the wrong buffers.
+3. **`-npu-assign-layout`** with the inverse transpose fold, without which the
+   pass only ever adds instructions.
+4. All three ablatable, wired into `-O2` per Section 12, positive **and**
+   negative lit tests each per the P9 pattern, and **the Section 2 arithmetic
+   re-derived in the same commit** rather than after it: 11 ablatable passes, 154
+   ablation cells, 217 total.
+5. **The Section 13.3 experiment, all three arms per model**, which is the
+   phase's reason to exist. Only `resnet_block` and `inception_block` spill at
+   their tight budget today, so those two are where the comparison has a subject;
+   ADR 0010's six models that cannot allocate at batch 4 are the population
+   tiling can bring into existence, which would make the experiment wider rather
+   than only deeper.
+6. **The ZigZag cross check**, Section 16.5: export the chosen mapping in ZigZag
+   and Timeloop mapping form and compare **cost under the same mapping**, not two
+   totals from two mappers. Bound the exploration to the layers actually tiled,
+   record wall clock and peak memory, and **if it cannot be made to fit inside
+   the 12 GB ceiling, stop that step and record why. Never suggest editing the
+   WSL configuration.** If it finds a materially better tiling, say so, quantify
+   it, and record it as a follow up in `docs/DEFECT_LOG.md` with a reproduction;
+   **do not retune the search to match**.
+
+**Three things this session learned that the next one should not rediscover.**
+
+- **`run_benchmarks.py` needs no arithmetic change** to go from 175 to 217. It
+  reads the ablatable set out of the driver at run time and computes both cell
+  counts. What needs editing is its prose and the six places listed above where a
+  count is written down by hand.
+- **`external_tools.py`'s table is the single edit point** for a new external
+  tool, and every consumer follows from it. That is D-0046's fix working.
+- **The tiled implementations decline rather than fail.** A pass that gets a
+  failure back from `getTiledImplementation` has been told the tile is not
+  expressible, and Section 13.2's answer to that is the allocator's spilling, not
+  a diagnostic.
 
 ## Next command
 
-Push the branch, then dispatch the nightly.
+The branch is not ready to push: the gate is not met and the phase is
+incomplete. **Do not open a pull request for it yet.**
+
+The next command is the first commit of the tiling pass, and before it the
+rehearsal P12's trigger asks for:
 
 ```
-git push -u origin phase/p12-performance
-gh workflow run nightly.yml --ref phase/p12-performance
+python experiments/compile_time_benchmark.py --check --sizes 500
 ```
 
-**The green condition for the push** is `pytest slow cells` running **1063
-passed, 31 skipped** in the CI image, the `external cross validation` step
-printing `external: confirmed absent`, and `regression-baseline: no drift.`
+which must exit 1 naming what to do about it, and is the red rehearsal that
+precedes wiring that gate into `ci.yml` in the same commit that makes functions
+longer.
 
-**Three lines to check before anything else, and the first is new.**
+**Three things to check before anything else.**
 
-**The `build-and-test` job's `NPUSimulatorTests` should report 55 passed rather
-than 54**, and the new one is `Determinism.TheKernelsAgreeWithThisTestAboutOpenMP`.
-**If it is red in CI, that is the most interesting result this branch can
-produce** and it is not a regression: it would mean the CI image's clang finds
-OpenMP and the same object library gap exists there in a form the directory scope
-fix does not close. The gtest message names the mechanism and the file. Do not
-relax the assertion; the whole point of it is that it is the only thing that can
-tell a serial kernel from a parallel one from inside the process.
+**The suite is still 175 cells and the baseline is recorded at `f7b32ba`.** A
+`regression-baseline.sh --check` at the tip reports no drift, and the first
+commit that adds an ablatable pass will move the cell count, the ablation table,
+`macros.tex` and six hardcoded numbers together. Move them in one commit.
 
-**The determinism assertion now means something in CI for the first time.** The
-image has OpenMP 5.1 for the clang jobs and gcc with libgomp in coverage, and
-until this branch the kernel it exercised had no parallel region in any of them.
-A green `Determinism.OneThreadAndMaxThreadsAgreeBitwise` in CI is the first
-evidence this project has that the convolution is bitwise stable across thread
-counts **on a second toolchain**, which is worth more than the local run.
+**`run_benchmarks.py --force` has not been run on this branch**, so there is no
+fourth `--mlir-timing` data point and the committed 175 cells are P12's. Serialise
+that run when it happens and say so, and read a red at 0.2000 as the fourth point
+rather than as noise.
 
-**The `pytest` arm's skip count.** 18 locally and 31 in the CI shape, because the
-tests that need SCALE-Sim or Accelergy skip through `pytest.importorskip` there
-and run here. A skip count of 18 in CI would mean those tests are being collected
-and passed without a tool, which is not possible and would mean something else is
-wrong.
-
-**The green condition for the nightly** is the benchmark suite printing a per
-cell cost and `run-benchmarks: inside the budget`. Record that cost in the
-engineering log beside the 1.17 seconds this machine measured. **Expect it to be
-higher and expect the gap to have narrowed**: a hosted runner is four vCPU, so
-the kernel parallelism is worth much less there than the 2.10 geometric mean this
-machine measured, and the external tools still run inside the suite. A nightly
-figure close to P11's is the expected result and not a regression.
+**The one observed flake is unexplained and its failure text was not captured.**
+If `test_the_opt_out_records_a_null_and_a_reason` goes red again, capture the
+whole failure before rerunning it. It asserts the harness returned zero, and the
+harness returns one on a finding.
