@@ -185,3 +185,42 @@ modified rather than showing a sha that does not describe the code that ran.
 **Every install used a constraints file built from `requirements-lock.txt`**, so
 that no external tool could move a pin the 175 committed results were measured
 under. Nothing in the lock file moved.
+
+### ZigZag, installed at P13, and it is recorded differently on purpose
+
+*Added 2026-09-04.* Section 16.5 pins the package as `zigzag-dse`, records that
+it is **not the same name as the project**, and warns that `pip install timeloop`
+fetches an unrelated periodic task scheduling library rather than the accelerator
+modelling tool. This project has never run that command and installs no Timeloop
+at all.
+
+| Tool | Package | Version | Imports as | Installed |
+|---|---|---|---|---|
+| ZigZag | `zigzag-dse` | 3.8.5 | `zigzag` | 2026-09-04 |
+
+**It is recorded by version rather than by git sha, and that is the exception the
+rule above already carves out.** The paragraph on source installs says tools that
+install from a package index are recorded by package metadata; ZigZag has a
+released wheel on PyPI, so there is no clone and no sha to name. Recording a sha
+here would mean cloning a repository this project does not otherwise need, and a
+version that resolves on the index is the stronger record for a tool that has
+one.
+
+**Nothing in `requirements-lock.txt` moved**, which is the same claim P11 makes
+above and it is checked the same way. The install resolved `numpy`, `networkx`,
+`sympy`, `matplotlib`, `onnx`, `tqdm` and `pyyaml` as already satisfied and moved
+none of them. What it added is `cerberus 1.3.8`, `dill 0.4.1`,
+`multiprocessing_on_dill 3.5.0a4`, `seaborn 0.13.2` and `typeguard 4.6.0`, none
+of which any committed result was measured under and none of which any code in
+this repository imports. Total wall clock four seconds, against the two minutes
+the six P11 installs took.
+
+**The interpreter question resolves the other way from the one Section 16.5
+anticipates.** That section says ZigZag requires Python 3.11 or newer and that
+the requirement has to be reconciled against the recorded build environment. This
+environment is 3.14.4, which is above the floor rather than below it, so there is
+nothing to reconcile: the wheel is `py3-none-any`, it installed with no build
+step of its own, and `import zigzag` answers with the version above. The floor
+that `zigzag-dse` sets is the reason `requires-python` says 3.11 at all, which
+this document has recorded since P0, and P13 is the first phase in which the tool
+that set it is actually present.

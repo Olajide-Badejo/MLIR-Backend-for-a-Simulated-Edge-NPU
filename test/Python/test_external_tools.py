@@ -220,13 +220,22 @@ def test_the_environment_block_is_the_two_facts_the_baseline_compares(
     }
 
 
-def test_the_real_table_is_the_two_tools_this_project_installs() -> None:
+def test_the_real_table_is_the_three_tools_this_project_installs() -> None:
     """The controlled table above must not drift from the real one.
 
     Every test here substitutes `EXTERNAL_TOOLS`, so a tool added to the real
-    table would be tested by none of them. This is the assertion that notices.
+    table would be tested by none of them. This is the assertion that notices,
+    and it noticed: `zigzag` arriving at P13 turned it red, which is why this
+    test is named for a count rather than for a property.
+
+    **`zigzag` is a library with no binary and that is not an omission.** The
+    `zigzag-dse` wheel ships no console script, so the only half of the
+    reachability question it has is the import, and writing a binary name here
+    that does not exist would make the tool permanently unreachable in every
+    environment including the one that has it.
     """
     assert external_tools.EXTERNAL_TOOLS == {
         "scalesim": None,
         "accelergy": "accelergy",
+        "zigzag": None,
     }

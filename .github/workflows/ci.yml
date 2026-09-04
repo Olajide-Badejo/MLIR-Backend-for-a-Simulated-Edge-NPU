@@ -705,19 +705,27 @@ jobs:
       - name: "external cross validation (activation table: P11, off)"
         run: |
           set -euo pipefail
-          echo "external: OFF at P11. SCALE-Sim and Accelergy are not in this"
-          echo "external: image, so experiments/roofline.py,"
+          echo "external: OFF at P11. SCALE-Sim, Accelergy and ZigZag are not in"
+          echo "external: this image, so experiments/roofline.py,"
           echo "external: experiments/scalesim_export.py and"
           echo "external: experiments/accelergy_energy.py are run on the"
           echo "external: development machine and their answers are committed in"
           echo "external: experiments/results/."
-          if python3 -c "import scalesim" 2>/dev/null; then
-            echo "::error::scalesim is importable in this image."
-            echo "external: this step is OFF because the tools are absent. If"
-            echo "external: they are present, the step should be ON and running"
-            echo "external: them, not printing that it is not."
-            exit 1
-          fi
+          # ZigZag joins this assertion at P13, on the same terms as the other
+          # two: it is in `EXTERNAL_TOOLS`, so an image that gained it while this
+          # step still printed that the tools are absent would be exactly the
+          # silence Section 19.0 forbids. The loop reads the names rather than
+          # repeating one `if` three times, because a fourth tool arriving and
+          # being asserted in two of three places is the shape of D-0032.
+          for module in scalesim accelergy zigzag; do
+            if python3 -c "import ${module}" 2>/dev/null; then
+              echo "::error::${module} is importable in this image."
+              echo "external: this step is OFF because the tools are absent. If"
+              echo "external: they are present, the step should be ON and running"
+              echo "external: them, not printing that it is not."
+              exit 1
+            fi
+          done
           echo "external: confirmed absent, which is what this step asserts."
 
       # ---- regression-baseline --check. ON at P9b. -------------------------

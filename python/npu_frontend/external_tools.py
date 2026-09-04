@@ -47,9 +47,19 @@ DEFAULT_SOURCE_TREE: Final[Path] = Path.home() / "npu-external" / "scale-sim-v2"
 
 #: Each external tool as an importable module and the binary that has to be on
 #: `PATH` for it to answer. `None` means the tool is a library with no binary.
+#:
+#: **`zigzag` joins here at P13 and it is the first entry installed from a
+#: package index rather than from a clone.** Section 16.5 pins the package as
+#: `zigzag-dse`, which is not the same name as the project and is not the name it
+#: imports under, so the key is the module and the pin lives in
+#: `docs/adr/0003-resolved-tool-matrix.md` beside the git shas of the others. It
+#: ships no console script, so the binary half is `None` and the reachability
+#: question is the import alone, which is the whole of what this project drives
+#: it through.
 EXTERNAL_TOOLS: Final[dict[str, str | None]] = {
     "scalesim": None,
     "accelergy": "accelergy",
+    "zigzag": None,
 }
 
 
