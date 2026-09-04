@@ -26,7 +26,7 @@
     "scratchpad_budget": "default",
     "scratchpad_budget_bytes": 1048576
   },
-  "content_hash": "3163eb7138153cba7e613a5f63f67d31c8b44c0ac72aa6780487a2385dd24217",
+  "content_hash": "28ff6469ed9f340b4b23abfd2a582734deb1dec9b19f5c103527c0ef69970170",
   "deltas": null,
   "external": {
     "area_mm2": 8.54464056,
@@ -176,7 +176,7 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "17d63ed9955fcd1132b7a0e1999d047a96a73d14",
+    "git_sha": "dcf913fb8a0003e101a927dfd62aeea5068c4003",
     "llvm_tag": "LLVM version 22.1.8",
     "registered_estimators": [
       "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
@@ -190,7 +190,7 @@
     "run_order_position": 154,
     "run_order_seed": 20260901,
     "technology_node": "45nm",
-    "timestamp": "2026-09-02T21:23:40.681738+00:00",
+    "timestamp": "2026-09-04T00:56:53.892077+00:00",
     "tool_shas": {
       "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
       "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
@@ -261,10 +261,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.5330667,
-        "ci95_low_ms": 0.461300975,
-        "iqr_ms": 0.04109425,
-        "median_ms": 0.4785905,
+        "ci95_high_ms": 0.633670925,
+        "ci95_low_ms": 0.442476125,
+        "iqr_ms": 0.06218299999999999,
+        "median_ms": 0.4683965,
         "n_trials": 10
       }
     },
@@ -305,10 +305,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.27799392500000003,
-        "ci95_low_ms": 0.204275725,
-        "iqr_ms": 0.003426499999999999,
-        "median_ms": 0.21073750000000002,
+        "ci95_high_ms": 0.3059865,
+        "ci95_low_ms": 0.202739075,
+        "iqr_ms": 0.032912250000000004,
+        "median_ms": 0.23120249999999998,
         "n_trials": 10
       }
     }
@@ -379,17 +379,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 41.56610254876796,
-      "ci95_low_ms": 38.20479227524629,
-      "iqr_ms": 1.9340727531016455,
-      "median_ms": 40.715845998420264,
+      "ci95_high_ms": 47.00534072518394,
+      "ci95_low_ms": 37.437878575042305,
+      "iqr_ms": 5.40388400008851,
+      "median_ms": 43.74312050003937,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 0.7575998,
-      "ci95_low_ms": 0.6681273,
-      "iqr_ms": 0.03595124999999999,
-      "median_ms": 0.6963165,
+      "ci95_high_ms": 0.939657425,
+      "ci95_low_ms": 0.6502205249999999,
+      "iqr_ms": 0.06632900000000008,
+      "median_ms": 0.700852,
       "n_trials": 10
     }
   }
