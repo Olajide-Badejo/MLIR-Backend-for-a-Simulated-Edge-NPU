@@ -25,9 +25,23 @@
 // runs are then single threaded. It says so in its output rather than being
 // skipped, because a test that silently becomes vacuous is worse than no test.
 //
+// **And that last sentence is why `TheKernelsAgreeWithThisTestAboutOpenMP`
+// exists.** Saying so in the output is not enough on its own, because between
+// P7 and P12 the output said the opposite of the truth: this file was compiled
+// with `-fopenmp` and `lib/Simulator/Kernels.cpp` was not, so the line below
+// printed a thread count of 28 while the kernel it exercises had no parallel
+// region in it at all, and the bitwise comparison ran twice over the same
+// serial code path. Nothing here could see that, because `_OPENMP` is a
+// property of a translation unit and this translation unit's answer was
+// correct about itself. D-0047. The first test in this file now asks the
+// kernels rather than the preprocessor, and it is red in exactly the build
+// shape that fault produced.
+//
 //===----------------------------------------------------------------------===//
 
 #include "TestPrograms.h"
+
+#include "NPU/Simulator/Simulator.h"
 
 #include "gtest/gtest.h"
 
@@ -128,11 +142,42 @@ std::vector<float> runWith(int threads) {
   return harness.outputF32(0);
 }
 
+TEST(Determinism, TheKernelsAgreeWithThisTestAboutOpenMP) {
+  // The two halves of D-0047, compared. `_OPENMP` below is this file's; the
+  // function is `Kernels.cpp`'s. They can only disagree in one direction and
+  // that direction has happened: this file links NPUSimulator and therefore
+  // picks up the OpenMP usage requirement attached to it, while the sources
+  // NPUSimulator is built from compile in a separate object library that the
+  // requirement never reached.
+  //
+  // The reverse cannot happen and is asserted anyway, because an assertion
+  // that only holds one way is one somebody eventually inverts.
+#ifdef _OPENMP
+  EXPECT_TRUE(nbin::kernelsUseOpenMP())
+      << "this test was compiled with OpenMP and lib/Simulator/Kernels.cpp was "
+         "not, so the convolution has no parallel region and every thread "
+         "count assertion in this file is vacuous. That is D-0047: the OpenMP "
+         "usage requirement is attached to the NPUSimulator target and the "
+         "sources compile in obj.NPUSimulator, which does not receive it. The "
+         "fix is the directory scope add_compile_options in "
+         "lib/Simulator/CMakeLists.txt";
+  std::cout << "[          ] the kernels report " << nbin::kernelThreadCount()
+            << " threads, read inside Kernels.cpp.\n";
+#else
+  EXPECT_FALSE(nbin::kernelsUseOpenMP())
+      << "the kernels were compiled with OpenMP and this test was not, which "
+         "no arrangement of this project's CMake produces and which would mean "
+         "the two are being configured from different places";
+  EXPECT_EQ(nbin::kernelThreadCount(), 1);
+#endif
+}
+
 TEST(Determinism, OneThreadAndMaxThreadsAgreeBitwise) {
 #ifdef _OPENMP
   const int maximum = omp_get_max_threads();
   std::cout << "[          ] OpenMP is on and reports " << maximum
-            << " threads available.\n";
+            << " threads available, and the kernels report "
+            << nbin::kernelThreadCount() << ".\n";
 #else
   const int maximum = 1;
   std::cout << "[          ] OpenMP is off in this build, so both runs below "

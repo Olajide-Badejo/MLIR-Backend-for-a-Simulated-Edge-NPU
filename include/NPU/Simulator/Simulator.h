@@ -38,6 +38,36 @@
 namespace nbin {
 
 //===----------------------------------------------------------------------===//
+// What this build of the kernels can do.
+//===----------------------------------------------------------------------===//
+
+/// Whether `lib/Simulator/Kernels.cpp` was compiled with OpenMP.
+///
+/// **This asks the kernels, not the caller.** It is defined in `Kernels.cpp`
+/// and returns that translation unit's `_OPENMP`, so a caller cannot answer it
+/// from its own preprocessor state. That distinction is the whole reason the
+/// function exists, and D-0047 is why it is not paranoia: between P7 and P12
+/// the OpenMP usage requirement was attached to `NPUSimulator` and not to the
+/// object library its sources compile in, so every consumer of this header was
+/// compiled with `-fopenmp` and the kernels were not. `omp_get_max_threads()`
+/// answered 28 in a test whose kernel had no parallel region in it, and the
+/// bitwise determinism assertion of Section 10.3 was comparing two serial runs.
+///
+/// A caller that has OpenMP itself and gets `false` from this is looking at
+/// that fault, and `unittests/Simulator/DeterminismTest.cpp` fails on exactly
+/// that comparison so it can never be silent again.
+bool kernelsUseOpenMP();
+
+/// The thread count the convolution kernel would use for its parallel region,
+/// read inside `Kernels.cpp`, or 1 when this build has no OpenMP.
+///
+/// Reported rather than asserted. It is a property of the host and of whatever
+/// `OMP_NUM_THREADS` says, so nothing gates on its value; it is here so that a
+/// test and a tool can print what the run actually had rather than what the
+/// machine could have offered.
+int kernelThreadCount();
+
+//===----------------------------------------------------------------------===//
 // Statistics.
 //===----------------------------------------------------------------------===//
 

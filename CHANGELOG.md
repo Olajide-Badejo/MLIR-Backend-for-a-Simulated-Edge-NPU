@@ -6,6 +6,64 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P12: performance
+
+**Nothing in this phase changes a simulated number, and that is the phase's
+claim rather than a side note.** Goldens are byte identical. Cycles, DRAM bytes
+read and written, scratchpad element counts, instruction counts, MAC counts,
+energy and area are unmoved in every recorded cell. **The only thing that
+changes is host wall clock**, which is a measurement of the machine a run
+happened on and never a property of the simulated design. A speedup reported
+below is a statement about how long a developer waits, and it must not be read
+as the modelled accelerator having become faster. Whatever this phase is worth,
+it is worth nothing to the cycle counts, and the reason for saying so here is
+that a reader coming to the numbers later has no way to tell those two kinds of
+"faster" apart unless somebody writes it down.
+
+- **D-0047: the convolution kernel had never been compiled with OpenMP, in any
+  build, in any environment, since P7.** The OpenMP usage requirement was
+  attached to the `NPUSimulator` target, and `add_mlir_library` compiles that
+  library's sources in a separate object library which the requirement never
+  reached. Every consumer of the simulator got `-fopenmp` and the kernels did
+  not, so the `parallel for` of Section 10.3 was preprocessed away while the
+  configure log said it was there. **The determinism test was the visible cost:**
+  it links the simulator, so it had OpenMP, so it printed a thread count of 28,
+  set the thread count twice, and compared two single threaded runs. It asserted
+  nothing for three phases. `add_compile_options` at directory scope is the fix,
+  and `Determinism.TheKernelsAgreeWithThisTestAboutOpenMP` is what makes the
+  silence impossible to repeat: it asks the kernels rather than the preprocessor,
+  and it is red at every commit from P7 to P12.
+- **`npu-sim --kernel-info`** prints whether this build's kernels have OpenMP and
+  how many threads they would use, read out of `Kernels.cpp` itself. It is the
+  same question on a command line, for a harness or a person who has not got a
+  compiler to hand.
+- **The convolution now parallelises for real, over batch and output channel,
+  with the team capped at the number of output tiles.** The reduction loops are
+  untouched, sequential, and in their original order, which is what keeps the
+  last bits stable. The cap carries no tuned constant: the collapsed loop has
+  `batch * outputChannels` iterations and a thread past that count has no
+  iteration to run while still paying for the region's barrier. Without it, five
+  of the seven suite models ran **slower than serial** at 28 threads.
+- **Measured on the seven models at 1, 2, 4, 8 and 28 threads: 0.86 to 3.17
+  times, geometric mean 2.10, and byte identical output at every thread count on
+  every model.** `experiments/kernel_threads.py` is the harness and it exits
+  nonzero if any byte moves. The one row below 1.0 is `depthwise_separable`,
+  whose entire simulation is a fraction of a millisecond inside a process that
+  takes longer than that to start; it is reported rather than hidden.
+- **The allocator's growth exponent is fitted rather than stepped, and it is
+  measured at the four sizes Section 13.1 names.** The gate asks for 500, 1000,
+  2000 and 5000 **buffers**; at P5 this benchmark read its sizes as operations
+  and the chain allocates one buffer per two operations, so the committed P5
+  curve was taken at 249, 499, 999 and 2499. `--size-unit operations` keeps the
+  P5 table reproducible. The exponent is a least squares line through log time
+  against log size over the whole curve, with the residual at each point beside
+  it, and `--check` fails above a ceiling derived from the sizes rather than
+  chosen.
+- **`experiments/compile_time_benchmark.py --check` and
+  `experiments/kernel_threads.py --check` both exit nonzero on a red result**,
+  which is P11's rule about tools that must not exit zero on failure, applied to
+  two more of them.
+
 ### Phase P11: external cross validation and the roofline
 
 - **The roofline check of Section 16.6 lands, and it lands first.**

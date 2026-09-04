@@ -28,8 +28,34 @@ endif()
 # Section 10.3 requires it to be optional and requires the absence to be said
 # out loud rather than to become a silent difference in behaviour. Without it
 # the convolution kernel runs single threaded and produces bitwise identical
-# output, which is the property SimulatorTest asserts by running the same
+# output, which is the property DeterminismTest asserts by running the same
 # program at one thread and at the maximum and comparing the buffers.
+#
+# **The compile option is set at directory scope and that is D-0047.** It is
+# not a style choice and it is not interchangeable with attaching the imported
+# target to `NPUSimulator` below. `add_mlir_library` compiles these four sources
+# in an object library called `obj.NPUSimulator` and then builds `NPUSimulator`
+# out of the objects, so a usage requirement attached to `NPUSimulator` reaches
+# everything that links it and does not reach the sources it is made of. From
+# P7 until P12 the only OpenMP wiring here was the `target_link_libraries` line
+# at the bottom of this file, and the result was that `-fopenmp` reached
+# `unittests/Simulator/DeterminismTest.cpp`, which links `NPUSimulator`, and
+# never reached `Kernels.cpp`, which is `NPUSimulator`. The `#ifdef _OPENMP`
+# around the convolution's `parallel for` was compiled out in every build in
+# every environment, the status line above said the kernel parallelises, and the
+# test that exists to prove the parallel kernel is bitwise stable was comparing
+# one serial run against another. `add_compile_options` is directory scope, so
+# it applies to every target created after it in this file, `obj.NPUSimulator`
+# included. It is the same mechanism `-Werror=switch` above already relies on
+# for the same reason.
+#
+# `separate_arguments` because `OpenMP_CXX_FLAGS` is one string and is more than
+# one flag on some compilers, and `add_compile_options` would pass a multi word
+# string to the compiler as a single argument.
+#
+# The link line at the bottom of the file stays: it is what puts the runtime on
+# the link line of everything that links this library. The two are different
+# jobs and this project needed both all along.
 # ---------------------------------------------------------------------------
 find_package(OpenMP COMPONENTS CXX)
 
@@ -38,6 +64,8 @@ if(OpenMP_CXX_FOUND)
     "OpenMP: found ${OpenMP_CXX_VERSION}. The convolution kernel parallelises "
     "over the batch and output channel dimensions; the reductions stay "
     "sequential and in their original order.")
+  separate_arguments(NPU_OPENMP_CXX_FLAGS NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
+  add_compile_options(${NPU_OPENMP_CXX_FLAGS})
 else()
   message(STATUS
     "OpenMP: not found. The convolution kernel runs single threaded. Results "
