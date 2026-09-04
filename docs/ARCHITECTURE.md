@@ -367,6 +367,35 @@ tell an interface bug from a policy bug. P2 implements
 and nothing tiling related, because there is nothing on the memref side for
 `TilingInterface` to be useful on.
 
+**What P1 left and P13 finished.** P1 implemented the introspection half for
+every operation and the generation half for the elementwise ones, and returned
+failure from `getTiledImplementation` on the windowed operations, on the stated
+grounds that the halo arithmetic belonged with the pass that would exercise it
+and that a wrong tile is worse than no tile. P13 owns that arithmetic and it is
+now implemented for the convolution, both pools and the matmul, **over the
+parallel dimensions only**: batch, group, per group output channel and the two
+output spatial axes for a convolution, batch, channel and the two spatial axes
+for a pool, and both of M and N for a matmul.
+
+**A tile that splits the reduction is declined**, which is Section 13.2's rule
+and not a gap. Under fp32 addition is not associative, so splitting the input
+channel, the kernel window or a matmul's inner dimension re associates the
+accumulation and moves every golden file; that is permitted only behind
+`allow-reduction-tiling`, with a documented deterministic accumulation order and
+its own golden set. Under INT8 with INT32 accumulation the same split is bit
+exact by construction and the restriction lifts, which is P14's to take.
+
+**The property that makes a parallel tile exact is asserted rather than
+described.** For every output position of every tile, the window touches the same
+input positions it touched untiled, and the positions that lie outside the input
+are the same ones. The second half is what an average pool depends on, because it
+divides by the number of elements that actually contributed rather than by the
+window area, so a tile that turned a real element into a padded one would move a
+divisor rather than only a sum.
+`NPUTiledImplementationTest.Conv2DEveryTileReadsTheSamePositionsAsTheWhole`
+checks it over five window shapes, every tile size that divides the output, and
+every offset.
+
 ### Registration, and the shape of a forgotten one
 
 Interfaces are registered as external models from a separate translation unit,
