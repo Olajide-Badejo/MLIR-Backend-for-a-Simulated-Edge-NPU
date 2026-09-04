@@ -33,25 +33,118 @@ both trace back here.
 | Cells recorded | 175 | `experiments/results/` |
 | Benchmark cells | 63 | 7 models times 3 levels times 3 budget and batch combinations |
 | Ablation cells | 112 | 8 ablatable passes times 7 models times 2 budgets |
-| Suite runtime | 3.70 minutes | `experiments/results-runtime.json`, `suite_seconds` 221.721 |
-| Cost per cell | 1.27 seconds | `experiments/results-runtime.json`, `seconds_per_cell` |
+| Suite runtime | 3.43 minutes | `experiments/results-runtime.json`, `suite_seconds` 205.558 |
+| Cost per cell | 1.17 seconds | `experiments/results-runtime.json`, `seconds_per_cell` |
 | Budget | 90 minutes | Section 2, enforced as a gate by `experiments/run_benchmarks.py` |
-| Worst clock disagreement | 0.1177 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
+| Worst clock disagreement | 0.1856 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
 
-**1.27 seconds per cell is the measured figure that replaces Section 2's 15
+**1.17 seconds per cell is the measured figure that replaces Section 2's 15
 second planning number.** The suite is inside its budget by a factor of
-twenty four. That headroom is what pays for running the cells serially, which the
+twenty six. That headroom is what pays for running the cells serially, which the
 timing objects require: cells competing for cores would measure the contention
 rather than the compiler.
 
-**It was 0.60 seconds at P10 and the difference is P11's external tools**, which
-now run inside the same suite: one SCALE-Sim invocation per cell and two on the
-dilated cells, plus one Accelergy invocation per distinct scratchpad budget. The
-factor in hand went from fifty to twenty four. **Do not run the suite beside
-those tools in another process**: the first P11 re-record died at cell 74 on the
-`--mlir-timing` cross check with a gap of 0.2157 ms against a bound of 0.2000
-while SCALE-Sim was running elsewhere, and two quiet runs measured 0.1577 and
-0.1177.
+**It was 1.27 seconds at P11 and the difference is the convolution kernel**,
+which is genuinely parallel from P12 and was not before, D-0047. Nothing about
+the simulated design changed: this is a figure for how long a developer waits.
+Before that it was 0.60 seconds at P10, and that difference is P11's external
+tools, which now run inside the same suite: one SCALE-Sim invocation per cell and
+two on the dilated cells, plus one Accelergy invocation per distinct scratchpad
+budget. The factor in hand went fifty, twenty four, twenty six.
+
+**Do not run the suite beside those tools in another process**: the first P11
+re-record died at cell 74 on the `--mlir-timing` cross check with a gap of
+0.2157 ms against a bound of 0.2000 while SCALE-Sim was running elsewhere, and
+two quiet runs measured 0.1577 and 0.1177. **The P12 run measured 0.1856 on a
+machine with nothing else on it**, which is inside the bound and closer to it
+than either quiet P11 run. One run is not a trend and it is recorded rather than
+explained away: P12 puts twenty eight threads into the same machine, the compile
+and the simulation are separate processes that run in sequence within a cell so
+there is no mechanism that ought to couple them, and that is an argument rather
+than a measurement.
+
+---
+
+## The convolution kernel's thread scaling
+
+**Host wall clock only.** Nothing here is a property of the simulated design and
+none of it is comparable with a figure from another machine. Measured on the
+14700K under WSL2, 28 logical processors, best of five whole `npu-sim`
+invocations, by `experiments/kernel_threads.py`.
+
+| Model | 1t s | 2t s | 4t s | 8t s | 28t s | speedup at 28 | output bytes |
+|---|---|---|---|---|---|---|---|
+| `conv_bn_relu_stack` | 0.0035 | 0.0023 | 0.0017 | 0.0015 | 0.0015 | 2.36 | equal |
+| `depthwise_separable` | 0.0016 | 0.0014 | 0.0013 | 0.0015 | 0.0019 | **0.86** | equal |
+| `dilated_stack` | 0.0029 | 0.0021 | 0.0016 | 0.0014 | 0.0014 | 2.07 | equal |
+| `inception_block` | 0.0034 | 0.0023 | 0.0021 | 0.0020 | 0.0019 | 1.77 | equal |
+| `lenet` | 0.0233 | 0.0139 | 0.0096 | 0.0072 | 0.0074 | 3.17 | equal |
+| `lenet_batched` | 0.0902 | 0.0511 | 0.0322 | 0.0251 | 0.0319 | 2.83 | equal |
+| `resnet_block` | 0.0045 | 0.0028 | 0.0021 | 0.0018 | 0.0017 | 2.70 | equal |
+
+**Geometric mean 2.10 times**, and **byte identical output at every thread count
+on every model**, which is Section 10.3's requirement measured on real programs
+rather than only on the synthetic convolution the unit test drives.
+
+`depthwise_separable` is below one and stays reported rather than tuned away. Its
+whole simulation is 12800 multiply accumulates inside a process that takes longer
+than that to start, so there is no arithmetic there for a thread to win back. A
+work threshold that fixed a three tenths of a millisecond row would be a wall
+clock constant measured on one host and baked into the kernel, which is exactly
+what the team size cap exists to avoid.
+
+**Uncapped, five of these seven rows were below one**, by as much as seven times.
+The kernel caps its team at `batch * outputChannels`, the number of independent
+output tiles the instruction has, because a thread past that count has no
+iteration to run and still pays for the region's entry and its closing barrier.
+D-0047 carries the before table.
+
+---
+
+## The allocator's compile time curve
+
+At the four sizes Section 13.1 names, in the unit it names them in.
+`experiments/compile_time_benchmark.py`, best of five, same host.
+
+| Buffers | Operations | Pass s | Total s | Step | Residual |
+|---|---|---|---|---|---|
+| 500 | 1002 | 0.0047 | 0.0209 | | +0.0377 |
+| 1000 | 2002 | 0.0094 | 0.0370 | 1.00 | -0.0343 |
+| 2000 | 4002 | 0.0202 | 0.0696 | 1.10 | -0.0344 |
+| 5000 | 10002 | 0.0593 | 0.1750 | 1.18 | +0.0311 |
+
+| Number | Value |
+|---|---|
+| Fitted growth exponent | **1.1038** |
+| r squared | 0.9987 |
+| Worst residual, log space | +0.0377 |
+| Reference exponent for n, at these sizes | 1.0000 |
+| Reference exponent for n log n, at these sizes | **1.1365** |
+| Reference exponent for n squared, at these sizes | 2.0000 |
+| Ceiling `--check` fails at | 1.5683 |
+
+**The fit is below the n log n reference**, which is the strongest form of
+"consistent with O(n log n)" the clause admits: O is an upper bound, so a curve
+growing more slowly than n log n meets it, and the check is one sided for that
+reason.
+
+Three things this number is not.
+
+- **It is not the sweep line on its own.** `NPUAllocateScratchpad` is liveness,
+  then the sweep line, then offset assignment, and P5 established that the linear
+  liveness term dominates at every size measured. What a curve at four sizes can
+  do is what Section 13.1 asks of it: separate the sweep line from the naive
+  nested formulation, which would sit near 2. It does that with 0.46 of margin.
+  The sweep line's correctness is held from the other direction, by the property
+  test in `AllocatorTest.cpp` against a brute force recomputation.
+- **It is not a proof of a complexity class.** It is a wall clock measurement on
+  one machine, at four sizes, and the residual column is printed so a reader can
+  see that the curve is not exactly a power law rather than being told that it is.
+- **It is not comparable with the P5 table without saying which axis.** P5
+  measured 1.05 over 249 to 2499 buffers, because this script read its sizes as
+  operations then. `--size-unit operations` reproduces it: 1.0605 fitted, over
+  pass times of 0.0023, 0.0046, 0.0095 and 0.0264 against P5's recorded 0.0023,
+  0.0046, 0.0096 and 0.0261.
 
 ---
 
