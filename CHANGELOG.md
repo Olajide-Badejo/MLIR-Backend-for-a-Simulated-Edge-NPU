@@ -66,6 +66,33 @@ model file at all.
   an image that has ZigZag in it, which is the reason the widening is a change
   and not tidying.
 
+- **`-npu-tile-to-scratchpad` is implemented and is in no `-O` level.**
+  Section 13.2's pass: it fires only when an operation's working set exceeds the
+  budget, enumerates the mapping space exhaustively with capacity pruning, scores
+  on Section 5.5's two port makespan through the simulator's own cost model,
+  records the chosen mapping on every tile, and declines rather than splitting an
+  fp32 reduction. It is in no level because `-npu-lower-to-npuisa` cannot lower a
+  tiled function yet, so wiring it in would take every model in the suite from
+  compiling to not compiling. **The ablatable set stays at eight and the suite
+  stays at 175 cells.**
+- **The cost model has its own library, `NPUCostModel`, and did not change.**
+  Section 5.5 requires the tiling pass to score against the one home; reaching
+  `gemmCharge` previously meant linking the whole simulator into `npu-opt`.
+- **The tiles are emitted at constant offsets rather than as `scf` loops that are
+  then unrolled**, because a convolution tile at a dynamic offset is not
+  representable in this dialect: the per tile pads differ between the first, last
+  and middle tiles of an axis and `pads` is a static attribute. The observable
+  contract is unchanged and asserted twice, by the pass about its own function
+  and by a lit test from outside: the tiles are fully unrolled and no `scf`
+  operation survives.
+- **D-0049, opened.** The flake this phase saw once is a bound whose precondition
+  is not checked. `cross_check_against_mlir_timing`'s upper bound assumes the gap
+  between MLIR's timer and this project's instrumentation is the instrumentation's
+  own walk; on a loaded machine it is the walk plus whatever the scheduler did.
+  Reproduced at one run in eight under load and none idle. **It is not D-0043's
+  deficit bound**, which is the one whose margin P12 asked P13 to watch. Left
+  open: the fix is a precondition, not a wider bound.
+
 ### Phase P12: performance
 
 **Nothing in this phase changes a simulated number, and that is the phase's

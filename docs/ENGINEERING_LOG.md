@@ -5520,3 +5520,183 @@ than by rerunning until it is green.** P12's handoff said to read a red at that
 bound as the next data point rather than as noise, and this session cannot say
 whether it was one. Recorded here so P14 can, and the flake governance of Section
 17.9 at P15 is where a test that does this twice belongs.
+
+## 2026-09-04 Phase P13: the tiling pass, and the flake that was a conditional bound
+
+### What the pass is, and the one line that matters about it
+
+`-npu-tile-to-scratchpad` is implemented and is in **no `-O` level**. It fires
+only when an operation's working set exceeds the budget, enumerates the mapping
+space exhaustively with capacity pruning, scores candidates on Section 5.5's two
+port makespan through the simulator's own `gemmCharge` and `dmaCycles`, records
+the chosen mapping on every tile, declines rather than splitting an fp32
+reduction, and leaves no `scf` behind.
+
+It is in no level because `-npu-lower-to-npuisa` cannot lower a tiled function.
+Wiring it in would take every model in the suite from compiling to not compiling
+at every budget tight enough to trigger it, so the ablatable set stays at eight
+and Section 2's arithmetic stays where it is.
+
+### The cost model moved house
+
+`CostModel.cpp` is now `lib/CostModel`, built as `NPUCostModel`, which links
+nothing. Section 5.5 says the one home "is also what the tiling pass scores
+against, so the project has exactly one cost function rather than a modelled one
+and a heuristic one that can disagree"; before this the only way for a pass to
+reach `gemmCharge` was to link `NPUSimulator`, which would have put the machine,
+its kernels, its memory and its OpenMP runtime on the link line of `npu-opt`.
+**A compiler has no business linking a simulator**, which is the same argument
+`lib/Simulator/CMakeLists.txt` already makes in the other direction about a
+simulator linking MLIR. Its own directory rather than a second target beside the
+simulator, because LLVM enforces one target per directory and discourages the
+opt out for a reason this project agrees with.
+
+### The tiles cannot be emitted as loops, and the reason is in the dialect
+
+Section 13.2 describes the tiled loops as emitted with `scf` and then fully
+unrolled inside the pass. The first version did exactly that, with
+`scf::tileUsingSCF` and `loopUnrollFull`, and it failed at the first tile.
+
+`tileUsingSCF` calls `getTiledImplementation` with the loop's **induction
+variable** as the offset, because the tile has to be built once inside a body
+that runs many times. **A convolution tile at a dynamic offset is not
+representable in this dialect.** The first tile of an axis carries the leading
+pad, the last carries the trailing one, the tiles between carry neither, and
+`pads` is a static `DenseI64ArrayAttr`, so one loop body cannot stand for tiles
+that disagree about it. The interface declines a non constant offset, which is
+the refusal written at P13 with the halo arithmetic, and this is the other end of
+it.
+
+So the grid is walked at compile time and every tile is materialised at a
+constant offset, which is what full unrolling produces anyway. **The observable
+contract that description exists for is met exactly**: the tiles are fully
+unrolled, no `scf` operation survives, the pass asserts that about its own
+function, and the lit test asserts it from outside. What is not met is the
+intermediate step, and it is not met because it cannot be.
+
+That assertion earned its place immediately: the first failed run left an
+`scf.for` behind, and the pass said so by name rather than letting the lowering
+report something unrelated three passes later.
+
+### Two bugs the tests caught, and the second is the interesting one
+
+The pass printed a budget of 64 as `@`. Streaming a tablegen pass option into a
+`Diagnostic` picks the character overload, and 64 is `@` in ASCII. It is D-0043's
+shape in miniature, a value arriving through a channel that loses information,
+and the diagnostic that told a reader the wrong number would have been the only
+place anybody saw it. The fix is a plain `int64_t` copy with a comment saying
+why it exists.
+
+The second was in the search. The byte model computed a tile's input extent as
+`(tile - 1) * stride + effectiveKernel` and did not clamp it to the input the
+operation actually has. Under same padding a tile covering a whole axis was
+therefore priced as reading **more rows than the axis contains**, because the
+window runs off both edges and the padding is not fetched.
+
+**That is not conservative in a safe direction.** It made the search believe
+that not splitting an axis costs more memory than the whole operand does, which
+pushed it to split axes it did not need to split and made `halo=cache` decline
+budgets it could have met. With the clamp, the same convolution goes from eight
+tiles at a makespan of 2988 cycles to four at 1704. The fix shares one helper
+between the thing that decides whether a candidate fits and the thing that
+decides whether it is good, so the two cannot disagree about what a tile is.
+
+**It was found by a lit test asserting an exact choice rather than a property.**
+A test that had checked only "it tiled" would have passed against both.
+
+### The regret of the named baselines, which is now a number
+
+On the eight channel convolution at a 2048 byte budget: exhaustive scores 1704,
+`fixed` ties at 1704, `largest-fit` scores 1790. That is 5 percent, and it is
+small on this shape rather than small in general; the point of keeping the two
+baselines is that the exhaustive result has something to be compared against
+rather than only asserted about.
+
+### Section 13.3's third arm, as far as it goes honestly
+
+The halo boolean is implemented and its limits are written into the pass
+description rather than left to the report. `halo=recompute` allows the two
+output spatial axes to be split, so adjacent tiles re-read the overlapping input
+rows and the halo is paid for in DMA per tile. `halo=cache` refuses to split
+them, so no halo is created and none is re-read.
+
+**What `halo=cache` is not is a scratchpad resident halo carried from one tile
+to the next.** That needs a transfer whose source is the previous tile's buffer
+and a cost model term for a partially reused operand, and this machine has
+neither. The boolean is the choice between **paying** the halo and **not
+creating** one, which is the cheap version Section 13.3 asks for, and any
+comparison reported from it has to say so.
+
+The lit test makes the tradeoff a measurement: `halo=cache` tiles four ways at
+2048 bytes and declines at 768, where `halo=recompute` splits the rows two at a
+time and fits in 720. Not creating a halo costs the ability to shrink the input
+at all, and the budget where that stops being affordable is a number.
+
+### D-0049: the flake was a bound whose precondition is not checked
+
+The single unexplained red from earlier in this phase was reproduced
+deliberately: twenty four busy loops against twenty eight hardware threads, eight
+runs, **one red**; three runs on the idle machine, none, on top of four clean
+full suite runs earlier.
+
+```
+--mlir-timing reports Canonicalizer at 4.5000 ms and this project's
+instrumentation at 0.4496 ms, a gap of 4.0504 ms against a bound of 2.3000 ms
+```
+
+**It is not the bound P12 asked P13 to watch**, and the distinction is the useful
+part of the finding. `cross_check_against_mlir_timing` has two bounds pointing in
+opposite directions. The **deficit** bound catches the instrumentation reading
+above MLIR, is derived from the print quantum, and is D-0043's, whose margin
+narrowed across 0.1577, 0.1177 and 0.1856 ms against 0.2000. This is the
+**upper** bound, `half_ulp` plus fifty percent of MLIR's figure. Nothing here is
+a fourth data point on the other one, and recording it as one would have put a
+wrong number into the only place that number is tracked.
+
+**The code already contains the argument for what is wrong.** The upper bound's
+premise is that the gap *is* the instrumentation's own operation walk, and
+`pass_stats.py` already refuses to check it under a traced interpreter, on the
+stated grounds that a tracer stretches everything else inside MLIR's window so
+the gap stops being the walk. A busy machine does the same thing for the same
+reason: MLIR's timer is wall clock and brackets the whole pass, so time the
+process spends descheduled lands inside MLIR's window and not inside this
+project's. 4.5000 ms for a canonicalization this project measured at 0.4496 is
+not a canonicalization that took four milliseconds.
+
+**It is left open deliberately.** The fix is a precondition, not a wider bound:
+measure the process's own CPU time against the wall clock and skip the upper
+bound when the process did not have the processor, exactly as it is already
+skipped under a tracer, with the deficit bound left active because its premise
+survives either way. `TIMING_GAP_FRACTION` must not move to a number chosen to
+make a run green, which is the rule this project already applies to D-0043's
+bound and which applies here for the same reason.
+
+**Where it matters is CI rather than here.** The test carries `slow`, CI's
+`pytest slow cells` step runs slow tests, and the runners are shared four vCPU
+machines. A developer machine with nothing on it is the least likely place for
+this to fire, which is D-0037 and D-0040's shape a third time: a check whose
+behaviour depends on the machine, validated on the machine where it behaves.
+
+**The cost of nearly losing it is worth recording.** The first observation went
+into a battery script that tailed three lines of output, so the message was gone
+before anybody read it and the session recorded the flake as unexplained. What
+turned it into an entry was capturing the whole failure, and the price of not
+doing that the first time was running everything again.
+
+### What tiling is waiting on, stated so it is not rediscovered
+
+`-npu-lower-to-npuisa` has no pattern for `tensor.extract_slice` or
+`tensor.insert_slice`, so a tiled function does not lower. That is the smaller of
+the two changes.
+
+The larger one decides whether tiling is worth anything. The conversion loads
+each DRAM function argument into the scratchpad **once, whole**, and records it
+so every consumer reads the same resident buffer. Under that arrangement a tiled
+program's slices are views of buffers that are already resident: tiling would
+split the compute instruction and leave the scratchpad footprint exactly where it
+was, and the ablation row would show instructions moving and cycles moving and
+pressure not moving at all. For tiling to relieve pressure the **slice** has to
+be what enters the scratchpad, which is consistent with Section 8's count of one
+load per DRAM value entering it, since under tiling the values are the slices.
+It is a real change to the conversion and to `dma-boundaries.mlir`, and it is
+where P13 continues.

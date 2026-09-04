@@ -22,7 +22,11 @@ back that far.
 
 ## Open
 
-None.
+**D-0049**, the timing gap bound assumes the process had the CPU.
+Reproduced under load, explained, and deliberately not fixed here, because
+the fix is a change to a gate and a red at a gate is not answered by
+widening it. The entry carries the reproduction and the proposed
+precondition.
 
 ## Resolved
 
@@ -2924,3 +2928,93 @@ the way a stale comment is never merely cosmetic.
   separately and is not the answer. Whatever the mechanism is, it is not the
   weight preload, and the next phase to look at it should start by measuring the
   charge rather than by reading it.
+
+### D-0049 the timing gap bound assumes the process had the CPU, and says so about a tracer but not about a busy machine
+
+- **Found:** 2026-09-04, phase P13, by a single unexplained red in a full suite
+  run, and then reproduced deliberately under load rather than left as a flake.
+- **Status:** **open.** Reproduced, explained and **not fixed here**, because
+  the fix is a change to a gate and the rule this project has about gates is
+  that a red is not answered by widening the bound. The proposed fix is below
+  and it is not a widening.
+
+- **Reproduce.** Load the machine and run the test eight times:
+
+  ```
+  for i in $(seq 1 24); do ( while :; do :; done ) & done
+  for run in $(seq 1 8); do
+    python -m pytest \
+      test/Python/test_benchmarks.py::test_the_opt_out_records_a_null_and_a_reason \
+      -q -m 'slow or not slow'
+  done
+  ```
+
+  **One red in eight under load; none in three on the idle machine**, and none
+  in any of the four full suite runs this session took on an idle one. The
+  failure:
+
+  ```
+  npu_frontend.pass_stats.PassStatisticsError: --mlir-timing reports
+  Canonicalizer at 4.5000 ms and this project's instrumentation at 0.4496 ms, a
+  gap of 4.0504 ms against a bound of 2.3000 ms, which is 0.0500 ms of display
+  rounding plus 50% of MLIR's figure.
+  ```
+
+- **Which bound this is, because it is not the one P12 asked P13 to watch.**
+  `cross_check_against_mlir_timing` has **two** bounds and they point in
+  opposite directions. The **deficit** bound catches the instrumentation
+  reading *above* MLIR, is derived from the print quantum, and is D-0043; that
+  is the one whose margin narrowed across P11 and P12 at 0.1577, 0.1177 and
+  0.1856 ms against 0.2000. **This is the other one**, the upper bound, which
+  catches MLIR reading far *above* the instrumentation and is
+  `half_ulp + 50 percent of MLIR's figure`. Nothing here is a fourth data point
+  on D-0043's margin, and reading it as one would be reading the wrong number.
+
+- **What is wrong, and the code already contains the argument.** The upper
+  bound's premise is stated in its own message: the gap **is** the
+  instrumentation's own operation walk, the one thing inside MLIR's window and
+  outside this project's. `pass_stats.py` already knows that premise can fail
+  and already refuses to check the bound when it does, for a tracer:
+
+  > **It is not checked under a traced interpreter, and that is a precondition
+  > rather than an exemption.** Under a tracer everything else in that window is
+  > stretched too, so the gap becomes the walk plus whatever the tracer did, and
+  > the bound stops measuring what it says.
+
+  **A busy machine does the same thing for the same reason.** MLIR's timer is
+  wall clock and brackets the whole pass, so when the process is descheduled
+  mid pass that time lands inside MLIR's window; the instrumentation's own
+  figure does not grow with it. The gap becomes the walk plus whatever the
+  scheduler did, which is exactly the sentence above with one word changed.
+  4.5000 ms for a canonicalization that this project measured at 0.4496 is not
+  a canonicalization that took four milliseconds.
+
+- **Where it matters, which is not this machine.** The test carries
+  `@pytest.mark.slow` and CI's `pytest slow cells` step runs slow tests, on
+  shared four vCPU runners. A developer machine with nothing on it is the least
+  likely place for this to fire and CI is among the most likely, which is
+  D-0037 and D-0040's shape again: a check whose behaviour depends on the
+  machine, validated on the machine where it behaves.
+
+- **The proposed fix, and it is a precondition rather than a wider bound.**
+  Measure the compiling process's own CPU time against the wall clock across the
+  invocation, and skip the **upper** bound when the ratio shows the process did
+  not have the processor, exactly as it is already skipped under a tracer and
+  with the same message. The deficit bound stays active in both cases, because
+  its premise survives: MLIR's window contains this project's whatever the
+  scheduler is doing in between. **What must not happen is
+  `TIMING_GAP_FRACTION` moving from 0.5 to a number chosen to make this run
+  green**, which would discard the only measurement the check exists to make.
+
+- **What was done instead of fixing it.** It is recorded, reproduced with a
+  written prediction, and handed to the flake governance of Section 17.9 at
+  P15, which owns the quarantine marker with its owner and expiry fields. The
+  one thing this entry adds beyond the reproduction is the discrimination: the
+  test is not flaky, the bound is conditional, and the condition is not being
+  checked.
+
+- **A note on how it was nearly lost.** The first observation was a single red
+  in a battery script that tailed three lines of output, so the message was
+  gone before anybody read it and the session recorded it as unexplained.
+  Capturing the whole failure is what turned a flake into an entry, and the
+  cost of not doing it the first time was a second run of everything.

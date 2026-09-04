@@ -20,7 +20,7 @@ costs more than writing these lines did.
 
 **P13, tiling, double buffering and layout. Incomplete, and this handoff says so
 first.** Branch `phase/p13-tiling`, cut from `main` at `2f59429`, which is the
-P12 merge. Four commits. **Not pushed.** **The gate is not met**, three of the
+P12 merge. Six commits. **Not pushed.** **The gate is not met**, three of the
 four deliverables have not started, and the reason the phase stopped where it did
 is the first commit.
 
@@ -30,6 +30,8 @@ is the first commit.
 | `6d662f2` | `build(external): zigzag joins the external tools, on the terms the other two are on` |
 | `f7b32ba` | `feat(dialect): the halo arithmetic P1 declined to write, over the parallel dimensions` |
 | `d8532a0` | `record: the baseline at the tip, and it moves fifteen test names and nothing else` |
+| `e8910f2` | `feat(passes): -npu-tile-to-scratchpad, implemented and deliberately in no level yet` |
+| tip | `docs: the flake is a conditional bound, and the lowering is what tiling waits on` |
 
 **The commit order carries meaning and the first commit is the phase.** P13 was
 briefed to fix D-0045 under the full declare then re-record governance, on the
@@ -54,7 +56,7 @@ asks for.
 |---|---|
 | Goldens byte identical for the tiling work, exactly | **stands, and it is not yet evidence.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty. Nothing consumes the tiling interface yet, so nothing could have moved them. The claim becomes evidence at the commit that adds `-npu-tile-to-scratchpad` |
 | Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **not reached.** Neither pass exists. No entry was written, and writing one before the pass would be declaring a movement nobody has measured |
-| No `scf` operation reaches the lowering, asserted by a lit test | **not started.** No pass emits `scf` yet |
+| No `scf` operation reaches the lowering, asserted by a lit test | **met for the pass, not yet for a level.** `-npu-tile-to-scratchpad` asserts it about its own function and `test/Transforms/tile-to-scratchpad.mlir` asserts it from outside with a `NOSCF` prefix. It becomes a statement about the lowering when a level runs the pass |
 | A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **not started**, and the numbers it will have to reproduce are recorded below so the next session does not have to re-derive them |
 | The tight budget question answered per model with all three arms of Section 13.3 | **not started.** This is the phase's reason to exist and none of the three arms has been run |
 | The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **not started** |
@@ -160,13 +162,59 @@ enough to check by hand has exactly one fold.
   second half is what an average pool's divisor depends on.
   `Conv2DEveryTileReadsTheSamePositionsAsTheWhole` checks both over five window
   shapes, every tile size that divides the output, and every offset.
+- **`-npu-tile-to-scratchpad` is implemented and is in no `-O` level**, which is
+  the state its own commit argues for at length. It fires only when an
+  operation's working set exceeds the budget, enumerates the mapping space
+  exhaustively with capacity pruning, scores on Section 5.5's two port makespan
+  through the simulator's own `gemmCharge` and `dmaCycles`, records the chosen
+  mapping on every tile as `npu.tiling_choice`, declines rather than splitting an
+  fp32 reduction, and leaves no `scf` behind. Six lit cases in the P9 pattern
+  across two files, including Section 13.3's halo boolean as a measured contrast
+  rather than a claim: `halo=cache` tiles four ways at a 2048 byte budget and
+  declines at 768, where `halo=recompute` splits the rows and fits in 720.
+- **The cost model has its own library now and did not change.**
+  `lib/CostModel`, built as `NPUCostModel`, linking nothing. Section 5.5 requires
+  the tiling pass to score against the one home, and before the split the only
+  way to reach `gemmCharge` was to link the whole simulator into `npu-opt`.
 - **ZigZag is installed, pinned and wired**, and unused. `zigzag-dse` 3.8.5,
   imports as `zigzag`, four seconds of wall clock, nothing in
   `requirements-lock.txt` moved. Recorded in ADR 0003 by version rather than by
   git sha, which is the exception that document already carves out for a package
   index install.
 - **The suite is still 175 cells and the ablatable set is still 8.** Nothing in
-  this branch adds an `-O` level pass.
+  this branch puts a pass into an `-O` level.
+
+## What tiling is waiting on, which is the next piece and is two changes
+
+**`-npu-lower-to-npuisa` has no pattern for `tensor.extract_slice` or
+`tensor.insert_slice`**, which is what a tiled program is stitched from, so a
+tiled function does not lower at all. `npu-opt --npu-tile-to-scratchpad
+--npu-lower-to-npuisa` reports `failed to legalize unresolved materialization`
+on the destination argument. That is the first change and it is the smaller one.
+
+**The second decides whether tiling is worth anything, and it is worth stating
+before somebody writes the first one and expects a result.** The conversion today
+loads each DRAM function argument into the scratchpad **once, whole**, and
+records it in `LoweringState::argumentBuffers` so every consumer reads the same
+resident buffer. Under that arrangement a tiled program's slices are views of
+buffers that are **already resident**, so tiling splits the compute instruction
+into more, smaller instructions and leaves the scratchpad footprint exactly where
+it was. The allocator would see the same buffers, the sweep line would find the
+same peak, and the ablation row would show instructions moving and cycles moving
+and pressure not moving at all.
+
+For tiling to relieve pressure, **the slice of a DRAM value has to be what enters
+the scratchpad**: a tile's operands separately allocated, loaded per tile, and
+dead after it, so the sweep line peak falls toward one tile's working set. That
+is consistent with Section 8, which counts one `dma_load` per DRAM value entering
+the scratchpad and under tiling the values are the slices rather than the whole
+arguments, but it is a real change to the conversion and to
+`test/Dialect/NPUISA/dma-boundaries.mlir`, which pins that invariant at exactly
+that point.
+
+**Neither change is started and neither is hard to describe**, which is why they
+are described here rather than left for the next session to rediscover by running
+the same two commands.
 
 ## The numbers the next session needs and should not re-derive
 
@@ -928,17 +976,36 @@ exactly zero; what is open is whether `docs/NUMBERS.md` should say so beside the
 headline, because a reader who takes the near cancellation as a physical
 coincidence is taking more from it than it carries.
 
-**One flake, observed once and not reproduced.**
-`test_the_opt_out_records_a_null_and_a_reason` failed once during this session's
-first full battery run and has not failed since: green alone, green with its own
-file, and green in two subsequent full suite runs at 1082 passed and 18 skipped.
-It asserts `run_benchmarks.main(...) == 0`, and the harness returns 1 on a
-finding, one of which is D-0043's `--mlir-timing` cross check whose bound is
-principled and **load sensitive**. That is a hypothesis and not a measurement:
-**the failure text was not captured**, because the battery script tailed three
-lines and the reason was above them. The lesson is the script's. P12's handoff
-asked for a red at that bound to be read as the next data point rather than as
-noise, and this session cannot say whether it was one.
+**The one flake is answered, and it is D-0049.** It was observed once, was
+green in every run after it, and was recorded as unexplained with the note that
+the failure text had been lost to a script that tailed three lines. It was then
+reproduced deliberately: **one red in eight runs under twenty four busy loops,
+none in three on the idle machine.** The message is
+`--mlir-timing reports Canonicalizer at 4.5000 ms and this project's
+instrumentation at 0.4496 ms, a gap of 4.0504 ms against a bound of 2.3000 ms`.
+
+**It is not the bound P12 asked P13 to watch, and that distinction is the
+useful part.** `cross_check_against_mlir_timing` has two bounds pointing in
+opposite directions. The **deficit** bound catches the instrumentation reading
+above MLIR, is derived from the print quantum, and is D-0043's, whose margin
+narrowed across 0.1577, 0.1177 and 0.1856 ms against 0.2000. This is the
+**upper** bound, `half_ulp` plus 50 percent of MLIR's figure, and nothing here
+is a fourth data point on the other one.
+
+**The bound is conditional and the condition is not being checked**, which
+`pass_stats.py` already knows how to say: it refuses to check this bound under a
+traced interpreter, on the stated grounds that a tracer stretches everything
+inside MLIR's window so the gap stops being the instrumentation's own walk. A
+busy machine does the same thing for the same reason. **The fix is a
+precondition and not a wider bound**, and `TIMING_GAP_FRACTION` must not move to
+a number chosen to make a run green. Left open deliberately, because a red at a
+gate is not answered by widening it, and handed to Section 17.9's flake
+governance at P15.
+
+**Where it matters is CI rather than here.** The test carries `slow`, CI's
+`pytest slow cells` step runs slow tests, and the runners are shared four vCPU
+machines. A developer machine with nothing on it is the least likely place for
+this to fire.
 
 **The `--mlir-timing` gap has no new quiet measurement.** P11's quiet runs
 measured 0.1577 and 0.1177 against D-0043's 0.2000 bound and P12's measured
@@ -1040,19 +1107,13 @@ different from the plan P12 handed over, and the differences are the point.
 
 **What is unchanged and is the critical path.**
 
-1. **`-npu-tile-to-scratchpad`**, Section 13.2. The interface half is done and
-   proven, so this is policy: the working set as input plus weight plus bias plus
-   output bytes at the current element type, firing only when it exceeds the
-   budget; the mapping as a first class object with per dimension temporal
-   factors, spatial factors bound to the 16 by 16 array and a permutation;
-   exhaustive enumeration over divisors with capacity pruning, which is what
-   makes the result optimal **with respect to the stated cost model** rather than
-   merely good; `strategy=fixed` and `strategy=largest-fit` kept as named
-   baselines with their regret reported as an ablation row. **Score on the two
-   port makespan of Section 5.5, not on DRAM bytes**, and double the prefetched
-   operand's working set when double buffering is on, or a tiling that fits only
-   without double buffering silently defeats it. Ties break by output channel,
-   then height, then width, then batch.
+1. **The lowering**, which is now the critical path and is the section above.
+   `-npu-tile-to-scratchpad` is done and unreachable until a tiled function can
+   lower, and the second half of that change is what decides whether tiling
+   relieves any pressure at all. Do the per slice DMA, not only the patterns.
+   Expect `test/Dialect/NPUISA/dma-boundaries.mlir` to move, and expect to have
+   to argue in Section 8's own terms why the values entering the scratchpad are
+   now the slices.
 2. **`-npu-double-buffer`**, over the tokens, **before allocation** per Section
    5.1, because the allocator has to see the doubled working set or it places a
    program that cannot fit and spills the wrong buffers.
@@ -1095,30 +1156,38 @@ different from the plan P12 handed over, and the differences are the point.
 The branch is not ready to push: the gate is not met and the phase is
 incomplete. **Do not open a pull request for it yet.**
 
-The next command is the first commit of the tiling pass, and before it the
-rehearsal P12's trigger asks for:
+The next command is the one that shows the blocker, because it is the shortest
+statement of what has to change:
 
 ```
-python experiments/compile_time_benchmark.py --check --sizes 500
+npu-opt test/Transforms/tile-to-scratchpad.mlir \
+  --npu-tile-to-scratchpad=budget=2048 --npu-lower-to-npuisa
 ```
 
-which must exit 1 naming what to do about it, and is the red rehearsal that
-precedes wiring that gate into `ci.yml` in the same commit that makes functions
-longer.
+It reports `failed to legalize unresolved materialization` on the destination
+argument. Making that command produce a program is the first change; making the
+program it produces have a smaller scratchpad peak than the untiled one is the
+second, and only the second is worth measuring.
 
-**Three things to check before anything else.**
+**Four things to check before anything else.**
 
 **The suite is still 175 cells and the baseline is recorded at `f7b32ba`.** A
 `regression-baseline.sh --check` at the tip reports no drift, and the first
-commit that adds an ablatable pass will move the cell count, the ablation table,
-`macros.tex` and six hardcoded numbers together. Move them in one commit.
+commit that puts an ablatable pass into a level moves the cell count, the
+ablation table, `macros.tex` and six hardcoded numbers together. Move them in one
+commit.
 
 **`run_benchmarks.py --force` has not been run on this branch**, so there is no
-fourth `--mlir-timing` data point and the committed 175 cells are P12's. Serialise
-that run when it happens and say so, and read a red at 0.2000 as the fourth point
-rather than as noise.
+fourth `--mlir-timing` data point and the committed 175 cells are P12's.
+Serialise that run when it happens and say so, and read a red at D-0043's 0.2000
+deficit bound as the fourth point rather than as noise. **A red at the other
+bound is D-0049 and is a different thing**, so read the message before deciding
+which one fired.
 
-**The one observed flake is unexplained and its failure text was not captured.**
-If `test_the_opt_out_records_a_null_and_a_reason` goes red again, capture the
-whole failure before rerunning it. It asserts the harness returned zero, and the
-harness returns one on a finding.
+**`compile_time_benchmark.py --check` is still unwired and its trigger has still
+not fired**, because functions do not get longer until a level runs the tiling
+pass. Rehearse it red with `--sizes 500` in the same commit that wires it.
+
+**D-0049 is open and is the reason to run measurements on a quiet machine even
+when the measurement is a test.** It is reproducible at roughly one run in eight
+under load and zero on an idle machine.
