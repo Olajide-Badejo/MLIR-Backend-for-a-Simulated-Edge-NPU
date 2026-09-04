@@ -187,6 +187,41 @@ would invalidate the binary stability test and every seed in the fuzz corpus in
 the same commit that introduced quantization, which is a migration worth
 spending six unused fields to avoid.
 
+### Version 2, declared at Phase P13
+
+**A change to the layout is coming and this section is written before it lands.**
+`docs/BREAKING_CHANGES.md` carries the decision; this is the format's own record
+of it, so that a reader of this manual is not the last to hear.
+
+**What forces it.** A tiled program writes one buffer in pieces, and version 1
+cannot express that. Three things are in the way and the third is the binding
+one, which D-0050 records in full: an `Instruction` carries `resultShape` and no
+`resultStrides`, so a strided write is not representable; and checks 8 and 9 ask
+whether a consumer's need fits **the count written to the buffer it reads**,
+which assumes one instruction wrote the whole buffer. A **contiguous** channel
+tile, which needs no strides at all, is refused by that rule too, so it is the
+write model rather than the layout that binds.
+
+**What version 2 adds**, and it is deliberately the smallest thing that works:
+
+- `resultStrides` on `Instruction`, symmetric with the strides an `Operand` has
+  carried since version 1;
+- checks 8 and 9 tracking written **ranges** per buffer rather than one count per
+  address. That is strictly more precise than the present rule and still refuses
+  everything the present rule refuses.
+
+**Nothing else is added.** No field is put in speculatively against a later
+phase, which is the discipline that kept this format at version 1 for six phases
+and is the reason the paragraph above still holds: **the six fields P14 needs are
+untouched, and P14 still bumps nothing.** Its gate's clause that
+`Program::kVersion` is unmoved is a statement about what P14 does and it stays
+true; what moves is the number that clause counts from.
+
+**What a version 2 build does with a version 1 file** is what it does with any
+unknown version: refuses it by name, through the `version` check. There is no tag
+mechanism and therefore no migration path, which is why the version policy above
+is written the way it is.
+
 ## The binary layout
 
 A `.nbin` is a fixed header followed by fixed order sections, each length

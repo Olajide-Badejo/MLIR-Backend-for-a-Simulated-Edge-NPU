@@ -309,3 +309,87 @@ come from different builds is a table nobody can reproduce.
 That is Section 17.6's declare then re-record, and the reason it is three commits
 rather than two is that `git log` is the only thing that can tell a decision from
 an explanation.
+
+### 2026-09-05, Phase P13: `Program::kVersion` goes to 2, so that a buffer can be written in pieces
+
+**Written before the commit that causes it.** The commits that change the format
+are the next ones; this entry is what makes the bump a decision rather than an
+explanation. It is the first version bump this format has had.
+
+**Why, in one paragraph.** `-npu-tile-to-scratchpad` splits an operation that
+does not fit the scratchpad into tiles, and every tile writes a piece of one
+buffer. The binary cannot express that, and D-0050 records the three refusals it
+takes to find out: a sub region of a DRAM argument has no address the encoder can
+name; `Instruction` carries `resultShape` and no `resultStrides`, so a strided
+write is not representable; and ISA checks 8 and 9 ask whether a consumer's need
+fits **the count written to the buffer it reads**, which assumes a buffer is
+written whole by one instruction. The third is the binding one: a **contiguous**
+channel tile, which needs no strides at all, is refused by the same rule.
+
+**What moves.**
+
+| Thing | From | To |
+|---|---|---|
+| `Program::kVersion` | 1 | **2** |
+| the `.nbin` header's `version` word | 1 | 2, in every file this build writes |
+| `Instruction` | `resultShape` only | `resultShape` **and `resultStrides`** |
+| ISA check 8, `operand-defined` | one written count per address | written **ranges** per buffer |
+| ISA check 9, `operand-extent` | the same | the same |
+| `fuzz/corpus/*.nbin` | version 1 seeds | regenerated at version 2 |
+| `FrozenConstants.TheFormatsNumbers` | asserts `kVersion == 1` | asserts 2, in the same commit |
+| `docs/ISA_MANUAL.md` | "currently 1" and the generated check table | 2 and the regenerated table |
+
+**What does not move, and this list is the point of the entry.**
+
+- **Not one simulated number.** No cycle count, no DRAM byte count, no
+  instruction count, no MAC count, no utilization, no energy or area figure. The
+  version word is a header field; nothing downstream of it reads differently.
+- **Not one golden tensor byte.** `test/baseline/golden` is expected to be
+  untouched by every commit in this sequence, and a moved golden here would be a
+  defect rather than a declared movement.
+- **No cost model constant**, and no file under `include/NPU/Simulator` or
+  `python/npu_frontend/cost_model.py`.
+- **Nothing about P14's claim.** The format's own version policy says the
+  element types are present from version one "together with `requantMultiplier`
+  and `requantShift`, and those specific fields **and nothing broader** are what
+  let Phase P14 land without bumping `kVersion`". Those six fields are untouched
+  here. **P14 still bumps nothing**, and its gate's clause that
+  `Program::kVersion` is unmoved is a statement about what P14 does, which
+  remains true. What this bump changes is the number that clause is measured
+  from, and the record says so here rather than leaving P14 to discover it.
+
+**Why the baseline moves at all, and in which direction.** The only baseline
+movement this sequence causes is **composition**: new tests for the new field and
+for the range tracking rules, so the suite counts and the recorded test names
+grow. That is not a regression and would not need this entry on its own. The
+entry exists because the format's own version policy in `docs/ISA_MANUAL.md`
+says a bump invalidates the seed corpus, and regenerating committed artifacts is
+a deliberate movement of things this repository has promised to keep stable.
+
+**Why the regression is worth taking.** Without it, tiling cannot be lowered at
+all. Measured on a two tile convolution, the arrangement the bump enables takes
+the sweep line peak from **4224 bytes to 1728**, where 4224 is the untiled
+working set to the byte; without it a tiled program either does not encode or
+splits instructions while leaving the peak exactly where it was. Section 13.3's
+experiment, which is the reason this phase exists, has no subject in either case.
+
+**What is deliberately not done.** The version is bumped once, to 2, and the
+layout change is the single field the write model needs. No field is added
+speculatively against a later phase, which is the discipline that kept the
+version at 1 through six phases and is the reason P14 costs nothing.
+
+**The order these commits land in.**
+
+1. This entry, in its own commit, touching `docs/BREAKING_CHANGES.md` and the
+   version policy prose in `docs/ISA_MANUAL.md`, and nothing else.
+2. The format change: `resultStrides` written and read, checks 8 and 9 tracking
+   ranges, the frozen version test moving with it in the same commit, and the
+   generated artifacts regenerated so the staleness gate stays green.
+3. `dramAddressOf` learning the view chain walk, which needs no format change
+   and is separated from the one that does.
+4. The corpus reseed and the malformed corpus extension, in their own commit.
+5. The baseline re-record, in its own commit, after all of it.
+
+That is Section 17.6's declare then re-record, and the reason the format change
+and the address resolution are separate commits is that only one of them is a
+format change and a reader should not have to untangle which.
