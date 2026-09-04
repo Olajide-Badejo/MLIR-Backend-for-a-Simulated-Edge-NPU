@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "dcf913fb8a0003e101a927dfd62aeea5068c4003",
+  "git_sha": "f7b32baaf063d6828b9f435b4bc16227cd5d3068",
   "levels": [
     0,
     1,
@@ -1067,7 +1067,7 @@
     },
     "NPUSimulatorTests": {
       "failed": 0,
-      "passed": 55,
+      "passed": 56,
       "skipped": 1,
       "tests": [
         "Control.NopAdvancesAndHaltStops",
@@ -1083,6 +1083,7 @@
         "CostModel.MacsAreRawAndTheOccupancyIsBeside",
         "CostModel.OverlapFractionReachesItsEndpoints",
         "CostModel.TheDmaChargeHasThreeTerms",
+        "CostModel.TheWeightPreloadIsChargedOncePerFold",
         "Determinism.OneThreadAndMaxThreadsAgreeBitwise",
         "Determinism.TheCycleCountDoesNotDependOnTheThreadCount",
         "Determinism.TheKernelsAgreeWithThisTestAboutOpenMP",
@@ -1130,9 +1131,17 @@
     },
     "NPUTilingTests": {
       "failed": 0,
-      "passed": 12,
+      "passed": 20,
       "skipped": 0,
       "tests": [
+        "NPUTiledImplementationTest.Conv2DDeclinesTheThingsSectionThirteenTwoForbids",
+        "NPUTiledImplementationTest.Conv2DEveryTileReadsTheSamePositionsAsTheWhole",
+        "NPUTiledImplementationTest.Conv2DTheFirstAndLastTilesKeepTheEdgePads",
+        "NPUTiledImplementationTest.Conv2DTilesTheGroupOfADepthwiseLayer",
+        "NPUTiledImplementationTest.Conv2DTilesTheOutputHeightWithItsHalo",
+        "NPUTiledImplementationTest.MatMulTilesBothParallelAxesAndDeclinesTheInner",
+        "NPUTiledImplementationTest.PoolDeclinesACeilMode",
+        "NPUTiledImplementationTest.PoolTilesItsOutputAndDeclinesItsWindow",
         "NPUTilingTest.Conv2DIterationDomainIsBatched",
         "NPUTilingTest.Conv2DIterationDomainIsGrouped",
         "NPUTilingTest.Conv2DIterationDomainWithFourGroups",
@@ -1144,7 +1153,7 @@
         "NPUTilingTest.MatMulIterationDomainIsBatchedOverM",
         "NPUTilingTest.MaxPoolIterationDomainIsBatchedAndReducesOverTheWindow",
         "NPUTilingTest.PoolIterationDomainIsLayoutIndependent",
-        "NPUTilingTest.WindowedTileGenerationIsDeclinedRatherThanGuessed"
+        "NPUTilingTest.WindowedTileGenerationSplitsParallelDimensionsOnly"
       ]
     },
     "check-npu": {
@@ -1191,7 +1200,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 1076,
+      "passed": 1082,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1299,6 +1308,12 @@
         "test.Python.test_cost_model_mirror::test_the_values_agree[kPeakMacsPerCycleF32]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kPeakMacsPerCycleI8]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kWeightPreloadCycles]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[1024-9-1]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[16-256-120]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[196-27-6]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[64-16-16]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[64-32-16]",
+        "test.Python.test_cost_model_mirror::test_the_weight_preload_is_charged_once_per_fold[64-72-8]",
         "test.Python.test_end_to_end::test_batch_norm_has_its_differential_case",
         "test.Python.test_end_to_end::test_pytest_collects_every_cell_of_both_matrices",
         "test.Python.test_end_to_end::test_the_budget_axis_is_covered_where_this_file_delegates_it",
@@ -1732,7 +1747,7 @@
         "test.Python.test_external_tools::test_an_importable_module_whose_binary_is_absent_is_missing",
         "test.Python.test_external_tools::test_the_environment_block_is_the_two_facts_the_baseline_compares",
         "test.Python.test_external_tools::test_the_promise_is_read_from_the_environment",
-        "test.Python.test_external_tools::test_the_real_table_is_the_two_tools_this_project_installs",
+        "test.Python.test_external_tools::test_the_real_table_is_the_three_tools_this_project_installs",
         "test.Python.test_external_tools::test_the_source_tree_defaults_and_can_be_named",
         "test.Python.test_external_tools::test_the_source_tree_is_present_only_when_the_example_is_readable",
         "test.Python.test_input_classes::test_a_class_is_deterministic_from_its_seed[large_neg]",
