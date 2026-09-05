@@ -269,53 +269,64 @@ and says so.
 programs its own encoder refuses is a worse state than one that does not emit
 them, and the tiling pass being in no `-O` level already keeps the suite green.
 
-## Stage B, and the soundness fork it turns on
+## Where a tiled result is assembled, and why it is DRAM
 
-**Checks 8 and 9 still refuse a buffer written in pieces and read whole**, which
-version 2 did not change and was not meant to: `operand-extent: operand 0 reads
-2048 bytes from 0 and the buffer written there ends at 512` is still what a
-program gets when one instruction writes a quarter of a buffer and a later one
-reads all of it. Version 2 fixed the **write** side, so the bytes now land where
-they should; the checks are about what a **read** may assume.
+**Decided. A tiled operation's result is assembled in DRAM, not in the
+scratchpad, and Stage B is deleted from the plan.** Checks 8 and 9 keep their
+present meaning, `WrittenSpans` keeps its no merge rule and the comment that
+explains it, and nothing about the declared ISA moves.
 
-**What `WrittenSpans` does today and why.** It records one span per written
-address and a later write at the same address replaces the earlier one rather
-than widening it. Spans are deliberately **not** merged, and the comment on the
-class says why: merging two adjacent buffers into one range would let an over
-read that runs off the end of the first and into the second pass validation,
-"which is precisely the case the rule exists to catch".
+**The fork.** A tiled program's assembled intermediate would be N disjoint
+writes covering one scratchpad buffer, then a read of all of it. Checks 8 and 9
+refuse that, by design rather than by accident: `WrittenSpans` records one span
+per written address and deliberately does not merge adjacent ones, because
+merging two adjacent buffers into one range would let an over read that runs off
+the end of the first and into the second pass validation, "which is precisely
+the case the rule exists to catch". **A tiled assembly and that over read are
+not distinguishable by addresses**, and addresses are all a validator has: the
+binary carries region identity for DRAM, in the declared input, output, constant
+and spill regions, and none at all for the scratchpad, which is one arena of
+offsets.
 
-**The fork.** A tiled program's assembled intermediate is N disjoint writes
-covering one buffer, then a read of all of it. Permitting that means relaxing a
-rule whose stated purpose is to refuse a read spanning two buffers, and
-**addresses alone cannot tell the two apart**. The binary has region identity
-for DRAM, in the declared input, output, constant and spill regions, and **none
-for the scratchpad**, which is one arena of offsets.
-
-The best sound formulation found is: a read is satisfied when every byte is
+The relaxation that would have permitted it was found and is recorded so the
+option is legible rather than forgotten: a read is satisfied when every byte is
 covered **and no covering write extends beyond the read's end**. It accepts the
-tiled assembly, refuses an over read that runs into a larger neighbour, and
-still refuses a read past what was written. **It does not refuse reading two
-exactly adjacent buffers as one**, which the present rule does refuse. Every
-byte read was written by the program itself, so that is a lost diagnostic rather
-than a memory safety hole, but it is a real weakening of a declared ISA check
-and it is not a phase's call to make quietly.
+tiled assembly and still refuses a read past what was written, and what it gives
+up is refusing a read of two exactly adjacent buffers as one.
 
-**There is a design that avoids the fork entirely and it may be the better
-answer.** The only reason to tile is that the whole value does not fit on chip,
-so a tiled operation's result has no business being assembled **in the
-scratchpad**: the tiles can be stored to DRAM as they are produced and the next
-layer loads the slices it needs, which is what the per slice convention already
-does on the read side. Then no scratchpad buffer is ever written in pieces and
-read whole, checks 8 and 9 need no change at all, and the format keeps a
-diagnostic it currently has. The cost is that a tiled intermediate always makes
-a DRAM round trip, which for a value that did not fit on chip it was going to
-make anyway.
+**Why the other branch was taken.** Four reasons and the last is about who may
+decide.
 
-**Evidence for both branches is committed.** `peak_perslice.mlir` in this
-session's scratch work is the design that needs no check change and it encodes,
-runs and matches its reference at version 2. `peak_whole.mlir` is the one that
-needs the change and it is still refused, by name, with the message above.
+- **Tiling exists because the value does not fit on chip.** A result that had to
+  be split has no business being reassembled in the memory it did not fit in.
+- **The DRAM round trip is a cost the program already accepted** when it tiled.
+  A value that did not fit was going to make that trip.
+- **Per slice stores mirror the per slice loads** the authorised convention
+  already established. One rule in both directions is easier to hold than one
+  rule and an exception.
+- **It keeps a declared check where the other branch spends one.** Every byte in
+  the refused read was written by the program itself, so the relaxation would
+  have cost a diagnostic rather than opened a memory safety hole; it would still
+  have been a weakening of semantics the ISA description declares and
+  `docs/ISA_MANUAL.md` and `docs/ISA_OPCODES.json` mirror. **Declining to change
+  spec declared semantics is not the same class of decision as changing them**,
+  which is why this fork was decidable where the `kVersion` bump was not.
+
+**What follows for the lowering.** Tiles are stored to DRAM as they are produced
+and the next layer loads the slices it needs, in both directions, which is the
+per slice convention applied symmetrically. Nothing is ever written in pieces and
+read whole, so no scratchpad buffer is ever assembled from tiles.
+
+**And it lands where the experiment wants it.** Section 13.3 measures spilling
+against tiling against recompute, and the DRAM traffic a tiled assembly makes is
+exactly the quantity those arms compare. Putting the assembly in DRAM does not
+hide a cost from the experiment; it puts the cost in the column the experiment
+reads.
+
+`test/Encoding/tiled-assembly-in-scratchpad.mlir` is the negative test that keeps
+this a decision. It is the refused program, asserting the refusal by name, so
+that a later reader finds out that a scratchpad assembled tiled result is
+rejected on purpose rather than discovering it as a puzzle.
 
 ## The numbers the next session needs and should not re-derive
 
