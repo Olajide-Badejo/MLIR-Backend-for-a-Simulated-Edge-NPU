@@ -337,6 +337,17 @@ strictly about adjacency. An await two operations later with a harmless operatio
 in between is a transfer that really does overlap some work, and folding it would
 undo a scheduling decision somebody made on purpose.
 
+Rule 4 is a rule about a **window**, and everything downstream of the pass that
+opens one has to read it that way. The scratchpad allocator is the case that got
+it wrong: it took the operation that names a buffer as the point the buffer
+stops being written, which for an asynchronous transfer is the issue rather than
+the await, and it therefore both placed a spill store inside the window and
+handed the window's bytes to a buffer defined inside it. Neither is a diagnostic
+problem. A transfer's destination belongs to the DMA engine for the whole window
+whether or not anything in the IR names it there, which is why the allocator now
+asks for the await and measures the live range to it. D-0054 has the program and
+the two messages.
+
 ### Why `TilingInterface` lives on `npu` and not here
 
 `TilingInterface` is implemented on the `npu` tensor operations at P1. It is

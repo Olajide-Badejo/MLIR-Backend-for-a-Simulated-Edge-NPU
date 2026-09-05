@@ -45,10 +45,15 @@ part goes with it**: the write model now expresses a buffer written in pieces
 inside a declared region, which is what its own version 2 declaration promised
 and did not deliver.
 
-**D-0054**, `-npu-double-buffer` fires on nothing this compiler emits, so its
-ablation row is zero for a reason that is not the one `docs/PASSES.md` gives
-for the pass. Recorded rather than fixed, because a fix makes the pass fire and
-moves numbers, which is a declaration and a re-record of its own.
+**D-0054 is narrower and its diagnosis is in.** `-npu-double-buffer` still
+fires on nothing this compiler emits, so its ablation row is zero for a reason
+that is not the one `docs/PASSES.md` gives for the pass. What the entry guessed
+was the cause, a hoist walk weaker than the verifier, is measured here and is
+not: the pass's output verifies and **the allocator** was the one that believed
+an asynchronous transfer is finished at its issue. That half is fixed. Making
+the pass fire is still not done, and the reason is now a measurement: a
+prefetched weight stays resident across the computation it hides under, and
+five of the seven models stop placing at their ADR 0008 tight budgets.
 
 **D-0056 is resolved**, and the answer was in the allocator: it was refusing a
 legal spill, because its view rule was wider than its reason. Tiling is in the
@@ -3644,9 +3649,10 @@ re-record took.
 - **Found:** 2026-09-05, phase P13, by reading the pass statistics of the wired
   level rather than by a failure. `prefetched` is 0 and `not-hoisted` is every
   transfer, on all seven models at both budgets.
-- **Status:** **open, recorded, and deliberately not fixed in this commit**,
-  because a fix makes the pass fire and moves numbers, and this commit's claim
-  is that it moves none.
+- **Status:** **half fixed and half still open.** The allocator half, which is
+  what actually produced the refused programs, is fixed and tested here and
+  moves nothing, because the pass fires on nothing at this tip. The pass half is
+  open with a measured reason rather than a guessed one.
 
 - **The two reasons, and neither of them is the overlap being worthless.**
 
@@ -3682,11 +3688,11 @@ re-record took.
   exactly that separation, and it is the reason this was found by reading the
   numbers rather than by a fault.
 
-- **What a fix would be, and it was tried on 2026-09-05 and is not this.**
-  Admitting `npuisa::ConstOp` to the prologue is the obvious change: a constant
-  is a pure definition whose position carries no meaning beyond the live range
-  it starts, exactly as an allocation's does. **It was written, built and run,
-  and it produces programs the `npuisa` verifier rejects**:
+- **What a fix would be, and it was tried on 2026-09-05.** Admitting
+  `npuisa::ConstOp` to the prologue is the obvious change: a constant is a pure
+  definition whose position carries no meaning beyond the live range it starts,
+  exactly as an allocation's does. It was written, built and run, and it
+  produced programs the `npuisa` verifier rejects:
 
   ```
   error: 'npuisa.dma_load_async' op the operation npuisa.dma_store lies between
@@ -3695,20 +3701,76 @@ re-record took.
   prevent
   ```
 
-  **So the pass's own hoist safety analysis is weaker than the verifier that
-  checks its output**, and that gap is the real defect rather than the missing
-  entry in the prologue set. The walk stops at an operation that
-  `npuisa::overlaps` says might touch the destination; the verifier asks the
-  same question of the whole window between the asynchronous load and its await
-  and finds an overlap the walk did not. Which of the two is right, and where
-  the two analyses diverge, is the thing to measure next, and it is a larger
-  question than a one line change to a set.
+  The entry then said the pass's hoist safety analysis must be weaker than the
+  verifier that checks its output, and named measuring the divergence as the
+  next thing to do.
 
-  **Not committed.** A fix that makes a pass fire and produces programs the
-  verifier refuses is worse than a pass that fires on nothing, and the rule for a
-  red is to read it rather than to work around it. The change moves the
-  instruction order of every model with a weight, so when it does land it needs a
-  declaration, a re-record and its own commit.
+- **The divergence was measured, and there is none. The pass was not the one at
+  fault.** The probe was re-run on `lenet_batched-n1` at its tight budget of
+  200832 with the IR dumped after `-npu-double-buffer`, and that IR verifies.
+  The window between the asynchronous load of the second convolution's weight
+  and its await holds an allocation, a convolution, an allocation, a relu, an
+  allocation and a pooling, and **no transfer at all**. The walk stopped exactly
+  where the verifier would have stopped it. Dumping the IR after
+  `-npu-allocate-scratchpad` instead is where the refused program appears.
+
+- **The allocator believed an asynchronous transfer is finished at its issue,
+  and it said so in two places.** Both are in
+  `lib/Dialect/NPUISA/Transforms/AllocateScratchpad.cpp` and both are fixed
+  here:
+
+  1. **Where the spill store goes.** `spill` inserted it
+     `setInsertionPointAfter(writer)`, and the writer of a prefetched buffer is
+     the `npuisa.dma_load_async`. The store therefore landed between the two
+     halves and copied out a buffer the DMA engine was still filling. That is
+     the diagnostic quoted above, and it is a race rather than a complaint: the
+     spilled copy holds whatever part of the transfer had landed.
+  2. **How long the buffer is live.** `collect` ends a range at the last
+     operation that **names** the buffer, and nothing names an in flight
+     destination between the two halves, because the await names the token. So
+     the range ended at the issue and the sweep line handed those bytes to a
+     buffer defined inside the window. In the same program the reload of one
+     weight and the in flight destination of another were both placed at offset
+     0, and the second message the verifier gives is about a `dma_load` rather
+     than a `dma_store`.
+
+  **They are one belief stated twice**, and `DoubleBuffer.cpp` had the correct
+  statement all along, in its comment about the buffer the hardware owns for the
+  whole window between the two halves. `completionOf` is that sentence in the
+  allocator: the range reaches the await and the store goes after it.
+  `test/Dialect/NPUISA/async-window-allocation.mlir` is the pair of programs,
+  and against the allocator as it was they fail with exactly the two messages.
+
+- **Nothing in the suite moves from the allocator fix**, because the pass fires
+  on nothing at this tip. That is what makes it committable on its own, and it
+  is the reason to do it before the pass half rather than with it.
+
+- **Admitting `npuisa::ConstOp` is still not done, and the reason is now a
+  measurement rather than a red.** With the allocator correct the change
+  produces programs the verifier accepts and the pass fires: one to four
+  transfers per model at `-O2`. It also stops **five of the seven models
+  placing at their ADR 0008 tight budgets**, because a prefetched weight is
+  resident across the computation it is hidden under and those budgets were
+  measured without it:
+
+  | model | tight budget | sweep line peak with the prefetch |
+  | --- | --- | --- |
+  | `conv_bn_relu_stack` | 6464 | 6560 |
+  | `dilated_stack` | 8064 | 9268 |
+  | `lenet` | 194624 | 234880 |
+  | `lenet_batched` | 200832 | 246080 |
+  | `resnet_block` | 6464 | 8736 |
+  | `depthwise_separable` | 8192 | places |
+  | `inception_block` | 6144 | places |
+
+  **A prefetch that cannot be placed is not a prefetch**, and ADR 0008's budgets
+  are frozen rather than available to move. What the change needs is a decision
+  the pass cannot make where it stands: whether an overlap is affordable is a
+  question about the whole program's peak, and Section 5.1 puts this pass
+  **before** allocation on purpose, so that the allocator sees the doubled set.
+  That order is right and is not what is missing. What is missing is a way for
+  the pass to ask what the doubling costs before it commits to it, which is a
+  design question with a measurement behind it now rather than a line in a set.
   `test/Pipeline/p13-passes-at-o2.mlir` carries the current behaviour as a
   measured negative, so the day it changes a test says so.
 

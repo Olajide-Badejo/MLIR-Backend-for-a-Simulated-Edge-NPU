@@ -1539,7 +1539,7 @@ reason rather than a convention:
 | Rule | Why |
 |---|---|
 | exactly one writer | the semantics are a store after *the* definition, and a buffer written twice has two |
-| no view of it | a view is a second SSA name for the same bytes, and rewriting only the direct uses would leave the view reading a buffer whose contents had moved |
+| no view **written through** it | a view is a second SSA name for the same bytes. A view that is only read is re-based onto the reload by the same call that moves a reader, so it is served; a view that is written through is not, because the write would land in the reload and be lost. The wider rule, refusing any buffer a view was taken of, refused legal spills, which is D-0056 |
 | not a reload, and not already spilled | both would let the loop spill its own output, which is how a spill loop fails to terminate |
 | at least one read after the write | spilling a buffer nothing reads later adds a transfer and shortens no live range |
 | an identity layout | `dma_store` requires its operands to agree, and a permuted buffer has no DRAM counterpart without deciding what order to write it in. That decision belongs to the relayouting transfer Section 12 marks as a future extension |
@@ -1548,6 +1548,18 @@ reason rather than a convention:
 `npuisa.spill_slot`. This is the one place in the compiler that allocates DRAM,
 and it amends the P4 sentence in `docs/ARCHITECTURE.md` that nothing below the
 tensor level does; the amendment is recorded there as a marked P5 extension.
+
+**A buffer an asynchronous transfer is filling belongs to the DMA engine until
+the `npuisa.await`, and this pass owes that belief in two places.** The store
+goes after the await rather than after the issue, because a store between the
+two halves copies out whatever part of the transfer had landed; and the live
+range reaches the await rather than the last operation that names the buffer,
+because nothing names an in flight destination between the two halves, so a
+range that stopped at the issue would let the sweep line hand those bytes to a
+buffer defined inside the window. Both are Section 8's rule 4 seen from the
+allocator's side, and both were wrong until D-0054 measured them.
+`test/Dialect/NPUISA/async-window-allocation.mlir` is the pair of programs that
+catch them.
 
 ### The function attributes it sets
 

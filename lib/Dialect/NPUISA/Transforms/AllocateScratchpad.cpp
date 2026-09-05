@@ -189,6 +189,32 @@ void effectsOnValue(Operation *op, Value value, bool &reads, bool &writes) {
   }
 }
 
+/// The `npuisa.await` that finishes an asynchronous transfer, or null.
+///
+/// **An asynchronous transfer is not done at its issue**, and everything in
+/// this file that asks when a buffer stops being written has to ask this
+/// rather than look at the operation that names the buffer. Section 8 gives
+/// the two halves one meaning between them: the destination belongs to the DMA
+/// engine from the issue until the await, and rule 4 is the verifier saying so
+/// from the other side, that no operation in that window may touch the
+/// destination.
+///
+/// A token with anything other than one `npuisa.await` use is a program the
+/// verifier has already refused, so returning null there is not a policy: it is
+/// the answer for IR that cannot reach this pass.
+Operation *completionOf(Operation *op) {
+  Value token;
+  if (auto load = dyn_cast<npuisa::DmaLoadAsyncOp>(op))
+    token = load.getToken();
+  else if (auto store = dyn_cast<npuisa::DmaStoreAsyncOp>(op))
+    token = store.getToken();
+  else
+    return nullptr;
+  if (!token || !token.hasOneUse())
+    return nullptr;
+  return dyn_cast<npuisa::AwaitOp>(*token.user_begin());
+}
+
 //===----------------------------------------------------------------------===//
 // The pass.
 //===----------------------------------------------------------------------===//
@@ -369,6 +395,18 @@ AllocateScratchpadPass::collect(func::FuncOp function) {
         buffer.interval.lastUse =
             std::max(buffer.interval.lastUse, indices[ancestor]);
 
+        // **An asynchronous transfer holds this buffer until its await**, so
+        // the interval reaches the await rather than the issue. Without this
+        // the sweep line ends the range at the issue and hands the same bytes
+        // to a buffer defined inside the window, which is the race Section 8's
+        // rule 4 exists to prevent and which the verifier catches only where
+        // the two happen to be compared. D-0054 is the measurement: a
+        // prefetched weight was placed at offset 0 and the reload of a
+        // different buffer was placed at offset 0 inside its window.
+        if (Operation *finish = completionOf(ancestor))
+          buffer.interval.lastUse =
+              std::max(buffer.interval.lastUse, indices[finish]);
+
         if (isViewLike(user)) {
           for (Value result : user->getResults())
             worklist.push_back(result);
@@ -522,6 +560,16 @@ void AllocateScratchpadPass::spill(Buffer &buffer, int64_t &spilledBuffers,
   Block *block = buffer.alloc->getBlock();
   Operation *writer = buffer.alloc->getBlock()->findAncestorOpInBlock(
       *buffer.writer);
+
+  // **The store goes after the transfer has finished, which for an
+  // asynchronous writer is its await rather than its issue.** A store placed
+  // between the two halves reads bytes the DMA engine is still filling, and
+  // that is a race rather than a diagnostic: the spilled copy would hold
+  // whatever part of the transfer had landed. The verifier refuses such a
+  // program, which is how D-0054 was found, but the reason to place it
+  // correctly is the hardware rather than the check.
+  if (Operation *finish = completionOf(writer))
+    writer = block->findAncestorOpInBlock(*finish);
 
   builder.setInsertionPointAfter(writer);
   auto slot = memref::AllocOp::create(builder, loc, dramType);
