@@ -6163,3 +6163,97 @@ own runs were failing against it would be doing the thing the rule exists to
 prevent, whatever the arithmetic said. Section 17.9's flake governance at P15 is
 where it belongs, and the entry carries the derivation so that session does not
 have to find it again.
+### D-0054's diagnosis was wrong, and the pass it accused had it right
+
+The entry said the double buffering pass's hoist walk must be weaker than the
+verifier that checks its output, because a probe that admitted `npuisa::ConstOp`
+to the prologue made the pass fire and produced this:
+
+```
+error: 'npuisa.dma_load_async' op the operation npuisa.dma_store lies between
+this asynchronous transfer and its npuisa.await and accesses memory overlapping
+the destination buffer, which is the race the token exists to prevent
+```
+
+That is a reasonable reading of the message and it is the wrong one. **The
+question the message answers is where the store came from, and nothing asked
+it.** The probe was re-run with the IR dumped after the pass rather than at the
+end of the pipeline, and the window between the asynchronous load of the second
+convolution's weight and its await holds an allocation, a convolution, an
+allocation, a relu, an allocation and a pooling, and no transfer at all. The
+walk stopped exactly where the verifier would have stopped it, and the same walk
+breaks on `DmaStoreOp` unconditionally, so it could not have let one through.
+
+Dumping after `-npu-allocate-scratchpad` instead shows the refused program being
+built, two instructions after the issue:
+
+```
+%12 = npuisa.dma_load_async(%9, %11)
+%13 = memref.alloc() {npuisa.spill_slot} : memref<16x6x5x5xf32, #npu.dram>
+      npuisa.dma_store(%11, %13)
+```
+
+**The allocator spilled the buffer the transfer was still filling, and it copied
+it out at the issue.** `spill` puts the store `setInsertionPointAfter(writer)`,
+and the writer of a prefetched buffer is the asynchronous load. That is not a
+diagnostic problem: the spilled copy holds whatever part of the transfer had
+landed, which is a race the simulator would reproduce faithfully and silently.
+
+**The second mistake was in the same belief and was invisible.** Twenty six
+lines further on, a reload of a different weight is placed at offset 0, which is
+where the in flight destination is. `collect` ends a live range at the last
+operation that **names** the buffer, and no operation names an in flight
+destination between the two halves, because the await names the token. So the
+range ended at the issue and the sweep line handed those bytes away. The
+verifier caught this one too, once the first was fixed, and it would not have
+caught it at all if the offsets had merely been adjacent rather than equal.
+
+**One belief, stated twice, and `DoubleBuffer.cpp` had the correct statement all
+along.** Its comment about the buffer the hardware will own for the whole window
+between the two halves is the rule; the allocator did not have it. `completionOf`
+is that sentence in the allocator, and the two places that needed it are one line
+each.
+
+The test is the pair of programs that fail against the allocator as it was: the
+first with the store between the halves, the second with a `dma_load` at the in
+flight destination's offset. Both messages are the verifier's own.
+
+### And the ConstOp change is still not made, for a reason that is a number
+
+With the allocator correct, the probe produces programs the verifier accepts and
+the pass fires on one to four transfers per model. It also stops five of the
+seven models placing at their tight budgets:
+
+| model | tight budget | peak with the prefetch |
+| --- | --- | --- |
+| `conv_bn_relu_stack` | 6464 | 6560 |
+| `dilated_stack` | 8064 | 9268 |
+| `lenet` | 194624 | 234880 |
+| `lenet_batched` | 200832 | 246080 |
+| `resnet_block` | 6464 | 8736 |
+
+**That is double buffering's cost showing up exactly where Section 5.1 said it
+would.** The pass doubles the residency of the operand it prefetches, the
+allocator has to see the doubled set, and ADR 0008's budgets were measured on
+programs that had no prefetch in them. The order is right and is not what is
+missing. What is missing is a way for the pass to ask what the doubling costs
+before it commits to it, and a pass that runs before the allocator cannot answer
+that from where it stands. It is a design question with a measurement behind it
+now, which is a better place than it was.
+
+### The two named tiling baselines get a test, four phases after they got a log entry
+
+`fixed` and `largest-fit` exist so the exhaustive search has something to be
+compared against, and the comparison lived in a paragraph: 1704, 1704 and 1790
+on the eight channel convolution. Nothing ran them. The same file now runs all
+three strategies over the same IR, and the matrix multiplication turns out to
+have a regret too, eight cycles out of 19412 with the baselines agreeing with
+each other and losing to the search. Both numbers are small and both are the
+first thing a change to the tie break would move.
+**And it is what closed the coverage red**, which is the part worth saying out
+loud. C++ line coverage was 84.9 against a threshold of 85, and the two searches
+are about eighty five lines that no test reached. The threshold did not move and
+nothing was written to touch a line for its own sake: the missing test was one
+the file should always have had, and the measurement came back at **86.0**, from
+5866 lines of 6824. A coverage number that goes up because a real assertion was
+added is the only kind worth having.

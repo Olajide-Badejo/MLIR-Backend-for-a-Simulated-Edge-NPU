@@ -42,14 +42,21 @@ declaration of a movement measured to be zero would be a false declaration.
   D-0050's third part arriving through the wiring. The tiles are written one
   store each and the binary's `operand-defined` and `operand-extent` checks
   satisfy a read out of a single written span, so the first tiled program this
-  suite produced did not encode. **The pass now declines rather than emitting a
-  program its own encoder refuses**, which is Section 13.2's answer to a tile
-  that is not expressible. The consequence is measured rather than argued:
-  **nothing tiles in this suite at `-O2` at either budget**, and Section 13.3's
-  tiling arm has no subject there until the ISA question is decided.
+  suite produced did not encode. The pass declined that shape while the question
+  was open, and the owner's answer is the region scoped coverage below, so
+  **what it declines now is only a result that is both returned and read**,
+  which is the one shape the binary still cannot express.
 - **D-0054: `-npu-double-buffer` fires on nothing this compiler emits**, so its
-  ablation row is a zero about the pair rather than about the pass. Recorded and
-  deliberately not fixed, because a fix makes the pass fire and moves numbers.
+  ablation row is a zero about the pair rather than about the pass. The entry
+  first blamed the pass's own hoist walk for the programs its probe produced;
+  measuring the divergence found none, and **the allocator was the one that
+  believed an asynchronous transfer is finished at its issue**. It put a spill
+  store between the two halves and it ended the buffer's live range there, so a
+  reload and an in flight destination were placed at the same offset. Both are
+  fixed and neither moves a number, because the pass still fires on nothing.
+  Making it fire is held for a reason that is a measurement rather than a red: a
+  prefetched weight stays resident across the computation it hides under, and
+  **five of the seven models stop placing at their frozen tight budgets**.
 - **Checks 8 and 9 gain region scoped coverage on the DRAM side**, which is the
   owner's answer to D-0052 and the other half of the version 2 declaration.
   Inside a declared spill slot the validator tracks exact byte coverage, strided
@@ -67,11 +74,13 @@ declaration of a movement measured to be zero would be a false declaration.
   **4640** with fusion ablated, `inception_block` loses **all three** of its
   spills, and `lenet` and `lenet_batched` each lose a few hundred bytes. It takes
   one cell away, `resnet_block` with fusion ablated, where the residual keeps the
-  block's input resident while the tiles run. **No rule inside the tiling pass
-  separates the four from the one**, because the quantity that decides is the
-  program's sweep line peak and the pass sees one operation, so the compiler half
-  is measured and held rather than committed. Two rules were tried and both are
-  recorded because both failed.
+  block's input resident while the tiles run. Two rules inside the tiling pass
+  were tried against that and both are recorded because both failed. **The cause
+  was not in the tiling pass at all**: the allocator refused to spill any buffer
+  a view was taken of, and what a reload cannot serve is only a view that is
+  written through. With the rule narrowed the cell places, with one spill, at a
+  peak of 6144 bytes against the 6432 the untiled program needs, and tiling is in
+  the suite. Thirty one cells move and **not one at a default budget**.
 - **D-0051, D-0053 and D-0055** are the other three the wiring found: `-cse`
   merging every `tensor.empty` of a shape into one value, an argument whose every
   use is a whole value slice never being loaded, and a `--mlir-timing` bound of

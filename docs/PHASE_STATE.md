@@ -120,6 +120,27 @@ argument loads and a constant's load cannot take its `npuisa.const` with it.
 D-0054 carries it. So the pass has two zeros for two reasons, and only the first
 is the one the previous paragraph gives.
 
+**D-0054's own diagnosis was wrong and the measurement says where the fault
+was.** The entry blamed the pass's hoist walk for the programs its probe
+produced, on the strength of a verifier error. The walk is not at fault: the IR
+the pass emits verifies, and the refused program appears two passes later.
+**The allocator believed an asynchronous transfer is finished at its issue**, so
+it put a spill store between the two halves and it ended the buffer's live range
+there, and a reload was placed at an in flight destination's offset. Both are
+fixed in `023edcd` with a pair of programs that reproduce them, and **neither
+moves a number**, because the pass fires on nothing at this tip.
+
+**Making it fire is held, and the reason is now a measurement rather than a
+red.** With the allocator correct, admitting `npuisa::ConstOp` to the prologue
+produces programs the verifier accepts and the pass fires on one to four
+transfers per model. It also stops **five of the seven models placing at their
+ADR 0008 tight budgets**, because a prefetched weight is resident across the
+computation it hides under: `lenet` wants 234880 against 194624 and
+`resnet_block` wants 8736 against 6464. A prefetch that cannot be placed is not
+a prefetch, and those budgets are frozen. What the change needs is a way for the
+pass to ask what the doubling costs before it commits, which is a design
+question rather than a line in a set, and D-0054 has the table.
+
 **The third finding is about the compiler.** At `-O2`, fusion hides 30 of the 44
 convolutions and matrix multiplications in the suite inside `npu.fused_op`
 regions, where the tiling pass does not look, and two of the seven models have
@@ -769,7 +790,7 @@ touched.**
 | `python experiments/results_to_tex.py --check` | `macros.tex` is up to date, regenerated over the 217 cells |
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
 | `bash scripts/regression-baseline.sh --check` | **no drift**, 21 golden tensors byte identical, exit 0, after the record at this tree |
-| `bash scripts/coverage.sh 85 93 16 58` | C++ **85.4** PASS against 85; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0. **The margin is 0.4 points where it was 1.1 at P12 and 0.54 at the wiring commit**, and it is named here rather than left as a dip. Two things moved it: the wiring's own new lines, and the validator's spill slot coverage, whose two caps and whose saturation branch are guards no test in this suite can reach, because reaching them needs a file with more than sixty five thousand discontiguous runs in one access. **The next commit that adds uncovered C++ takes this under the threshold**, and the threshold does not move: it is a gate. `build-coverage/` has to be cleared before a run, because it holds gcov data for `lib/Simulator/CostModel.cpp`, which moved to its own library earlier in this phase, and gcovr errors on a source it cannot find rather than skipping it |
+| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.0** PASS against 85, 5866 lines of 6824, branch 75.2; per tree **93.4052 / 16.1191 / 74.5156** PASS, exit 0. **The margin is 1.0 point.** It was 0.4 two commits earlier and went red at 84.9 while this checkpoint was working, and what closed it was not a threshold. The two named tiling baselines, `fixed` and `largest-fit`, were reachable only through a pass option no test set: about eighty five lines of search that ran on nobody's machine. Running all three strategies over the same IR asserts the regret the log had claimed and covers them at the same time. The validator's two caps have a unit test; its saturation branch still has none, because reaching it needs a file with more than sixty five thousand discontiguous runs in one access. **The threshold does not move: it is a gate.** `build-coverage/` has to be cleared before a run, because it holds gcov data for `lib/Simulator/CostModel.cpp`, which moved to its own library earlier in this phase, and gcovr errors on a source it cannot find rather than skipping it |
 | the whole suite in the CI shape, four differences | **1071 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`. **Predicted before each of the two runs and measured exactly both times**: 1069 at the wiring commit, because it adds two lit tests and no pytest case, and 1071 after the two ablation row tests, because neither needs an external tool and both run in either shape |
 | `regression-baseline --check` in the CI shape | **no drift**, exit 0, with both environments named, the count difference printed as 1084 against 1071 and not compared, and three oracle distances reported as inside D-0039's band rather than as silence |
 | the same environment with `NPU_EXTERNAL_TOOLS=1` | `missing_tools` reports **all three**, `scalesim`, `accelergy` and `zigzag`, and `tools_reachable` is false, so the guards fail naming the variable rather than skipping. `test_external_tools.py` is 10 passed in that shape |
