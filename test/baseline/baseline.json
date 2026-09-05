@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "bb38d27d1a39a36da371d9405ef3eebd2d065997",
+  "git_sha": "8d877c433b4c954fa260cce19e04906809af3aff",
   "levels": [
     0,
     1,
@@ -1210,7 +1210,7 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 1082,
+      "passed": 1084,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1237,9 +1237,11 @@
         "test.Python.test_benchmarks::test_the_budget_verdict_passes_inside_and_fails_outside",
         "test.Python.test_benchmarks::test_the_committed_run_records_its_own_measured_cost",
         "test.Python.test_benchmarks::test_the_counts_are_what_adr_0010_says",
+        "test.Python.test_benchmarks::test_the_layout_and_double_buffer_rows_are_zero_on_every_model",
         "test.Python.test_benchmarks::test_the_opt_out_records_a_null_and_a_reason",
         "test.Python.test_benchmarks::test_the_planned_cells_are_the_computed_cross_product",
         "test.Python.test_benchmarks::test_the_run_fails_when_it_exceeds_its_budget",
+        "test.Python.test_benchmarks::test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle",
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
         "test.Python.test_bindings_wiring::test_f32_type_round_trips",
         "test.Python.test_compile_driver::test_a_budget_too_small_is_a_refusal_with_the_numbers_in_it",

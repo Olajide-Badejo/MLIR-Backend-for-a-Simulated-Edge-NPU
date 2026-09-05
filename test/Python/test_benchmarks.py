@@ -492,3 +492,105 @@ def test_the_committed_run_records_its_own_measured_cost() -> None:
     assert (
         recorded["suite_seconds"] < recorded["budget_minutes"] * 60.0
     ), "the committed run is outside the budget it was measured against"
+
+
+# ---------------------------------------------------------------------------
+# The P13 gate clause about the tiling disabled ablation row.
+# ---------------------------------------------------------------------------
+
+#: The two models that spill at their tight budget, with the instructions,
+#: cycles and spills ADR 0008's tight budgets were measured against. The other
+#: five do not spill at either budget, which is ADR 0008's own finding, so they
+#: have nothing for this clause to be about.
+SPILLING_AT_THE_TIGHT_BUDGET = {
+    "resnet_block": (17, 2018.0, 1),
+    "inception_block": (22, 3799.0, 3),
+}
+
+
+def _tight_cell(model: str, ablated: str = "") -> dict[str, Any]:
+    batch = 4 if model == "lenet_batched" else 1
+    name = f"{model}-O2-tight-n{batch}-fp32-normal"
+    if ablated:
+        name += f"-ablate-{ablated}"
+    return json.loads((RESULTS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _counted(cell: dict[str, Any]) -> tuple[int, float, int]:
+    return (
+        cell["instruction_count"],
+        cell["simulation"]["simulated_cycles"],
+        cell["simulation"]["spill_count"],
+    )
+
+
+def test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle() -> None:
+    """The P13 gate clause, asserted about the committed cells.
+
+    Section 13.2's fallback for an operation that cannot be tiled is the
+    allocator's spilling, so a suite where `-npu-tile-to-scratchpad` is in `-O2`
+    has to produce the same program as one where it is not, on every cell the
+    pass does not change. **To the cycle, not to a tolerance**, because tiling
+    over parallel dimensions only is exact and a cycle count is an integer count
+    of a deterministic schedule.
+
+    The two rows below are the ones ADR 0008's tight budgets were measured
+    against and are the whole population the clause can be about: only these two
+    models spill at their tight budget. Reading them out of the committed cells
+    rather than re-deriving them is the point, since the clause is about the
+    recorded numbers rather than about what the compiler would produce now.
+    """
+    if not (RESULTS_DIR / "resnet_block-O2-tight-n1-fp32-normal.json").is_file():
+        pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
+
+    for model, expected in SPILLING_AT_THE_TIGHT_BUDGET.items():
+        baseline = _counted(_tight_cell(model))
+        ablated = _counted(_tight_cell(model, "npu-tile-to-scratchpad"))
+        assert baseline == expected, (
+            f"{model} at its tight budget is {baseline} and ADR 0008 measured "
+            f"its budget against {expected}"
+        )
+        assert ablated == expected, (
+            f"{model} with the tiling pass ablated is {ablated} rather than "
+            f"{expected}, so the pass moved a cell it should not have"
+        )
+
+
+def test_the_layout_and_double_buffer_rows_are_zero_on_every_model() -> None:
+    """The other two P13 ablation rows, over all four counted columns.
+
+    `docs/NUMBERS.md` gives each of the three zeros a different reason and the
+    reasons are prose. This is the arithmetic under them, and it is asserted over
+    the columns the table does not print as well as the two it does, because a
+    row that was zero in instructions and cycles while DRAM traffic moved would
+    read as inert and would not be.
+    """
+    if not (RESULTS_DIR / "resnet_block-O2-tight-n1-fp32-normal.json").is_file():
+        pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
+
+    def columns(cell: dict[str, Any]) -> tuple[Any, ...]:
+        simulation = cell["simulation"]
+        return (
+            cell["instruction_count"],
+            simulation["simulated_cycles"],
+            simulation["spill_count"],
+            simulation["dram_bytes_total"],
+        )
+
+    for model in MODELS:
+        batch = 4 if model == "lenet_batched" else 1
+        for budget in ("default", "tight"):
+            name = f"{model}-O2-{budget}-n{batch}-fp32-normal"
+            baseline = json.loads(
+                (RESULTS_DIR / f"{name}.json").read_text(encoding="utf-8")
+            )
+            for ablated in ("npu-assign-layout", "npu-double-buffer"):
+                other = json.loads(
+                    (RESULTS_DIR / f"{name}-ablate-{ablated}.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                assert columns(other) == columns(baseline), (
+                    f"ablating {ablated} moved {name} from "
+                    f"{columns(baseline)} to {columns(other)}"
+                )

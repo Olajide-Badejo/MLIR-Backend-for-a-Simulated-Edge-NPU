@@ -3039,6 +3039,26 @@ the way a stale comment is never merely cosmetic.
   Capturing the whole failure is what turned a flake into an entry, and the
   cost of not doing it the first time was a second run of everything.
 
+**A sixth observation, at P13's wiring commit, and it is on a different test.**
+`test_the_run_fails_when_it_exceeds_its_budget` went red once in the CI shape
+suite, on a machine whose one minute load average was above 3 from the runs
+before it. **The same test passed in the `regression-baseline --check` sub run
+minutes later on the same tree**, and passed five times out of five when the
+load was allowed to fall to 0.34 first. It is `slow` marked, it drives a whole
+model's cells through `run_benchmarks.main`, and each of those cells goes through
+`cross_check_against_mlir_timing`, so it inherits this bound and the condition it
+does not check.
+
+**The failure text was lost to a script that tailed two lines**, which is the
+same mistake this entry's own first paragraph records, made again by the session
+that was writing the entry. The observation is recorded with that caveat rather
+than with a message it does not have.
+
+**What it adds to the entry**: the red is not a property of one test. Anything
+that reaches this bound reaches it, and the population is every `slow` test that
+runs a cell. That widens what a precondition at P15 has to cover and narrows
+nothing.
+
 ### D-0050 the binary format cannot express a buffer written in pieces, so a tiled program cannot be encoded
 
 - **Found:** 2026-09-05, phase P13, by trying to encode a tiled program rather

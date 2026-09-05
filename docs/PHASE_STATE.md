@@ -78,6 +78,14 @@ costs, so performing a transpose always beats moving the same data strided. Both
 are measured, both are asserted by a test, and both are inputs to Section 13.3
 rather than obstacles to it.
 
+**Putting them in a level added a third negative to the first of those and it is
+a different one.** On the suite `-npu-double-buffer` does not fire **at all**:
+`prefetched` is 0 and `not-hoisted` is every transfer, on all seven models at
+both budgets, because every argument load is in the entry block beside the other
+argument loads and a constant's load cannot take its `npuisa.const` with it.
+D-0054 carries it. So the pass has two zeros for two reasons, and only the first
+is the one the previous paragraph gives.
+
 **The third finding is about the compiler.** At `-O2`, fusion hides 30 of the 44
 convolutions and matrix multiplications in the suite inside `npu.fused_op`
 regions, where the tiling pass does not look, and two of the seven models have
