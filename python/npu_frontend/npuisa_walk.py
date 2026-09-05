@@ -86,9 +86,17 @@ class WalkError(Exception):
 # The types.
 # ---------------------------------------------------------------------------
 
+#: **The offset is optional and leaving it out was D-0057.** A strided layout
+#: prints as `strided<[512, 64, 8, 1]>` when the view starts at its parent's
+#: first byte and as `strided<[512, 64, 8, 1], offset: 24>` when it does not,
+#: and a tiled program produces one of each per operation: the first tile starts
+#: at the base and every later tile does not. A pattern that accepted only the
+#: first form did not fail on the second, it **failed to match at all**, so
+#: `finditer` skipped that operand and every later operand moved down one place.
 _MEMREF = re.compile(
     r"memref<(?P<extents>[0-9x]*)(?P<element>[a-z0-9]+)"
-    r"(?:,\s*strided<\[(?P<strides>[^\]]*)\]>)?"
+    r"(?:,\s*strided<\[(?P<strides>[^\]]*)\]"
+    r"(?:,\s*offset:\s*(?P<offset>[-0-9?]+))?>)?"
     r"(?:,\s*#npu\.(?P<space>scratchpad|dram))?>"
 )
 
@@ -279,6 +287,30 @@ def _split_ins_outs(body: str) -> tuple[str, str]:
     return clauses["ins"], clauses["outs"]
 
 
+def _checkOperandCount(op: str, clause: str, parsed: list[MemRef], text: str) -> None:
+    """That the walker read one type per operand, and not one fewer.
+
+    **This is D-0057's guard and it matters more than the pattern it guards.**
+    A type this pattern cannot match is not a loud failure: `finditer` simply
+    does not yield it, so the operand list comes out one short and every later
+    operand shifts down a place. On a convolution that ends in an `IndexError`,
+    which is how the defect was found; on a matrix multiply it would have ended
+    in a **wrong reduction extent and a wrong charge**, with nothing to say so.
+
+    The count on the left of the colon is what the operand list has to match,
+    and an `ins` clause names its operands there before it types them.
+    """
+    names = clause.split(":", 1)[0]
+    expected = len([part for part in names.split(",") if part.strip()])
+    if expected != len(parsed):
+        raise WalkError(
+            f"npuisa.{op} names {expected} operands and this walker read "
+            f"{len(parsed)} types from them, so a type in this clause is one "
+            f"the memref pattern does not match and the operands after it have "
+            f"shifted. See D-0057. The operation is {text!r}"
+        )
+
+
 def _charge(
     op: str, operands: list[MemRef], result: MemRef, attributes: dict[str, Any]
 ) -> tuple[str, float, cost_model.ComputeCharge]:
@@ -422,6 +454,7 @@ def walk(npuisa_text: str) -> list[Operation]:
                     f"{text!r}"
                 )
             operands = _parse_memrefs(ins)
+            _checkOperandCount(op, ins, operands, text)
             results = _parse_memrefs(outs)
             if len(results) != 1:
                 raise WalkError(f"npuisa.{op} writes {len(results)} results: {text!r}")

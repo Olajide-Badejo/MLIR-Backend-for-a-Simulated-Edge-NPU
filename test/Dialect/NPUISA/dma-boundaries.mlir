@@ -16,7 +16,12 @@
 //   1. the lowering itself, which is what this file checks;
 //   2. spilling, which adds a store after a spilled definition and a load
 //      before each later use;
-//   3. tiling, which adds one load and one store per tile it split.
+//   3. tiling, which adds one load and one store per tile it split, and one
+//      further load when the assembled result is read by another operation.
+//      **That load is one per DRAM value and not one per reader**, which is
+//      the invariant unchanged rather than an exception to it: the assembly is
+//      one value, it enters the scratchpad once, and every consumer reads the
+//      copy. The last section of this file is where that is checked.
 //
 // The run line is what makes this file mean anything: it runs the lowering and
 // nothing after it. Adding an allocation or a double buffering pass to that
@@ -32,6 +37,8 @@
 // RUN: npu-opt %s --npu-lower-to-npuisa | FileCheck %s
 // RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 --npu-lower-to-npuisa \
 // RUN:   | FileCheck %s --check-prefix=TILED
+// RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 --npu-lower-to-npuisa \
+// RUN:   | FileCheck %s --check-prefix=REENTRY
 
 // =============================================================================
 // One argument, one constant, one result: two loads in, one store out, and
@@ -283,6 +290,12 @@ func.func @the_lowering_emits_no_asynchronous_transfer(%x: tensor<1x8x4x4xf32>)
 // result's extents anywhere in the function, which is the property the design
 // decision turns on and the one a reader should be able to check by eye.
 // TILED-NOT:     memref.alloc() : memref<1x8x8x8xf32, #npu.scratchpad>
+//
+// The label bounds the exclusion above to this function. The next one in this
+// file assembles a result that **is** read, so it does allocate at the whole
+// result's extents, and an unbounded exclusion would read that as this
+// function's.
+// TILED-LABEL: func.func @an_assembly_read_twice_enters_the_scratchpad_once(
 func.func @tiling_loads_the_slice_and_stores_the_tile(
     %x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>, %b: tensor<8xf32>)
     -> tensor<1x8x8x8xf32> {
@@ -294,4 +307,52 @@ func.func @tiling_loads_the_slice_and_stores_the_tile(
                    dilations = array<i64: 1, 1>, group = 1 : i64}
        -> tensor<1x8x8x8xf32>
   return %r : tensor<1x8x8x8xf32>
+}
+// =============================================================================
+// **An assembly that is read comes back once, however many operations read it.**
+//
+// The section above is the tiled result that is returned: its tiles go straight
+// into the out parameter and nothing reads them back. This is the other shape,
+// the one D-0052 refused until checks 8 and 9 learned to answer a read inside a
+// declared spill slot by exact byte coverage. The tiles assemble in a spill
+// slot, and the operation that reads the assembly gets it in **one**
+// `npuisa.dma_load`.
+//
+// **One per DRAM value, not one per reader**, which is Section 8's count
+// unchanged. The convolution below is read twice, by an activation and by an
+// addition, and the lowering records the transfer so the second reader is given
+// the first reader's copy. A second load here would be a fourth DMA producer
+// arriving without a name.
+// =============================================================================
+
+// REENTRY-LABEL: func.func @an_assembly_read_twice_enters_the_scratchpad_once(
+//
+// The assembly is a DRAM buffer carrying the spill slot mark, which is what
+// gives it an identity the validator can scope a read to.
+// REENTRY:       %[[SLOT:[a-z_0-9]+]] = memref.alloc() {npuisa.spill_slot} : memref<1x8x8x8xf32, #npu.dram>
+//
+// One store per tile into it.
+// REENTRY:       npuisa.dma_store
+//
+// And exactly one load of it, which is the assertion this section exists for.
+// REENTRY:       npuisa.dma_load %[[SLOT]],
+// REENTRY-NOT:   npuisa.dma_load %[[SLOT]],
+func.func @an_assembly_read_twice_enters_the_scratchpad_once(
+    %x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>, %b: tensor<8xf32>,
+    %y: tensor<1x8x8x8xf32>)
+    -> (tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>) {
+  %d = tensor.empty() : tensor<1x8x8x8xf32>
+  %c = npu.conv2d ins(%x, %w, %b : tensor<1x4x8x8xf32>, tensor<8x4x3x3xf32>,
+                                   tensor<8xf32>)
+                  outs(%d : tensor<1x8x8x8xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x8x8x8xf32>
+  %e = tensor.empty() : tensor<1x8x8x8xf32>
+  %r = npu.relu ins(%c : tensor<1x8x8x8xf32>)
+                outs(%e : tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32>
+  %f = tensor.empty() : tensor<1x8x8x8xf32>
+  %a = npu.add ins(%c, %y : tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>)
+               outs(%f : tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32>
+  return %r, %a : tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>
 }

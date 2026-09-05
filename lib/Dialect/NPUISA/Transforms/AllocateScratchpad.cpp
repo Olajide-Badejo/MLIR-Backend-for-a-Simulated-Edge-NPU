@@ -127,7 +127,16 @@ struct Buffer {
   /// Whether anything took a view of it. A buffer with a view has more than one
   /// SSA name for the same bytes, and a spill that rewrote only the direct uses
   /// would leave the view reading a buffer whose contents had moved.
-  bool hasViewUser = false;
+  /// Whether any view of this buffer is **written through**.
+  ///
+  /// **Not whether a view is taken, which is what this used to be, and the
+  /// difference is D-0056.** A view that is only read through can be re-based
+  /// onto the reload the spill inserts, because the reload holds the same
+  /// bytes at that point and `replaceUsesOfWith` rewrites the view's source
+  /// exactly as it rewrites a reader's operand. A view that is **written**
+  /// through cannot: the write would land in the reload and be lost, and the
+  /// buffer the store put in DRAM would never see it.
+  bool viewWrittenThrough = false;
   /// Whether it is a reload buffer, a spill slot's landing site, or a buffer
   /// that has already been spilled. Each of these is excluded from the
   /// candidate set for a different reason and all three are recorded in the IR
@@ -361,18 +370,31 @@ AllocateScratchpadPass::collect(func::FuncOp function) {
             std::max(buffer.interval.lastUse, indices[ancestor]);
 
         if (isViewLike(user)) {
-          buffer.hasViewUser = true;
           for (Value result : user->getResults())
             worklist.push_back(result);
+          // **A view taken directly of the allocation is a reader**, and that
+          // is what lets the spill rewrite re-base it. `spill` replaces uses of
+          // the allocation in every reader after the write, and a view's use of
+          // the allocation is its source operand, so the same call moves the
+          // view onto the reload without knowing it is a view. A view of a view
+          // is not listed, because it names the inner view's result and follows
+          // it for free. D-0056 is why this is here.
+          if (isTheAllocation && !llvm::is_contained(buffer.readers, user))
+            buffer.readers.push_back(user);
           continue;
         }
 
-        // Only the allocation's own uses tell us where the value is defined and
-        // read. A use through a view is counted for liveness above and makes
-        // the buffer unspillable, so it never reaches the rewrite that would
-        // need to know which of the two names to replace.
-        if (!isTheAllocation)
+        // A use reached **through** a view still decides one thing: whether the
+        // view is written through. That is the case a reload cannot serve, and
+        // it is the only case the view rule now refuses.
+        if (!isTheAllocation) {
+          bool viewReads = false;
+          bool viewWrites = false;
+          effectsOnValue(user, value, viewReads, viewWrites);
+          if (viewWrites)
+            buffer.viewWrittenThrough = true;
           continue;
+        }
 
         bool reads = false;
         bool writes = false;
@@ -407,6 +429,10 @@ AllocateScratchpadPass::collect(func::FuncOp function) {
 /// - **No view users.** A view is a second SSA name for the same bytes;
 ///   rewriting the direct uses and leaving the view behind would make the view
 ///   read a buffer whose contents had moved to DRAM.
+/// - **No view of it is written through.** A view that is only read through is
+///   re-based onto the reload by the same rewrite that moves a reader, which is
+///   D-0056's refinement; a view that is written through would send the write
+///   into the reload and lose it.
 /// - **Not a reload and not already spilled.** Both would let the loop spill
 ///   its own output, which is how a spill loop fails to terminate.
 /// - **At least one read after the write.** Spilling a buffer nothing reads
@@ -418,26 +444,47 @@ AllocateScratchpadPass::collect(func::FuncOp function) {
 ///   order to write it in. That decision belongs to a relayouting transfer,
 ///   which Section 12 marks as a named future extension and which nothing may
 ///   cite as available today.
-bool isSpillable(const Buffer &buffer,
-                 const llvm::DenseMap<Operation *, int64_t> &indices) {
-  if (!buffer.writer || buffer.hasViewUser || buffer.isReload ||
-      buffer.alreadySpilled)
-    return false;
+/// Which of the five rules refused this buffer, or nothing when none did.
+///
+/// **The reason is computed rather than recomputed, and that is the point.**
+/// `isSpillable` used to answer yes or no, and the failure it feeds says "no
+/// buffer live across the pressure peak can be spilled" without saying which
+/// rule refused which buffer. A reader of that message has to reconstruct five
+/// predicates over every candidate by hand, which is how P13 spent a session on
+/// D-0056. The two now come from one function so they cannot disagree.
+const char *spillRefusal(const Buffer &buffer,
+                         const llvm::DenseMap<Operation *, int64_t> &indices) {
+  if (!buffer.writer)
+    return "nothing writes it";
+  if (buffer.viewWrittenThrough)
+    return "a view of it is written through, and a reload cannot serve that";
+  if (buffer.isReload)
+    return "it is itself a reload";
+  if (buffer.alreadySpilled)
+    return "it has already been spilled";
 
   // An operation handle is a value type and its accessors are not const, so the
   // handle is copied out rather than the struct being taken by value. That is
   // the MLIR idiom and it costs a pointer copy.
   memref::AllocOp alloc = buffer.alloc;
   if (!alloc.getType().getLayout().isIdentity())
-    return false;
+    return "its layout map is not the identity";
 
   auto writerIndex = indices.find(buffer.writer);
   if (writerIndex == indices.end())
-    return false;
-  return llvm::any_of(buffer.readers, [&](Operation *reader) {
+    return "its writer is not in this block";
+  const bool readLater = llvm::any_of(buffer.readers, [&](Operation *reader) {
     auto found = indices.find(reader);
     return found != indices.end() && found->second > writerIndex->second;
   });
+  if (!readLater)
+    return "nothing reads it after it is written";
+  return nullptr;
+}
+
+bool isSpillable(const Buffer &buffer,
+                 const llvm::DenseMap<Operation *, int64_t> &indices) {
+  return spillRefusal(buffer, indices) == nullptr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -685,6 +732,28 @@ void AllocateScratchpadPass::runOnOperation() {
     if (!victim) {
       const Buffer &stuck = buffers[failure.interval];
       memref::AllocOp stuckAlloc = stuck.alloc;
+
+      // **Every candidate and the rule that refused it.** A message that says
+      // no buffer can be spilled and stops is the shape of failure this project
+      // spends sessions on: the reader has to reconstruct five predicates over
+      // a dozen buffers from the IR to find out whether the allocator was
+      // right. Printing the working is what turns "it refused" into "it refused
+      // for this reason", and it costs a few lines in a branch that is already
+      // fatal.
+      std::string refusals;
+      llvm::raw_string_ostream out(refusals);
+      for (auto [position, index] : llvm::enumerate(candidateBuffers)) {
+        const Buffer &candidate = buffers[index];
+        out << "\n  " << candidate.interval.bytes << " bytes, live ["
+            << candidate.interval.definition << ", "
+            << candidate.interval.lastUse << "], "
+            << candidates[position].usesAfterPeak << " uses after the peak: ";
+        if (const char *why = spillRefusal(candidate, indices))
+          out << "refused, " << why;
+        else
+          out << "spillable";
+      }
+
       stuckAlloc.emitError()
           << "the scratchpad budget of " << *resolvedBudget
           << " bytes is too small: this buffer of " << stuck.interval.bytes
@@ -696,7 +765,9 @@ void AllocateScratchpadPass::runOnOperation() {
           << " bytes, which is a lower bound on any placement; the "
              "requirement is therefore at least "
           << std::max(peak.bytes, failure.wantedOffset + stuck.interval.bytes)
-          << " bytes against a budget of " << *resolvedBudget;
+          << " bytes against a budget of " << *resolvedBudget
+          << ". The peak is at operation " << peak.index
+          << " and the buffers live across it are:" << refusals;
       return signalPassFailure();
     }
 

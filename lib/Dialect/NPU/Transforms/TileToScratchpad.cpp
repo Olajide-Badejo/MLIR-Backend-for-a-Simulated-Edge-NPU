@@ -767,38 +767,39 @@ LogicalResult applyTiling(IRRewriter &rewriter, TilingInterface op,
 
 /// Whether this operation's result may be assembled from tiles at all.
 ///
-/// **A value assembled from tiles can be written and never read, and that is
-/// not a property of this pass but of the declared ISA.** A tiled result is
-/// assembled in DRAM, one `npuisa.dma_store` per tile, which is the decision
-/// `docs/PHASE_STATE.md` records. Checks 8 and 9, `operand-defined` and
-/// `operand-extent`, ask whether a read fits inside **one** written span, and
-/// `WrittenSpans` deliberately does not merge adjacent spans, because merging
-/// them is what would let an over read off the end of one buffer and into the
-/// next pass validation. So a buffer written by N stores can only be read by a
-/// read that fits inside one of those N, and a consumer that wants the whole
-/// assembled value is refused. D-0052 is that refusal with its reproduction.
+/// **A tiled result is assembled in DRAM, one `npuisa.dma_store` per tile, and
+/// from P13 the binary can express reading one back.** Checks 8 and 9 answer a
+/// read whose address lies inside a declared spill slot by exact byte coverage
+/// of that slot, so a buffer written by N stores is readable once those N cover
+/// what the read addresses. D-0052 records the refusal that came before, and
+/// `docs/BREAKING_CHANGES.md` the decision that removed it. **A result another
+/// operation reads is therefore fine**, whole or by slices.
 ///
-/// **The one shape that is expressible is the one where nothing reads it.** An
-/// assembled value that reaches `func.return` is mapped straight to the out
-/// parameter the function gained for it, so the tiles are stored into the
-/// output region and no instruction ever reads them back. That is the shape
-/// `test/Encoding/dram-subview.mlir`'s sibling case has, and it is the only
-/// shape this pass may produce.
+/// **One shape is still not expressible, and it is why this predicate
+/// survives.** When the assembled value reaches `func.return` the lowering maps
+/// it straight to the out parameter the function gained for it, so the tiles
+/// are stored into the **output** region rather than into a spill slot. An
+/// output region has no coverage, because Section 8 makes it a place to write
+/// and never a place to read, and a value that is both returned and read would
+/// need it to be both. Assembling into a spill slot and storing from there into
+/// the out parameter would be a DRAM to DRAM transfer this machine has no
+/// instruction for.
 ///
 /// **So this is a decline and not an error**, which is Section 13.2's own
 /// answer to a tile that is not expressible: the allocator's spilling is the
-/// fallback. Emitting the tiles anyway would produce a program this project's
-/// own encoder refuses, three tools away from the pass that caused it.
-///
-/// Whether the relaxation that would accept a tiled assembly is worth a
-/// declared check is an owner decision and is recorded as one; this pass does
-/// not take it.
+/// fallback.
 bool resultCanBeAssembled(Operation *op) {
   if (op->getNumResults() != 1)
     return false;
-  return llvm::all_of(op->getResult(0).getUsers(), [](Operation *user) {
-    return isa<func::ReturnOp>(user);
-  });
+  bool returned = false;
+  bool readByAnythingElse = false;
+  for (Operation *user : op->getResult(0).getUsers()) {
+    if (isa<func::ReturnOp>(user))
+      returned = true;
+    else
+      readByAnythingElse = true;
+  }
+  return !(returned && readByAnythingElse);
 }
 
 //===----------------------------------------------------------------------===//
@@ -889,21 +890,21 @@ struct TileToScratchpadPass
         continue;
       }
 
-      // Over budget, and the assembled result would be read by something. The
-      // declared ISA cannot express that, so the tiling is declined here rather
-      // than emitted for the encoder to refuse. See `resultCanBeAssembled`.
+      // Over budget, and the assembled result would be both returned and read.
+      // The declared ISA cannot express that, so the tiling is declined here
+      // rather than emitted for the encoder to refuse. See
+      // `resultCanBeAssembled`.
       if (!resultCanBeAssembled(op)) {
         ++declinedOps;
         op->emitRemark()
             << "working set of " << working << " bytes exceeds the "
             << budgetBytes
-            << " byte budget, and this operation's result is read by another "
-               "operation rather than returned. A tiled result is assembled in "
-               "DRAM by one store per tile, and the binary's operand-defined "
-               "and operand-extent checks satisfy a read out of a single "
-               "written span, so an assembled value that is read back is "
-               "refused by the encoder. D-0052 carries the reproduction. The "
-               "allocator's spilling is the fallback.";
+            << " byte budget, and this operation's result is both returned and "
+               "read by another operation. A returned assembly is stored "
+               "straight into the out parameter, and an output region is a "
+               "place to write and never a place to read, so the same value "
+               "cannot be both. D-0052 carries the reasoning. The allocator's "
+               "spilling is the fallback.";
         continue;
       }
 

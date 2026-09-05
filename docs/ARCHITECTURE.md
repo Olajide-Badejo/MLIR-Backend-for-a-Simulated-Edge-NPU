@@ -687,7 +687,16 @@ Later phases inherit these as decisions, not as suggestions:
 - Destination passing with exactly one trailing `outs` on every compute
   instruction, no results, and both interfaces implemented.
 - Byte offsets as `memref.view` SSA operands over a flat buffer. Not attributes.
-- Exactly three producers of DMA. A fourth is a defect until this list is amended.
+- Exactly three producers of DMA. A fourth is a defect until this list is
+  amended. **P13 adds a transfer to the first of them rather than a fourth
+  producer**, and the distinction is what keeps the list closed: when a tiled
+  result assembled in DRAM is read by another operation, the lowering brings it
+  back with one `npuisa.dma_load`. That is **one per DRAM value entering the
+  scratchpad**, which is Section 8's own count applied to a value the compiler
+  did not use to produce, and not one per reader: the transfer is recorded, so
+  a second consumer is given the first consumer's copy.
+  `test/Dialect/NPUISA/dma-boundaries.mlir` pins it with a convolution read
+  twice and exactly one load between the stores and the readers.
 - The overlap rule decided on effects plus byte ranges. A future pass that needs
   to ask whether two buffers alias calls `mlir::npuisa::overlaps` and honours all
   three of its answers, including `Unknown`. An identity comparison anywhere in

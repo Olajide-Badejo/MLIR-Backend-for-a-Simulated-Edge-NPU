@@ -420,9 +420,37 @@ program's sweep line peak and the pass sees one operation. D-0056 carries the
 measurement, the two rules that were tried and failed, and the three ways
 forward.
 
-**Nothing in the baseline moved**, so nothing here needs re-recording: the suite
-is the same 217 cells it was, `regression-baseline --check` reports no drift and
-the goldens are byte identical.
+**And then the compiler half did land, one checkpoint later, so the rest of this
+outcome is what it moved.** D-0056's answer was that the allocator was refusing
+a legal spill: its rule refused a buffer any view was taken of, and what a
+reload cannot serve is only a view that is **written through**. With that rule
+narrowed, the cell that would not place places, at a peak of 6144 bytes against
+the 6432 the untiled program needs.
+
+**31 cells moved and not one of them is a default budget cell**, which is the
+line this entry drew and which held. The prediction above named `resnet_block`
+and `inception_block` and said the other five models must not move. **That last
+clause is wrong**, and the reason is one the prediction did not think through:
+ablating `-npu-fuse-ops` un-hides the convolutions fusion was covering, so the
+tiling pass sees them on every model, and eight further tight budget ablation
+rows move with it. The eight are `conv_bn_relu_stack` ablating
+`npu-fold-batchnorm` and `npu-fuse-ops`, `depthwise_separable` and `lenet` and
+`lenet_batched` ablating `npu-fuse-ops`, and `dilated_stack` ablating
+`npu-fuse-bias` and `npu-fuse-ops`. The prediction is not edited; this is the
+adjudication.
+
+**The direction is not one sided and that is the finding rather than the
+disappointment.** `inception_block` at its tight budget goes from 3799.0 cycles
+with 3 spills and 21936 DRAM bytes to **3395.0 with none and 12720**.
+`resnet_block` goes from 17 instructions and 2018.0 cycles to **21 and 2660.0**.
+Tiling helps one model and costs four, which is the trade Section 13.3 exists to
+quantify.
+
+**What did not move, and it is the whole list this entry promised.** No default
+budget cell. No golden tensor byte. No `max_abs_error_vs_onnxruntime`. The
+tiling disabled ablation cells still read 17 / 2018.0 / 1 and 22 / 3799.0 / 3 to
+the cycle, which is the gate clause; what moved there is the row's delta,
+because the baseline moved, which is an ablation row becoming a measurement.
 
 ### 2026-09-05, Phase P13: `Program::kVersion` goes to 2, so that a buffer can be written in pieces
 

@@ -101,27 +101,32 @@ func.func @tiles_when_the_result_is_returned(
 }
 
 // -----------------------------------------------------------------------------
-// Tiling, negative: over budget, and something reads the result.
+// Tiling, negative: over budget, and the result is both returned and read.
 //
-// **This is a decline about the binary format rather than about the search.** A
-// tiled result is assembled in DRAM by one store per tile, and the
-// `operand-defined` and `operand-extent` checks satisfy a read out of a single
-// written span, so an assembled value that is read back is refused by the
-// encoder. D-0052 carries the reproduction. The pass declines rather than
-// emitting a program this project's own encoder rejects.
+// **The one shape the binary still cannot express, and it is a narrow one.** A
+// returned assembly is stored straight into the out parameter the function
+// gained for it, and Section 8 makes an output region a place to write and
+// never a place to read. A value that is both returned and read would need it
+// to be both, and assembling into a spill slot and storing from there into the
+// out parameter would be a DRAM to DRAM transfer this machine has no
+// instruction for. D-0052 carries the reasoning.
+//
+// **A result that is only read is fine from P13**, which is the case below
+// this one: checks 8 and 9 answer a read inside a declared spill slot by exact
+// byte coverage, so the assembly comes back on chip in one transfer.
 //
 // The convolution has two readers so `-npu-fuse-ops` leaves it alone, which is
 // deliberate: a single reader would be fused into the same region and the
 // decline this case is about would be the fused region's rather than this one.
 // -----------------------------------------------------------------------------
 
-// TENSOR-LABEL: func.func @declines_when_the_result_is_read
+// TENSOR-LABEL: func.func @declines_when_the_result_is_returned_and_read
 // TENSOR-NOT:     npu.tiling_choice
 // TENSOR:         npu.conv2d
 
-// REMARK: this operation's result is read by another operation rather than returned
+// REMARK: this operation's result is both returned and read by another operation
 
-func.func @declines_when_the_result_is_read(
+func.func @declines_when_the_result_is_returned_and_read(
     %x: tensor<1x8x8x8xf32>, %w: tensor<8x8x3x3xf32>)
     -> (tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>) {
   %d = tensor.empty() : tensor<1x8x8x8xf32>
@@ -134,6 +139,52 @@ func.func @declines_when_the_result_is_read(
   %r = npu.relu ins(%c : tensor<1x8x8x8xf32>)
                 outs(%e : tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32>
   return %c, %r : tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>
+}
+
+// -----------------------------------------------------------------------------
+// Tiling, positive: over budget, and the result is read by another operation.
+//
+// **This is the case D-0052 refused and the one the format was taught to
+// accept.** The tiles are stored into a spill slot, one `npuisa.dma_store`
+// each, and the operation that reads the assembly gets it back in **one**
+// `npuisa.dma_load`, which is Section 8's count unchanged: the assembly is one
+// DRAM value and it enters the scratchpad once, however many operations read
+// it. Checks 8 and 9 admit that read because every byte of it lies inside one
+// declared slot and the tiles cover all of them.
+//
+// The relu after the convolution is what makes the result read rather than
+// returned, and the second reader is what keeps `-npu-fuse-ops` from folding
+// the two into one region.
+// -----------------------------------------------------------------------------
+
+// TENSOR-LABEL: func.func @tiles_when_the_result_is_read
+// TENSOR:         npu.tiling_choice
+// TENSOR:         tensor.insert_slice
+
+// One store per tile into the assembly, then one load of the whole thing back.
+// LOWERED-LABEL: func.func @tiles_when_the_result_is_read
+// LOWERED:         npuisa.dma_store
+// LOWERED:         npuisa.dma_store
+// LOWERED:         npuisa.dma_load
+// LOWERED:         npuisa.relu
+
+func.func @tiles_when_the_result_is_read(%x: tensor<1x8x8x8xf32>,
+                                         %w: tensor<8x8x3x3xf32>,
+                                         %y: tensor<1x8x8x8xf32>)
+    -> (tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>) {
+  %d = tensor.empty() : tensor<1x8x8x8xf32>
+  %c = npu.conv2d ins(%x, %w : tensor<1x8x8x8xf32>, tensor<8x8x3x3xf32>)
+                  outs(%d : tensor<1x8x8x8xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x8x8x8xf32>
+  %e = tensor.empty() : tensor<1x8x8x8xf32>
+  %r = npu.relu ins(%c : tensor<1x8x8x8xf32>)
+                outs(%e : tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32>
+  %f = tensor.empty() : tensor<1x8x8x8xf32>
+  %a = npu.add ins(%c, %y : tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>)
+               outs(%f : tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32>
+  return %r, %a : tensor<1x8x8x8xf32>, tensor<1x8x8x8xf32>
 }
 
 // -----------------------------------------------------------------------------

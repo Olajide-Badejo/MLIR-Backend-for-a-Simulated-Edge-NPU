@@ -50,12 +50,9 @@ ablation row is zero for a reason that is not the one `docs/PASSES.md` gives
 for the pass. Recorded rather than fixed, because a fix makes the pass fire and
 moves numbers, which is a declaration and a re-record of its own.
 
-**D-0056**, tiling is expressible from P13 and is not always an improvement.
-Four tight budget cells get a lower peak or fewer spills and one stops
-allocating, and no rule inside the tiling pass separates them, because the
-quantity that decides is the program's sweep line peak and the pass sees one
-operation. The measurement and the two rules that were tried and failed are in
-the entry.
+**D-0056 is resolved**, and the answer was in the allocator: it was refusing a
+legal spill, because its view rule was wider than its reason. Tiling is in the
+suite now and the trade it makes is a table rather than an argument.
 
 ## Resolved
 
@@ -3073,10 +3070,68 @@ nothing.
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by
   compiling all 168 cells of the suite at the wired tree rather than by
   reasoning about one.
-- **Status:** **open, and escalated with the measurement.** The validator change
-  is committed and correct; the compiler change that would use it is **not**,
-  because one cell stops compiling and no per operation rule I could measure
-  separates that cell from the four the same change improves.
+- **Status:** **resolved 2026-09-05, and the answer was in the allocator rather
+  than in the tiling pass.** The cell that would not place is placed now, every
+  one of the 168 compiles, and the compiler half of D-0052 is in. No
+  discriminator was written, because there was nothing to discriminate: the
+  allocator was refusing a legal spill.
+
+- **The diagnosis, which is the part worth keeping.** The allocator's failure
+  said "no buffer live across the pressure peak can be spilled" and stopped
+  there, so the first thing this session did was make it say **why**, per
+  candidate. `spillRefusal` now returns the rule that refused a buffer and the
+  failure prints one line per candidate. On the cell in question:
+
+  ```
+  The peak is at operation 37 and the buffers live across it are:
+    2048 bytes, live [0, 65], 1 uses after the peak: refused, a view is taken
+      of it, and a reload cannot serve a view
+    2048 bytes, live [19, 53], 0 uses after the peak: refused, a view is taken
+      of it, and a reload cannot serve a view
+    1024 bytes, live [34, 41], 1 uses after the peak: refused, it has already
+      been spilled
+    2304 bytes, live [35, 39], 1 uses after the peak: refused, it is itself a
+      reload
+    32 bytes, live [37, 39], 1 uses after the peak: refused, it is itself a
+      reload
+  ```
+
+  **The first line is the residual and it does have a view user**, which is what
+  the hypothesis that it had none got wrong. The residual is the block's input,
+  and it is also the first convolution's input, so the tiling pass takes a
+  `memref.subview` of it per tile. Under the per slice convention a slice of a
+  **scratchpad** value is a view and no transfer, so the producer stays whole
+  resident as the subview base, and being a subview base is exactly what the old
+  spill rule refused.
+
+  **So tiling pinned that buffer twice over**: whole resident because the slices
+  are views of it, and unspillable because it has view users.
+
+- **The fix is in the rule that was wider than its reason.** `spill` rewrites a
+  buffer's later uses onto the reload with `replaceUsesOfWith`, and a view's use
+  of the buffer is its source operand, so the same call re-bases a view without
+  knowing it is one. What a reload genuinely cannot serve is a view that is
+  **written through**: the write would land in the reload and be lost. So the
+  rule is now that narrower one, a direct view of the allocation is recorded as
+  a reader, and `viewWrittenThrough` replaces `hasViewUser`. The cell places
+  with one spill at a peak of 6144 bytes, which is **lower than the 6432 the
+  untiled program needs**.
+
+- **What tiling then costs and buys, over the whole suite, at the tight
+  budgets.** 31 cells move and **not one default budget cell moves**:
+
+  | Cell | before | after |
+  |---|---|---|
+  | `inception_block` | 3799.0 cycles, 3 spills, 21936 DRAM bytes | **3395.0, 0 spills, 12720** |
+  | `resnet_block` | 17 instructions, 2018.0 cycles, 14944 bytes | **21, 2660.0, 19040** |
+  | `conv_bn_relu_stack` ablate `npu-fuse-ops` | 1160.5 cycles | 1572.5 |
+  | `lenet` ablate `npu-fuse-ops` | 17766.25 cycles | 20617.25 |
+
+  **Tiling helps one model and costs four**, and both directions are the
+  measurement rather than a defect. `inception_block` loses all three spills and
+  42 percent of its DRAM traffic; `resnet_block` gains four instructions and 642
+  cycles for a peak it did not need to lower. That is the trade Section 13.3
+  exists to quantify, arriving as a table rather than as an argument.
 
 - **What the fix made possible.** With region scoped coverage on the DRAM side,
   `-npu-tile-to-scratchpad` can tile an operation whose result another operation
@@ -3139,23 +3194,82 @@ nothing.
   compiles all 168 cells, and it leaves the four wins on the table, which is
   recorded here rather than quietly forgone.
 
-- **The three ways forward**, so the decision has something concrete to weigh.
+- **The two rules this entry recorded as failures stay recorded**, and the
+  reason they failed is now clear: both were trying to discriminate cases that
+  did not need discriminating. Section 13.2's own trigger, tile when the working
+  set exceeds the budget, is what the pass does, and the allocator decides what
+  the program costs.
 
-  - **The pass consults the allocator.** Tile, place, and undo the tiling when
-    the placement fails or the peak does not fall. That is a real change of
-    shape: a pass that runs another pass to score itself.
-  - **Tile the consumer chain.** If the operation that reads the assembly is
-    tiled with the same geometry, it reads slices and the assembly never comes
-    back whole, which is the arrangement `docs/PHASE_STATE.md` measured at 4224
-    bytes against 1728 and the one the DRAM assembly decision assumed.
-  - **Leave it declining and report the four wins as what tiling would buy**,
-    which is the state this commit is in and is the least useful of the three.
+- **The mechanism, which is the transferable part.** Under the per slice
+  convention a slice of a **DRAM** value becomes a transfer and a slice of a
+  **scratchpad** value becomes a view. So tiling relieves the operand that lives
+  in DRAM, an argument or a DRAM assembly, and does not relieve an on chip
+  producer, which stays whole resident as the subview base. That is why
+  `conv_bn_relu_stack` wins, where the tiled convolution reads an argument, and
+  why `resnet_block`'s second convolution does not, where it reads the previous
+  layer's activation. The sentence is in `docs/PASSES.md` beside the pass and in
+  `docs/NUMBERS.md` beside the table.
+
+- **Two follow ups, with this evidence behind them and out of P13's budget.** A
+  tiling pass that consults the allocator, tiling and undoing the tiling when
+  the placement does not improve; and a pass that tiles a **chain** rather than
+  an operation, so the consumer reads slices and the assembly never comes back
+  whole, which is the arrangement `docs/PHASE_STATE.md` measured at 4224 bytes
+  against 1728.
 
 - **What this says about Section 13.3.** The experiment's tiling arm has a
   subject now: these five cells are exactly the population where tiling changes
   something, and four of the five say it helps. The arm can be run over them
   with the pass forced on, and it has to report the fifth as a program the
   arrangement cannot place rather than as a slower one.
+
+### D-0057 the roofline walk drops an operand whose type carries a strided offset, and shifts every operand after it
+
+- **Found:** 2026-09-05, phase P13, by the first tiled program reaching
+  `experiments/roofline.py`. It arrived as an `IndexError` and it could as
+  easily have arrived as a wrong number.
+- **Status:** **fixed**, in the commit that lands the compiler half of D-0052.
+
+- **Reproduce.** Any tiled convolution whose second tile does not start at its
+  parent's first byte:
+
+  ```
+  python experiments/run_benchmarks.py --models resnet_block --force
+  ```
+
+  ```
+  File "python/npu_frontend/npuisa_walk.py", line 299, in _charge
+    kernel_height = weights.shape[2]
+  IndexError: tuple index out of range
+  ```
+
+- **The mechanism.** `npuisa_walk` reads operand types out of the printed IR
+  with one regular expression, and its strided branch was
+  `strided<\[(?P<strides>[^\]]*)\]>`, which requires the closing `>` right
+  after the stride list. A view that starts at its parent's first byte prints as
+  `strided<[512, 64, 8, 1]>` and matches; **a view that does not prints as
+  `strided<[512, 64, 8, 1], offset: 24>` and does not**. A tiled operation
+  produces one of each: the first tile starts at the base and every later tile
+  does not.
+
+- **And the pattern failing is not the defect. The silence is.** `finditer` does
+  not raise on a type it cannot match, it yields one fewer, so the operand list
+  came out one short and every operand after the unmatched one moved down a
+  place. On a convolution that is an `IndexError`, because `weights.shape[2]`
+  runs off a rank 1 bias. **On a matrix multiply it would have been a wrong
+  reduction extent and a wrong charge, with nothing to say so**, and on an
+  elementwise operation, which takes its extents from the result, nothing at all
+  would have gone wrong until somebody read the per layer table.
+
+- **The fix is two things and the second is the one that matters.** The pattern
+  accepts an optional `offset:`, and `_checkOperandCount` asserts that the
+  walker read one type per operand, comparing against the names on the left of
+  the clause's colon. A type this walker cannot match is now a `WalkError`
+  naming the operation rather than a list that quietly lost an entry.
+
+- **The shape.** A parser whose failure mode is to return less rather than to
+  refuse, feeding an index. It is D-0032's shape, a value arriving through a
+  channel that loses information, and this project's most repeated one.
 
 ### D-0050 the binary format cannot express a buffer written in pieces, so a tiled program cannot be encoded
 

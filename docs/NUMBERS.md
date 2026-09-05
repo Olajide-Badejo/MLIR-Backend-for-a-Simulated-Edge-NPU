@@ -265,9 +265,22 @@ different reasons.
 
 **The tiling disabled row reproduces the spilling numbers to the cycle**, which
 is the P13 gate clause that asks for it: `resnet_block` at its tight budget is
-17 instructions, 2018.0 cycles and 1 spill with the pass ablated and with it
-present, and `inception_block` is 22, 3799.0 and 3. Those are the figures ADR
-0008's tight budgets were measured against and they have not moved.
+17 instructions, 2018.0 cycles and 1 spill with `-npu-tile-to-scratchpad`
+ablated, and `inception_block` is 22, 3799.0 and 3. Those are the figures ADR
+0008's tight budgets were measured against and **the ablated cells still read
+them exactly**. What moved is the row's **delta**, because the baseline moved:
+the pass fires now, so the row measures a pass that does something.
+
+**Which operand tiling relieves, and it is not the one a reader would guess.**
+Under the per slice convention a slice of a **DRAM** value becomes a transfer
+and a slice of a **scratchpad** value becomes a view. So tiling relieves the
+operand that lives in DRAM, an argument or a DRAM assembly, and does **not**
+relieve an on chip producer, which stays whole resident as the base the tile
+views are taken of. `inception_block` loses all three spills and 42 percent of
+its DRAM traffic; `resnet_block` gains four instructions and 642 cycles for a
+peak it did not need to lower. Both directions are in the ablation rows and both
+are the measurement rather than a defect. D-0056 carries the mechanism and the
+allocator change that made the second case placeable at all.
 
 ### The zero rows, each with its reason, because a zero is not self explanatory
 

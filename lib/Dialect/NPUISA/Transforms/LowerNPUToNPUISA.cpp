@@ -738,8 +738,52 @@ public:
       : OpConversionPattern<SourceOp>(converter, context), state(state) {}
 
 protected:
-  /// The scratchpad buffer an adaptor operand names.
+  /// The buffer an adaptor operand names, wherever it lives.
+  ///
+  /// Use it for a **destination**, which is written rather than read, and in
+  /// the two slice patterns, which decide for themselves what a memory space
+  /// means. Every operand a compute instruction **reads** goes through
+  /// `resident` instead.
   Value buffer(Value converted) const { return state.resolve(converted); }
+
+  /// The same buffer, on chip, with one `npuisa.dma_load` if it was not.
+  ///
+  /// **A compute instruction reads the scratchpad and nothing else**, which the
+  /// `npuisa` verifiers enforce, so an operand that converted to a DRAM buffer
+  /// has to be brought across before it can be read. There is exactly one way
+  /// for one to be in DRAM here and it arrived at P13: a **tiled result
+  /// assembled in DRAM**, whose tiles were stored one at a time into a spill
+  /// slot and which the next operation wants whole. A function argument cannot
+  /// reach this, because `FuncOpLowering` has already loaded and recorded every
+  /// argument any instruction reads.
+  ///
+  /// **This is what checks 8 and 9 were taught to accept.** The slot is covered
+  /// by the tiles between them, and one read of the whole slot lies inside that
+  /// one region, so the coverage rule admits it where the single span rule
+  /// refused it. D-0052 is the refusal and `docs/BREAKING_CHANGES.md` the
+  /// decision.
+  ///
+  /// **The transfer is recorded, so a second reader reuses the first reader's
+  /// copy**, and Section 8's count of one `dma_load` per DRAM value entering
+  /// the scratchpad still holds: the assembly is one DRAM value and it enters
+  /// once, however many operations read it.
+  Value resident(Value converted, Location loc,
+                 ConversionPatternRewriter &rewriter) const {
+    Value resolved = state.resolve(converted);
+    if (!resolved)
+      return resolved;
+    auto type = dyn_cast<MemRefType>(resolved.getType());
+    if (!type || !isa_and_present<npu::DramAttr>(type.getMemorySpace()))
+      return resolved;
+
+    auto onChip = MemRefType::get(type.getShape(), type.getElementType(),
+                                  MemRefLayoutAttrInterface(),
+                                  npu::ScratchpadAttr::get(type.getContext()));
+    Value copy = memref::AllocOp::create(rewriter, loc, onChip);
+    npuisa::DmaLoadOp::create(rewriter, loc, resolved, copy);
+    state.recordArgumentBuffer(resolved, copy);
+    return copy;
+  }
 
   LoweringState &state;
 };
@@ -1204,11 +1248,13 @@ public:
   LogicalResult
   matchAndRewrite(npu::Conv2DOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
     npuisa::Conv2DOp::create(
-        rewriter, op.getLoc(), buffer(adaptor.getInput()),
-        buffer(adaptor.getFilter()),
-        adaptor.getBias() ? buffer(adaptor.getBias()) : Value(),
+        rewriter, loc, resident(adaptor.getInput(), loc, rewriter),
+        resident(adaptor.getFilter(), loc, rewriter),
+        adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
+                          : Value(),
         op.getStridesAttr(), op.getPadsAttr(), op.getDilationsAttr(),
         op.getGroupAttr(), destination);
     rewriter.replaceOp(op, destination);
@@ -1223,11 +1269,14 @@ public:
   LogicalResult
   matchAndRewrite(npu::MatMulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
     npuisa::MatMulOp::create(
-        rewriter, op.getLoc(), buffer(adaptor.getLhs()),
-        buffer(adaptor.getRhs()),
-        adaptor.getBias() ? buffer(adaptor.getBias()) : Value(), destination);
+        rewriter, loc, resident(adaptor.getLhs(), loc, rewriter),
+        resident(adaptor.getRhs(), loc, rewriter),
+        adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
+                          : Value(),
+        destination);
     rewriter.replaceOp(op, destination);
     return success();
   }
@@ -1248,14 +1297,16 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = this->buffer(adaptor.getDestination());
     auto destinationType = cast<MemRefType>(destination.getType());
 
-    Value rhs = this->buffer(adaptor.getRhs());
+    Value rhs = this->resident(adaptor.getRhs(), loc, rewriter);
     if (cast<MemRefType>(rhs.getType()).getRank() != destinationType.getRank())
-      rhs = channelBroadcast(rewriter, op.getLoc(), rhs, destinationType);
+      rhs = channelBroadcast(rewriter, loc, rhs, destinationType);
 
-    TargetOp::create(rewriter, op.getLoc(), this->buffer(adaptor.getLhs()), rhs,
+    TargetOp::create(rewriter, loc,
+                     this->resident(adaptor.getLhs(), loc, rewriter), rhs,
                      destination);
     rewriter.replaceOp(op, destination);
     return success();
@@ -1269,8 +1320,10 @@ public:
   LogicalResult
   matchAndRewrite(npu::ReluOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
-    npuisa::ReluOp::create(rewriter, op.getLoc(), buffer(adaptor.getInput()),
+    npuisa::ReluOp::create(rewriter, loc,
+                           resident(adaptor.getInput(), loc, rewriter),
                            destination);
     rewriter.replaceOp(op, destination);
     return success();
@@ -1288,8 +1341,10 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = this->buffer(adaptor.getDestination());
-    TargetOp::create(rewriter, op.getLoc(), this->buffer(adaptor.getInput()),
+    TargetOp::create(rewriter, loc,
+                     this->resident(adaptor.getInput(), loc, rewriter),
                      op.getKernelAttr(), op.getStridesAttr(), op.getPadsAttr(),
                      op.getDilationsAttr(), op.getCeilModeAttr(), destination);
     rewriter.replaceOp(op, destination);
@@ -1316,7 +1371,8 @@ public:
     Location loc = op.getLoc();
     Value destination =
         memref::AllocOp::create(rewriter, loc, scratchpadTypeOf(op.getType()));
-    npuisa::ReshapeOp::create(rewriter, loc, buffer(adaptor.getInput()),
+    npuisa::ReshapeOp::create(rewriter, loc,
+                              resident(adaptor.getInput(), loc, rewriter),
                               destination);
     rewriter.replaceOp(op, destination);
     return success();
@@ -1330,9 +1386,10 @@ public:
   LogicalResult
   matchAndRewrite(npu::TransposeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
-    npuisa::TransposeOp::create(rewriter, op.getLoc(),
-                                buffer(adaptor.getInput()),
+    npuisa::TransposeOp::create(rewriter, loc,
+                                resident(adaptor.getInput(), loc, rewriter),
                                 op.getPermutationAttr(), destination);
     rewriter.replaceOp(op, destination);
     return success();
@@ -1346,11 +1403,12 @@ public:
   LogicalResult
   matchAndRewrite(npu::ConcatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
     SmallVector<Value> inputs;
     for (Value input : adaptor.getInputs())
-      inputs.push_back(buffer(input));
-    npuisa::ConcatOp::create(rewriter, op.getLoc(), inputs, op.getAxisAttr(),
+      inputs.push_back(resident(input, loc, rewriter));
+    npuisa::ConcatOp::create(rewriter, loc, inputs, op.getAxisAttr(),
                              destination);
     rewriter.replaceOp(op, destination);
     return success();

@@ -749,9 +749,16 @@ own. `test/Encoding/tiled-result-returned.mlir` carries that case from the tenso
 level through the encoder and the disassembler, and
 `test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal beside it.
 
-**So Section 13.3's tiling arm has no subject inside this suite at `-O2` yet**,
-and that is a finding about the format rather than about the pass. It is the
-first thing the next phase has to decide what to do about.
+**Which operand tiling relieves, which is the mechanism the table above turns
+on.** Under the per slice convention a slice of a **DRAM** value becomes a
+transfer and a slice of a **scratchpad** value becomes a view. So tiling
+relieves the operand that lives in DRAM, an argument or a DRAM assembly, and it
+does **not** relieve an on chip producer, which stays whole resident as the base
+the tile views are taken of. That is why `conv_bn_relu_stack` wins, where the
+tiled convolution reads a function argument, and why `resnet_block`'s second
+convolution does not, where it reads the previous layer's activation and gains
+the tile buffers on top of a residency it did not remove. D-0056 has the
+measurement and the allocator change that let the second case place at all.
 
 **It is exact, and the goldens say so rather than the argument.** Only parallel
 dimensions are split, so no reduction is reassociated and no `f32` sum changes
