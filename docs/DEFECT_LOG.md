@@ -37,11 +37,13 @@ fixed later in P13**, the DRAM view chain walk and `resultStrides` at format
 version 2; the third, the write model, is what is still open, and D-0052 is
 what it costs now that the passes are in a level.
 
-**D-0052's remainder**, a tiled result assembled in DRAM cannot be read back.
-The compiler is fixed: `-npu-tile-to-scratchpad` declines rather than emitting
-a program the encoder refuses, and it is counted and says why. What is open is
-whether the ISA should be able to express the read, which is D-0050's question
-and the owner's.
+**D-0052 is owner decided and no longer open.** A tiled result assembled in
+DRAM could not be read back; the decision is region scoped coverage on the DRAM
+side of checks 8 and 9, with no `kVersion` bump, declared in
+`docs/BREAKING_CHANGES.md` before the commit that causes it. **D-0050's third
+part goes with it**: the write model now expresses a buffer written in pieces
+inside a declared region, which is what its own version 2 declaration promised
+and did not deliver.
 
 **D-0054**, `-npu-double-buffer` fires on nothing this compiler emits, so its
 ablation row is zero for a reason that is not the one `docs/PASSES.md` gives
@@ -3236,11 +3238,34 @@ nothing.
 
 - **Found:** 2026-09-05, phase P13, by wiring the three passes into `-O2` and
   running the suite. The first tiled program the suite produced did not encode.
-- **Status:** **the compiler is fixed and the underlying constraint is open and
-  escalated.** `-npu-tile-to-scratchpad` now declines an operation whose
-  assembled result is read by anything, which keeps this compiler from emitting
-  a program its own encoder refuses. Whether the ISA should be able to express
-  the read is D-0050's question and is the owner's.
+- **Status:** **owner decided 2026-09-05, and the fix follows.** The decision is
+  **region scoped coverage on the DRAM side, with no `kVersion` bump**, and
+  `docs/BREAKING_CHANGES.md` carries the declaration written before the commit
+  that causes it.
+
+  The rule: checks 8 and 9 keep their present meaning on the scratchpad, where
+  buffers have no identity and the no merge rule is the only way to catch an
+  over read into the buffer next door. On the **DRAM** side, for a read whose
+  address lies inside a **declared spill slot**, the validator tracks exact byte
+  coverage of every write into that slot, strided writes run by run, and accepts
+  the read when every byte it addresses lies inside that one slot and every one
+  of those bytes has been written. A read that reaches into the next slot is
+  refused for leaving its region; a read of interior bytes nothing wrote is
+  refused for reading what nothing wrote. Inputs and constants stay defined
+  whole; outputs stay never read.
+
+  **That also closes the count against reach asymmetry this entry measured**, and
+  it closes it **on the DRAM spill slot side only**: a strided write there is
+  recorded by the bytes it actually touches rather than by its element count laid
+  down as one contiguous run. The scratchpad side records what it always did.
+
+  **No version bump**, because no encoded byte moves. Version 2 was declared so
+  that a buffer could be written in pieces, and its own declaration promised
+  checks 8 and 9 would move to written ranges per buffer; only the format half
+  landed, and this is the other half of that decision rather than a new one.
+  `test_binary_stability` is untouched and the corpus is not reseeded. Corpus
+  seeds can change **verdict**, which is the declared effect and is listed seed
+  by seed.
 
 - **Reproduce.** At the tree where the three passes are in `-O2` and the pass
   did not yet decline:

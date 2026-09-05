@@ -312,6 +312,97 @@ That is Section 17.6's declare then re-record, and the reason it is three commit
 rather than two is that `git log` is the only thing that can tell a decision from
 an explanation.
 
+### 2026-09-05, Phase P13: checks 8 and 9 gain region scoped coverage on the DRAM side, so that a tiled result can be read
+
+**Written before the commit that causes it.** The validator commit and the
+compiler commit that follows it are the next two; this entry is what makes the
+change to two **declared** checks a decision rather than an explanation.
+
+**Why, in one paragraph.** `Program::kVersion` went to 2 so that a buffer could
+be written in pieces, and the entry below promised that checks 8 and 9 would
+move from "one written count per address" to "written ranges per buffer". **Only
+the format half of that landed.** The validator kept the single span rule, so a
+tiled result assembled in DRAM is written by one store per tile and then refused
+the moment anything reads it: `operand-extent: operand 0 reads 2048 bytes from
+10944 and the buffer written there ends at 11968`. D-0052 has the reproduction
+and the three measurements that settle its scope. This entry is the other half
+of the bump, decided by the owner, and it needs **no further version bump**
+because no encoded byte moves: what changes is what the validator makes of bytes
+the format already carries.
+
+**The rule, exactly, because a declared check is worth stating precisely.**
+
+- **The scratchpad side does not change.** Buffers there have no identity, the
+  arena is one run of offsets, and the no merge rule is the only thing that can
+  catch an over read that runs off the end of one buffer and into the next.
+  `test/Encoding/tiled-assembly-in-scratchpad.mlir` stays a refusal and stays
+  the reason.
+- **The DRAM side gains region scoped coverage, and only inside a declared spill
+  slot.** `program.spillSlots` carries an offset, an element type and a shape per
+  slot, so each slot has its own extent and its own identity. For a read whose
+  address lies inside one slot, the validator accepts when **every byte the read
+  addresses lies inside that one slot** and **every one of those bytes has been
+  written**. A read that reaches into the next slot is refused for leaving its
+  region; a read of interior bytes no write covered is refused for reading what
+  nothing wrote.
+- **The bytes are computed exactly from the strides on both sides, run by run**,
+  not from an element count laid down as one contiguous span. That closes the
+  asymmetry D-0052 measured, where a strided tile write recorded 1024 bytes as a
+  run while the matching read addressed a reach of 1920.
+- **Inputs and constants stay defined whole before the first instruction, and
+  outputs stay never read.** Those three region kinds are untouched.
+
+**What moves.**
+
+| Thing | From | To |
+|---|---|---|
+| ISA check 8, `operand-defined` | one written span per address, in every space | unchanged on the scratchpad; exact byte coverage inside one declared spill slot on the DRAM side |
+| ISA check 9, `operand-extent` | the read's span fits the one span written at its address | unchanged on the scratchpad; every addressed byte inside one slot and covered, on the DRAM side |
+| `include/NPU/Encoding/NPUISADescription.td` | the two check texts above | the texts that say which side changed |
+| `docs/ISA_MANUAL.md`, `docs/ISA_OPCODES.json` | generated from the old text | regenerated, `check-isa-staleness.sh` clean |
+| `-npu-tile-to-scratchpad`'s decline rule | every user of the result is `func.return` | a DRAM assembled result may be read, whole or by slices |
+| `test/Dialect/NPUISA/dma-boundaries.mlir` | Section 8's count without an assembly that re-enters the scratchpad | with one, entering once |
+
+**Which cells this predicts will move, and by how much.** Measured at the tree
+that had the passes wired and the decline rule not yet written, where tiling
+really fired and the encoder refused the programs:
+
+| Cell | Prediction |
+|---|---|
+| `resnet_block-O2-tight-n1-fp32-normal` | one convolution tiles into two. Instructions rise from 17; the allocator's peak stays 6432 and the spill count stays 1 |
+| `inception_block-O2-tight-n1-fp32-normal` | two convolutions tile into four. Instructions rise from 22; the peak stays 6144 and **the spill count is predicted to fall from 3 to 0**, because tiling is what relieves the pressure that was spilling |
+| the nine other `-O2` tight ablation rows on each of those two models | move with their baselines |
+| `-ablate-npu-tile-to-scratchpad` on both | **must not move**, and must still read 17 / 2018.0 / 1 and 22 / 3799.0 / 3 to the cycle. That is the gate clause and this entry does not license it to move |
+| `-ablate-npu-double-buffer` on both | **not predicted to move**, because ablating it relaxes the tiling search and nothing tiles without the prefetch's contribution |
+| **every default budget cell, on all seven models** | **must not move.** Nothing is over budget at the default budget, so a default budget cell that moves is a wiring defect and not this declaration |
+| the other five models at either budget | must not move |
+
+**What does not move, and this list is the point of the entry.**
+
+- **Not one golden tensor byte.** Tiling over parallel dimensions splits no
+  reduction and reassociates no `f32` sum, so the tiled program computes the same
+  bytes. **This is the P13 gate's first clause becoming evidence**: until now the
+  goldens were byte identical because nothing consumed the tiling interface.
+- **`Program::kVersion` stays 2** and no encoded byte moves, so
+  `test_binary_stability` is untouched and the corpus is not reseeded. What a
+  corpus seed can do is change **verdict**, which is the declared effect and is
+  listed seed by seed in the validator commit.
+- **No cost model constant**, and no file under `include/NPU/Simulator`,
+  `lib/CostModel` or `python/npu_frontend/cost_model.py`.
+- **No bound, tolerance or threshold.** `GOLDEN_TOLERANCE` stays zero,
+  `TIMING_GAP_FRACTION` stays 0.5, the coverage thresholds stay where they are,
+  and ADR 0008's suite tight budgets are **not** re-measured here.
+
+**Why the regression is worth taking.** The alternative is a compiler whose
+tiling pass declines every operation it could tile, which is what P13 shipped
+one commit ago and recorded as D-0052. Section 13.3's tiling arm has no subject
+without this, so the phase's reason to exist is what the change buys. The
+narrower alternative, relaxing the no merge rule everywhere, was considered at
+D-0050 and refused: it would give up refusing a read of two exactly adjacent
+buffers as one, in the space where buffers have no identity. **Scoping the
+relaxation to a declared region is what makes it a completion of the version 2
+decision rather than a weakening of it.**
+
 ### 2026-09-05, Phase P13: `Program::kVersion` goes to 2, so that a buffer can be written in pieces
 
 **Written before the commit that causes it.** The commits that change the format
