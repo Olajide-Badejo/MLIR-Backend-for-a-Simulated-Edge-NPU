@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "80ac24d3b80c3f5f3330204f0417a66283dc021c",
+  "git_sha": "57d9c344b656c8e4e0776c2e5d16fb988b302fae",
   "levels": [
     0,
     1,
@@ -953,7 +953,7 @@
     },
     "NPUEncodingTests": {
       "failed": 0,
-      "passed": 81,
+      "passed": 84,
       "skipped": 1,
       "tests": [
         "Disassembly.AMissingMandatoryOperandStillPrintsTheInstruction",
@@ -998,7 +998,10 @@
         "SpillSlotCoverage.AReadThatSpansTwoSlotsIsRefusedForLeavingItsRegion",
         "SpillSlotCoverage.ASpilledBufferWrittenWholeAndReloadedWholeStillPasses",
         "SpillSlotCoverage.AWholeReadOfATwoTileAssemblyIsAccepted",
+        "SpillSlotCoverage.AnAccessWithTooManyRunsIsRefusedRatherThanEnumerated",
+        "SpillSlotCoverage.AnAddressBetweenTwoSlotsIsInNeither",
         "SpillSlotCoverage.TheScratchpadKeepsTheNoMergeRule",
+        "SpillSlotCoverage.TheSlotsAreFoundWhateverOrderTheFileDeclaresThem",
         "Validation.Activation",
         "Validation.Arity",
         "Validation.AttributeSize",
@@ -1215,8 +1218,8 @@
       ]
     },
     "pytest": {
-      "failed": 0,
-      "passed": 1085,
+      "failed": 1,
+      "passed": 1084,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",

@@ -37,6 +37,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -184,6 +185,13 @@ constexpr size_t kMaxIntervalsPerSlot = 1 << 14;
 
 class SlotCoverage {
 public:
+  /// **The slots are sorted by offset once, here, so a lookup is a search
+  /// rather than a scan.** A declared region's offset does not change, and the
+  /// file is free to declare them in any order, so the sort belongs at
+  /// construction and the order the file used is not the order this searches.
+  /// The scan it replaces was correct and quadratic in the file's size: every
+  /// operand of every instruction asked every slot, and a file is free to
+  /// declare many of both.
   explicit SlotCoverage(const Program &program) {
     for (const MemRegion &slot : program.spillSlots) {
       const int64_t bytes = slot.byteSize();
@@ -194,15 +202,32 @@ public:
         continue;
       bounds.emplace_back(begin, begin + bytes);
     }
+    llvm::sort(bounds, [](const std::pair<int64_t, int64_t> &left,
+                          const std::pair<int64_t, int64_t> &right) {
+      return left.first < right.first;
+    });
     covered.resize(bounds.size());
     saturated.assign(bounds.size(), false);
   }
 
   /// The slot this DRAM address lies in, or nothing when it lies in none.
+  ///
+  /// **The address between two slots is the case worth naming.** Regions do not
+  /// have to abut, so an address can be past one slot's end and before the
+  /// next's beginning, and the answer there is nothing rather than either
+  /// neighbour: a read there is not inside a declared region and falls through
+  /// to the rule that governs everything outside one.
   std::optional<size_t> slotAt(int64_t address) const {
-    for (const auto &[index, range] : llvm::enumerate(bounds))
-      if (address >= range.first && address < range.second)
-        return index;
+    auto after = std::upper_bound(
+        bounds.begin(), bounds.end(), address,
+        [](int64_t value, const std::pair<int64_t, int64_t> &range) {
+          return value < range.first;
+        });
+    if (after == bounds.begin())
+      return std::nullopt;
+    const auto candidate = std::prev(after);
+    if (address < candidate->second)
+      return static_cast<size_t>(candidate - bounds.begin());
     return std::nullopt;
   }
 

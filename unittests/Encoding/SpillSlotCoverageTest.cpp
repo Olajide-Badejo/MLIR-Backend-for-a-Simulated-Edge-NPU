@@ -205,4 +205,134 @@ TEST(SpillSlotCoverage, ASpilledBufferWrittenWholeAndReloadedWholeStillPasses) {
       << (error ? error->toString() : std::string());
 }
 
+//===----------------------------------------------------------------------===//
+// Which slot an address is in, and the two caps.
+//===----------------------------------------------------------------------===//
+
+TEST(SpillSlotCoverage, AnAddressBetweenTwoSlotsIsInNeither) {
+  // Two slots with a gap between them, and a read that starts in the gap.
+  // **The gap is the case the search has to get right**: regions do not have to
+  // abut, so an address can be past one slot's end and before the next's, and
+  // the answer there is neither. A read there is outside every declared region
+  // and falls through to the rule that governs everything outside one, which
+  // refuses it because nothing wrote that address.
+  const std::vector<int64_t> shape = {1, 2, 4, 4};
+  Program program;
+  program.scratchpadBytes = 128;
+  program.dramBytes = 512;
+  program.inputs.push_back(region(0, ElemType::F32, shape));
+  // 128 bytes each, at 128 and at 384, so 256 to 384 belongs to neither.
+  program.spillSlots.push_back(region(128, ElemType::F32, shape));
+  program.spillSlots.push_back(region(384, ElemType::F32, shape));
+
+  Instruction load = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, shape);
+  load.operands.push_back(operand(MemSpace::Dram, ElemType::F32, 0, shape));
+  program.instructions.push_back(load);
+
+  Instruction store = instruction(Opcode::DMA_STORE, MemSpace::Dram,
+                                  ElemType::F32, 128, shape);
+  store.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, shape));
+  program.instructions.push_back(store);
+
+  Instruction read = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, shape);
+  read.operands.push_back(operand(MemSpace::Dram, ElemType::F32, 256, shape));
+  program.instructions.push_back(read);
+  program.instructions.push_back(halt());
+
+  std::optional<ProgramError> error = program.validate();
+  ASSERT_TRUE(error.has_value()) << "an address in no region must fail";
+  EXPECT_EQ(error->check, Check::OperandDefined);
+  EXPECT_NE(error->toString().find("no declared region covers"),
+            std::string::npos)
+      << error->toString();
+}
+
+TEST(SpillSlotCoverage, TheSlotsAreFoundWhateverOrderTheFileDeclaresThem) {
+  // The same two slots, declared in descending order. A file may print its
+  // regions in any order and the search sorts them, so the answer must not
+  // depend on the order. This is the assertion that sort is doing something.
+  const std::vector<int64_t> shape = {1, 2, 4, 4};
+  Program program;
+  program.scratchpadBytes = 128;
+  program.dramBytes = 512;
+  program.inputs.push_back(region(0, ElemType::F32, shape));
+  program.spillSlots.push_back(region(384, ElemType::F32, shape));
+  program.spillSlots.push_back(region(128, ElemType::F32, shape));
+
+  Instruction load = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, shape);
+  load.operands.push_back(operand(MemSpace::Dram, ElemType::F32, 0, shape));
+  program.instructions.push_back(load);
+
+  // Write the lower slot whole and read it back whole.
+  Instruction store = instruction(Opcode::DMA_STORE, MemSpace::Dram,
+                                  ElemType::F32, 128, shape);
+  store.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, shape));
+  program.instructions.push_back(store);
+
+  Instruction read = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, shape);
+  read.operands.push_back(operand(MemSpace::Dram, ElemType::F32, 128, shape));
+  program.instructions.push_back(read);
+  program.instructions.push_back(halt());
+
+  std::optional<ProgramError> error = program.validate();
+  ASSERT_FALSE(error.has_value())
+      << (error ? error->toString() : std::string());
+}
+
+TEST(SpillSlotCoverage, AnAccessWithTooManyRunsIsRefusedRatherThanEnumerated) {
+  // **The run cap, reached without writing a file and in well under a second.**
+  // The cap is 65536 runs, and an access reaches it by having more than that
+  // many rows: a `[131072, 1]` shape whose innermost stride is not one is one
+  // run per element, so the count is 131072 before a single run is built.
+  //
+  // The point of the cap is that this returns rather than enumerating, and the
+  // point of the refusal is that a validator which ran out of room must not
+  // accept: an access it cannot measure is one it cannot say is covered.
+  const std::vector<int64_t> whole = {131072, 1};
+  Program program;
+  program.scratchpadBytes = 4;
+  // Room for the read to address, so the in range check passes and the run
+  // cap is what the access meets rather than the memory size.
+  program.dramBytes = 8 * 131072 * 4;
+  program.inputs.push_back(region(0, ElemType::F32, whole));
+  program.spillSlots.push_back(
+      region(static_cast<uint64_t>(131072 * 4), ElemType::F32, whole));
+
+  Instruction prime = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                  ElemType::F32, 0, {1, 1});
+  prime.operands.push_back(operand(MemSpace::Dram, ElemType::F32, 0, {1, 1}));
+  program.instructions.push_back(prime);
+
+  Instruction store = instruction(Opcode::DMA_STORE, MemSpace::Dram,
+                                  ElemType::F32, 131072 * 4, whole);
+  store.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, {1, 1}));
+  program.instructions.push_back(store);
+
+  // The read: the same bytes, addressed one element at a time because the
+  // innermost stride is two rather than one.
+  Instruction read = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::F32, 0, {1, 1});
+  Operand scattered;
+  scattered.space = MemSpace::Dram;
+  scattered.elementType = ElemType::F32;
+  scattered.address = 131072 * 4;
+  scattered.shape = {65537, 1};
+  scattered.strides = {2, 2};
+  read.operands.push_back(scattered);
+  program.instructions.push_back(read);
+  program.instructions.push_back(halt());
+
+  std::optional<ProgramError> error = program.validate();
+  ASSERT_TRUE(error.has_value()) << "an access past the run cap must fail";
+  EXPECT_NE(error->toString().find("discontiguous runs"), std::string::npos)
+      << error->toString();
+}
+
 } // namespace

@@ -996,48 +996,53 @@ the assertion did not name. It is not hypothetical: `zigzag` is in
 would fail on it, and a step that told the log the tools were absent while one of
 them was importable would be wrong in the direction that matters.
 
-> **Trigger re-evaluated at the wired tree, and it has still not fired.** P12
-> recorded the trigger for wiring `experiments/compile_time_benchmark.py --check`
-> into `ci.yml` as "P13, because tiling makes functions longer, which moves the
+> **Trigger fired at the third evaluation, and the step is on.** P12 recorded
+> the trigger for wiring `experiments/compile_time_benchmark.py --check` into
+> `ci.yml` as "P13, because tiling makes functions longer, which moves the
 > crossover with the genuinely quadratic offset assignment scan toward the
-> measured range". **Tiling is in `-O2` now and no function in the suite got
-> longer**, which is a measurement rather than an argument: `instruction_count`
-> is identical on all 175 pre-existing cells at the wired tree, and the wired
-> tiles table above is 0 tiled on every model at both budgets. The premise of the
-> trigger is a longer function and there is not one, so **it is not wired**, and
-> the reason is D-0052 rather than the budgets.
+> measured range". It was evaluated three times: at the wiring commit, where
+> nothing tiled and no function moved; after the D-0052 validator fix, where the
+> compiler half was held back and nothing moved again; and here, where tiling
+> reaches the suite. **Seventeen cells have longer functions, the longest went
+> from 25 instructions to 33, and the largest single growth is 12 to 30 on
+> `dilated_stack` with fusion ablated.** The premise of the trigger is a longer
+> function and there are seventeen, so it is wired.
 >
-> **The red branch was rehearsed anyway**, because a gate nobody has seen fail is
-> a gate nobody knows works. `python experiments/compile_time_benchmark.py
-> --check --sizes 500` prints "No fit: a growth exponent needs at least two sizes
-> and a nonzero pass time at every one of them" and **exits 1**, which is exactly
-> the branch P12's recipe named. `--check` at the four real sizes exits 0 with a
-> fitted exponent of 1.1081 against a ceiling of 1.5683.
+> **Rehearsed red first**, which is P12's recipe and the reason to rehearse at
+> all: `python experiments/compile_time_benchmark.py --check --sizes 500` prints
+> "No fit: a growth exponent needs at least two sizes and a nonzero pass time at
+> every one of them" and **exits 1**. `--check` at the four real sizes exits 0
+> with a fitted exponent of 1.1072 against a ceiling of 1.5683.
 >
-> **What would fire it**, so the next session does not re-derive it: a program in
-> the suite whose function is longer than it is today. That needs tiling to fire,
-> which needs either a tiled operation whose result is the function's own, or the
-> ISA question D-0052 escalates. **The recipe for wiring it is unchanged and is
-> kept here**: switch it on in the `build-and-test` job, under `pull_request` and
-> `push` to `phase/**` like every other step, after `check-reachability full` and
-> before `regression-baseline --check`, which runs last because it needs
-> everything the job has.
+> **Where it sits and why**: the `build-and-test` job, under `pull_request` and
+> `push` to `phase/**` like every other step, after `check-reachability full`,
+> which builds the model IR, and before `regression-baseline --check`, which is
+> documented as running last because it needs everything the job has.
+>
+> **What it can and cannot catch, restated so a red is read correctly.** The
+> curve is fitted over synthetic sizes inside one process on one host, so it is
+> a slope and not a wall clock compared across machines. A red means the
+> allocator's growth left the band between the two hypotheses Section 13.1
+> names, and it does not mean the runner was slow.
 
-> **Trigger also re-evaluated and also unfired: `experiments/kernel_threads.py`
-> into `nightly.yml`.** P12 recorded it as "the first phase that changes the
-> convolution kernel's loop nest, which is P13's tiling or P14's integer
-> kernels". **This branch does not touch the kernel and nothing tiles**, so the
-> instruction shapes the kernel is handed are P12's to the byte. It was re-run at
-> the wired tree and the table moved, 0.86 to 3.17 at P12 against 0.96 to 4.00
-> here, **with the output bytes equal on every model at every thread count**.
-> That spread is the host and not the kernel, and reading it as a trigger would
-> be reading a wall clock across runs, which Section 16.1 forbids in the same
-> words. **Not wired.**
+> **Trigger evaluated a third time and still unfired:
+> `experiments/kernel_threads.py` into `nightly.yml`.** P12 recorded it as "the
+> first phase that changes the convolution kernel's loop nest, which is P13's
+> tiling or P14's integer kernels". **The kernel's loop nest is untouched and so
+> is its team cap**, which is `batch * outputChannels`: the tilings this pass
+> chooses split output **rows**, so the number of independent output tiles an
+> instruction has does not move. And `kernel_threads.py` measures each model at
+> its default configuration, where **nothing tiles at all**, so the instructions
+> it hands the kernel are the same ones. The table moved from 0.96 to 4.00 to
+> 0.90 to 3.98 between two runs at this tree, **with the output bytes equal on
+> every model at every thread count**, which is the host and not the kernel.
+> **Not wired.**
 >
-> **What would fire it** is unchanged: the first phase that changes the
-> convolution kernel's loop nest, which is P14's integer kernels unless P13's
-> tiling becomes reachable first. The recipe is unchanged too: add it to
-> `nightly.yml` beside `full-matrix`, not to `ci.yml`.
+> **What would fire it** is now sharper than "P13's tiling": a change to the
+> kernel's loop nest, or a tiling that splits the output channel axis, which
+> would move the team cap. P14's integer kernels are the next candidate. The
+> recipe is unchanged: add it to `nightly.yml` beside `full-matrix`, not to
+> `ci.yml`.
 
 ### 0. Reproducing the CI image locally, which is now a standing recipe
 
