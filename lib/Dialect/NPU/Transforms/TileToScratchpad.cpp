@@ -780,14 +780,39 @@ struct TileToScratchpadPass
     // `npu.fused_op` region alone. That region is `IsolatedFromAbove` and its
     // whole purpose is to keep an intermediate in the scratchpad; tiling one
     // member of a fused pair without the other would put the intermediate back
-    // in DRAM, which is the opposite of what fusion was for. A fused region
-    // whose working set does not fit is left to the allocator, and it is
-    // counted as declined rather than skipped silently.
+    // in DRAM, which is the opposite of what fusion was for.
+    //
+    // **A fused region over the budget is counted as declined and says so**,
+    // rather than being passed over in silence. It is not a small thing on this
+    // suite: at `-O2` fusion hides 30 of the 44 convolutions and matrix
+    // multiplications in the fourteen model configurations, and two of the
+    // seven models have none left visible at all. A tiling arm that reported
+    // zero on those two without saying why would be reporting the fusion pass
+    // and calling it a tiling result. `docs/PASSES.md` carries what Section
+    // 13.3 does about it and why a fused region that tiles as a unit is future
+    // work rather than part of this phase.
     SmallVector<Operation *> candidates;
+    SmallVector<Operation *> fusedRegions;
     for (Block &block : function.getBody())
-      for (Operation &op : block)
+      for (Operation &op : block) {
         if (isa<Conv2DOp, MatMulOp>(op))
           candidates.push_back(&op);
+        else if (isa<FusedOp>(op))
+          fusedRegions.push_back(&op);
+      }
+
+    for (Operation *op : fusedRegions) {
+      if (workingSetBytesFor(op, doubleBuffer) <= budgetBytes)
+        continue;
+      ++declinedOps;
+      op->emitRemark()
+          << "a fused region whose working set exceeds the budget is left to "
+             "the allocator. Tiling one member of a fused pair without the "
+             "other would put the intermediate back in DRAM, which is what the "
+             "fusion existed to prevent, and a region that tiles as a unit "
+             "would have to implement TilingInterface itself. Section 12 does "
+             "not require that and this version does not do it.";
+    }
 
     IRRewriter rewriter(&getContext());
     int64_t emitted = 0;

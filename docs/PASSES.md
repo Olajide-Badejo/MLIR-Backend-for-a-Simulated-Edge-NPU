@@ -760,6 +760,51 @@ assertion that none survives.
   is counted rather than silent.
 - **The output spatial axes, under `halo=cache`.** That is Section 13.3's third
   arm: the choice between paying for a halo and not creating one.
+- **An operation inside a `npu.fused_op` region**, counted as `declined` with a
+  remark that says why. The next section is what that costs and what Section
+  13.3 does about it.
+
+### Fusion hides most of the suite's convolutions from tiling
+
+**The number first.** At `-O2`, fusion puts 30 of the 44 convolutions and matrix
+multiplications in the fourteen model configurations inside `npu.fused_op`
+regions, where this pass does not look. Two of the seven models,
+`depthwise_separable` and `dilated_stack`, have **none** left visible at all.
+`inception_block` has all three of its visible. The rest have one each.
+
+**Why the pass does not look inside.** A fused region is `IsolatedFromAbove` and
+its entire purpose is to keep the intermediate between a convolution and its
+activation in the scratchpad. Tiling the convolution without the activation
+beside it would put that intermediate back into DRAM, which is the thing the
+fusion existed to prevent. Tiling the pair together is the correct rewrite and
+it needs `npu.fused_op` to implement `TilingInterface` itself, composing its
+members' tiled implementations. **Section 12 does not require that and neither
+does Section 13**, so it is recorded here as future work rather than built now.
+It is a real design change and not an oversight: the interface would have to
+tile a region whose members are tiled at different domains.
+
+**What Section 13.3 does about it, decided before the experiment ran rather
+than after.** The three arms run at `-O2` and stay there, because Section 13.3's
+premise is explicitly that an *optimizing* pipeline can be slower than `-O0`
+under pressure, and `-O2` is that pipeline; moving the arms to a level without
+fusion would answer a different question from the one asked.
+
+Within that, **arm two, tile, is reported in two configurations**, which is the
+treatment Section 13.3 already gives arm one when it says spilling is "run under
+both heuristics of Section 13.1, which is two configurations of one arm rather
+than two arms". The two are `-O2` as it stands, where tiling sees fourteen of
+the forty four operations, and `-O2` with `-npu-fuse-ops` left out, where it
+sees all of them. The first is what the compiler does today. The second is what
+tiling is worth when nothing hides the operations from it, and the gap between
+them is the measured cost of the fusion and tiling conflict rather than a
+caveat in prose.
+
+That keeps the arm non vacuous on all seven models, which matters because
+Section 13.3 says in as many words that a two arm result is reported as an
+incomplete experiment rather than as the experiment. A tiling arm reporting zero
+on `depthwise_separable` and `dilated_stack` without saying why would be
+reporting the fusion pass and calling it a tiling result, and that is exactly
+the shape of claim this project's `declined` statistic exists to prevent.
 
 ---
 

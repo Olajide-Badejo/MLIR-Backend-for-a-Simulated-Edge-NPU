@@ -26,6 +26,11 @@
 // RUN:   | FileCheck %s --check-prefix=ROOMY
 // RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 \
 // RUN:   | FileCheck %s --check-prefix=NOSCF
+// RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 \
+// RUN:   -mlir-pass-statistics -mlir-pass-statistics-display=list 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=STATS
+// RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=REMARK
 
 // -----------------------------------------------------------------------------
 // Positive: a convolution whose working set is 4256 bytes against a budget of
@@ -116,3 +121,63 @@ func.func @matmul(%a: tensor<16x64xf32>, %b: tensor<64x32xf32>,
                   outs(%d : tensor<16x32xf32>) -> tensor<16x32xf32>
   return %0 : tensor<16x32xf32>
 }
+
+// -----------------------------------------------------------------------------
+// Negative: a convolution inside a fused region is declined, and the decline is
+// counted and said out loud.
+//
+// The region is `IsolatedFromAbove` and its whole purpose is to keep the
+// intermediate in the scratchpad. Tiling the convolution without the activation
+// beside it would put that intermediate back into DRAM, which is what the
+// fusion existed to prevent, so a region that tiled as a unit would have to
+// implement `TilingInterface` itself. Section 12 does not require that and this
+// version does not do it.
+//
+// **The decline is counted rather than silent, and that is the point of this
+// case.** At `-O2` fusion hides 30 of the 44 convolutions and matrix
+// multiplications in the model suite, and two of the seven models have none
+// left visible. A tiling arm reporting zero on those two without saying why
+// would be reporting the fusion pass and calling it a tiling result.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: func.func @fused_region_declines
+// CHECK-NOT: tensor.extract_slice
+// CHECK: npu.fused_op
+
+// ROOMY-LABEL: func.func @fused_region_declines
+// ROOMY: npu.fused_op
+
+// NOSCF-LABEL: func.func @fused_region_declines
+// NOSCF-NOT: scf.
+
+// REMARK: a fused region whose working set exceeds the budget is left to the
+// REMARK-SAME: allocator
+
+func.func @fused_region_declines(%x: tensor<1x4x16x16xf32>,
+                                 %w: tensor<4x4x3x3xf32>)
+    -> tensor<1x4x14x14xf32> {
+  %d = tensor.empty() : tensor<1x4x14x14xf32>
+  %r = npu.fused_op ins(%x, %w, %d, %d : tensor<1x4x16x16xf32>,
+                                         tensor<4x4x3x3xf32>,
+                                         tensor<1x4x14x14xf32>,
+                                         tensor<1x4x14x14xf32>) {
+  ^bb0(%a: tensor<1x4x16x16xf32>, %b: tensor<4x4x3x3xf32>,
+       %c: tensor<1x4x14x14xf32>, %e: tensor<1x4x14x14xf32>):
+    %0 = npu.conv2d ins(%a, %b : tensor<1x4x16x16xf32>, tensor<4x4x3x3xf32>)
+                    outs(%c : tensor<1x4x14x14xf32>)
+                    {dilations = array<i64: 1, 1>,
+                     pads = array<i64: 0, 0, 0, 0>,
+                     strides = array<i64: 1, 1>} -> tensor<1x4x14x14xf32>
+    %1 = npu.relu ins(%0 : tensor<1x4x14x14xf32>)
+                  outs(%e : tensor<1x4x14x14xf32>) -> tensor<1x4x14x14xf32>
+    npu.yield %1 : tensor<1x4x14x14xf32>
+  } -> tensor<1x4x14x14xf32>
+  return %r : tensor<1x4x14x14xf32>
+}
+
+// **The counts, asserted rather than left implied.** Two operations tile, the
+// convolution and the matrix multiplication, and the fused region is the one
+// decline. A pass that had quietly stopped looking at fused regions would leave
+// `declined` at zero and every other assertion in this file would still pass.
+// STATS: 1 declined
+// STATS: 2 tiled-ops
