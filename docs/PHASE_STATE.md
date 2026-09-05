@@ -185,10 +185,21 @@ enough to check by hand has exactly one fold.
 
 ## What P13 has, in one place
 
-- **The cost model is untouched.** `git diff main..HEAD` touches no file under
-  `lib/Simulator/`, `include/NPU/Simulator/` or `python/npu_frontend/cost_model.py`.
-  No `docs/BREAKING_CHANGES.md` entry, no band re-versioning, no re-record for a
-  numeric reason.
+- **The cost model's charges are untouched, and the sentence this file used to
+  carry here was wider than that and false.** It said `git diff main..HEAD`
+  touches no file under `lib/Simulator/`, and it does touch two. What is
+  checkable and true: `python/npu_frontend/cost_model.py` and
+  `include/NPU/Simulator/` are **untouched over the whole branch**, so no
+  constant and no declared charge moved; `lib/Simulator/CostModel.cpp` moved to
+  `lib/CostModel/` as a rename with a zero byte diff; and
+  `lib/Simulator/Kernels.cpp` gained the version 2 scatter path at `670dd0b`,
+  which **is** declared, in `docs/BREAKING_CHANGES.md` under the `kVersion` bump,
+  and which no program before version 2 could reach. **The wiring commit and the
+  two beside it touch none of those files at all**, which is the narrow claim
+  this phase's last three commits are entitled to make.
+- The correction is recorded rather than quietly applied because a claim of the
+  form "this diff touches nothing under that directory" is checkable in one
+  command, and this one was carried for four commits without anybody running it.
 - **The `TilingInterface` generation half is complete for the operations that
   matter**, over the parallel dimensions only: convolution, both pools, matmul.
   A tile that splits the reduction is declined, which is Section 13.2's rule

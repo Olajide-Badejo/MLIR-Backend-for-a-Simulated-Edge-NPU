@@ -15,11 +15,13 @@ blocked on an owner decision rather than on work.
 
 **All three passes are in `-O2`**, the ablatable set is eleven, the suite is 217
 cells, and the whole suite was re-recorded once at that tree. **No simulated
-number moved**: all 21 golden tensors are byte identical, **not one counted
-field of the 175 pre-existing cells moved**, and `git diff main..HEAD` touches
-no cost model file at all. There is nothing to declare in
-`docs/BREAKING_CHANGES.md`, because a declaration of a movement measured to be
-zero would be a false declaration.
+number moved**: all 21 golden tensors are byte identical and **not one counted
+field of the 175 pre-existing cells moved**. The wiring commit and the two
+beside it touch no cost model file at all, and over the whole branch the
+constants and their headers are untouched; what did change under
+`lib/Simulator/` is the version 2 scatter path, which is declared under the
+`kVersion` bump. There is nothing to declare for the wiring, because a
+declaration of a movement measured to be zero would be a false declaration.
 
 - **`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
   went into `-O2` in one commit**, in Section 12's own positions: layout and
