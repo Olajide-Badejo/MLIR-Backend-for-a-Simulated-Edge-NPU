@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "9325b3bd68e292b5f8f12701085d18b8481f68a8",
+  "git_sha": "ee456e7c215b01cf72b12ed800f2768efb156c09",
   "levels": [
     0,
     1,
@@ -1158,7 +1158,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 28,
+      "passed": 29,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1177,6 +1177,7 @@
         "NPU :: Dialect/NPUISA/spill-heuristic.mlir",
         "NPU :: Encoding/all_ops.mlir",
         "NPU :: Encoding/diagnostics.mlir",
+        "NPU :: Encoding/dram-subview.mlir",
         "NPU :: Encoding/objdump.mlir",
         "NPU :: Pipeline/opt-levels.mlir",
         "NPU :: Pipeline/pass-stats.mlir",
