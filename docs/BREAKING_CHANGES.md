@@ -42,6 +42,96 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-06, Phase P13: `-npu-double-buffer` starts firing, and declines the prefetches that would not place
+
+**Written before the commit that causes it.** The commit that changes the pass
+is the next one; this entry is what makes a pass that has fired on nothing since
+it landed start moving recorded fields a decision rather than an explanation.
+
+**Why, in one paragraph.** D-0054 recorded that the pass fires on nothing this
+compiler emits, for a reason that is not the overlap being worthless: every
+argument load sits in the entry block beside the other argument loads, where the
+hoist correctly stops at another transfer, so the one transfer with a
+computation before it is the load of a weight, and its source is an
+`npuisa.const` that `prologueOf` would not let move with it. Admitting
+`npuisa::ConstOp` to the prologue makes the pass fire on one to four transfers
+per model. It also makes **five of the seven models stop placing at their ADR
+0008 tight budgets**, because a prefetched weight is resident across the
+computation it hides under, and those budgets are frozen. **A prefetch that
+cannot be placed is not a prefetch**, so the pass now asks what the doubling
+costs before it commits to it.
+
+**The rule, exactly, because a pass that declines has to say what it declines
+on.** Before committing a hoist, the pass takes the live intervals the allocator
+itself collects, moves the definition of every allocation that would travel with
+the transfer to the point the transfer is moving to, and runs the allocator's own
+`assignOffsets` over the result at the same budget, the same strategy and the
+same alignment. A set that does not place is a decline, counted as
+`would-not-fit` beside `not-hoisted`, so a pass that answered no reads
+differently from one that never asked.
+
+**The sweep line peak was tried as that rule first and is not enough**, and the
+measurement is why this entry is worth reading. Section 13.1 says the peak is a
+lower bound on any placement and that the allocator's spill trigger is therefore
+"offset assignment failed" and never "peak exceeded budget". Under a peak rule
+`dilated_stack` at its tight budget of 8064 accepted a prefetch that left a peak
+of 8028, which fits, and the arena then needed 8084 and **the cell did not
+compile**. 56 bytes of alignment is the difference between a lower bound and an
+answer, and a change that takes a cell away is not one this phase ships.
+
+**What the pass answers now, measured at this tree per model, as prefetched /
+not hoisted / would not fit.**
+
+| Model | at the default 1048576 | at its tight budget |
+|---|---|---|
+| `lenet` | 4 / 7 / 0 | 3 / 7 / 1 |
+| `depthwise_separable` | 1 / 4 / 0 | 1 / 4 / 0 |
+| `resnet_block` | 2 / 4 / 0 | **0** / 6 / 1 |
+| `inception_block` | 2 / 5 / 0 | 1 / 8 / 0 |
+| `conv_bn_relu_stack` | 2 / 4 / 0 | 1 / 4 / 1 |
+| `dilated_stack` | 1 / 4 / 0 | **0** / 4 / 1 |
+| `lenet_batched` | 4 / 7 / 0 | 3 / 7 / 1 |
+
+**Which fields this predicts will move.**
+
+| Field | Prediction |
+|---|---|
+| `npuisa_op_counts` | **moves on every `-O2` cell where the pass hoists at least one transfer.** `npuisa.dma_load` falls by the number prefetched, and `npuisa.dma_load_async` and `npuisa.await` appear with that count. It is the same transfer named differently |
+| `simulation.fragmentation_ratio` | **moves on six of the seven default budget baselines**, every model but `depthwise_separable`, because the prefetched destination is live longer and the arena is packed differently. Sweep line peak and high water mark, measured: `lenet` 194560 to 194896 and 194592 to 194960; `resnet_block` 8480 to 8512 and 8480 to 8544; `inception_block` 6728 unchanged and 6848 to 6856; `conv_bn_relu_stack` 6432 to 6560 in both; `dilated_stack` 8008 to 8028 and 8036 to 8084; `lenet_batched` 200800 to 201136 and 200800 to 201168 |
+| the same, at the **tight** budgets | **does not move on any model.** A tight budget is the smallest at which the program places, so a hoist that raises the peak does not place and is declined, and only a hoist that costs nothing survives there. That is the decline rule doing exactly what it was written for, and it is the sharpest prediction in this entry |
+| `instruction_count` | **does not move anywhere.** `npuisa.await` encodes to nothing and `npuisa.dma_load_async` encodes to `DMA_LOAD`, because the wait is a property of the dialect level and not of the machine. A function does not get longer from a reorder |
+| `simulated_cycles`, `compute_cycles`, `dma_cycles`, `overlap_fraction` | **do not move anywhere.** Section 5.5 starts an instruction at the later of its port becoming free and its last operand becoming ready, which is a dataflow schedule rather than a program order one, so reordering two instructions charged to different ports moves no start time. `docs/PASSES.md` already carries that measured on a hand written tiled convolution: 2116 cycles, 1524 DMA and 596 compute, before and after |
+| `dram_bytes_read`, `dram_bytes_written`, `macs`, `scratchpad_elements_read`, `scratchpad_elements_written`, `spill_count` | **do not move anywhere.** No transfer is added or removed and no spill count moves in the measurement above |
+| the 21 golden tensors | **byte identical.** A reorder of a transfer and a computation changes no arithmetic, so the numerics move by exactly zero rather than by less than a tolerance |
+| `max_abs_error_vs_onnxruntime` | **does not move**, for the same reason |
+| the 14 `-ablate-npu-double-buffer` cells | **do not move at all**, because the pass is not in those pipelines and the tiling coupling is unchanged |
+| `content_hash`, and `npuResultsContentHash` with it | moves on all 217 cells, because it is a hash over the compiler sources and they moved. That is provenance rather than a measurement, and it moves on every code commit |
+
+**What does not move, and this list is the point of the entry.**
+
+- **No bound, tolerance or threshold.** `GOLDEN_TOLERANCE` stays zero,
+  `TIMING_GAP_FRACTION` stays 0.5, and the coverage thresholds stay where they
+  are.
+- **ADR 0008's suite tight budgets are not re-measured and do not move.** They
+  are the reason the pass declines rather than the thing that gives way.
+- **No cost model constant**, and no file under `include/NPU/Simulator`,
+  `lib/CostModel` or `python/npu_frontend/cost_model.py`.
+- **`Program::kVersion` stays 2** and the corpus is not reseeded.
+
+**Why the regression is worth taking.** The alternative is a pass that has been
+in `-O2` since the wiring commit and has never once fired, whose ablation row is
+entirely the tiling coupling, and whose only measurement is a negative about the
+pair. Section 13.3 asks what overlapping a transfer with a computation is worth
+on this machine, and a pass that never overlaps anything cannot answer it. What
+this entry buys is a row that measures the pass.
+
+**A default budget cell moving is not the wiring defect the tiling entry
+named.** That rule was about `-npu-tile-to-scratchpad`, where nothing is over
+budget at the default budget, so a default budget cell moving would have meant
+the search firing where it had nothing to do. Here the default budget is where
+the pass has the most room, and a default budget cell that moves is the pass
+working.
+
 ### 2026-09-01, Interphase P9b: `dilated_stack` gains the separate bias add, and every one of its cells moves
 
 **Written before the commit that causes it.** The commit that changes the model
