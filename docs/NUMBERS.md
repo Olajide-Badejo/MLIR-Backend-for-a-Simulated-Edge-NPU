@@ -40,10 +40,10 @@ commit before it existed.
 | Cells recorded | 217 | `experiments/results/` |
 | Benchmark cells | 63 | 7 models times 3 levels times 3 budget and batch combinations |
 | Ablation cells | 154 | 11 ablatable passes times 7 models times 2 budgets |
-| Suite runtime | 4.12 minutes | `experiments/results-runtime.json`, `suite_seconds` 247.186 |
+| Suite runtime | 4.11 minutes | `experiments/results-runtime.json`, `suite_seconds` 246.886 |
 | Cost per cell | 1.14 seconds | `experiments/results-runtime.json`, `seconds_per_cell` |
 | Budget | 90 minutes | Section 2, enforced as a gate by `experiments/run_benchmarks.py` |
-| Worst clock disagreement, upper direction | 0.2430 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
+| Worst clock disagreement, upper direction | 0.1041 ms | `experiments/results-runtime.json`, `worst_timing_gap_ms` |
 
 **217 cells from P13, where it was 175.** The three passes Section 12 names and
 P9 held back went into `-O2` in one commit, so the ablatable set is eleven and
@@ -56,7 +56,8 @@ moves.
 `worst_timing_gap_ms` is the **upper** direction, MLIR's figure above this
 project's instrumentation, and its bound is `half_ulp` plus 50 percent of MLIR's
 own figure, so it is a different number for each pass rather than a constant.
-0.2430 ms at `NPULowerToNPUISA` in `lenet-O2-tight-n1-fp32-normal` is green
+0.1041 ms at `NPUAssignLayout` in
+`conv_bn_relu_stack-O2-tight-n1-fp32-normal-ablate-npu-fuse-bias` is green
 against that pass's own allowance. **D-0043's bound is the other one**, the
 deficit, and it is `half_ulp` alone, 0.0500 ms at the four decimals of seconds
 MLIR prints. **No cell of the 217 came within a red of it.** Three handoffs
@@ -162,7 +163,7 @@ At the four sizes Section 13.1 names, in the unit it names them in.
 
 | Number | Value |
 |---|---|
-| Fitted growth exponent | **1.1105** |
+| Fitted growth exponent | **1.1072** |
 | r squared | 0.9979 |
 | Worst residual, log space | +0.0577 |
 | Reference exponent for n, at these sizes | 1.0000 |
@@ -471,9 +472,9 @@ Measured over the 217 committed cells:
 | Figure | Value |
 |---|---|
 | Cells checked | 217 |
-| MAC bearing layers checked | 682 |
-| Layers bound by the memory branch | 217 |
-| Layers bound by the compute branch | 465 |
+| MAC bearing layers checked | 728 |
+| Layers bound by the memory branch | 220 |
+| Layers bound by the compute branch | 508 |
 | Cells bound by the memory branch | 76 |
 | Cells below their bound | 0 |
 | Tightest layer | `lenet` `node_conv2d`, 0.000635 headroom over its compute bound |
@@ -529,13 +530,13 @@ fraction of 0.711.
 is Section 16.3's rule, and the schema enforces it: the two fractions are written
 in the same block as the cycles.
 
-### The 682 layers against Section 16.3's pre-registered bands
+### The 728 layers against Section 16.3's pre-registered bands
 
 | Band | Layers |
 |---|---|
-| under 10 percent, expected | 117 |
+| under 10 percent, expected | 139 |
 | 10 to 25 percent, a finding requiring an explanation | 138 |
-| above 25 percent, a defect requiring a root cause | **427** |
+| above 25 percent, a defect requiring a root cause | **451** |
 
 The widest gaps, one row per distinct layer:
 
@@ -558,14 +559,14 @@ lost between the terms.
 
 | Term | Cycles | What it is |
 |---|---|---|
-| double buffering | +545287 | this machine's DMA time that could not hide behind compute, against SCALE-Sim's own stall cycles |
-| array fragmentation | -540423 | the two models' compute times for the same MAC count, which differ only in how each charges array occupancy |
+| double buffering | +571022 | this machine's DMA time that could not hide behind compute, against SCALE-Sim's own stall cycles |
+| array fragmentation | -548353 | the two models' compute times for the same MAC count, which differ only in how each charges array occupancy |
 | elementwise gap | +73982 | work with no systolic representation |
 | dilation approximation | -60966 | measured by a second SCALE-Sim run at the true tap extent, not argued |
 | pooling gap | +53114 | SCALE-Sim models no pooling at all |
 | uncovered DMA gap | +37161 | transfers feeding operations SCALE-Sim never saw |
 | residual | 0 | |
-| **total** | **+131486** | |
+| **total** | **+135969** | |
 
 The two dominant terms are nearly equal and opposite, which is the single most
 useful thing this comparison produced: the suite wide headline of plus 110
@@ -585,11 +586,11 @@ the near cancellation as a physical coincidence is taking more from it than it
 carries.
 
 **The stalls do not account for the size of either term.** The suite total is
-136444 cycles against 545287 and 540423, under a quarter of either. What they do
-account for is the whole of the tight budget cells' extra divergence: of the 682
-layer rows, **84 carry stall cycles and every one of the 84 is a tight budget
+116380 cycles against 571022 and 548353, under a quarter of either. What they do
+account for is the whole of the tight budget cells' extra divergence: of the 728
+layer rows, **77 carry stall cycles and every one of the 77 is a tight budget
 cell**, and the 374 default budget rows carry none at all. Median divergence with
-stalls is -72.42 percent against +11.59 percent without. That is why a layer's
+stalls is -80.50 percent against -0.86 percent without. That is why a layer's
 gap can read as a factor of three at one budget and 1.36 at the other while the
 analytical charge does not move at all. See D-0048.
 
@@ -597,8 +598,8 @@ analytical charge does not move at all. See D-0048.
 
 | Ordering | Kendall tau b | Pairwise accuracy | n |
 |---|---|---|---|
-| whole cells | 0.6258 | 0.8173 | 217 |
-| individual layers | 0.7444 | 0.8777 | 682 |
+| whole cells | 0.6143 | 0.8100 | 217 |
+| individual layers | 0.7242 | 0.8663 | 728 |
 
 **Ranked over the covered layers on both sides**, which is the same quantity the
 divergence figures above use. Ranking a cell's whole serial total against
@@ -636,7 +637,7 @@ of exactly zero.
 > divergence of 5 to 20 percent once the skipped operations are excluded from
 > both sides
 
-**Wrong on all three.** 427 of 682 layers exceed 25 percent where the entry
+**Wrong on all three.** 451 of 728 layers exceed 25 percent where the entry
 predicted none would at the default budget with both ports on. The 1 by 1
 convolutions are the widest gaps, which the entry got right, but at +334 percent
 rather than 10 to 25. Whole model divergence reaches -87 percent against a
@@ -696,7 +697,7 @@ in the decomposition as its own term, never inside a divergence.
 
 > 3. **Array fragmentation.** ... I expect the two to disagree about how much
 
-**Confirmed and larger than expected.** It is the second largest term at -540423
+**Confirmed and larger than expected.** It is the second largest term at -548353
 cycles, and D-0045 is what it is made of.
 
 > **Coverage:** I expect `scalesim_covered_cycle_fraction` between 0.5 and 0.85 on
@@ -724,9 +725,9 @@ occur.
 > I predict **Kendall tau above 0.8** ... and pairwise comparison accuracy above
 > 0.85
 
-**Wrong on tau and marginal on pairwise.** Tau b is 0.6258 over cells and 0.7444
-over layers, against a predicted 0.8. Pairwise accuracy is 0.8173 over cells,
-below the predicted 0.85, and 0.8777 over layers, above it. The entry called this
+**Wrong on tau and marginal on pairwise.** Tau b is 0.6143 over cells and 0.7242
+over layers, against a predicted 0.8. Pairwise accuracy is 0.8100 over cells,
+below the predicted 0.85, and 0.8663 over layers, above it. The entry called this
 "a stronger finding than any absolute error here", and it is: the cost model is
 not merely imprecise, it orders one pair in five differently from the reference.
 

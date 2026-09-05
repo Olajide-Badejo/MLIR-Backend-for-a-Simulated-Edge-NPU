@@ -328,20 +328,20 @@
       "batch": 1,
       "budget": "tight",
       "budget_bytes": 6464,
-      "compute_cycles": 956,
-      "cycles": 2018,
-      "dma_cycles": 1614,
-      "dram_bytes_read": 10848,
-      "dram_bytes_written": 4096,
-      "energy_pj_per_inference": 4664544.8464,
-      "instructions": 17,
+      "compute_cycles": 1040,
+      "cycles": 2660,
+      "dma_cycles": 2074,
+      "dram_bytes_read": 12896,
+      "dram_bytes_written": 6144,
+      "energy_pj_per_inference": 4937561.1616,
+      "instructions": 21,
       "level": 2,
       "macs": 73728,
       "max_abs_error_vs_onnxruntime": 2.2351741790771484e-07,
       "max_abs_movement_vs_o0": 0.0,
       "model": "resnet_block",
-      "scratchpad_elements_read": 6288,
-      "scratchpad_elements_written": 5784
+      "scratchpad_elements_read": 7512,
+      "scratchpad_elements_written": 6296
     },
     {
       "batch": 1,
@@ -442,20 +442,20 @@
       "batch": 1,
       "budget": "tight",
       "budget_bytes": 6144,
-      "compute_cycles": 1640,
-      "cycles": 3799,
-      "dma_cycles": 2459,
-      "dram_bytes_read": 14256,
-      "dram_bytes_written": 7680,
-      "energy_pj_per_inference": 4201387.32,
+      "compute_cycles": 1936,
+      "cycles": 3395,
+      "dma_cycles": 1747,
+      "dram_bytes_read": 7600,
+      "dram_bytes_written": 5120,
+      "energy_pj_per_inference": 3605546.4448,
       "instructions": 22,
       "level": 2,
       "macs": 55296,
       "max_abs_error_vs_onnxruntime": 5.960464477539062e-07,
       "max_abs_movement_vs_o0": 0.0,
       "model": "inception_block",
-      "scratchpad_elements_read": 5868,
-      "scratchpad_elements_written": 5868
+      "scratchpad_elements_read": 6452,
+      "scratchpad_elements_written": 4204
     },
     {
       "batch": 1,
@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "1f004f0e4bb5951d572f706760f223390f5d68cc",
+  "git_sha": "818475cb3b32a68554ebe405517dc730389e0a9f",
   "levels": [
     0,
     1,
@@ -1165,7 +1165,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 34,
+      "passed": 35,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1182,6 +1182,7 @@
         "NPU :: Dialect/NPUISA/ops.mlir",
         "NPU :: Dialect/NPUISA/scratchpad-alloc.mlir",
         "NPU :: Dialect/NPUISA/spill-heuristic.mlir",
+        "NPU :: Dialect/NPUISA/spill-through-a-view.mlir",
         "NPU :: Encoding/all_ops.mlir",
         "NPU :: Encoding/diagnostics.mlir",
         "NPU :: Encoding/dram-subview.mlir",
@@ -1214,8 +1215,8 @@
       ]
     },
     "pytest": {
-      "failed": 0,
-      "passed": 1084,
+      "failed": 3,
+      "passed": 1081,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
