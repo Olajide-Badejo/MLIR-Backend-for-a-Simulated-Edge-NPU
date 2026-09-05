@@ -953,26 +953,48 @@ the assertion did not name. It is not hypothetical: `zigzag` is in
 would fail on it, and a step that told the log the tools were absent while one of
 them was importable would be wrong in the direction that matters.
 
-> **Trigger, carried forward unchanged: the commit that adds
-> `-npu-tile-to-scratchpad`.** P12 recorded the trigger for wiring
-> `experiments/compile_time_benchmark.py --check` into `ci.yml` as "P13, because
-> tiling makes functions longer, which moves the crossover with the genuinely
-> quadratic offset assignment scan toward the measured range". **Tiling has not
-> landed on this branch, so functions are not longer**, and switching the gate on
-> now would gate on a curve nothing has moved. Rehearse it red first with
-> `--sizes 500`, which is the branch that has no fit and exits 1 naming what to
-> do about it; then switch it on in the `build-and-test` job, under
-> `pull_request` and `push` to `phase/**` like every other step, positioned after
-> `check-reachability full` and before `regression-baseline --check`, which is
-> documented as running last because it needs everything the job has.
+> **Trigger re-evaluated at the wired tree, and it has still not fired.** P12
+> recorded the trigger for wiring `experiments/compile_time_benchmark.py --check`
+> into `ci.yml` as "P13, because tiling makes functions longer, which moves the
+> crossover with the genuinely quadratic offset assignment scan toward the
+> measured range". **Tiling is in `-O2` now and no function in the suite got
+> longer**, which is a measurement rather than an argument: `instruction_count`
+> is identical on all 175 pre-existing cells at the wired tree, and the wired
+> tiles table above is 0 tiled on every model at both budgets. The premise of the
+> trigger is a longer function and there is not one, so **it is not wired**, and
+> the reason is D-0052 rather than the budgets.
+>
+> **The red branch was rehearsed anyway**, because a gate nobody has seen fail is
+> a gate nobody knows works. `python experiments/compile_time_benchmark.py
+> --check --sizes 500` prints "No fit: a growth exponent needs at least two sizes
+> and a nonzero pass time at every one of them" and **exits 1**, which is exactly
+> the branch P12's recipe named. `--check` at the four real sizes exits 0 with a
+> fitted exponent of 1.1081 against a ceiling of 1.5683.
+>
+> **What would fire it**, so the next session does not re-derive it: a program in
+> the suite whose function is longer than it is today. That needs tiling to fire,
+> which needs either a tiled operation whose result is the function's own, or the
+> ISA question D-0052 escalates. **The recipe for wiring it is unchanged and is
+> kept here**: switch it on in the `build-and-test` job, under `pull_request` and
+> `push` to `phase/**` like every other step, after `check-reachability full` and
+> before `regression-baseline --check`, which runs last because it needs
+> everything the job has.
 
-> **Trigger, also unfired: `experiments/kernel_threads.py` into `nightly.yml`.**
-> P12 recorded it as "the first phase that changes the convolution kernel's loop
-> nest, which is P13's tiling or P14's integer kernels". **This branch does not
-> touch the kernel**, so the table it would measure is P12's. It fires with the
-> same commit as the one above, because a tiled convolution has a smaller output
-> tile per instruction and more instructions, and the kernel's team cap is
-> `batch * outputChannels`.
+> **Trigger also re-evaluated and also unfired: `experiments/kernel_threads.py`
+> into `nightly.yml`.** P12 recorded it as "the first phase that changes the
+> convolution kernel's loop nest, which is P13's tiling or P14's integer
+> kernels". **This branch does not touch the kernel and nothing tiles**, so the
+> instruction shapes the kernel is handed are P12's to the byte. It was re-run at
+> the wired tree and the table moved, 0.86 to 3.17 at P12 against 0.96 to 4.00
+> here, **with the output bytes equal on every model at every thread count**.
+> That spread is the host and not the kernel, and reading it as a trigger would
+> be reading a wall clock across runs, which Section 16.1 forbids in the same
+> words. **Not wired.**
+>
+> **What would fire it** is unchanged: the first phase that changes the
+> convolution kernel's loop nest, which is P14's integer kernels unless P13's
+> tiling becomes reachable first. The recipe is unchanged too: add it to
+> `nightly.yml` beside `full-matrix`, not to `ci.yml`.
 
 ### 0. Reproducing the CI image locally, which is now a standing recipe
 
