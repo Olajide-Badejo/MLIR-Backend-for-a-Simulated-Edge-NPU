@@ -11,21 +11,20 @@
 
 **Benchmark cells:** 7 models times 3 levels times 3 budget and batch
 combinations, which is **63**. **Ablation cells:** the ablatable `-O2` set, read
-from the driver at run time, times 7 models times 2 budgets, which is 8 times 7
-times 2 and therefore **112**. **175 in total.**
+from the driver at run time, times 7 models times 2 budgets, which is 11 times 7
+times 2 and therefore **154**. **217 in total.**
 
-Two of those numbers differ from Section 2's arithmetic and both differences are
+One of those numbers differs from Section 2's arithmetic and the difference is
 recorded rather than reconciled away.
 
-**Eight ablatable passes, not eleven.** Section 2 multiplies 11 by 7 by 2 to
-reach 154 ablation cells. Three of Section 12's eleven,
-`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`, arrive
-at P13 and no `-O` level names them yet, because a level that named a pass
-nothing implements would give the ablation table a row it could not fill. The
-eight is never written down here: `ablatable_passes(2)` reads it out of the
-compiler, which is Section 16.2's rule and exists so that a pass added to `-O2`
-and marked ablatable is swept the day it lands rather than the day somebody
-remembers this file.
+**Eleven ablatable passes, which is Section 12's own number, from P13.**
+`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` went
+into `-O2` in one commit, and the ablation half of Section 2's arithmetic agrees
+exactly at 154. The eleven is never written down here: `ablatable_passes(2)`
+reads it out of the compiler, which is Section 16.2's rule and exists so that a
+pass added to `-O2` and marked ablatable is swept the day it lands rather than
+the day somebody remembers this file. It is why nothing in this file's
+arithmetic had to change when the three landed.
 
 **The tight budget is not an axis the batch axis is free to cross, and this is a
 P10 decision recorded in `docs/adr/0010`.** Section 17.4's matrix sweeps budget

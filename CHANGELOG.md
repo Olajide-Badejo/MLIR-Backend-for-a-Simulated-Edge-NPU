@@ -9,13 +9,50 @@ Semantic Versioning once a release is tagged.
 ### Phase P13: tiling, double buffering, layout (in progress)
 
 **This phase is incomplete and the section says so first**, because a changelog
-that reads as though a phase finished is worse than no entry. Three of the four
-deliverables have not started: `-npu-tile-to-scratchpad`, `-npu-double-buffer`
-and `-npu-assign-layout` do not exist, no `-O` level names them, the ablatable
-set is still eight and the suite is still 175 cells. **No simulated number moved
-on this branch**: all 21 golden tensors are byte identical, every cell field in
-the regression baseline is unchanged, and `git diff main..HEAD` touches no cost
-model file at all.
+that reads as though a phase finished is worse than no entry. Section 13.3's
+three arms and the ZigZag cross check have not been run, and one of them is now
+blocked on an owner decision rather than on work.
+
+**All three passes are in `-O2`**, the ablatable set is eleven, the suite is 217
+cells, and the whole suite was re-recorded once at that tree. **No simulated
+number moved**: all 21 golden tensors are byte identical, **not one counted
+field of the 175 pre-existing cells moved**, and `git diff main..HEAD` touches
+no cost model file at all. There is nothing to declare in
+`docs/BREAKING_CHANGES.md`, because a declaration of a movement measured to be
+zero would be a false declaration.
+
+- **`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
+  went into `-O2` in one commit**, in Section 12's own positions: layout and
+  tiling as the last tensor level passes, double buffering after the conversion
+  and before the allocator, because it rewrites transfer tokens that do not
+  exist above it. The ablatable set went from 8 to 11 and the suite from 175
+  cells to 217, so the **ablation half of Section 2's arithmetic now agrees
+  exactly** at 154 cells. Nine hardcoded count sites moved together, three of
+  which were tripwires that turned red exactly as their own docstrings said they
+  would.
+- **The pipeline hands the tiling search two things the pass would otherwise
+  guess**: the allocator's budget, because there is one budget on this machine,
+  and whether `-npu-double-buffer` is in this pipeline, because Section 13.2
+  makes the doubled working set the search's problem. **That couples two
+  ablation rows** and `docs/PASSES.md` says so beside the row rather than
+  leaving a reader to attribute the whole of it to the overlap.
+- **D-0052: a tiled result assembled in DRAM cannot be read back**, which is
+  D-0050's third part arriving through the wiring. The tiles are written one
+  store each and the binary's `operand-defined` and `operand-extent` checks
+  satisfy a read out of a single written span, so the first tiled program this
+  suite produced did not encode. **The pass now declines rather than emitting a
+  program its own encoder refuses**, which is Section 13.2's answer to a tile
+  that is not expressible. The consequence is measured rather than argued:
+  **nothing tiles in this suite at `-O2` at either budget**, and Section 13.3's
+  tiling arm has no subject there until the ISA question is decided.
+- **D-0054: `-npu-double-buffer` fires on nothing this compiler emits**, so its
+  ablation row is a zero about the pair rather than about the pass. Recorded and
+  deliberately not fixed, because a fix makes the pass fire and moves numbers.
+- **D-0051, D-0053 and D-0055** are the other three the wiring found: `-cse`
+  merging every `tensor.empty` of a shape into one value, an argument whose every
+  use is a whole value slice never being loaded, and a `--mlir-timing` bound of
+  0.2000 that three handoffs carried and that is not in the source. **No bound
+  moved.**
 
 - **D-0048: D-0045 was not a defect in the cost model.** P13 was handed the
   charge to change and measured it first. The entry says `gemmCharge` amortises

@@ -26,7 +26,7 @@
     "scratchpad_budget": "tight",
     "scratchpad_budget_bytes": 8064
   },
-  "content_hash": "28ff6469ed9f340b4b23abfd2a582734deb1dec9b19f5c103527c0ef69970170",
+  "content_hash": "047e197db42a08d96c19a3aee0add5def56617bf4809998260f0d107e769a5e6",
   "deltas": {
     "dram_bytes_total": 0,
     "instruction_count": 1,
@@ -217,7 +217,7 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "dcf913fb8a0003e101a927dfd62aeea5068c4003",
+    "git_sha": "08e3b62b32db17c8395ce6bad07b575ccd06aab4",
     "llvm_tag": "LLVM version 22.1.8",
     "registered_estimators": [
       "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
@@ -228,10 +228,10 @@
       "CactiDRAM",
       "CactiSRAM"
     ],
-    "run_order_position": 137,
+    "run_order_position": 187,
     "run_order_seed": 20260901,
     "technology_node": "45nm",
-    "timestamp": "2026-09-04T00:56:43.431359+00:00",
+    "timestamp": "2026-09-05T09:10:04.160905+00:00",
     "tool_shas": {
       "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
       "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
@@ -297,10 +297,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.10899185,
-        "ci95_low_ms": 0.08848452500000001,
-        "iqr_ms": 0.005012500000000003,
-        "median_ms": 0.093653,
+        "ci95_high_ms": 0.1111048,
+        "ci95_low_ms": 0.08792615000000001,
+        "iqr_ms": 0.004587000000000008,
+        "median_ms": 0.09292349999999999,
         "n_trials": 10
       }
     },
@@ -333,10 +333,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.21886565,
-        "ci95_low_ms": 0.17779175,
-        "iqr_ms": 0.00796949999999999,
-        "median_ms": 0.1861565,
+        "ci95_high_ms": 0.2016626,
+        "ci95_low_ms": 0.1737602,
+        "iqr_ms": 0.009064500000000003,
+        "median_ms": 0.177465,
         "n_trials": 10
       }
     },
@@ -369,10 +369,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 2,
       "timing": {
-        "ci95_high_ms": 0.10365602500000001,
-        "ci95_low_ms": 0.057803825,
-        "iqr_ms": 0.013016,
-        "median_ms": 0.060900499999999996,
+        "ci95_high_ms": 0.07431137500000001,
+        "ci95_low_ms": 0.0580247,
+        "iqr_ms": 0.0024157499999999943,
+        "median_ms": 0.060053999999999996,
         "n_trials": 10
       }
     },
@@ -407,10 +407,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 3,
       "timing": {
-        "ci95_high_ms": 0.11389817500000002,
-        "ci95_low_ms": 0.08671775,
-        "iqr_ms": 0.0014684999999999976,
-        "median_ms": 0.0915185,
+        "ci95_high_ms": 0.110431925,
+        "ci95_low_ms": 0.085374325,
+        "iqr_ms": 0.00725025,
+        "median_ms": 0.089669,
         "n_trials": 10
       }
     },
@@ -447,10 +447,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 4,
       "timing": {
-        "ci95_high_ms": 0.1918338,
-        "ci95_low_ms": 0.16228282500000002,
-        "iqr_ms": 0.0034464999999999912,
-        "median_ms": 0.1651875,
+        "ci95_high_ms": 0.1811342,
+        "ci95_low_ms": 0.155407525,
+        "iqr_ms": 0.010519750000000022,
+        "median_ms": 0.1671875,
         "n_trials": 10
       }
     },
@@ -487,10 +487,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 5,
       "timing": {
-        "ci95_high_ms": 0.1311727,
-        "ci95_low_ms": 0.101735225,
-        "iqr_ms": 0.006898000000000001,
-        "median_ms": 0.1045445,
+        "ci95_high_ms": 0.106420525,
+        "ci95_low_ms": 0.09975365,
+        "iqr_ms": 0.0022642499999999954,
+        "median_ms": 0.10242100000000001,
         "n_trials": 10
       }
     },
@@ -529,10 +529,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 6,
       "timing": {
-        "ci95_high_ms": 0.18794602500000002,
-        "ci95_low_ms": 0.15351875,
-        "iqr_ms": 0.00448125000000002,
-        "median_ms": 0.1611115,
+        "ci95_high_ms": 0.17145425,
+        "ci95_low_ms": 0.1500797,
+        "iqr_ms": 0.0073084999999999956,
+        "median_ms": 0.1553795,
         "n_trials": 10
       }
     },
@@ -571,10 +571,90 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 7,
       "timing": {
-        "ci95_high_ms": 0.13284365,
-        "ci95_low_ms": 0.088621275,
-        "iqr_ms": 0.002510750000000006,
-        "median_ms": 0.092281,
+        "ci95_high_ms": 0.10427829999999999,
+        "ci95_low_ms": 0.08978635,
+        "iqr_ms": 0.0014102500000000157,
+        "median_ms": 0.090762,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-assign-layout",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 4,
+        "npu.conv2d": 2,
+        "npu.fused_op": 1,
+        "npu.relu": 2,
+        "npu.transpose": 1,
+        "npu.yield": 1,
+        "tensor.empty": 3
+      },
+      "ops_after_total": 17,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 4,
+        "npu.conv2d": 2,
+        "npu.fused_op": 1,
+        "npu.relu": 2,
+        "npu.transpose": 1,
+        "npu.yield": 1,
+        "tensor.empty": 3
+      },
+      "ops_before_total": 17,
+      "pass_name": "NPUAssignLayout",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 8,
+      "timing": {
+        "ci95_high_ms": 0.0873917,
+        "ci95_low_ms": 0.078371925,
+        "iqr_ms": 0.0011525000000000007,
+        "median_ms": 0.07984250000000001,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-tile-to-scratchpad",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 4,
+        "npu.conv2d": 2,
+        "npu.fused_op": 1,
+        "npu.relu": 2,
+        "npu.transpose": 1,
+        "npu.yield": 1,
+        "tensor.empty": 3
+      },
+      "ops_after_total": 17,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 4,
+        "npu.conv2d": 2,
+        "npu.fused_op": 1,
+        "npu.relu": 2,
+        "npu.transpose": 1,
+        "npu.yield": 1,
+        "tensor.empty": 3
+      },
+      "ops_before_total": 17,
+      "pass_name": "NPUTileToScratchpad",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 9,
+      "timing": {
+        "ci95_high_ms": 0.29567985,
+        "ci95_low_ms": 0.272215725,
+        "iqr_ms": 0.00447924999999999,
+        "median_ms": 0.279549,
         "n_trials": 10
       }
     },
@@ -612,12 +692,54 @@
       "ops_before_total": 18,
       "pass_name": "NPULowerToNPUISA",
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
-      "position": 8,
+      "position": 10,
       "timing": {
-        "ci95_high_ms": 0.508329425,
-        "ci95_low_ms": 0.36951337500000003,
-        "iqr_ms": 0.03840425000000003,
-        "median_ms": 0.3881805,
+        "ci95_high_ms": 0.49765807500000003,
+        "ci95_low_ms": 0.396894775,
+        "iqr_ms": 0.016906500000000046,
+        "median_ms": 0.4091875,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-double-buffer",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 11,
+        "memref.reinterpret_cast": 1,
+        "npuisa.add": 1,
+        "npuisa.const": 4,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 5,
+        "npuisa.dma_store": 1,
+        "npuisa.relu": 2,
+        "npuisa.transpose": 1
+      },
+      "ops_after_total": 30,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 11,
+        "memref.reinterpret_cast": 1,
+        "npuisa.add": 1,
+        "npuisa.const": 4,
+        "npuisa.conv2d": 2,
+        "npuisa.dma_load": 5,
+        "npuisa.dma_store": 1,
+        "npuisa.relu": 2,
+        "npuisa.transpose": 1
+      },
+      "ops_before_total": 30,
+      "pass_name": "NPUDoubleBuffer",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 11,
+      "timing": {
+        "ci95_high_ms": 0.07921435,
+        "ci95_low_ms": 0.071998825,
+        "iqr_ms": 0.0019917500000000005,
+        "median_ms": 0.074295,
         "n_trials": 10
       }
     },
@@ -656,12 +778,12 @@
       "ops_before_total": 30,
       "pass_name": "NPUAllocateScratchpad",
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
-      "position": 9,
+      "position": 12,
       "timing": {
-        "ci95_high_ms": 0.339057125,
-        "ci95_low_ms": 0.1746047,
-        "iqr_ms": 0.010582750000000002,
-        "median_ms": 0.187707,
+        "ci95_high_ms": 0.202960525,
+        "ci95_low_ms": 0.17132932499999998,
+        "iqr_ms": 0.006764499999999979,
+        "median_ms": 0.183361,
         "n_trials": 10
       }
     }
@@ -732,17 +854,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 48.30902507488872,
-      "ci95_low_ms": 39.96933862492824,
-      "iqr_ms": 4.032030999496783,
-      "median_ms": 43.5576115000913,
+      "ci95_high_ms": 48.05074197493013,
+      "ci95_low_ms": 40.450998674123184,
+      "iqr_ms": 4.486758499297139,
+      "median_ms": 43.72950300148659,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 1.873119275,
-      "ci95_low_ms": 1.50671695,
-      "iqr_ms": 0.12088674999999993,
-      "median_ms": 1.551637,
+      "ci95_high_ms": 2.0752196499999997,
+      "ci95_low_ms": 1.9239038,
+      "iqr_ms": 0.051409999999999956,
+      "median_ms": 1.991317,
       "n_trials": 10
     }
   }

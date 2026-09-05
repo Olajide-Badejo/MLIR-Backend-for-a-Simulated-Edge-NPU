@@ -28,13 +28,18 @@
 //
 // `[0, 2, 3, 1]` then `[0, 3, 1, 2]` is the NCHW to NHWC round trip, which is
 // the exact permutation Section 10.1's kernel test and the dilated stack's
-// closing transpose both use. Both transposes go, and the two `tensor.empty`
-// destinations they leave behind are `-canonicalize`'s to remove, which is why
-// this file does not assert their absence.
+// closing transpose both use. Both transposes go, and so do both destinations:
+// **this pass cleans up after itself rather than leaving a dead `tensor.empty`
+// for `-canonicalize`**, because Section 12 puts the two canonicalizations
+// around fusion and there is none between this pass and the lowering. A
+// destination left dead here would reach the conversion and be given a
+// scratchpad buffer for a value nothing reads, so the absence is asserted
+// rather than assumed to be somebody else's problem.
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: func.func @round_trip_folds
 // CHECK-NOT:     npu.transpose
+// CHECK-NOT:     tensor.empty
 // CHECK:         return %arg0
 func.func @round_trip_folds(%x: tensor<1x3x8x8xf32>) -> tensor<1x3x8x8xf32> {
   %d0 = tensor.empty() : tensor<1x8x8x3xf32>

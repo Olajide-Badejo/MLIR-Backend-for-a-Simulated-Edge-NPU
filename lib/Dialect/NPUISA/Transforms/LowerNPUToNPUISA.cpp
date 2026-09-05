@@ -831,12 +831,26 @@ public:
     // conservative reading is the correct one: the whole value does enter the
     // scratchpad in that case, and its slices are then views of the resident
     // copy at no transfer cost.
+    //
+    // **A slice of the whole value is not a slice**, and reading it as one is
+    // D-0053. The tiling pass slices every operand of a tiled operation
+    // including the ones it did not split, so a convolution tiled over its
+    // output rows still asks for a `tensor.extract_slice` of the **whole**
+    // filter. The conversion driver folds an identity slice away before any
+    // pattern sees it, so counting it here as a slice use leaves the argument
+    // unloaded and hands the compute instruction a DRAM buffer, which the
+    // `npuisa` verifier then refuses. Asking whether the slice is a proper sub
+    // region is what tells the two apart.
     SmallVector<bool> isRead;
     for (BlockArgument argument : function.getArguments()) {
       const bool everyUseIsASlice =
           !argument.use_empty() &&
-          llvm::all_of(argument.getUsers(), [](Operation *user) {
-            return isa<tensor::ExtractSliceOp, tensor::InsertSliceOp>(user);
+          llvm::all_of(argument.getUsers(), [&](Operation *user) {
+            if (auto extract = dyn_cast<tensor::ExtractSliceOp>(user))
+              return extract.getResult().getType() != argument.getType();
+            if (auto insert = dyn_cast<tensor::InsertSliceOp>(user))
+              return insert.getSource().getType() != argument.getType();
+            return false;
           });
       isRead.push_back(!argument.use_empty() && !everyUseIsASlice);
     }

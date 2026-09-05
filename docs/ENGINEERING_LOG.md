@@ -5816,3 +5816,130 @@ The fold also hands the orphaned inner transpose back to its caller rather than
 erasing it where it stands, because the caller is iterating a worklist that may
 still hold it. A fold that left a dead full pass over the data behind would be
 reporting a saving it had not made.
+## 2026-09-05 Phase P13: the wiring commit, and the tiled program the encoder refuses
+
+**The three passes went into `-O2` together and the suite was re-recorded once at
+that tree.** The ablatable set is eleven, which is Section 12's own number with
+nothing subtracted from it, the suite is 217 cells, and the ablation half of
+Section 2's arithmetic agrees exactly at 154. **Not one counted field of the 175
+pre-existing cells moved**, over instructions, cycles, compute and DMA cycles,
+scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle
+distance, the overlap fraction and the fragmentation ratio. All 21 golden tensors
+are byte identical. There is nothing to declare in `docs/BREAKING_CHANGES.md` and
+writing an entry anyway would be a false declaration.
+
+**The wiring found five defects, which is the argument for wiring a pass into a
+level rather than testing it beside one.** Each of the three passes had lit
+tests, statistics and a measured delta before this session, and each was correct
+about the program it was handed. What none of them could see is the pipeline:
+what `-cse` does to the values the tiling pass reads, what the conversion driver
+folds before a pattern sees it, what the encoder does with a buffer written in
+pieces, and what the lowering's own transfer layout leaves for double buffering
+to work on.
+
+### D-0052, which changes the phase rather than the commit
+
+**A tiled result assembled in DRAM cannot be read back.** The first tiled program
+this suite produced, `resnet_block` at its tight budget, did not encode:
+
+```
+operand-extent: operand 0 reads 2048 bytes from 10944 and the buffer written
+there ends at 11968 (instruction 14)
+```
+
+Instruction 14 is the load that brings the assembled convolution back on chip for
+the multiply that reads it. The assembly is 2048 bytes and was written by two
+stores of 1024, and `WrittenSpans` deliberately does not merge adjacent spans,
+because merging them is what would let an over read off the end of one buffer and
+into the next pass validation.
+
+**The decision this contradicts is one of P13's own, and the contradiction is one
+sentence deep.** `docs/PHASE_STATE.md` chose DRAM assembly over weakening checks
+8 and 9, and gave as a reason that "nothing is ever written in pieces and read
+whole". That is true of the tiles and false of the consumer. The decision assumed
+the next layer loads the slices it needs; the next layer is not tiled, so it loads
+the whole value.
+
+**Three measurements settle the scope**, and they are the reason this is D-0052
+rather than a patch. A **matching** tiled consumer does not help, because the
+write side records `resultByteSize`, the element count, and the read side computes
+`addressedByteSpan`, the stride reach, and for a strided tile those differ, 1024
+against 1920 on the case above. A **scratchpad** assembly is refused by the same
+rule, which `test/Encoding/tiled-assembly-in-scratchpad.mlir` already records. And
+the **one** shape that does encode is an assembly nothing reads: a tiled operation
+whose result is the function's own, whose tiles are stored straight into the out
+parameter, which never gets read back.
+
+**So the pass declines**, which is Section 13.2's own answer to a tile that is not
+expressible, and the allocator's spilling is the fallback. The alternative was a
+compiler that emits programs its own encoder refuses, reported three tools away
+from the pass that caused it.
+
+**What it costs is measured rather than estimated.** Before the rule,
+`resnet_block` tiled one convolution at its tight budget and `inception_block`
+tiled two, and every one of those three programs was refused. After it, nothing
+in the suite tiles at `-O2` at either budget, which is what the committed
+prediction said, for a reason the prediction did not give. **Section 13.3's
+tiling arm has no subject inside the suite until the ISA question is decided, and
+that is not a phase's decision.**
+
+### The wired tree changes the tiles nothing measurement's premise, and the table had to be taken again
+
+The pass alone at its own defaults is not what the suite compiles. The pipeline
+hands the tiling search the allocator's budget and tells it that
+`-npu-double-buffer` is in the pipeline, which doubles the prefetched operand's
+contribution per Section 13.2, so an operation that fits without the prefetch is
+over budget with it.
+
+**The default budget column did not move and that is the check that mattered.** A
+default budget cell that moved would have been a wiring defect rather than a
+declaration to write. The tight budget column moved in its `declined` count on
+every model, and ablating `-npu-double-buffer` moves it back, which is the
+coupling made visible: **ablating double buffering also relaxes the tiling
+search, so its ablation row measures the pass together with the sizing it
+forces.** That is Section 13.2's coupling rather than this wiring's, and
+`docs/PASSES.md` says so beside the row.
+
+### Two zeros that look identical and are not, again
+
+**`-npu-double-buffer` fires on nothing this compiler emits**, which is D-0054.
+`docs/PASSES.md` already carried a measured reason for a zero from this pass: on a
+hand written tiled convolution it fires, the instruction stream genuinely changes,
+and no cycle moves, because tiling makes a program DMA bound. **That reason is
+true and is not the suite's reason.** On the suite `prefetched` is 0 and
+`not-hoisted` is every transfer, because every argument load sits in the entry
+block beside the other argument loads, where the walk correctly stops at another
+transfer, and a constant's load is the one transfer with a computation before it
+and the one whose `npuisa.const` the prologue cannot carry.
+
+**This is P10's `-canonicalize` finding for the third time**, and the general
+statement is now worth making: in this project a zero ablation row has meant a
+pass with nothing to do, a pass whose work another pass would do, a pass whose
+answer is the input it was given, a pass whose subject the binary format cannot
+express, and a pass that fires on nothing. Five mechanisms, one printed value.
+
+### A bound that was quoted three times and is not in the code
+
+**D-0055.** `cross_check_against_mlir_timing` has two bounds pointing in opposite
+directions. The deficit bound is `half_ulp_ms`, which is 0.0500 ms at the four
+decimals of seconds MLIR prints, and it is D-0043's. The upper bound is that plus
+half of MLIR's own figure, so it is a different number for every pass. **There is
+no 0.2000 anywhere.** Three handoffs recorded 0.1577, 0.1177 and 0.1856 as a
+narrowing margin against "D-0043's 0.2000 bound"; all three are readings of the
+**upper** gap, which is what `run_benchmarks.py` prints, and the bound they were
+compared against does not exist.
+
+P13's quiet run measures a worst upper gap of 0.2430 ms, green against that
+pass's own allowance, and **no cell of the 217 came within a red of the deficit
+bound**, which is the statement D-0043 wanted and that nobody was making. Nothing
+was widened; a misread bound is corrected by reading it correctly.
+
+### The first attempt at the re-record went red, and it is D-0049's fifth point
+
+It died on the upper bound with a gap of 0.6897 ms against 0.5000, on a machine
+with nothing running but a one minute load average still around 3 from the builds
+seconds before. Ninety seconds of settling brought it to 0.74 and the run
+completed clean. **The bound was not touched.** D-0049's own claim is that the
+upper bound's premise, that the gap is this instrumentation's operation walk, does
+not survive a machine that is not idle, and a machine still draining a build is
+not idle however empty the process table looks.

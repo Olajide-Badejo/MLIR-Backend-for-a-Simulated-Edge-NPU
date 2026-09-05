@@ -86,8 +86,11 @@ that names the default budget runs at both batches.**
 
 For the benchmark suite of `experiments/run_benchmarks.py` that gives 7 models
 times 3 levels times 3 budget and batch combinations, which is 63 benchmark
-cells, plus 8 ablatable passes times 7 models times 2 budgets at the declared
-batch, which is 112 ablation cells, for 175 in total.
+cells, plus the ablatable `-O2` set times 7 models times 2 budgets at the
+declared batch. **This decision fixes the 63 and nothing else**: the ablation
+half is however many ablatable passes the driver reports, which was 8 and 112
+when this record was written and is 11 and 154 from P13, for 217 in total. The
+number this ADR is about is the 63.
 
 **No constant in ADR 0008 moves and none is added.** The alternative considered
 and rejected was to extend the 64 byte sweep to batch 4 and record seven more
@@ -104,9 +107,11 @@ is exactly the unverifiable number ground rule 1 forbids.
 
 ## Consequences
 
-- The benchmark suite has 175 cells rather than the 84 plus 112 a free cross
+- The benchmark half of the suite has 63 cells rather than the 84 a free cross
   product would give. The count is computed from this rule rather than written
-  down, so it moves when the rule or the model suite does.
+  down, so it moves when the rule or the model suite does, and it did not move
+  at P13 when the ablatable set went from 8 to 11 and the suite from 175 cells
+  to 217.
 - Every ablation row's `baseline_cell` is a cell the same run measured, because
   ablation cells and their baselines share the declared batch. `fill_deltas`
   refuses a row whose baseline is missing, so this is checked rather than assumed.

@@ -3263,8 +3263,13 @@ the way a stale comment is never merely cosmetic.
   - The **one** shape that encodes is an assembly nothing reads: a
     `tensor.empty` whose insert chain reaches `func.return` is mapped straight
     to the out parameter, the tiles are stored into the output region, and an
-    output region is never read. `test/Pipeline/p13-passes-at-o2.mlir` carries
-    that case and it compiles, encodes and runs.
+    output region is never read.
+    **`test/Encoding/tiled-result-returned.mlir` is that case end to end**, from
+    the tensor level through the level, the encoder and the disassembler, and it
+    is the permission `tiled-assembly-in-scratchpad.mlir` is the refusal for. The
+    disassembly is one load and one store per tile and **no load of the assembly
+    back**, and the tiled program's scratchpad is 4608 bytes against an untiled
+    working set of 6400.
 
 - **So the rule the pass now applies is exactly the shape that is expressible**:
   tile an operation over budget when every user of its result is `func.return`,

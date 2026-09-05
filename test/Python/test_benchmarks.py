@@ -94,19 +94,28 @@ def test_the_counts_are_what_adr_0010_says(built: None) -> None:
     """The arithmetic, written out once so a change to the rule is visible.
 
     Seven models times three levels times three budget and batch combinations is
-    63 benchmark cells; eight ablatable passes times seven models times two
-    budgets is 112 ablation cells; 175 in total. Section 2's 238 assumed eleven
-    ablatable passes and a free budget times batch product, and both differences
-    are recorded in `docs/adr/0010` and in the harness docstring.
+    63 benchmark cells; eleven ablatable passes times seven models times two
+    budgets is 154 ablation cells; 217 in total.
+
+    **Eleven from P13, and the eight it replaces was never the whole of Section
+    2's disagreement with this file.** `-npu-assign-layout`,
+    `-npu-tile-to-scratchpad` and `-npu-double-buffer` are in `-O2` now, so the
+    ablatable set the driver reports is Section 12's eleven and the ablation
+    half of Section 2's arithmetic agrees exactly. What still differs is the
+    benchmark half: Section 2 multiplies budget by batch freely and reaches 84,
+    and this suite has 63, because a tight budget is defined from a program's
+    own allocated peak and a model at batch 4 is a different program. That
+    difference is recorded in `docs/adr/0010` and in the harness docstring, and
+    it is not a number a landing pass moves.
     """
     cells = run_benchmarks.planned_cells()
     ablation = [cell for cell in cells if cell.key.ablated_pass is not None]
     benchmark = [cell for cell in cells if cell.key.ablated_pass is None]
 
-    assert len(ablatable_passes(2)) == 8
+    assert len(ablatable_passes(2)) == 11
     assert len(benchmark) == len(MODELS) * len(implemented_levels()) * 3 == 63
-    assert len(ablation) == 8 * len(MODELS) * 2 == 112
-    assert len(cells) == 175
+    assert len(ablation) == 11 * len(MODELS) * 2 == 154
+    assert len(cells) == 217
 
 
 def test_every_ablatable_pass_has_a_row_at_every_budget(built: None) -> None:
@@ -163,7 +172,7 @@ def test_every_ablation_row_has_its_baseline_in_the_run(built: None) -> None:
             continue
         assert baseline in names, f"{cell.name} names a baseline outside the run"
         checked += 1
-    assert checked == 112
+    assert checked == 154
 
 
 def test_an_unknown_model_is_refused(built: None) -> None:
@@ -477,7 +486,7 @@ def test_the_committed_run_records_its_own_measured_cost() -> None:
     if not runtime.is_file():
         pytest.skip("no run recorded yet; run experiments/run_benchmarks.py")
     recorded = json.loads(runtime.read_text(encoding="utf-8"))
-    assert recorded["cells_total"] == 175
+    assert recorded["cells_total"] == 217
     assert recorded["seconds_per_cell"] > 0.0
     assert recorded["budget_minutes"] == 90.0
     assert (

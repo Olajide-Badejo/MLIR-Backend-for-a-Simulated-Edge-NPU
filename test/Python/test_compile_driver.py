@@ -82,7 +82,10 @@ def test_the_level_table_comes_from_the_compiler() -> None:
         "cse",
         "sccp",
         "symbol-dce",
+        "npu-assign-layout",
+        "npu-tile-to-scratchpad",
         "npu-lower-to-npuisa",
+        "npu-double-buffer",
         "npu-allocate-scratchpad",
     ]
 
@@ -118,11 +121,18 @@ def test_the_ablatable_set_grows_with_the_levels() -> None:
     `-O0` is empty and correctly so: both of its passes are marked not
     ablatable, since removing either produces no program at all.
 
-    `-O2` has eight, and eight is the arithmetic Section 12 states minus the
-    three passes P9 excludes by name. That section counts eleven ablatable
-    passes in the full `-O2` set; `-npu-assign-layout`,
-    `-npu-tile-to-scratchpad` and `-npu-double-buffer` arrive at P13, and
-    8 + 3 = 11.
+    `-O2` has eleven, which is Section 12's own arithmetic with nothing
+    subtracted from it. It was eight from P9 to P12, because
+    `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
+    arrive at P13 and a level that named a pass nothing implements would give
+    the ablation table three rows it could not fill. The three went in
+    together, in one commit, so that the cell count and Section 2's arithmetic
+    moved once rather than three times.
+
+    The order is the order the level runs them, which is why the three are at
+    the end: layout assignment and tiling are the last tensor level passes, and
+    double buffering is after the conversion and before the allocator, because
+    it rewrites transfer tokens that do not exist above it.
     """
     assert ablatable_passes(0) == []
     assert ablatable_passes(1) == ["npu-constant-fold", "canonicalize"]
@@ -135,8 +145,11 @@ def test_the_ablatable_set_grows_with_the_levels() -> None:
         "cse",
         "sccp",
         "symbol-dce",
+        "npu-assign-layout",
+        "npu-tile-to-scratchpad",
+        "npu-double-buffer",
     ]
-    assert len(ablatable_passes(2)) == 8
+    assert len(ablatable_passes(2)) == 11
     # The set, not the sequence: `-canonicalize` runs twice and is one pass to
     # ablate. A duplicate here would give Section 16.2's table two rows for one
     # pass and make the eleven of Section 12's arithmetic unreachable.

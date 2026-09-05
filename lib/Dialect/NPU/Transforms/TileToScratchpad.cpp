@@ -646,14 +646,34 @@ LogicalResult applyTiling(IRRewriter &rewriter, TilingInterface op,
     total *= counts[index];
   }
 
-  // The destination operand is what every tile writes into and is the value the
-  // stitched result is built from. Destination passing is what makes that a
-  // value rather than a buffer this pass has to invent.
+  // The destination operand is what the untiled operation wrote into, and the
+  // assembled result is built from a **fresh** buffer of the same type rather
+  // than from that one.
+  //
+  // **The freshness is an aliasing requirement and it was found by wiring this
+  // pass into a level, not by reading.** `-cse` runs before this pass at `-O2`
+  // and merges every `tensor.empty` of the same type in a function into one
+  // value, so the destination found here is in general also the destination of
+  // other operations of that shape. The lowering classifies a `tensor.empty`
+  // as a DRAM assembly buffer by asking whether any tile is inserted into it,
+  // and that question is asked of the **value**, so a shared destination makes
+  // the answer reach operations that have nothing to do with this tiling.
+  //
+  // A fresh destination is what the untiled program had before `-cse` merged
+  // them, so this restores a property the pass depends on rather than
+  // inventing one. D-0051 records how it was found and what it did, including
+  // the part that is honest about reproduction.
   auto destinationStyle =
       dyn_cast<DestinationStyleOpInterface>(op.getOperation());
   if (!destinationStyle || destinationStyle.getNumDpsInits() != 1)
     return failure();
-  Value stitched = destinationStyle.getDpsInits()[0];
+  Value original = destinationStyle.getDpsInits()[0];
+  auto stitchedType = dyn_cast<RankedTensorType>(original.getType());
+  if (!stitchedType)
+    return failure();
+  Value stitched = tensor::EmptyOp::create(
+      rewriter, loc, stitchedType.getShape(), stitchedType.getElementType(),
+      stitchedType.getEncoding());
 
   SmallVector<int64_t> position(rank, 0);
   for (int64_t linear = 0; linear < total; ++linear) {
@@ -733,7 +753,52 @@ LogicalResult applyTiling(IRRewriter &rewriter, TilingInterface op,
   }
 
   rewriter.replaceOp(op, stitched);
+
+  // The destination the untiled operation had may now have no reader at all,
+  // and nothing between this pass and the lowering removes one: Section 12 puts
+  // the two canonicalizations around fusion. A `tensor.empty` left dead here
+  // becomes a scratchpad allocation for a value nothing writes and nothing
+  // reads, which the allocator would then place.
+  if (auto empty = original.getDefiningOp<tensor::EmptyOp>())
+    if (empty.getResult().use_empty())
+      rewriter.eraseOp(empty);
   return success();
+}
+
+/// Whether this operation's result may be assembled from tiles at all.
+///
+/// **A value assembled from tiles can be written and never read, and that is
+/// not a property of this pass but of the declared ISA.** A tiled result is
+/// assembled in DRAM, one `npuisa.dma_store` per tile, which is the decision
+/// `docs/PHASE_STATE.md` records. Checks 8 and 9, `operand-defined` and
+/// `operand-extent`, ask whether a read fits inside **one** written span, and
+/// `WrittenSpans` deliberately does not merge adjacent spans, because merging
+/// them is what would let an over read off the end of one buffer and into the
+/// next pass validation. So a buffer written by N stores can only be read by a
+/// read that fits inside one of those N, and a consumer that wants the whole
+/// assembled value is refused. D-0052 is that refusal with its reproduction.
+///
+/// **The one shape that is expressible is the one where nothing reads it.** An
+/// assembled value that reaches `func.return` is mapped straight to the out
+/// parameter the function gained for it, so the tiles are stored into the
+/// output region and no instruction ever reads them back. That is the shape
+/// `test/Encoding/dram-subview.mlir`'s sibling case has, and it is the only
+/// shape this pass may produce.
+///
+/// **So this is a decline and not an error**, which is Section 13.2's own
+/// answer to a tile that is not expressible: the allocator's spilling is the
+/// fallback. Emitting the tiles anyway would produce a program this project's
+/// own encoder refuses, three tools away from the pass that caused it.
+///
+/// Whether the relaxation that would accept a tiled assembly is worth a
+/// declared check is an owner decision and is recorded as one; this pass does
+/// not take it.
+bool resultCanBeAssembled(Operation *op) {
+  if (op->getNumResults() != 1)
+    return false;
+  return llvm::all_of(op->getResult(0).getUsers(), [](Operation *user) {
+    return isa<func::ReturnOp>(user);
+  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -821,6 +886,24 @@ struct TileToScratchpadPass
       const int64_t working = workingSetBytesFor(op, doubleBuffer);
       if (working <= budgetBytes) {
         ++alreadyFitting;
+        continue;
+      }
+
+      // Over budget, and the assembled result would be read by something. The
+      // declared ISA cannot express that, so the tiling is declined here rather
+      // than emitted for the encoder to refuse. See `resultCanBeAssembled`.
+      if (!resultCanBeAssembled(op)) {
+        ++declinedOps;
+        op->emitRemark()
+            << "working set of " << working << " bytes exceeds the "
+            << budgetBytes
+            << " byte budget, and this operation's result is read by another "
+               "operation rather than returned. A tiled result is assembled in "
+               "DRAM by one store per tile, and the binary's operand-defined "
+               "and operand-extent checks satisfy a read out of a single "
+               "written span, so an assembled value that is read back is "
+               "refused by the encoder. D-0052 carries the reproduction. The "
+               "allocator's spilling is the fallback.";
         continue;
       }
 

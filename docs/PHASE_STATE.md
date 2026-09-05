@@ -14,23 +14,50 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-04.
+**Last updated:** 2026-09-05.
 
 ## Current phase
 
 **P13, tiling, double buffering and layout. Incomplete, and this handoff says so
 first.** Branch `phase/p13-tiling`, cut from `main` at `2f59429`, which is the
-P12 merge. Twenty nine commits, tip `515560c`. **The gate is not met**, and what
-remains is the wiring commit and the experiments that depend on it.
+P12 merge. **The gate is not met**, and what remains is Section 13.3's three
+arms and the ZigZag cross check.
 
-**All three passes now exist and none is in an `-O` level.**
-`-npu-tile-to-scratchpad` at `e8910f2`, `-npu-double-buffer` at `7c0fd44`,
-`-npu-assign-layout` at `0746f53`. They are held back together on purpose:
-putting them in is what moves the cell count, re-derives Section 2's arithmetic
-at six sites, and requires the tiles nothing measurement to be taken again at
-the tree that has all three. Doing that once is one declaration and one
-re-record; doing it three times is three of each, with two intermediate states
-nothing will ever run again.
+**All three passes are in `-O2` now, and the wiring commit is what this session
+did.** `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
+went in together, in Section 12's own positions, with the ablatable set from 8
+to 11 and the suite from 175 cells to 217. **The whole suite was re-recorded
+once, serially, on a quiet machine, at that tree, and not one counted field of
+the 175 pre-existing cells moved**, which is the strongest form the governance
+clause can take: there is nothing to declare in `docs/BREAKING_CHANGES.md`
+because nothing moved, and a declaration of a movement measured to be zero
+would be a false declaration.
+
+**The wiring found five defects and one of them changes the phase.**
+D-0051 to D-0055 are in `docs/DEFECT_LOG.md` with their reproductions. **D-0052
+is the one that matters: a tiled result assembled in DRAM cannot be read back.**
+The tiles are written one store each, and the binary's `operand-defined` and
+`operand-extent` checks satisfy a read out of a **single** written span, so an
+assembled value that another operation reads is refused by the encoder. That is
+D-0050's third part, arriving through the wiring rather than through reading,
+and it is why the first tiled program this suite produced did not encode.
+
+**The pass now declines rather than emitting a program its own encoder
+refuses**, which is Section 13.2's own answer to a tile that is not
+expressible, and the allocator's spilling is the fallback. The one shape that
+**is** expressible is an assembly nothing reads: a tiled operation whose result
+is the function's own, whose tiles are stored straight into the out parameter.
+`test/Encoding/tiled-result-returned.mlir` carries that case from the tensor
+level through the encoder and the disassembler, one load and one store per tile
+and no load of the assembly back, and it is the permission that
+`test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal for.
+
+**So nothing tiles in this suite at `-O2`, at either budget, on any model**, and
+the committed prediction's main clause is right for a reason it did not give.
+Section 13.3's tiling arm has no subject inside the suite until either a
+consumer chain tiles with its producer or the ISA can express the read, and the
+second is D-0050's owner decision. **That is the phase's largest open item and
+it is not something a phase may decide.**
 
 **The commit order carries meaning and the first commit is the phase.** P13 was
 briefed to fix D-0045 under the full declare then re-record governance, on the
@@ -66,13 +93,13 @@ already gives arm one.
 
 | Clause | Status |
 |---|---|
-| Goldens byte identical for the tiling work, exactly | **stands, and it is not yet evidence.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty. Nothing consumes the tiling interface yet, so nothing could have moved them. The claim becomes evidence at the commit that adds `-npu-tile-to-scratchpad` |
-| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **answered, and the answer is that there is nothing to declare.** Both passes exist and both were measured. Double buffering reorders instructions and moves no cycle, no byte and no scratchpad byte: 2116 cycles, 1524 DMA, 596 compute, overlap 0.0067, peak 1744, before and after. Layout assignment rewrites nothing on any model in the suite at `-O0` or `-O2`, and the printed IR is identical to its input. Neither is in an `-O` level either, so there are two independent reasons no number moved. An entry declaring a movement that was measured to be zero would be a false declaration |
-| No `scf` operation reaches the lowering, asserted by a lit test | **met for the pass, not yet for a level.** `-npu-tile-to-scratchpad` asserts it about its own function and `test/Transforms/tile-to-scratchpad.mlir` asserts it from outside with a `NOSCF` prefix. It becomes a statement about the lowering when a level runs the pass |
-| A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **not started**, and the numbers it will have to reproduce are recorded below so the next session does not have to re-derive them |
-| The tight budget question answered per model with all three arms of Section 13.3 | **not started, but no longer blocked and no longer under designed.** This is the phase's reason to exist and none of the three arms has been run. What changed is that the fused region question is settled first rather than discovered mid experiment: the arms stay at `-O2` and arm two is reported in two configurations, with `-npu-fuse-ops` and without, which is written into `docs/PASSES.md` beside the tiling pass |
-| The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **met at the pass, pending at the level.** The delta is zero and the DMA stride term is exactly what makes it zero: Section 5.5 charges layout only through the non unit innermost stride penalty, it charges it to NHWC and never to NCHW because an NHWC tensor is a buffer at NCHW extents with permuted strides, and 0.5 cycles per element against a permutation's 0.0625 makes a physical transpose eight times cheaper at every extent. `CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt` asserts the direction and the factor in the file that owns both constants. What is pending is the ablation row, which needs the level |
-| The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started.** The tool is installed, pinned, recorded and wired into the external tools policy; there is no mapping to export yet, because mappings are what the tiling pass produces |
+| Goldens byte identical for the tiling work, exactly | **met, and it is evidence now.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty at the tree that has all three passes in `-O2`. It became evidence at the wiring commit, which is what the previous handoff said would make it one |
+| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **met, and the answer is still that there is nothing to declare.** Measured at the wired tree over the whole suite: **not one counted field of the 175 pre-existing cells moved**, over instructions, cycles, compute and DMA cycles, scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle distance, the overlap fraction and the fragmentation ratio. The 42 cells the run added are the three new ablation rows and had no counterpart to move. An entry declaring a movement measured to be zero would be a false declaration |
+| No `scf` operation reaches the lowering, asserted by a lit test | **met, as a statement about the lowering.** `test/Pipeline/p13-passes-at-o2.mlir` runs `-O2` at a budget where tiling fires and asserts no `scf` operation anywhere in the level's output, and the `NOSCF` prefix in `test/Transforms/tile-to-scratchpad.mlir` is kept beside it |
+| A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **met, to the cycle.** `resnet_block` at its tight budget is 17 instructions, 2018.0 cycles and 1 spill with `-npu-tile-to-scratchpad` ablated and with it present; `inception_block` is 22, 3799.0 and 3. Read out of the committed re-record rather than re-derived |
+| The tight budget question answered per model with all three arms of Section 13.3 | **not started, and now blocked in a way it was not.** The fused region question was settled in advance and stands. What is new is D-0052: the tiling arm has no subject inside the suite at `-O2`, because every operation the search finds over budget is declined for a reason about the binary format. The arms can still be run over the swept budget range, and arm two has to say what it is measuring |
+| The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **met at the level.** The ablation row is zero on every model at both budgets, in all four counted columns, and the DMA stride term is exactly what makes it zero: 0.5 cycles per element strided against a permutation's 0.0625 makes a physical transpose eight times cheaper at every extent this machine can hold. `CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt` asserts the direction and the factor in the file that owns both constants |
+| The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started, and D-0052 changes what it can be over.** The tool is installed, pinned, recorded and wired into the external tools policy. `npu.tiling_choice` is recorded on every tile the pass emits, and the pass emits none inside this suite at `-O2`, so the mappings to export have to come from the swept budget range or from `-O0` |
 
 **Two clauses of the brief around the gate are answered rather than pending, and
 both are answered in the negative.** The D-0045 governance sequence does not run,
@@ -211,8 +238,10 @@ enough to check by hand has exactly one fold.
   an operation into NHWC, because the comparison refuses that trade at every
   shape this machine can hold and a materialisation path would be a branch no
   input could reach. Five lit cases, three of them negatives, plus statistics.
-- **The suite is still 175 cells and the ablatable set is still 8.** Nothing in
-  this branch puts a pass into an `-O` level.
+- **The suite is 217 cells and the ablatable set is 11**, from the wiring
+  commit. The three passes are in `-O2` in Section 12's own order, each carrying
+  its `ablatable` property, and `run_benchmarks.py` needed no arithmetic change
+  to follow: it reads the set out of the driver at run time.
 
 ## What tiling was waiting on, all of which has landed
 
@@ -442,6 +471,52 @@ prediction gave: ADR 0008's tight budget is the smallest at which a **program**
 allocates, which needs every simultaneously live buffer to fit, and that is a
 stronger requirement than any one operation's working set.
 
+### The same table re-measured at the wired tree, which is a different measurement
+
+**The table above is the pass run alone at its own default options. The table
+below is `-O2` with the options the pipeline chooses**, which is what the suite
+actually compiles, and it had to be taken again because the wiring changes the
+premise twice: the pipeline hands the tiling search the allocator's budget and
+tells it that `-npu-double-buffer` is in the pipeline, which doubles the
+prefetched operand's contribution per Section 13.2.
+
+Tiled / already fitting / declined, through `-O2`, at the wired tree:
+
+| Model | Tight budget | at the default 1048576 | at its tight budget | tight, `-npu-double-buffer` ablated |
+|---|---|---|---|---|
+| `lenet` | 194624 | 0 / 1 / 0 | 0 / 1 / 1 | 0 / 1 / 1 |
+| `depthwise_separable` | 8192 | 0 / 0 / 0 | 0 / 0 / 2 | 0 / 0 / 1 |
+| `resnet_block` | 6464 | 0 / 1 / 0 | 0 / 0 / 2 | 0 / 1 / 1 |
+| `inception_block` | 6144 | 0 / 3 / 0 | 0 / 1 / 2 | 0 / 3 / 0 |
+| `conv_bn_relu_stack` | 6464 | 0 / 1 / 0 | 0 / 1 / 2 | 0 / 1 / 1 |
+| `dilated_stack` | 8064 | 0 / 0 / 0 | 0 / 0 / 2 | 0 / 0 / 1 |
+| `lenet_batched` | 200832 | 0 / 1 / 0 | 0 / 1 / 1 | 0 / 1 / 1 |
+
+**Which cells differ from the pass alone table, and why.** The **default budget**
+column is identical, and that matters most: a default budget cell that moved
+would be a wiring defect rather than a declaration to write, and none moved. The
+**tight budget** column differs in the `declined` count on every model, and the
+last column is why: with double buffering ablated the search sizes the working
+set without the prefetch and finds fewer operations over budget. **That is the
+coupling Section 13.2 asks for, measured**, and it is why `docs/PASSES.md` says
+beside the `-npu-double-buffer` row that ablating it also relaxes the tiling
+search.
+
+**The declines are two different declines and the difference is the finding.**
+Some are fused regions over budget, which the pass has counted and explained
+since `515560c`. The rest are D-0052: an operation over budget whose assembled
+result would be read by another operation, which the binary format cannot
+express. **Before D-0052's rule the tight budget column read
+`resnet_block` 1 / 0 / 1 and `inception_block` 2 / 1 / 0**, tiling really fired,
+and all three of those programs were refused by `npu-translate`. So the pass
+alone table's zeros and the wired table's zeros agree on the number and disagree
+completely on the reason, and only the second reason is about this compiler.
+
+**The allocator's own figures at the wired tree**, which is the other half of a
+wiring check, reproduce ADR 0008's recorded table exactly: `resnet_block` tight
+is 6432 peak with 1 spill and 3 DMA, `inception_block` tight is 6144 with 3 and
+8, and the other five spill nothing at either budget.
+
 ### A second finding the prediction did not make, and it is the more interesting one
 
 **At `-O2` most convolutions are inside `npu.fused_op` regions and the tiling
@@ -508,59 +583,117 @@ at a budget below the peak. ADR 0010 records that the remaining five do not
 allocate at batch 4 under their recorded tight budget at all, and names tiling as
 the remedy, so P13 is also the phase that can make those six cells exist.
 
-**Where the counts are hardcoded and will have to move together** when three
-ablatable passes land and the suite goes from 175 to 217:
-`test/Python/test_benchmarks.py` at the assertions for 8, 63, 112, 175 and the
-`checked == 112` and `cells_total == 175` ones; `docs/NUMBERS.md`'s cell count
-table; `report/generated/macros.tex` through `results_to_tex.py`;
-`test/Pipeline/opt-levels.mlir`'s flat `-O2` pass argument list and its
-`DESCRIBE` sequence; `test/Pipeline/pass-stats.mlir`'s ordered name list;
-`docs/PASSES.md`'s pass table and its "eight ablatable" paragraph. **No
-arithmetic in `run_benchmarks.py` changes**: it reads the ablatable set out of
-the driver at run time and the 63 and 112 are computed, never written down.
+**Where the counts were hardcoded, all moved together in the wiring commit**, and
+there were **nine** sites rather than the six this file predicted. The six that
+were listed: `test/Python/test_benchmarks.py` at the assertions for 8, 63, 112
+and 175 and the `checked == 112` and `cells_total == 175` ones; `docs/NUMBERS.md`
+cell count table; `report/generated/macros.tex` through `results_to_tex.py`;
+`test/Pipeline/opt-levels.mlir` flat `-O2` argument list and `DESCRIBE` sequence;
+`test/Pipeline/pass-stats.mlir` ordered name list; `docs/PASSES.md` pass table
+and its "eight ablatable" paragraph.
+
+**The three the list did not have, and every one of them is a tripwire that
+worked.**
+
+- `test/Python/test_compile_driver.py::test_the_level_table_comes_from_the_compiler`,
+  the `-O2` pass list by name and in order.
+- `test/Python/test_pass_instrumentation.py::test_the_ablatable_set_is_read_from_the_compiler_and_is_not_written_here`,
+  whose own docstring says a pass added to `-O2` and marked ablatable makes it
+  red as a prompt to add the row and the entry. It did exactly that.
+- `test/Python/test_predictions.py::test_at_least_one_committed_result_names_a_prediction`,
+  which counts the cells naming the ablation prediction: 126 to 168, of which
+  the ablation rows are 112 to 154 and the fourteen baselines did not move.
+
+**No arithmetic in `run_benchmarks.py` changed**, which is what the previous
+handoff said and it held: it reads the ablatable set out of the driver at run
+time and the 63 and 154 are computed. Its **prose** changed, which is the tenth
+site and was named.
+
+**Two more present tense claims were swept out of the tree** and are recorded
+here so a later reader knows they were considered rather than missed:
+`docs/adr/0010`, which stated 8, 112 and 175 as though the ADR fixed all three
+when it fixes only the 63, and `docs/BREAKING_CHANGES.md`'s P10 entry, which
+described a test as running "each of the eight ablatable passes" when the test
+sweeps whatever the driver reports. Historical statements inside those documents
+were left exactly as they were.
 
 ## The Section 2 carve out, for the owner
 
-**Unchanged from P12 and repeated because it is still open.** The measured figure
-is **1.17 seconds per cell**, over 175 cells in 3.43 minutes, serially, on the
-14700K under WSL2. Section 2 still says 15 seconds and 238 cells while the
-repository says 1.17 and 175, and a reader comparing them finds a disagreement
-rather than a correction. The suggested replacement paragraph is in P12's handoff
-below and it is unchanged.
+**Re-derived at P13, in the commit that made it derivable, and it is the owner's
+to apply because nothing in this project may edit the specification.**
 
-**The ablatable set is still 8 and the suite is still 175 cells.** P12's handoff
-said the arithmetic needs re-deriving to 11 and 217 in the commit that adds the
-three passes rather than after it. That commit has not happened, so the
-re-derivation has not either, and doing it in advance would put a cell count in a
-document that the suite would contradict.
+**What Section 2 says today.** 7 models times 3 levels times 2 budgets times 2
+batches is 84 benchmark cells; 11 ablatable `-O2` passes times 7 models times 2
+budgets is 154 ablation cells; 238 in total, at 15 seconds per cell as a
+planning figure, giving 59.5 minutes against a stated budget of 90.
+
+**What the repository measures.** 63 benchmark cells, 154 ablation cells, **217
+in total**, at **1.14 seconds per cell**, 4.12 minutes, serially, on an Intel
+Core i7-14700K under WSL2 with nothing else running.
+
+**One of the two disagreements is now closed and the other is a real decision.**
+The **ablation** half agrees exactly: 11 ablatable passes and 154 ablation cells,
+because the three passes Section 12's table names went into `-O2` at P13 and the
+ablatable set is read out of the driver at run time. The **benchmark** half does
+not, 63 against 84, and that is ADR 0010: a tight budget is defined as the
+smallest budget at which **that program** allocates, and a model at batch 4 is a
+different program from the same model at batch 1, so budget and batch are not a
+free cross product. Six of the seven models do not allocate at batch 4 under
+their recorded tight budget at all.
+
+**The drop in replacement paragraph, for Section 2.**
+
+> **Benchmark cells:** 7 models times 3 levels times 3 budget and batch
+> combinations equals **63**. The combinations are not a free product of 2
+> budgets and 2 batches: a tight budget is the smallest at which that program
+> allocates, measured from its own peak, and a model at another batch is another
+> program, so a cell that names the tight budget runs at the model's declared
+> batch. `docs/adr/0010` records that decision and the peaks behind it.
+> **Ablation cells:** 11 ablatable `-O2` passes, Section 12 defines the property
+> and Section 16.2 reads the set from the driver, times 7 models times 2 budgets,
+> at `-O2` and batch 1, equals **154**. Total **217 cells**. Each cell costs one
+> instrumented compile, one encode, one simulation, one onnxruntime reference
+> run, plus the `n_trials = 10` whole pipeline repetitions Section 16.1 requires
+> for the timing object. **The measured cost is 1.14 seconds per cell**, 217
+> cells in 4.12 minutes serially on the reference machine, so **the 90 minute
+> budget stands with a factor of twenty one in hand** and the 15 second per cell
+> planning figure is replaced by the measurement, per the rule at the end of this
+> section.
+
+**Why the number is worth applying now rather than at the end of the phase.**
+The 217 is not going to move again inside P13: `-npu-calibrate` is P14's and is
+never in a default `-O` level, and the model suite is fixed. The 1.14 seconds
+will move with the host and is a wall clock, which is why the paragraph gives it
+as a measurement on a named machine rather than as a property.
 
 ## Verification output
 
 Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 `~/npu-venv`.
 
-**Two whole categories were deliberately not run, and the reason is the same for
-both.** `run_benchmarks.py`, `roofline.py`, `scalesim_export.py`,
-`accelergy_energy.py`, `kernel_threads.py` and `compile_time_benchmark.py` all
-measure the compiled suite, and **this branch changes nothing the suite
-measures**: no `-O` level gained a pass, no charge moved, the cell count is P12's
-175 and the committed results are P12's. Re-running them would produce P12's
-numbers with a new timestamp and would spend the one thing a measurement of a
-load sensitive bound cannot get back, which is a quiet machine.
-`regression-baseline --check` is the gate that would have caught it if that were
-wrong, and it reports no drift over 42 cells and 21 golden tensors.
+**Everything was run this time, and the quiet machine was spent here**, which is
+what the previous handoff said the wiring commit would have to do. The suite is
+217 cells rather than 175, so every measurement over it is a measurement of a
+different population, and the whole set was re-run **once**, serially, with
+nothing else on the machine.
 
-**That reasoning expires at the wiring commit and the next session should expect
-to spend the quiet machine there.** Once the three passes are in `-O2` the suite
-is 217 cells rather than 175 and every one of those measurements is of a
-different program, so the whole set is re-run once, serially, at that tree, and
-not before.
+**Once is the right number and here is why.** Nothing after the re-record moved
+a measured quantity: the code was final before the run, and what followed it was
+documentation, the baseline record and the CI evaluation. `regression-baseline
+--check` at the tip reports no drift, which is the gate that would say otherwise.
+
+**The first attempt at the re-record went red and that is recorded rather than
+retried into silence.** It died on the `--mlir-timing` cross check at the
+**upper** bound, which is D-0049, on a machine with nothing running but a one
+minute load average still around 3 from the builds seconds earlier. Ninety
+seconds of settling brought it to 0.74 and the run completed. **No bound was
+touched.**
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
 | `ninja -C build-ndebug -j6` | clean, no warnings |
-| `ninja -C build check-npu` | **32 discovered, 32 passed**. 26 at the previous handoff, plus `dma-boundaries` slicing, tiling assembly, `double-buffer.mlir` and `assign-layout.mlir` |
+| `ninja -C build check-npu` | **34 discovered, 34 passed**. 32 at the previous handoff, plus `test/Pipeline/p13-passes-at-o2.mlir` and `test/Encoding/tiled-result-returned.mlir` |
 | `build/bin/NPUInterfaceTests` | 23 passed |
 | `build/bin/NPUTilingTests` | **20 passed**. 12 at P12, plus the eight tiled implementation tests |
 | `build/bin/NPUAllocatorTests` | 29 passed |
@@ -568,25 +701,32 @@ not before.
 | `build/bin/NPUSimulatorTests` | **58 passed**, 1 skipped. 55 at P12, plus the per fold assertion, the version 2 strided transfer and the layout crossover |
 | `build-ndebug/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **1082 passed, 18 skipped**. 1076 at P12, plus the six parametrized cases of the mirror's per fold assertion |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1082 passed, 18 skipped**, unchanged. The wiring moved five hardcoded counts inside existing tests and added no pytest case |
 | `mypy` | no issues found in 26 source files |
 | `black --check .` | 66 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 489 of 489 files |
+| `reuse lint` | compliant, **533 of 533** files. 489 at the previous handoff, plus the 42 new result cells and the two new lit tests |
 | `pre-commit run` | all twelve hooks passed, on every commit of this branch |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
 | `bash scripts/check-isa-staleness.sh build` | up to date |
 | `python scripts/gen-design-decisions.py --check` | index up to date |
-| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
+| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date, regenerated over the 217 cells |
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
-| `bash scripts/regression-baseline.sh --check` | **no drift**, 42 cells, 21 golden tensors, exit 0 |
-| `bash scripts/coverage.sh 85 93 16 58` | C++ **86.1** PASS against 85, branch 75.7; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0 |
-| the whole suite in the CI shape, now four differences rather than three | **1069 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3` |
+| `bash scripts/regression-baseline.sh --check` | **no drift**, 21 golden tensors byte identical, exit 0, after the record at this tree |
+| `bash scripts/coverage.sh 85 93 16 58` | C++ **85.54** PASS against 85, branch 74.20; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0. **The margin is 0.54 points where it was 1.1**, and it is named here rather than left as a dip: `build-coverage/` had to be cleared first, because it held gcov data for `lib/Simulator/CostModel.cpp`, which moved to its own library earlier in this phase and which gcovr refuses to report on rather than skipping |
+| the whole suite in the CI shape, four differences | **1069 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`. **Predicted before the run and measured exactly**: the wiring adds two lit tests and no pytest case, so the CI shape row could not move from the previous handoff's |
 | `regression-baseline --check` in the CI shape | **no drift**, with both environments named, the count difference printed, and three oracle distances reported as inside D-0039's band rather than as silence |
 | the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, and the message now lists **all three** tools |
+| `python experiments/roofline.py` | 217 cells, 682 layers, 217 memory bound, 465 compute bound, every cell at or above its bound |
+| `python experiments/scalesim_export.py` | 217 cells, worst whole model divergence -87.14% on `dilated_stack-O0-tight`, tau b 0.6258 over cells and 0.7444 over layers |
+| `python experiments/accelergy_energy.py` | 217 cells at 45nm, 49.2860 pJ per MAC against a published 4.60, a factor of 10.71, unchanged |
+| `python experiments/kernel_threads.py` | 0.96 to 4.00 times at 28 threads, **output bytes equal on every model at every thread count** |
+| `python experiments/compile_time_benchmark.py --check` | fitted exponent 1.1081 against a ceiling of 1.5683, exit 0 |
+| `python experiments/compile_time_benchmark.py --check --sizes 500` | **red**, "No fit: a growth exponent needs at least two sizes", exit 1, which is the rehearsal P12's recipe asked for |
+| `python experiments/run_benchmarks.py --force` | **217 cells, 4.12 minutes, 1.14 s per cell**, inside the 90 minute budget, worst upper `--mlir-timing` gap 0.2430 ms and no red at either bound |
 | `git status --short` | empty |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case insensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
@@ -1234,30 +1374,39 @@ correction lives here and in `docs/NUMBERS.md` rather than in it.
 
 ## What is left in P13, in the order it should be done
 
-1. **The single wiring commit.** All three passes into `-O1` and `-O2` per
-   Section 12's table, each carrying its `ablatable` property, the ablatable set
-   from 8 to 11, the suite from 175 to 217 cells, and the six hardcoded count
-   sites above moved together. The tiles nothing measurement is taken again at
-   that tree before the commit, and a default budget cell that moves is a defect
-   in the wiring rather than a declaration to write.
-2. **The no `scf` assertion as a statement about the lowering**, once a level
-   runs the pass, rather than about the pass alone.
-3. **The tiling disabled ablation row**, which has to reproduce the previous
-   spilling numbers to the cycle. The two rows it has to hit are in the table
-   above: `resnet_block` 17 instructions and 2018.0 cycles with 1 spill, and
-   `inception_block` 22 and 3799.0 with 3.
-4. **Section 13.3's three arms**, at `-O2`, with arm one in two configurations
+**Six of the previous list's eight items are done and are the wiring commit**:
+the wiring itself, the no `scf` assertion as a statement about the lowering, the
+tiling disabled ablation row reproducing to the cycle, the layout delta as a
+measured row, the two CI triggers re-evaluated, and the quiet serialized
+re-record of all 217 cells. What follows is what remains, and the first entry is
+new.
+
+1. **The owner decision D-0052 escalates, and it is the phase's blocker.** A
+   tiled result assembled in DRAM cannot be read back, because `operand-defined`
+   and `operand-extent` satisfy a read out of a single written span. The tiling
+   pass declines rather than emitting a program the encoder refuses, so nothing
+   in the suite tiles at `-O2`, and Section 13.3's tiling arm has no subject
+   there. The options are in D-0052 and in D-0050 and each of them changes
+   declared ISA semantics or the format version, which is not a phase's call.
+   **Section 13.3 can still be run**, over the swept budget range and at `-O0`,
+   and it has to say what its tiling arm is measuring.
+2. **Section 13.3's three arms**, at `-O2`, with arm one in two configurations
    for the two spill heuristics and arm two in two configurations for fusion on
    and off, over the measured budget range of 6000 to 6464 for two models and
-   4000 to 6000 for the third. ADR 0008's tight budgets are re-measured at that
-   tree rather than quoted from P12.
-5. **The layout delta as an ablation row**, which is the zero this handoff
-   already argues for, arriving as a measured row rather than as an argument.
-6. **The ZigZag comparison under the same mapping**, which is what
-   `npu.tiling_choice` was recorded for.
-7. **The two CI triggers re-evaluated** against a suite that is 217 cells rather
-   than 175.
-8. **The quiet serialized re-record of all 217 cells**, once, at the wired tree.
+   4000 to 6000 for the third. ADR 0008's tight budgets are re-measured at the
+   wired tree rather than quoted from P12, and that re-measurement is this
+   item's first step.
+3. **The ZigZag comparison under the same mapping**, which is what
+   `npu.tiling_choice` was recorded for. The mappings have to come from where
+   the pass actually emits tiles, which is no longer anywhere inside the suite
+   at `-O2`.
+4. **The predictions for both, committed before either experiment runs**, in the
+   repository's prediction schema, which has a validator.
+
+**The one thing the wiring commit deliberately did not do** is move the suite's
+recorded tight budgets. The tiling disabled row was only checkable at the
+budgets the old numbers were measured at, so re-measuring ADR 0008's budgets is
+an input to Section 13.3 rather than part of the wiring.
 
 ## Open questions
 
@@ -1288,13 +1437,19 @@ none in three on the idle machine.** The message is
 `--mlir-timing reports Canonicalizer at 4.5000 ms and this project's
 instrumentation at 0.4496 ms, a gap of 4.0504 ms against a bound of 2.3000 ms`.
 
-**It is not the bound P12 asked P13 to watch, and that distinction is the
-useful part.** `cross_check_against_mlir_timing` has two bounds pointing in
-opposite directions. The **deficit** bound catches the instrumentation reading
-above MLIR, is derived from the print quantum, and is D-0043's, whose margin
-narrowed across 0.1577, 0.1177 and 0.1856 ms against 0.2000. This is the
-**upper** bound, `half_ulp` plus 50 percent of MLIR's figure, and nothing here
-is a fourth data point on the other one.
+**It is not the bound P12 asked P13 to watch, and the distinction turned out to
+be more than a distinction.** `cross_check_against_mlir_timing` has two bounds
+pointing in opposite directions. The **deficit** bound catches the
+instrumentation reading above MLIR, is derived from the print quantum, and is
+D-0043's; it is `half_ulp_ms`, **0.0500 ms** at the four decimals of seconds
+MLIR prints. The **upper** bound is `half_ulp` plus 50 percent of MLIR's own
+figure, so it is a different number for every pass.
+
+**The 0.1577, 0.1177 and 0.1856 this file recorded as a narrowing margin against
+"D-0043's 0.2000 bound" are readings of the upper gap, and 0.2000 is not a bound
+in this code at all.** That is D-0055, corrected here rather than carried a
+fourth time. `run_benchmarks.py` prints `CrossCheck.worst_gap_ms`, which is the
+upper direction, so three handoffs read one bound and named the other.
 
 **The bound is conditional and the condition is not being checked**, which
 `pass_stats.py` already knows how to say: it refuses to check this bound under a
@@ -1311,12 +1466,19 @@ governance at P15.
 machines. A developer machine with nothing on it is the least likely place for
 this to fire.
 
-**The `--mlir-timing` gap has no new quiet measurement.** P11's quiet runs
-measured 0.1577 and 0.1177 against D-0043's 0.2000 bound and P12's measured
-0.1856. **P13 adds no fourth point**, because the fourth point comes from
-`run_benchmarks.py --force` and this branch had no reason to run it: no
-ablatable pass landed, so the suite is the same 175 cells P12 recorded. The next
-session that runs the suite gets the point. **Do not respond to a red at that
+**The `--mlir-timing` gap has a new quiet measurement and it is read correctly
+for the first time.** The 217 cell re-record measures a worst **upper** gap of
+**0.2430 ms**, at `NPULowerToNPUISA` in `lenet-O2-tight-n1-fp32-normal`, green
+against that pass's own allowance of `half_ulp` plus half of MLIR's figure. **No
+cell of the 217 produced a red at the deficit bound**, which is D-0043's and is
+0.0500 ms, and that is the statement the previous three handoffs were trying to
+make about a number they were reading from the other bound. See D-0055.
+
+**The first attempt at the re-record went red at the upper bound** with a gap of
+0.6897 ms against 0.5000, on a machine whose one minute load average was still
+around 3 from the builds seconds earlier. That is D-0049's fifth data point and
+its clearest: the process table was empty and the machine was not idle. Ninety
+seconds of settling and the run completed. **Do not respond to a red at either
 bound by widening it.**
 
 **The allocator growth benchmark is still not wired into CI**, and the trigger it
@@ -1461,37 +1623,52 @@ The branch is not ready to push: the gate is not met and the phase is
 incomplete. **Do not open a pull request for it yet.**
 
 The next command is the one that shows the blocker, because it is the shortest
-statement of what has to change:
+statement of what has to change. Write a convolution over the budget whose result
+another operation reads, put it through the level, and read the remark:
 
 ```
-npu-opt test/Transforms/tile-to-scratchpad.mlir \
-  --npu-tile-to-scratchpad=budget=2048 --npu-lower-to-npuisa
+npu-opt <program>.mlir --pass-pipeline='builtin.module(npu-O2{budget=6464})' \
+  -mlir-pass-statistics -mlir-pass-statistics-display=list
 ```
 
-It reports `failed to legalize unresolved materialization` on the destination
-argument. Making that command produce a program is the first change; making the
-program it produces have a smaller scratchpad peak than the untiled one is the
-second, and only the second is worth measuring.
+It reports the operation `declined`, with a remark saying the result is read by
+another operation rather than returned, and naming D-0052. Removing the decline
+rule makes the same command produce a program, and `npu-translate` then refuses
+it at `operand-extent`. **Both of those are the same fact and only the owner can
+change which one this compiler does.**
+
+**The command that shows what does work**, so the next session starts from the
+shape rather than from the refusal:
+
+```
+ninja -C build check-npu    # test/Pipeline/p13-passes-at-o2.mlir
+```
+
+Its first case is a convolution over the budget whose result is the function's
+own. It tiles, it lowers, it encodes and it runs.
 
 **Four things to check before anything else.**
 
-**The suite is still 175 cells and the baseline is recorded at `f7b32ba`.** A
-`regression-baseline.sh --check` at the tip reports no drift, and the first
-commit that puts an ablatable pass into a level moves the cell count, the
-ablation table, `macros.tex` and six hardcoded numbers together. Move them in one
-commit.
+**The suite is 217 cells and the baseline is recorded at the wiring commit.**
+`regression-baseline.sh --check` at the tip reports no drift and the 21 golden
+tensors are byte identical. Anything that moves a cell from here needs its
+declaration first.
 
-**`run_benchmarks.py --force` has not been run on this branch**, so there is no
-fourth `--mlir-timing` data point and the committed 175 cells are P12's.
-Serialise that run when it happens and say so, and read a red at D-0043's 0.2000
-deficit bound as the fourth point rather than as noise. **A red at the other
-bound is D-0049 and is a different thing**, so read the message before deciding
-which one fired.
+**The 217 cells were measured once, at the wired tree, and once is correct.**
+Nothing after that run moved a measured quantity: the code was final before it,
+and what followed was documentation, the baseline record and the CI evaluation.
+If something in Section 13.3 moves a number, the re-record repeats in its own
+commit with the declaration before it.
 
-**`compile_time_benchmark.py --check` is still unwired and its trigger has still
-not fired**, because functions do not get longer until a level runs the tiling
-pass. Rehearse it red with `--sizes 500` in the same commit that wires it.
+**Neither CI trigger fired and both were re-evaluated with numbers rather than
+with an argument.** `compile_time_benchmark.py --check` waits on a function
+getting longer and none did, because nothing tiles; its red branch was rehearsed
+anyway and exits 1 at `--sizes 500`. `kernel_threads.py` waits on the
+convolution kernel's loop nest changing and this branch does not touch it; the
+table was re-run and moved only as a host wall clock, with the output bytes equal
+on every model at every thread count.
 
 **D-0049 is open and is the reason to run measurements on a quiet machine even
-when the measurement is a test.** It is reproducible at roughly one run in eight
-under load and zero on an idle machine.
+when the measurement is a test**, and P13's own re-record is the fifth data
+point: the process table was empty, the one minute load average was 3, and the
+first attempt went red. Wait for the load to fall before measuring anything.

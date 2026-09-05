@@ -16,13 +16,25 @@
 // from a row in this file, and adding a row that ran a verifier would be adding
 // a second, weaker one beside the one that already runs.
 //
-// **`-O1` and `-O2` arrive here at P9**, with the four `npu` level passes and
-// the four upstream ones Section 12's table names. What is deliberately absent
-// is the other four rows of that table: `-npu-assign-layout`,
-// `-npu-tile-to-scratchpad`, `-npu-double-buffer` and `-npu-calibrate`. P9's
-// roadmap entry excludes them by name, they arrive at P13 and P14, and a level
-// that claimed them would be a level whose ablation table had rows nothing
-// could fill.
+// **`-O1` and `-O2` arrived here at P9** with the four `npu` level passes and
+// the four upstream ones Section 12's table names, and **P13 completes the
+// table** by adding `-npu-assign-layout`, `-npu-tile-to-scratchpad` and
+// `-npu-double-buffer` to `-O2`. The one row still absent is `-npu-calibrate`,
+// which Section 12 marks quantized mode only and never in a default `-O` level.
+// The ablatable set is therefore **eleven**, which is the number Section 2's
+// cell count arithmetic uses, and the three arrived in one commit because
+// wiring them one at a time would have moved that arithmetic three times
+// through two states nothing would ever run again.
+//
+// **Two passes take an option from the pipeline rather than their own default,
+// and both are Section 13.2's doing.** `-npu-tile-to-scratchpad` is given the
+// allocator's budget, because there is one budget on this machine and two
+// passes with different ideas of how much scratchpad there is would tile
+// against one number and spill against another. It is also told whether
+// `-npu-double-buffer` is in this pipeline, because Section 13.2 makes the
+// doubled working set the tiling search's problem: a tiling that fits only
+// without the prefetch silently defeats the pass that adds it. That second one
+// couples two ablation rows, which is stated where the rows are.
 //
 // **The order in the `-O2` table is not Section 5.1's listing order, and there
 // are exactly two deviations. Both were measured rather than chosen.**
@@ -161,10 +173,24 @@ const PassEntry kO2[] = {
     PassEntry(PassKind::SymbolDCE, "symbol-dce", /*ablatable=*/true,
               /*eliminatesDeadCode=*/true,
               "removes a private symbol nobody calls"),
+    PassEntry(PassKind::NPUAssignLayout, "npu-assign-layout",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "scores the rank 4 layout question on Section 5.5 and cancels "
+              "the permutations the answer makes redundant; exact, and the "
+              "answer is NCHW at every extent on this machine"),
+    PassEntry(PassKind::NPUTileToScratchpad, "npu-tile-to-scratchpad",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "splits an operation whose working set exceeds the budget over "
+              "its parallel dimensions; exact, because no reduction is split"),
     PassEntry(PassKind::NPULowerToNPUISA, "npu-lower-to-npuisa",
               /*ablatable=*/false, /*eliminatesDeadCode=*/false,
               "the dialect conversion to npuisa on memrefs; removing it "
               "produces no program at all"),
+    PassEntry(PassKind::NPUDoubleBuffer, "npu-double-buffer",
+              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+              "overlaps a transfer with the computation before it; before "
+              "allocation, since the doubled working set has to be visible to "
+              "the allocator"),
     PassEntry(PassKind::NPUAllocateScratchpad, "npu-allocate-scratchpad",
               /*ablatable=*/false, /*eliminatesDeadCode=*/false,
               "assigns every scratchpad buffer an offset; removing it produces "
@@ -188,9 +214,8 @@ const LevelInfo kLevels[] = {
     {OptLevel::O1, "-O1", "npu-O1", llvm::ArrayRef<PassEntry>(kO1), true, "",
      "constant folding and canonicalization, on top of -O0"},
     {OptLevel::O2, "-O2", "npu-O2", llvm::ArrayRef<PassEntry>(kO2), true, "",
-     "batch norm folding, bias fusion, operation fusion, CSE, SCCP and symbol "
-     "DCE, on top of -O1. Layout assignment, tiling and double buffering "
-     "arrive at P13"},
+     "batch norm folding, bias fusion, operation fusion, CSE, SCCP, symbol "
+     "DCE, layout assignment, tiling and double buffering, on top of -O1"},
 };
 
 const LevelInfo &infoFor(OptLevel level) {
@@ -273,7 +298,7 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
 /// nesting either inside a function would give it a view in which every
 /// question it asks has the wrong answer.
 void addPass(OpPassManager &pm, const PassEntry &entry,
-             const PipelineOptions &options) {
+             const PipelineOptions &options, bool doubleBufferInPipeline) {
   switch (entry.kind) {
   case PassKind::Canonicalize:
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
@@ -299,8 +324,37 @@ void addPass(OpPassManager &pm, const PassEntry &entry,
   case PassKind::NPUFuseOps:
     pm.addNestedPass<func::FuncOp>(npu::createNPUFuseOps());
     return;
+  case PassKind::NPUAssignLayout:
+    pm.addNestedPass<func::FuncOp>(npu::createNPUAssignLayout());
+    return;
+  case PassKind::NPUTileToScratchpad: {
+    // **The tiling pass is told the allocator's budget, and that is not a
+    // convenience.** Section 13.2 has the pass split an operation whose working
+    // set exceeds *the budget*, and there is exactly one budget on this
+    // machine: two passes with different ideas of how much scratchpad there is
+    // would tile against one number and spill against another. A budget of
+    // minus one means the allocator's own default, which is the tiling pass's
+    // default too, so leaving both alone still leaves them agreeing.
+    npu::NPUTileToScratchpadOptions tiling;
+    if (options.scratchpadBudget >= 0)
+      tiling.budget = options.scratchpadBudget;
+    // **And it is told whether double buffering is in this pipeline.**
+    // Section 13.2 makes the doubled working set the search's problem rather
+    // than the allocator's, because a tiling that fits only without the
+    // prefetch silently defeats the pass that adds it. That couples the two:
+    // ablating `-npu-double-buffer` also relaxes the tiling search, so its
+    // ablation row measures the pass together with the sizing it forces. The
+    // coupling is real rather than an artifact of this wiring, it is what
+    // Section 13.2 asks for, and `docs/PASSES.md` says so beside the row.
+    tiling.doubleBuffer = doubleBufferInPipeline;
+    pm.addNestedPass<func::FuncOp>(npu::createNPUTileToScratchpad(tiling));
+    return;
+  }
   case PassKind::NPULowerToNPUISA:
     pm.addPass(npuisa::createNPULowerToNPUISA());
+    return;
+  case PassKind::NPUDoubleBuffer:
+    pm.addNestedPass<func::FuncOp>(npuisa::createNPUDoubleBuffer());
     return;
   case PassKind::NPUAllocateScratchpad: {
     npuisa::NPUAllocateScratchpadOptions allocation;
@@ -332,8 +386,14 @@ bool mlir::npu::pipeline::isTensorLevel(PassKind kind) {
   case PassKind::NPUFoldBatchNorm:
   case PassKind::NPUFuseBias:
   case PassKind::NPUFuseOps:
+  case PassKind::NPUAssignLayout:
+  case PassKind::NPUTileToScratchpad:
     return true;
   case PassKind::NPULowerToNPUISA:
+  // `-npu-double-buffer` rewrites the asynchronous transfer tokens, and those
+  // exist only below the tensor level, so it is on the far side of the
+  // conversion even though Section 12 lists it before the allocator.
+  case PassKind::NPUDoubleBuffer:
   case PassKind::NPUAllocateScratchpad:
     return false;
   }
@@ -381,6 +441,30 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
          "build() was asked for a level this compiler cannot build; the caller "
          "checks isImplemented and says which phase it arrives at");
 
+  // Whether this level runs `-npu-double-buffer`, which the tiling search has
+  // to know before it chooses a tile: Section 13.2 sizes the working set for
+  // the prefetch. It is read from the same rows the loop below walks, with the
+  // **ablation** filter applied, so an ablation row measures the pass together
+  // with the sizing it forces and the answer cannot drift from what is built.
+  //
+  // **The stage filter is deliberately not applied**, and that asymmetry is the
+  // point. `--stop-after npu` is `npu-compile --emit npu`, which is a view of
+  // the tensor level half of *this* compilation rather than a different one. If
+  // stopping early relaxed the tiling search, the IR a reader was shown would
+  // be tiled differently from the IR that gets compiled, and the two would
+  // disagree without either being wrong on its own terms. The tensor level
+  // output stays a prefix of the whole pipeline's, which is what makes it worth
+  // printing.
+  bool doubleBufferInPipeline = false;
+  for (const PassEntry &entry : infoFor(level).passes) {
+    if (entry.kind != PassKind::NPUDoubleBuffer)
+      continue;
+    if (entry.ablatable && !options.ablatedPass.empty() &&
+        entry.argument == options.ablatedPass)
+      continue;
+    doubleBufferInPipeline = true;
+  }
+
   for (const PassEntry &entry : infoFor(level).passes) {
     if (options.stopAfter == PipelineStage::Npu && !isTensorLevel(entry.kind))
       continue;
@@ -392,7 +476,7 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
     if (entry.ablatable && !options.ablatedPass.empty() &&
         entry.argument == options.ablatedPass)
       continue;
-    addPass(pm, entry, options);
+    addPass(pm, entry, options, doubleBufferInPipeline);
   }
 }
 
@@ -460,7 +544,8 @@ void mlir::npu::pipeline::registerNPUPipelines() {
   static PassPipelineRegistration<PipelineCLOptions> registerO2(
       "npu-O2",
       "The -O2 pipeline of Section 12: batch norm folding, bias fusion, "
-      "operation fusion, CSE, SCCP and symbol DCE on top of -O1.",
+      "operation fusion, CSE, SCCP, symbol DCE, layout assignment, tiling and "
+      "double buffering on top of -O1.",
       [](OpPassManager &pm, const PipelineCLOptions &options) {
         build(pm, OptLevel::O2, options.toPipelineOptions());
       });

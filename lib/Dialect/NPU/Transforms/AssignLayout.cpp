@@ -154,6 +154,27 @@ bool isIdentityPermutation(ArrayRef<int64_t> permutation) {
 // The rewrites.
 //===----------------------------------------------------------------------===//
 
+/// Removes a destination `tensor.empty` that a rewrite here has just orphaned.
+///
+/// **This pass cleans up after itself rather than leaving it to
+/// `-canonicalize`, and the difference from `-npu-fuse-bias` is the pipeline
+/// rather than the taste.** Section 12 puts the two canonicalizations around
+/// **fusion**, so the passes that fuse have one after them and can leave a dead
+/// destination for it. This pass runs after `-symbol-dce`, and nothing between
+/// it and the lowering removes a dead `tensor.empty`: `-cse` merges, `-sccp`
+/// propagates and `-symbol-dce` is about symbols. A destination left dead here
+/// would reach the conversion and be given a buffer, which is a scratchpad
+/// allocation for a value nothing reads.
+///
+/// Only a value this pass orphaned is passed in, and only an unread
+/// `tensor.empty` is erased, so this removes nothing it did not create the
+/// deadness of.
+void eraseIfDeadEmpty(Value destination) {
+  auto empty = destination.getDefiningOp<tensor::EmptyOp>();
+  if (empty && empty.getResult().use_empty())
+    empty.erase();
+}
+
 /// `transpose(transpose(%x, p), q)` with `q` composed with `p` the identity,
 /// and `transpose(%x, identity)`, both replaced by `%x`.
 ///
@@ -178,8 +199,10 @@ bool foldTranspose(TransposeOp op, TransposeOp &orphaned) {
   if (isIdentityPermutation(op.getPermutation())) {
     if (input.getType() != op.getResult().getType())
       return false;
+    Value destination = op.getDestination();
     op.getResult().replaceAllUsesWith(input);
     op.erase();
+    eraseIfDeadEmpty(destination);
     return true;
   }
 
@@ -191,8 +214,10 @@ bool foldTranspose(TransposeOp op, TransposeOp &orphaned) {
   if (inner.getInput().getType() != op.getResult().getType())
     return false;
 
+  Value destination = op.getDestination();
   op.getResult().replaceAllUsesWith(inner.getInput());
   op.erase();
+  eraseIfDeadEmpty(destination);
   if (inner.getResult().use_empty())
     orphaned = inner;
   return true;
@@ -349,10 +374,15 @@ void AssignLayoutPass::runOnOperation() {
       for (TransposeOp &entry : transposes)
         if (entry == orphaned)
           entry = nullptr;
-      // The destination it leaves behind has no user either, and
-      // `-canonicalize` removes it. That is the canonicalization Section 12
-      // puts beside these passes rather than after the whole pipeline.
+      // The destination it leaves behind has no user either, and it is erased
+      // here for the reason `eraseIfDeadEmpty` gives: there is no
+      // canonicalization between this pass and the lowering, so a destination
+      // left dead here becomes a scratchpad allocation for a value nothing
+      // reads. The order matters, because the destination has a user until the
+      // transpose that reads it is gone.
+      Value orphanedDestination = orphaned.getDestination();
       orphaned.erase();
+      eraseIfDeadEmpty(orphanedDestination);
     }
   }
 

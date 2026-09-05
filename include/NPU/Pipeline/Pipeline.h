@@ -90,7 +90,10 @@ enum class PassKind {
   NPUFoldBatchNorm,
   NPUFuseBias,
   NPUFuseOps,
+  NPUAssignLayout,
+  NPUTileToScratchpad,
   NPULowerToNPUISA,
+  NPUDoubleBuffer,
   NPUAllocateScratchpad,
 };
 

@@ -19,14 +19,16 @@ The numbers come from `experiments/results/`, one JSON per cell, produced by
 `experiments/run_benchmarks.py`, and every entry names the files its row comes
 from so a reader can check it rather than trust it.
 
-**Read the zeros with the prose beside them.** Six of the eight ablatable passes
-have a delta of zero on every model at every budget, and the six zeros do not
-mean the same thing. Two are structural and would be zero on any program this
-compiler can currently emit; three are properties of this model suite; and one,
+**Read the zeros with the prose beside them.** Nine of the eleven ablatable
+passes have a delta of zero on every model at every budget, and the nine zeros
+do not mean the same thing. Two are structural and would be zero on any program
+this compiler can currently emit; three are properties of this model suite; one,
 `-canonicalize`, is a pass doing substantial work that the ablation cannot see
-because another pass would have done it. A table of deltas with no prose beside
-it would report those six identically, which is why each entry below carries its
-own reason and why `docs/NUMBERS.md` repeats them next to the table itself.
+because another pass would have done it; and the three P13 wired in are three
+more kinds again, one per pass, set out beside their rows below. A table of
+deltas with no prose beside it would report all nine identically, which is why
+each entry below carries its own reason and why `docs/NUMBERS.md` repeats them
+next to the table itself.
 
 **What P9 measured one pass at a time still stands beside the ablation**, and
 where both exist they agree: `-npu-fold-batchnorm`'s eight instructions and 212
@@ -75,27 +77,38 @@ they land.
 | `-cse` | O2 | yes | P9 | upstream, wired in |
 | `-sccp` | O2 | yes | P9 | upstream, wired in |
 | `-symbol-dce` | O2 | yes | P9 | upstream, wired in |
+| `-npu-assign-layout` | O2 | yes | P13 | implemented |
+| `-npu-tile-to-scratchpad` | O2 | yes | P13 | implemented |
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
+| `-npu-double-buffer` | O2 | yes | P13 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
-| `-npu-assign-layout` | none yet | yes, when it joins one | P13 | implemented, **not in an `-O` level** |
-| `-npu-tile-to-scratchpad` | none yet | yes, when it joins one | P13 | implemented, **not in an `-O` level** |
-| `-npu-double-buffer` | none yet | yes, when it joins one | P13 | implemented, **not in an `-O` level** |
 
-**Eight ablatable, and Section 12's eleven is that plus three.** All three of
-the missing three now exist, and none of them is in an `-O` level yet, so the
-ablatable set is still eight and Section 2's arithmetic is still the one P10
-derived. `-npu-calibrate` is P14 and is never in a default `-O` level anyway.
-Nothing below claims an ablation row for a pass no level runs, because a row
-Section 16.2 could not fill is worse than a row that is not there.
+**Eleven ablatable, which is Section 12's own number.** The three P13 rows went
+into `-O2` in one commit, so the ablatable set is eleven, the suite is 217 cells
+and the ablation half of Section 2's arithmetic agrees exactly at 154.
+`-npu-calibrate` is P14 and is never in a default `-O` level, which is why
+eleven rather than twelve. The table's order is the order `-O2` runs them, which
+is why `-npu-double-buffer` sits between the lowering and the allocator: it
+rewrites asynchronous transfer tokens, and those exist only below the
+conversion.
 
-**The three are held back together, on purpose.** Each is complete against its
-own contract and each has its lit tests, and they are still outside the levels
-because putting them in is what moves the cell count, re-derives Section 2's
-arithmetic at six sites, and requires the tiles nothing measurement to be taken
-again at the tree that has all three. Doing that once is one declaration and one
-re-record; doing it three times is three of each, with two intermediate states
-that nothing will ever run again. The wiring is therefore a single commit and it
-is the next one.
+**The three went in together, on purpose.** Putting one in is what moves the
+cell count, re-derives Section 2's arithmetic at six sites, and requires the
+tiles nothing measurement to be taken again at the tree that has all three.
+Doing that once is one re-record; doing it three times is three, with two
+intermediate states nothing would ever run again.
+
+**`-npu-tile-to-scratchpad` and `-npu-double-buffer` are coupled, and the
+coupling is Section 13.2's rather than this wiring's.** The pipeline tells the
+tiling search whether double buffering is in the pipeline, because 13.2 makes
+the doubled working set the search's problem: a tiling that fits only without
+the prefetch silently defeats the pass that adds it. So **ablating
+`-npu-double-buffer` also relaxes the tiling search, and its row measures the
+pass together with the sizing it forces.** That is stated here because a reader
+of the ablation table would otherwise attribute the whole row to the overlap.
+The measured size of the coupling is in `docs/NUMBERS.md`: at the tight budgets
+it changes which operations the search declines, and at the default budget it
+changes nothing because nothing is near the budget.
 
 **What each of the three is, in a sentence.** `-npu-assign-layout` scores the
 rank 4 layout question on Section 5.5 and answers NCHW every time, then cancels
@@ -604,9 +617,12 @@ cloned into the body even if it were tempting.
 Chooses each rank 4 activation's layout and cancels the permutations the choice
 makes redundant. Implemented in `lib/Dialect/NPU/Transforms/AssignLayout.cpp`.
 
-**Ablatable: yes, when it joins a level.** **Delta, computed from Section 5.5
-rather than measured from a run: zero, on every model at both budgets, and the
-DMA stride term is exactly what makes it zero.**
+**Ablatable: yes.** **Delta, measured over the 217 cell suite: zero, on every
+model at both budgets, in instructions, cycles, spills and DRAM bytes, and the
+DMA stride term is exactly what makes it zero.** P13 predicted that from Section
+5.5 before wiring the pass into `-O2` and the ablation row now says it from a
+run: `experiments/results/*-O2-*-ablate-npu-assign-layout.json` against the
+unablated cell beside each of them.
 
 **The choice is one term of the cost model and nothing else.** Section 5.5
 charges layout in one place: the non unit innermost stride penalty on a
@@ -710,9 +726,32 @@ into tiles that fit. Implemented in
 `lib/Dialect/NPU/Transforms/TileToScratchpad.cpp`, consuming the
 `TilingInterface` that P1 implemented.
 
-**Ablatable: yes, when it joins a level.** **Delta, measured on a hand written
-convolution at a budget tight enough to trigger it: peak scratchpad 4256 bytes
-to 1744, instructions 6 to 21, cycles 782 to 2116, output byte identical.**
+**Ablatable: yes.** **Delta over the 217 cell suite: zero everywhere, because
+nothing in the suite tiles at `-O2`, and the reason is D-0052 rather than the
+budget.** **Delta on a hand written convolution at a budget tight enough to
+trigger it, which is where the pass can be seen doing its work: peak scratchpad
+4256 bytes to 1744, instructions 6 to 21, cycles 782 to 2116, output byte
+identical.**
+
+**The suite's zero is two findings and neither is "the budgets are too
+generous".** At the **default** budget nothing is over budget at all, which is
+what P13's committed prediction said and why: ADR 0008's budgets are program
+level minima, which need every simultaneously live buffer to fit, and that is a
+stronger requirement than any one operation's working set. At the **tight**
+budgets the search does find operations over budget on five of the seven models,
+and **declines every one of them**, because a tiled result is assembled in DRAM
+by one store per tile and the binary's `operand-defined` and `operand-extent`
+checks satisfy a read out of a single written span, so an assembled value that
+another operation reads is refused by the encoder. **D-0052 carries the
+reproduction and the measurement.** The one shape that is expressible is an
+assembly nothing reads, which is a tiled operation whose result is the function's
+own. `test/Encoding/tiled-result-returned.mlir` carries that case from the tensor
+level through the encoder and the disassembler, and
+`test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal beside it.
+
+**So Section 13.3's tiling arm has no subject inside this suite at `-O2` yet**,
+and that is a finding about the format rather than about the pass. It is the
+first thing the next phase has to decide what to do about.
 
 **It is exact, and the goldens say so rather than the argument.** Only parallel
 dimensions are split, so no reduction is reassociated and no `f32` sum changes
@@ -817,9 +856,20 @@ runs underneath that computation. Implemented in
 allocation** per Section 5.1, since the doubled working set has to be visible to
 the allocator.
 
-**Ablatable: yes, when it joins a level.** **Delta, measured on the tiled
-convolution above: zero cycles, and the encoded instruction stream genuinely
-changes.** One `DMA_LOAD` moves from position 23 to position 11, three transfers
+**Ablatable: yes.** **Delta over the 217 cell suite: zero everywhere, and it is
+a different zero from the one below.** On the suite the pass fires on **nothing
+at all**: `prefetched` is 0 and `not-hoisted` is every transfer, on all seven
+models at both budgets. Every argument load sits in the entry block beside the
+other argument loads, where the walk correctly stops at another transfer, and a
+constant's load is the one transfer with a computation before it and the one
+whose `npuisa.const` cannot move with it. **D-0054 carries that with the
+mechanism, and `test/Pipeline/p13-passes-at-o2.mlir` pins it as a measured
+negative** so the day it changes a test says so. **Ablating this pass also
+relaxes the tiling search**, per the coupling stated at the top of this file, and
+that half of the row is not about the overlap at all.
+
+**Delta, measured on the tiled convolution above, which is where the pass does
+fire: zero cycles, and the encoded instruction stream genuinely changes.** One `DMA_LOAD` moves from position 23 to position 11, three transfers
 are reordered, and the totals do not move at all: 2116 cycles, 1524 DMA, 596
 compute, overlap fraction 0.0067, before and after, with the output byte
 identical either way. The scratchpad peak does not move either, 1744 bytes with

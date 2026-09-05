@@ -33,7 +33,10 @@
 // STATS: "name": "cse"
 // STATS: "name": "sccp"
 // STATS: "name": "symbol-dce"
+// STATS: "name": "npu-assign-layout"
+// STATS: "name": "npu-tile-to-scratchpad"
 // STATS: "name": "npu-lower-to-npuisa"
+// STATS: "name": "npu-double-buffer"
 // STATS: "name": "npu-allocate-scratchpad"
 // STATS: "run_completed": true
 // STATS: "still_running_at_exit": []
@@ -56,6 +59,21 @@
 // an ablation that removed one position would be measuring an ordering change.
 // RUN: npu-opt %s '--npu-O2=ablate=canonicalize' --npu-pass-stats-json=%t.nocanon.json -o /dev/null
 // RUN: not grep '"name": "canonicalize"' %t.nocanon.json
+
+// The three P13 rows, each removed by name. They are checked here rather than
+// only in the ablation table because the table is generated from these files:
+// a pass whose argument string and whose `PassKind` disagreed would build the
+// level correctly and then be unablatable, and the run would silently measure
+// the unablated pipeline in a row labelled with the pass's name.
+// RUN: npu-opt %s '--npu-O2=ablate=npu-assign-layout' --npu-pass-stats-json=%t.nolayout.json -o /dev/null
+// RUN: not grep '"name": "npu-assign-layout"' %t.nolayout.json
+// RUN: grep '"name": "npu-tile-to-scratchpad"' %t.nolayout.json
+// RUN: npu-opt %s '--npu-O2=ablate=npu-tile-to-scratchpad' --npu-pass-stats-json=%t.notiling.json -o /dev/null
+// RUN: not grep '"name": "npu-tile-to-scratchpad"' %t.notiling.json
+// RUN: grep '"name": "npu-assign-layout"' %t.notiling.json
+// RUN: npu-opt %s '--npu-O2=ablate=npu-double-buffer' --npu-pass-stats-json=%t.nodb.json -o /dev/null
+// RUN: not grep '"name": "npu-double-buffer"' %t.nodb.json
+// RUN: grep '"name": "npu-allocate-scratchpad"' %t.nodb.json
 
 // A pass the table marks as not ablatable is not removed here. The refusal
 // lives in the driver, which reads the ablatable set at run time; MLIR's

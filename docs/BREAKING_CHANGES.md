@@ -212,7 +212,9 @@ the bias to the same `f32` accumulator the unfused program stores and then adds
 to. `-npu-fuse-ops` is bit exact because `-npu-lower-to-npuisa` flattens the
 region into the instruction stream the unfused chain produced.
 `test/Python/test_transform_passes.py::test_fold_batchnorm_is_the_only_pass_that_moves_a_number`
-runs each of the eight ablatable passes alone and asserts it.
+runs each ablatable pass alone and asserts it. That was eight passes when this
+entry was written and is eleven from P13, because the test sweeps the set the
+driver reports rather than a list written beside it.
 
 **Why the regression is worth taking.** Folding a batch norm into the
 convolution before it is the single largest structural saving available at this
