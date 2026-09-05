@@ -328,6 +328,55 @@ this a decision. It is the refused program, asserting the refusal by name, so
 that a later reader finds out that a scratchpad assembled tiled result is
 rejected on purpose rather than discovering it as a puzzle.
 
+## The lowering patterns, fully scoped, with the last unknown resolved
+
+**Everything this needs already exists.** The design below was checked against
+the code rather than sketched, and the one mechanism it turned on is confirmed:
+**a `memref.alloc` of a `#npu.dram` type carrying the `npuisa.spill_slot`
+attribute is a DRAM buffer the encoder places and maps.** The allocator has
+created them since P5 for spilling, `layOutDram` finds them by predicate rather
+than by analysis, and `dramAddresses` gets the result. That is the assembly
+buffer primitive, and it needs no encoder change.
+
+Reusing the mark rather than inventing one is deliberate and the name is
+accurate: a spill slot is a DRAM buffer that exists to hold a value the
+scratchpad could not hold, and a tile assembly buffer is exactly that. A second
+mark would mean teaching the encoder a second predicate for a concept it already
+has.
+
+**Four patterns, and the third is the decision made executable.**
+
+| Source | Becomes |
+|---|---|
+| `tensor.extract_slice` of a **DRAM** value | `memref.subview` of the DRAM buffer, a scratchpad `memref.alloc` at the tile's extents, and one `npuisa.dma_load` between them |
+| `tensor.extract_slice` of a **scratchpad** value | `memref.subview`, and no transfer. The bytes are already on chip and a scratchpad to scratchpad DMA is not representable in this ISA |
+| `tensor.insert_slice` into a DRAM buffer | `npuisa.dma_store` from the tile's own buffer into a `memref.subview` of the destination, with the insert's result mapping to that destination |
+| `tensor.insert_slice` into a **scratchpad** buffer | **refused, by name.** That is the assembly checks 8 and 9 reject and `test/Encoding/tiled-assembly-in-scratchpad.mlir` records; the pass says so rather than emitting a program the encoder will refuse later |
+
+**Where the assembly buffer comes from.** A `tensor.empty` whose uses include
+being an `insert_slice` destination is an assembly buffer, not a scratchpad
+destination, so `EmptyOpLowering` gives it a DRAM allocation with the spill slot
+mark instead of a scratchpad one. **One special case avoids a transfer that is
+not representable**: when that value reaches a `func.return`, it is mapped
+directly to the out parameter the function gained for that result, because
+otherwise the return's own `dma_store` would be DRAM to DRAM. That is the shape
+`peak_perslice.mlir` already has, and it encodes, runs and matches its reference.
+
+**What the boundary test has to say afterwards.**
+`test/Dialect/NPUISA/dma-boundaries.mlir` pins Section 8's count immediately
+after lowering, and the count changes: an untiled function still gets one load
+per argument that is read and one store per returned value, and a **tiled** one
+gets one load per slice that enters the scratchpad and one store per tile that
+leaves it. The invariant is the same sentence applied to a different set of
+values, which is the argument `docs/ARCHITECTURE.md` carries, and the test moves
+in the same commit as the change it tests.
+
+**The three things that make this smaller than it looks.** The encoder already
+resolves a DRAM view chain, so a subview of an argument has an address. The
+format already carries strides on both sides, so a tile scatters correctly. And
+the tiling pass already emits exactly the `extract_slice` and `insert_slice`
+shapes these patterns consume, at constant offsets, fully unrolled.
+
 ## The numbers the next session needs and should not re-derive
 
 **The tight budget spilling numbers a tiling disabled ablation row has to
