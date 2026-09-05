@@ -110,7 +110,13 @@ private:
   FailureOr<ElemType> elemTypeOf(Type type, Operation *at);
   FailureOr<MemSpace> spaceOf(MemRefType type, Operation *at);
   /// The strides of a memref, refusing a layout this encoder cannot represent.
-  FailureOr<SmallVector<int64_t>> stridesOf(MemRefType type, Operation *at);
+  ///
+  /// `layoutOffset` receives the layout's own element offset. It is an output
+  /// rather than a refusal from P13: a `memref.subview` carries the offset of
+  /// the sub region it names, and the caller has to reconcile it against the
+  /// address the view chain walk produced rather than add the two.
+  FailureOr<SmallVector<int64_t>> stridesOf(MemRefType type, Operation *at,
+                                            int64_t &layoutOffset);
   FailureOr<MemRegion> regionFor(Value value, Operation *at);
   LogicalResult appendConstantData(npuisa::ConstOp op, Constant &constant);
 
@@ -162,7 +168,8 @@ FailureOr<MemSpace> FunctionEncoder::spaceOf(MemRefType type, Operation *at) {
 }
 
 FailureOr<SmallVector<int64_t>>
-FunctionEncoder::stridesOf(MemRefType type, Operation *at) {
+FunctionEncoder::stridesOf(MemRefType type, Operation *at,
+                           int64_t &layoutOffset) {
   if (!type.hasStaticShape()) {
     at->emitError() << "cannot encode the dynamically shaped buffer " << type;
     return failure();
@@ -175,17 +182,23 @@ FunctionEncoder::stridesOf(MemRefType type, Operation *at) {
                        "layout is not strided";
     return failure();
   }
-  if (offset != 0) {
-    // The address of a buffer comes from the view chain, which
-    // `computeBufferRange` walks. A layout that also carried a non zero offset
-    // would be a second place the address came from, and adding the two
-    // without knowing which producer wrote which would be guessing. Nothing in
-    // this pipeline emits one.
+  if (ShapedType::isDynamic(offset) || offset < 0) {
     at->emitError() << "cannot encode " << type
-                    << ": its layout carries a non zero offset, and the "
-                       "address of a buffer comes from its view chain";
+                    << ": its layout offset must be a non negative constant";
     return failure();
   }
+  // **This used to be a refusal and P13 turned it into an output.** The old
+  // reasoning was sound and its last sentence was what expired: the address of
+  // a buffer comes from the view chain that `computeBufferRange` walks, a
+  // layout offset would be a second place the address came from, adding the two
+  // would be guessing, and *nothing in this pipeline emitted one*. A tiled
+  // program emits one per tile. The two are not two addresses, they are the
+  // same number written twice, because the walk computes a subview's offset as
+  // the dot product of its offsets with the source's strides and that is
+  // exactly what the layout records. The caller reconciles them and uses the
+  // walk, which is the one that also works for `memref.view` over the
+  // allocator's arena, where the layout offset is zero and the address is not.
+  layoutOffset = offset;
   for (int64_t stride : strides)
     if (ShapedType::isDynamic(stride) || stride < 0) {
       at->emitError() << "cannot encode " << type
@@ -200,15 +213,36 @@ FunctionEncoder::stridesOf(MemRefType type, Operation *at) {
 //===----------------------------------------------------------------------===//
 
 FailureOr<int64_t> FunctionEncoder::dramAddressOf(Value value, Operation *at) {
-  auto entry = dramAddresses.find(value);
+  // **The DRAM side walks the view chain from P13, which is what the scratchpad
+  // side has done since P5.** Before tiling, nothing produced a view of a DRAM
+  // buffer, so a lookup was the whole answer and the asymmetry cost nothing. A
+  // tiled program produces one view per tile, and a sub region of an argument
+  // is a DRAM value this map will never hold: the map holds whole regions,
+  // because a region is what the header declares and what the loader places.
+  //
+  // So the address of a DRAM buffer is the address of the region it is a view
+  // of, plus the bytes the walk accumulates. `computeBufferRange` is the same
+  // analysis `scratchpadAddressOf` uses and it already understood
+  // `memref.subview`; only this side had not asked it.
+  //
+  // A value the walk cannot analyse falls back to being looked up directly,
+  // which is exactly the old behaviour for every value that is its own base.
+  std::optional<npuisa::BufferRange> range = npuisa::computeBufferRange(value);
+  Value base = range ? range->base : value;
+  int64_t offset = range ? range->offset : 0;
+
+  auto entry = dramAddresses.find(base);
   if (entry == dramAddresses.end()) {
     at->emitError() << "this DRAM buffer has no address in the DRAM map. The "
                        "map holds the function's arguments, the npuisa.const "
                        "results, and the allocator's npuisa.spill_slot "
-                       "allocations, and nothing else may live off chip";
+                       "allocations, and nothing else may live off chip. A "
+                       "view of one of those is resolved to the region it "
+                       "views, so this is a buffer that is not derived from "
+                       "any of them";
     return failure();
   }
-  return entry->second;
+  return entry->second + offset;
 }
 
 FailureOr<int64_t> FunctionEncoder::scratchpadAddressOf(Value value,
@@ -242,7 +276,8 @@ FailureOr<Operand> FunctionEncoder::makeOperand(Value value, Operation *at) {
   FailureOr<ElemType> elementType = elemTypeOf(type.getElementType(), at);
   if (failed(elementType))
     return failure();
-  FailureOr<SmallVector<int64_t>> strides = stridesOf(type, at);
+  int64_t layoutOffset = 0;
+  FailureOr<SmallVector<int64_t>> strides = stridesOf(type, at, layoutOffset);
   if (failed(strides))
     return failure();
 
@@ -251,6 +286,24 @@ FailureOr<Operand> FunctionEncoder::makeOperand(Value value, Operation *at) {
                                    : scratchpadAddressOf(value, at);
   if (failed(address))
     return failure();
+
+  // **The layout offset is reconciled against the address rather than added to
+  // it.** Both address paths walk the view chain, and for a `memref.subview`
+  // the walk's contribution and the layout's offset are the same number written
+  // twice; adding them would double the offset and address the wrong bytes.
+  // What has to be checked is the case the walk did not see: a non zero layout
+  // offset on a value whose address did **not** come from a walk is an offset
+  // nothing accounted for, and encoding it would be encoding the base as though
+  // it were the sub region. That is the refusal this used to make
+  // unconditionally, kept for exactly the case it was right about.
+  if (layoutOffset != 0 && !npuisa::computeBufferRange(value)) {
+    at->emitError() << "cannot encode " << type
+                    << ": its layout carries a non zero offset and its view "
+                       "chain could not be analysed, so nothing accounts for "
+                       "that offset. "
+                    << npuisa::describeWhyNotAnalysable(value);
+    return failure();
+  }
 
   Operand operand;
   operand.space = *space;
