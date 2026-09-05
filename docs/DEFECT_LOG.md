@@ -50,6 +50,13 @@ ablation row is zero for a reason that is not the one `docs/PASSES.md` gives
 for the pass. Recorded rather than fixed, because a fix makes the pass fire and
 moves numbers, which is a declaration and a re-record of its own.
 
+**D-0056**, tiling is expressible from P13 and is not always an improvement.
+Four tight budget cells get a lower peak or fewer spills and one stops
+allocating, and no rule inside the tiling pass separates them, because the
+quantity that decides is the program's sweep line peak and the pass sees one
+operation. The measurement and the two rules that were tried and failed are in
+the entry.
+
 ## Resolved
 
 ### D-0001 lit exits nonzero on a genuinely empty test suite
@@ -3060,6 +3067,95 @@ than with a message it does not have.
 that reaches this bound reaches it, and the population is every `slow` test that
 runs a cell. That widens what a precondition at P15 has to cover and narrows
 nothing.
+
+### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
+
+- **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by
+  compiling all 168 cells of the suite at the wired tree rather than by
+  reasoning about one.
+- **Status:** **open, and escalated with the measurement.** The validator change
+  is committed and correct; the compiler change that would use it is **not**,
+  because one cell stops compiling and no per operation rule I could measure
+  separates that cell from the four the same change improves.
+
+- **What the fix made possible.** With region scoped coverage on the DRAM side,
+  `-npu-tile-to-scratchpad` can tile an operation whose result another operation
+  reads: the tiles store into a spill slot, the lowering brings the assembly back
+  on chip in one transfer, and checks 8 and 9 accept it. Every one of the 168
+  cells encodes and runs except one.
+
+- **What it costs, measured, at the tight budgets.** Peak scratchpad bytes and
+  spill count, with the tiling pass present against ablated:
+
+  | Cell | with tiling | tiling ablated |
+  |---|---|---|
+  | `lenet` ablate `npu-fuse-ops` | 194200, 0 spills | 194560, 0 spills |
+  | `conv_bn_relu_stack` ablate `npu-fuse-ops` | **4640**, 0 spills | 6432, 0 spills |
+  | `inception_block`, both | 6144, **0 spills** | 6144, 3 spills |
+  | `lenet_batched` ablate `npu-fuse-ops` | 199840, 0 spills | 200800, 0 spills |
+  | `resnet_block` ablate `npu-fuse-ops` | **does not allocate** | 6432, 1 spill |
+
+  **Four wins and one program that stops existing.** The 28 percent peak
+  reduction on `conv_bn_relu_stack` and the three spills tiling removes from
+  `inception_block` are the first evidence in this project that tiling buys
+  anything on a real model. The `resnet_block` row is the same change taking a
+  cell away.
+
+- **Why that one cell.** The residual keeps the block's input resident across
+  both convolutions, so tiling the second one adds the tile buffers on top of a
+  2048 byte activation it does not remove, and the assembly comes back whole on
+  top of that. The allocator refuses at a sweep line peak of 7456 bytes against
+  a budget of 6464:
+
+  ```
+  the scratchpad budget of 6464 bytes is too small: this buffer of 1024 bytes
+  could not be placed below offset 6400 in @main, and no buffer live across the
+  pressure peak can be spilled. The sweep line peak is 7456 bytes
+  ```
+
+- **Two rules were tried and measured, and neither separates the cases.**
+
+  - **Charge the assembly's re-entry to the search's budget**, so a tile may
+    spend `budget - wholeResult`. The search answered with smaller tiles rather
+    than declining, and the same cell failed with a 256 byte buffer unplaced
+    instead of a 1024 byte one.
+  - **Require the tiling to be an improvement**, `tilePeak + reentry <=
+    untiledWorkingSet`. It **declined `inception_block`**, which was one of the
+    wins, and **still admitted the `resnet_block` case**, which was the loss. It
+    is both too strict and too weak, which is what a wrong discriminator looks
+    like.
+
+- **Why no rule inside the pass can do it, which is the transferable part.** The
+  quantity that decides is the **program's** sweep line peak, and the tiling
+  pass sees one operation. On `resnet_block` the deciding byte is an activation
+  that belongs to a different operation and is live for a reason, the residual,
+  that the tiled operation has no view of. Section 13.2 sizes a tile's working
+  set against the budget, which is the right unit for choosing **between**
+  tilings and the wrong one for choosing **whether** to tile.
+
+- **What P13 did instead.** Kept the validator fix, which is correct on its own
+  and completes the version 2 declaration, and left `-npu-tile-to-scratchpad`
+  declining unless the assembled result is only returned. That is the tree that
+  compiles all 168 cells, and it leaves the four wins on the table, which is
+  recorded here rather than quietly forgone.
+
+- **The three ways forward**, so the decision has something concrete to weigh.
+
+  - **The pass consults the allocator.** Tile, place, and undo the tiling when
+    the placement fails or the peak does not fall. That is a real change of
+    shape: a pass that runs another pass to score itself.
+  - **Tile the consumer chain.** If the operation that reads the assembly is
+    tiled with the same geometry, it reads slices and the assembly never comes
+    back whole, which is the arrangement `docs/PHASE_STATE.md` measured at 4224
+    bytes against 1728 and the one the DRAM assembly decision assumed.
+  - **Leave it declining and report the four wins as what tiling would buy**,
+    which is the state this commit is in and is the least useful of the three.
+
+- **What this says about Section 13.3.** The experiment's tiling arm has a
+  subject now: these five cells are exactly the population where tiling changes
+  something, and four of the five say it helps. The arm can be run over them
+  with the pass forced on, and it has to report the fifth as a program the
+  arrangement cannot place rather than as a slower one.
 
 ### D-0050 the binary format cannot express a buffer written in pieces, so a tiled program cannot be encoded
 

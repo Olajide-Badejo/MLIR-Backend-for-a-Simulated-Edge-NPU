@@ -403,6 +403,27 @@ buffers as one, in the space where buffers have no identity. **Scoping the
 relaxation to a declared region is what makes it a completion of the version 2
 decision rather than a weakening of it.**
 
+**Outcome, written after the fact and kept apart from the predictions above,
+which are not edited.** The validator half landed and is `20fc6c1`. **The
+compiler half did not, so none of the cells above moved**, and the entry stands
+as a declaration whose causing commit was held back rather than as one that
+failed to predict.
+
+Compiling all 168 cells at the tree that used the fix measured what the entry
+did not ask about: tiling now produces a valid program everywhere except one
+cell, `resnet_block` at its tight budget with `-npu-fuse-ops` ablated, where the
+allocator refuses at a sweep line peak of 7456 bytes against 6464. Four other
+cells improve, including a peak of 4640 against 6432 on `conv_bn_relu_stack` and
+three spills removed from `inception_block`. **No rule inside the tiling pass
+separates the four from the one**, because the deciding quantity is the
+program's sweep line peak and the pass sees one operation. D-0056 carries the
+measurement, the two rules that were tried and failed, and the three ways
+forward.
+
+**Nothing in the baseline moved**, so nothing here needs re-recording: the suite
+is the same 217 cells it was, `regression-baseline --check` reports no drift and
+the goldens are byte identical.
+
 ### 2026-09-05, Phase P13: `Program::kVersion` goes to 2, so that a buffer can be written in pieces
 
 **Written before the commit that causes it.** The commits that change the format

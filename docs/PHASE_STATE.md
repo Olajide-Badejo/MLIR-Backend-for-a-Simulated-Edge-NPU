@@ -54,10 +54,34 @@ and no load of the assembly back, and it is the permission that
 
 **So nothing tiles in this suite at `-O2`, at either budget, on any model**, and
 the committed prediction's main clause is right for a reason it did not give.
-Section 13.3's tiling arm has no subject inside the suite until either a
-consumer chain tiles with its producer or the ISA can express the read, and the
-second is D-0050's owner decision. **That is the phase's largest open item and
-it is not something a phase may decide.**
+
+**The owner decided D-0052 the same day, and the format half of the fix is
+in.** The decision is region scoped coverage on the DRAM side of checks 8 and 9,
+with no `kVersion` bump: inside a declared spill slot the validator tracks exact
+byte coverage, strided writes run by run, and accepts a read when every byte it
+addresses lies inside that one slot and has been written. The scratchpad keeps
+the no merge rule. `docs/BREAKING_CHANGES.md` carries the declaration, written
+before the commit, and `20fc6c1` is the commit.
+
+**The compiler half is measured and not committed, and D-0056 is why.** With the
+validator fixed, tiling produces a valid program on 167 of the suite's 168
+cells. It **improves four** of them, and the numbers are the first evidence in
+this project that tiling buys anything on a real model: `conv_bn_relu_stack`
+with fusion ablated goes from a 6432 byte peak to **4640**, `inception_block`
+loses **all three** of its spills, and `lenet` and `lenet_batched` each lose a
+few hundred bytes of peak. It **takes one cell away**: `resnet_block` at its
+tight budget with `-npu-fuse-ops` ablated stops allocating at all, because the
+residual keeps the block's input resident while the tiles run and the assembly
+comes back whole on top of it.
+
+**Two rules were tried against that and neither separates the cases**, which is
+the finding rather than the inconvenience. Charging the assembly's re-entry to
+the search's budget made the tiles smaller and the cell still failed. Requiring
+the tiling to be an improvement declined `inception_block`, which was a win, and
+still admitted `resnet_block`, which was the loss. **The quantity that decides
+is the program's sweep line peak and the tiling pass sees one operation**, so no
+rule inside it can be the discriminator. D-0056 has the table, the two rules and
+the three ways forward.
 
 **The commit order carries meaning and the first commit is the phase.** P13 was
 briefed to fix D-0045 under the full declare then re-record governance, on the
@@ -105,7 +129,7 @@ already gives arm one.
 | Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **met, and the answer is still that there is nothing to declare.** Measured at the wired tree over the whole suite: **not one counted field of the 175 pre-existing cells moved**, over instructions, cycles, compute and DMA cycles, scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle distance, the overlap fraction and the fragmentation ratio. The 42 cells the run added are the three new ablation rows and had no counterpart to move. An entry declaring a movement measured to be zero would be a false declaration |
 | No `scf` operation reaches the lowering, asserted by a lit test | **met, as a statement about the lowering.** `test/Pipeline/p13-passes-at-o2.mlir` runs `-O2` at a budget where tiling fires and asserts no `scf` operation anywhere in the level's output, and the `NOSCF` prefix in `test/Transforms/tile-to-scratchpad.mlir` is kept beside it |
 | A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **met, to the cycle.** `resnet_block` at its tight budget is 17 instructions, 2018.0 cycles and 1 spill with `-npu-tile-to-scratchpad` ablated and with it present; `inception_block` is 22, 3799.0 and 3. Read out of the committed re-record rather than re-derived |
-| The tight budget question answered per model with all three arms of Section 13.3 | **not started, and now blocked in a way it was not.** The fused region question was settled in advance and stands. What is new is D-0052: the tiling arm has no subject inside the suite at `-O2`, because every operation the search finds over budget is declined for a reason about the binary format. The arms can still be run over the swept budget range, and arm two has to say what it is measuring |
+| The tight budget question answered per model with all three arms of Section 13.3 | **not started, and it has a subject now.** The fused region question was settled in advance and stands. D-0052 is fixed, so the format no longer refuses a tiled program, and D-0056 measures five cells where tiling changes something: four where it lowers the peak or removes spills and one where it makes the program unplaceable. That is the population the tiling arm is about, and the arm has to report the fifth as a program the arrangement cannot place rather than as a slower one |
 | The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **met at the level.** The ablation row is zero on every model at both budgets, in all four counted columns, and the DMA stride term is exactly what makes it zero: 0.5 cycles per element strided against a permutation's 0.0625 makes a physical transpose eight times cheaper at every extent this machine can hold. `CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt` asserts the direction and the factor in the file that owns both constants |
 | The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started, and D-0052 changes what it can be over.** The tool is installed, pinned, recorded and wired into the external tools policy. `npu.tiling_choice` is recorded on every tile the pass emits, and the pass emits none inside this suite at `-O2`, so the mappings to export have to come from the swept budget range or from `-O0` |
 
