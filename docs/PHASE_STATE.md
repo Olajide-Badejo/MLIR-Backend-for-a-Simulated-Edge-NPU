@@ -720,7 +720,7 @@ touched.**
 | `build/bin/NPUSimulatorTests` | **58 passed**, 1 skipped. 55 at P12, plus the per fold assertion, the version 2 strided transfer and the layout crossover |
 | `build-ndebug/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **1082 passed, 18 skipped**, unchanged. The wiring moved five hardcoded counts inside existing tests and added no pytest case |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1084 passed, 18 skipped**. 1082 through the wiring, which moved five hardcoded counts inside existing tests and added no case, plus the two that assert the P13 ablation rows |
 | `mypy` | no issues found in 26 source files |
 | `black --check .` | 66 files unchanged |
 | `ruff check .` | all checks passed |
@@ -736,9 +736,9 @@ touched.**
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
 | `bash scripts/regression-baseline.sh --check` | **no drift**, 21 golden tensors byte identical, exit 0, after the record at this tree |
 | `bash scripts/coverage.sh 85 93 16 58` | C++ **85.54** PASS against 85, branch 74.20; per tree **93.4313 / 16.1191 / 74.5156** PASS, exit 0. **The margin is 0.54 points where it was 1.1**, and it is named here rather than left as a dip: `build-coverage/` had to be cleared first, because it held gcov data for `lib/Simulator/CostModel.cpp`, which moved to its own library earlier in this phase and which gcovr refuses to report on rather than skipping |
-| the whole suite in the CI shape, four differences | **1069 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`. **Predicted before the run and measured exactly**: the wiring adds two lit tests and no pytest case, so the CI shape row could not move from the previous handoff's |
-| `regression-baseline --check` in the CI shape | **no drift**, with both environments named, the count difference printed, and three oracle distances reported as inside D-0039's band rather than as silence |
-| the same environment with `NPU_EXTERNAL_TOOLS=1` | the guards **fail** naming the variable rather than skipping, and the message now lists **all three** tools |
+| the whole suite in the CI shape, four differences | **1071 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`. **Predicted before each of the two runs and measured exactly both times**: 1069 at the wiring commit, because it adds two lit tests and no pytest case, and 1071 after the two ablation row tests, because neither needs an external tool and both run in either shape |
+| `regression-baseline --check` in the CI shape | **no drift**, exit 0, with both environments named, the count difference printed as 1084 against 1071 and not compared, and three oracle distances reported as inside D-0039's band rather than as silence |
+| the same environment with `NPU_EXTERNAL_TOOLS=1` | `missing_tools` reports **all three**, `scalesim`, `accelergy` and `zigzag`, and `tools_reachable` is false, so the guards fail naming the variable rather than skipping. `test_external_tools.py` is 10 passed in that shape |
 | `python experiments/roofline.py` | 217 cells, 682 layers, 217 memory bound, 465 compute bound, every cell at or above its bound |
 | `python experiments/scalesim_export.py` | 217 cells, worst whole model divergence -87.14% on `dilated_stack-O0-tight`, tau b 0.6258 over cells and 0.7444 over layers |
 | `python experiments/accelergy_energy.py` | 217 cells at 45nm, 49.2860 pJ per MAC against a published 4.60, a factor of 10.71, unchanged |
