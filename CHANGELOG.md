@@ -14,14 +14,17 @@ three arms and the ZigZag cross check have not been run, and one of them is now
 blocked on an owner decision rather than on work.
 
 **All three passes are in `-O2`**, the ablatable set is eleven, the suite is 217
-cells, and the whole suite was re-recorded once at that tree. **No simulated
-number moved**: all 21 golden tensors are byte identical and **not one counted
-field of the 175 pre-existing cells moved**. The wiring commit and the two
-beside it touch no cost model file at all, and over the whole branch the
-constants and their headers are untouched; what did change under
+cells, and the suite has been re-recorded twice: once at the wiring commit and
+once at the tree where tiling reaches it. **No golden tensor byte moved at
+either.** At the wiring commit **not one counted field of the 175 pre-existing
+cells moved**, so there was nothing to declare for it and a declaration of a
+movement measured to be zero would have been a false one. At the second, **31
+cells moved**, every one of them a tight budget cell, every one of them tiling's,
+and all of them declared in `docs/BREAKING_CHANGES.md` before the commit that
+caused them. The three passes touch no cost model file at all, and over the whole
+branch the constants and their headers are untouched; what did change under
 `lib/Simulator/` is the version 2 scatter path, which is declared under the
-`kVersion` bump. There is nothing to declare for the wiring, because a
-declaration of a movement measured to be zero would be a false declaration.
+`kVersion` bump.
 
 - **`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer`
   went into `-O2` in one commit**, in Section 12's own positions: layout and
@@ -136,15 +139,16 @@ declaration of a movement measured to be zero would be a false declaration.
   an image that has ZigZag in it, which is the reason the widening is a change
   and not tidying.
 
-- **`-npu-tile-to-scratchpad` is implemented and is in no `-O` level.**
+- **`-npu-tile-to-scratchpad` was implemented and landed in no `-O` level.**
   Section 13.2's pass: it fires only when an operation's working set exceeds the
   budget, enumerates the mapping space exhaustively with capacity pruning, scores
   on Section 5.5's two port makespan through the simulator's own cost model,
   records the chosen mapping on every tile, and declines rather than splitting an
-  fp32 reduction. It is in no level because `-npu-lower-to-npuisa` cannot lower a
-  tiled function yet, so wiring it in would take every model in the suite from
-  compiling to not compiling. **The ablatable set stays at eight and the suite
-  stays at 175 cells.**
+  fp32 reduction. It landed in no level because `-npu-lower-to-npuisa` could not
+  lower a tiled function yet, so wiring it in would have taken every model in the
+  suite from compiling to not compiling. **At that commit the ablatable set
+  stayed at eight and the suite at 175 cells**; the wiring entry above is where
+  both moved.
 - **The cost model has its own library, `NPUCostModel`, and did not change.**
   Section 5.5 requires the tiling pass to score against the one home; reaching
   `gemmCharge` previously meant linking the whole simulator into `npu-opt`.

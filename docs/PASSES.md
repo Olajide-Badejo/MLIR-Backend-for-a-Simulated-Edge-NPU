@@ -19,16 +19,21 @@ The numbers come from `experiments/results/`, one JSON per cell, produced by
 `experiments/run_benchmarks.py`, and every entry names the files its row comes
 from so a reader can check it rather than trust it.
 
-**Read the zeros with the prose beside them.** Nine of the eleven ablatable
-passes have a delta of zero on every model at every budget, and the nine zeros
+**Read the zeros with the prose beside them.** Seven of the eleven ablatable
+passes have a delta of zero on every model at every budget, and the seven zeros
 do not mean the same thing. Two are structural and would be zero on any program
-this compiler can currently emit; three are properties of this model suite; one,
-`-canonicalize`, is a pass doing substantial work that the ablation cannot see
-because another pass would have done it; and the three P13 wired in are three
-more kinds again, one per pass, set out beside their rows below. A table of
-deltas with no prose beside it would report all nine identically, which is why
-each entry below carries its own reason and why `docs/NUMBERS.md` repeats them
-next to the table itself.
+this compiler can currently emit; one is numerically and structurally inert by
+design; two are properties of this model suite; one, `-canonicalize`, is a pass
+doing substantial work that the ablation cannot see because another pass would
+have done it; and one, `-npu-assign-layout`, is a pass whose answer is the layout
+the program already had. A table of deltas with no prose beside it would report
+all seven identically, which is why each entry below carries its own reason and
+why `docs/NUMBERS.md` repeats them next to the table itself.
+
+**The two rows that are not zero at P13 are one measurement rather than two.**
+`-npu-tile-to-scratchpad` and `-npu-double-buffer` read the same numbers because
+the pipeline couples them, which the section on the coupling below sets out; the
+overlap contributes none of it, for the reason D-0054 gives.
 
 **What P9 measured one pass at a time still stands beside the ablation**, and
 where both exist they agree: `-npu-fold-batchnorm`'s eight instructions and 212
@@ -107,8 +112,9 @@ the prefetch silently defeats the pass that adds it. So **ablating
 pass together with the sizing it forces.** That is stated here because a reader
 of the ablation table would otherwise attribute the whole row to the overlap.
 The measured size of the coupling is in `docs/NUMBERS.md`: at the tight budgets
-it changes which operations the search declines, and at the default budget it
-changes nothing because nothing is near the budget.
+it changes which operations the search finds over budget, and therefore which it
+tiles, and at the default budget it changes nothing because nothing is near the
+budget.
 
 **What each of the three is, in a sentence.** `-npu-assign-layout` scores the
 rank 4 layout question on Section 5.5 and answers NCHW every time, then cancels
@@ -726,28 +732,35 @@ into tiles that fit. Implemented in
 `lib/Dialect/NPU/Transforms/TileToScratchpad.cpp`, consuming the
 `TilingInterface` that P1 implemented.
 
-**Ablatable: yes.** **Delta over the 217 cell suite: zero everywhere, because
-nothing in the suite tiles at `-O2`, and the reason is D-0052 rather than the
-budget.** **Delta on a hand written convolution at a budget tight enough to
-trigger it, which is where the pass can be seen doing its work: peak scratchpad
-4256 bytes to 1744, instructions 6 to 21, cycles 782 to 2116, output byte
-identical.**
+**Ablatable: yes.** **Delta over the 217 cell suite: zero at the default budget
+on every model, and not zero at the tight budgets, where 31 cells move.** A
+positive number is what the pass saves: on `inception_block` at its tight budget
+the pass is worth **404.0 cycles, all three spills and 9216 DRAM bytes**, and on
+`resnet_block` at its tight budget it **costs 4 instructions, 642.0 cycles and
+4096 DRAM bytes**. **Delta on a hand written convolution at a budget tight enough
+to trigger it, which is where the pass can be seen doing its work in isolation:
+peak scratchpad 4256 bytes to 1744, instructions 6 to 21, cycles 782 to 2116,
+output byte identical.**
 
-**The suite's zero is two findings and neither is "the budgets are too
-generous".** At the **default** budget nothing is over budget at all, which is
-what P13's committed prediction said and why: ADR 0008's budgets are program
-level minima, which need every simultaneously live buffer to fit, and that is a
-stronger requirement than any one operation's working set. At the **tight**
-budgets the search does find operations over budget on five of the seven models,
-and **declines every one of them**, because a tiled result is assembled in DRAM
-by one store per tile and the binary's `operand-defined` and `operand-extent`
-checks satisfy a read out of a single written span, so an assembled value that
-another operation reads is refused by the encoder. **D-0052 carries the
-reproduction and the measurement.** The one shape that is expressible is an
-assembly nothing reads, which is a tiled operation whose result is the function's
-own. `test/Encoding/tiled-result-returned.mlir` carries that case from the tensor
-level through the encoder and the disassembler, and
-`test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal beside it.
+**The default budget zero is the one that needs a reason, and it is not "the
+budgets are too generous".** At the **default** budget nothing is over budget at
+all, which is what P13's committed prediction said and why: ADR 0008's budgets
+are program level minima, which need every simultaneously live buffer to fit, and
+that is a stronger requirement than any one operation's working set. At the
+**tight** budgets the search finds operations over budget on five of the seven
+models and tiles them.
+
+**For one commit it declined every one of them, and that is D-0052.** A tiled
+result is assembled in DRAM by one store per tile, and the binary's
+`operand-defined` and `operand-extent` checks satisfied a read out of a single
+written span, so an assembled value another operation read was refused by the
+encoder. The owner's answer was region scoped coverage on the DRAM side of both
+checks, which is in `docs/BREAKING_CHANGES.md`; with it the assembly can be read
+back and the decline rule keeps only the shape the format still cannot express.
+`test/Encoding/tiled-result-returned.mlir` carries a tiled result that is the
+function's own from the tensor level through the encoder and the disassembler,
+and `test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal beside it,
+which is the scratchpad case and is unchanged.
 
 **Which operand tiling relieves, which is the mechanism the table above turns
 on.** Under the per slice convention a slice of a **DRAM** value becomes a
@@ -773,13 +786,15 @@ untiled program does not, and it pays for that in traffic. That trade is the
 subject of Section 13.3's three arms rather than something this pass decides
 alone.
 
-**It fires nowhere in the suite at either published budget**, and that was
-predicted before it was measured, in
-`experiments/predictions/p13-tiling-cell-movement.md`. The threshold was then
-measured: the smallest budget at which some model tiles sits just below the
-tight budgets rather than above them. So the pass is correct, complete, and
-inert on the models as configured, and the number that would change that is a
-budget rather than a code change.
+**It fires nowhere at the default budget and on five of the seven models at the
+tight ones.** `experiments/predictions/p13-tiling-cell-movement.md` predicted
+that it would fire nowhere at either, and at the tree that prediction was
+adjudicated against it was right, for a reason it did not give: the format could
+not express what the pass produced. The prediction is not edited and the
+adjudication is in `docs/NUMBERS.md`. What the same measurement says now is that
+the threshold sits just below the tight budgets rather than above them, so the
+two published budgets sit on either side of the interesting range, which is what
+gives Section 13.3 a sweep to run.
 
 ### Before and after
 
@@ -863,17 +878,19 @@ runs underneath that computation. Implemented in
 allocation** per Section 5.1, since the doubled working set has to be visible to
 the allocator.
 
-**Ablatable: yes.** **Delta over the 217 cell suite: zero everywhere, and it is
-a different zero from the one below.** On the suite the pass fires on **nothing
-at all**: `prefetched` is 0 and `not-hoisted` is every transfer, on all seven
-models at both budgets. Every argument load sits in the entry block beside the
-other argument loads, where the walk correctly stops at another transfer, and a
-constant's load is the one transfer with a computation before it and the one
-whose `npuisa.const` cannot move with it. **D-0054 carries that with the
-mechanism, and `test/Pipeline/p13-passes-at-o2.mlir` pins it as a measured
-negative** so the day it changes a test says so. **Ablating this pass also
-relaxes the tiling search**, per the coupling stated at the top of this file, and
-that half of the row is not about the overlap at all.
+**Ablatable: yes.** **Delta over the 217 cell suite: the same numbers as
+`-npu-tile-to-scratchpad`'s row, and not one of them is the overlap.** The
+pipeline tells the tiling search whether this pass is in the pipeline, so
+ablating it also relaxes that search and produces the untiled program; the row is
+therefore a measurement of the pair, which is the coupling stated at the top of
+this file. **What this pass contributes to it is zero**, because on the suite it
+fires on **nothing at all**: `prefetched` is 0 and `not-hoisted` is every
+transfer, on all seven models at both budgets. Every argument load sits in the
+entry block beside the other argument loads, where the walk correctly stops at
+another transfer, and a constant's load is the one transfer with a computation
+before it and the one whose `npuisa.const` cannot move with it. **D-0054 carries
+that with the mechanism, and `test/Pipeline/p13-passes-at-o2.mlir` pins it as a
+measured negative** so the day it changes a test says so.
 
 **Delta, measured on the tiled convolution above, which is where the pass does
 fire: zero cycles, and the encoded instruction stream genuinely changes.** One `DMA_LOAD` moves from position 23 to position 11, three transfers
