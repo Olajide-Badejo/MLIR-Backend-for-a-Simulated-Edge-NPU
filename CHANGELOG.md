@@ -50,6 +50,28 @@ declaration of a movement measured to be zero would be a false declaration.
 - **D-0054: `-npu-double-buffer` fires on nothing this compiler emits**, so its
   ablation row is a zero about the pair rather than about the pass. Recorded and
   deliberately not fixed, because a fix makes the pass fire and moves numbers.
+- **Checks 8 and 9 gain region scoped coverage on the DRAM side**, which is the
+  owner's answer to D-0052 and the other half of the version 2 declaration.
+  Inside a declared spill slot the validator tracks exact byte coverage, strided
+  writes run by run, and accepts a read when every byte it addresses lies inside
+  that one slot and has been written; a read that reaches into the next slot is
+  refused for leaving its region. **The scratchpad does not change**, because a
+  buffer there has no declared extent and the no merge rule is the only thing
+  that can catch an over read into the buffer next door. **No encoded byte
+  moves**, so `Program::kVersion` stays 2 and the corpus is not reseeded; all 778
+  seeds were run at the parent and here and not one changed verdict, because not
+  one of them exercises a spill slot read.
+- **D-0056: tiling is expressible now and is not always an improvement.** With
+  the validator fixed, tiling compiles on 167 of the suite's 168 cells and
+  improves four of them: `conv_bn_relu_stack` goes from a 6432 byte peak to
+  **4640** with fusion ablated, `inception_block` loses **all three** of its
+  spills, and `lenet` and `lenet_batched` each lose a few hundred bytes. It takes
+  one cell away, `resnet_block` with fusion ablated, where the residual keeps the
+  block's input resident while the tiles run. **No rule inside the tiling pass
+  separates the four from the one**, because the quantity that decides is the
+  program's sweep line peak and the pass sees one operation, so the compiler half
+  is measured and held rather than committed. Two rules were tried and both are
+  recorded because both failed.
 - **D-0051, D-0053 and D-0055** are the other three the wiring found: `-cse`
   merging every `tensor.empty` of a shape into one value, an argument whose every
   use is a whole value slice never being loaded, and a `--mlir-timing` bound of

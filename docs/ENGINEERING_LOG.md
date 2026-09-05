@@ -5943,3 +5943,103 @@ completed clean. **The bound was not touched.** D-0049's own claim is that the
 upper bound's premise, that the gap is this instrumentation's operation walk, does
 not survive a machine that is not idle, and a machine still draining a build is
 not idle however empty the process table looks.
+## 2026-09-05 Phase P13: the format learns to read a buffer written in pieces, and the compiler does not use it yet
+
+**The owner decided D-0052 and the decision is region scoped coverage on the
+DRAM side of checks 8 and 9, with no version bump.** Inside a declared spill
+slot the validator now tracks exact byte coverage, strided writes run by run,
+and accepts a read when every byte it addresses lies inside that one slot and
+has been written. The scratchpad keeps the no merge rule, because a buffer there
+has no declared extent and a merged range would accept an over read into the
+buffer next door. That asymmetry is the whole decision: **a spill slot has an
+identity and the scratchpad arena does not**, and the relaxation goes exactly as
+far as the identity does.
+
+**No encoded byte moves, which is why no version moves.** Version 2 was declared
+so that a buffer could be written in pieces, and that declaration's own table
+promised checks 8 and 9 would go from "one written count per address" to
+"written ranges per buffer". **Only the format half landed.** This is the other
+half of a decision already taken rather than a new one, and saying so is what
+makes the absence of a bump defensible rather than convenient.
+
+**It also closes the count against reach asymmetry**, on the DRAM spill slot
+side only. A strided store recorded its element count as one contiguous run
+while the matching read computed its stride reach: 1024 against 1920 on the case
+D-0052 measured. Both sides now use the bytes actually touched, and the
+scratchpad side is untouched.
+
+### What the corpus said, which is nothing, and why that is worth printing
+
+All 778 seeds were run through the validator at the parent and at the fix.
+**Zero verdict flips.** Not one seed exercises a spill slot read at all, so the
+corpus could neither confirm nor contradict the change. That is a fact about the
+corpus rather than about the change, and it is the reason the five unit tests in
+`SpillSlotCoverageTest.cpp` exist and are written as four verdicts rather than as
+four refusals: a corpus that cannot reach a rule cannot be the evidence for it.
+
+### The compiler half is measured and held, and D-0056 is the reason
+
+With the validator fixed, `-npu-tile-to-scratchpad` can tile an operation whose
+result another operation reads. Compiling all 168 cells at that tree says what
+one cell could not.
+
+**It improves four of them**, and these are the first numbers in this project
+that say tiling buys anything on a real model:
+
+| Cell, at its tight budget | with tiling | tiling ablated |
+|---|---|---|
+| `conv_bn_relu_stack` ablate `npu-fuse-ops` | peak **4640** | peak 6432 |
+| `inception_block` | **0 spills** | 3 spills |
+| `lenet` ablate `npu-fuse-ops` | peak 194200 | peak 194560 |
+| `lenet_batched` ablate `npu-fuse-ops` | peak 199840 | peak 200800 |
+
+**And it takes one away.** `resnet_block` at its tight budget with fusion
+ablated stops allocating: the residual keeps the block's input resident across
+both convolutions, so tiling the second adds the tile buffers on top of an
+activation it does not remove, and the assembly comes back on chip whole above
+that. Sweep line peak 7456 against a budget of 6464.
+
+**Two rules were written against that and both are recorded because both
+failed.** Charging the assembly's re-entry to the search's budget made the tiles
+smaller and the cell failed again with a 256 byte buffer unplaced instead of a
+1024 byte one. Requiring the tiling to be an improvement, tile peak plus
+re-entry against the untiled working set, **declined `inception_block`**, which
+was one of the wins, and **still admitted `resnet_block`**, which was the loss.
+
+**A rule that is both too strict and too weak is a wrong discriminator**, and
+the reason it is wrong is worth more than the two attempts: the quantity that
+decides is the **program's** sweep line peak, and the tiling pass sees one
+operation. On `resnet_block` the deciding byte belongs to a different operation
+and is live for a reason, the residual, that the tiled operation has no view of.
+Section 13.2 sizes a tile's working set against the budget, which is the right
+unit for choosing **between** tilings and the wrong one for choosing **whether**
+to tile.
+
+So the compiler half is not committed. The tree that ships is the one where all
+168 cells compile, the four wins are left on the table and said so, and D-0056
+carries the three ways forward: the pass consults the allocator, the consumer
+chain tiles with its producer, or it stays as it is.
+
+### D-0054's one line fix is not one line, and the verifier said so
+
+Admitting `npuisa.const` to the double buffering prologue is the obvious change
+and it was written, built and run. It produces programs this project's own
+verifier rejects: a `dma_store` lands between the asynchronous load and its
+await and overlaps the destination, which is the race the token exists to
+prevent.
+
+**So the pass's hoist safety walk is weaker than the verifier that checks its
+output**, and that gap is the defect rather than the missing entry in a set.
+Both ask `npuisa::overlaps`; the walk asks it of the operations it steps over
+and the verifier asks it of the whole window. Where the two diverge is the thing
+to measure, and it is larger than a change to an `isa<>` list. Not committed,
+because a pass that fires and emits programs the verifier refuses is worse than
+a pass that fires on nothing.
+
+### What this run did not spend
+
+**The quiet machine.** Nothing moved a measured quantity: no cell field, no
+cycle, no DRAM byte, no golden tensor byte. The suite is the same 217 cells at
+the same numbers, `regression-baseline --check` reports no drift in both shapes,
+and the only baseline movement is five test names and five counts, which is the
+composition change the declaration's own list of what does not move predicted.

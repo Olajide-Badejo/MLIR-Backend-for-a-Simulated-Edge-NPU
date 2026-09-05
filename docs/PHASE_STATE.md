@@ -740,17 +740,17 @@ touched.**
 | `build/bin/NPUInterfaceTests` | 23 passed |
 | `build/bin/NPUTilingTests` | **20 passed**. 12 at P12, plus the eight tiled implementation tests |
 | `build/bin/NPUAllocatorTests` | 29 passed |
-| `build/bin/NPUEncodingTests` | 76 passed, 1 skipped |
+| `build/bin/NPUEncodingTests` | **81 passed**, 1 skipped. 76 before, plus the five `SpillSlotCoverage` cases: a two tile assembly read whole and accepted, a read of bytes no tile wrote refused, a read across two slots refused for leaving its region, the scratchpad's no merge rule still refusing, and a whole spilled buffer still passing |
 | `build/bin/NPUSimulatorTests` | **58 passed**, 1 skipped. 55 at P12, plus the per fold assertion, the version 2 strided transfer and the layout crossover |
 | `build-ndebug/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
-| `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **1084 passed, 18 skipped**. 1082 through the wiring, which moved five hardcoded counts inside existing tests and added no case, plus the two that assert the P13 ablation rows |
+| `build-ndebug/bin/NPUEncodingTests` | 81 passed, 1 skipped |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1084 passed, 18 skipped**. 1082 through the wiring, which moved five hardcoded counts inside existing tests and added no case, plus the two that assert the P13 ablation rows. The validator change added five C++ cases and no Python one |
 | `mypy` | no issues found in 26 source files |
 | `black --check .` | 66 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, **533 of 533** files. 489 at the previous handoff, plus the 42 new result cells and the two new lit tests |
+| `reuse lint` | compliant, **534 of 534** files. 489 at the P12 handoff, plus the 42 new result cells, the two new lit tests and `unittests/Encoding/SpillSlotCoverageTest.cpp` |
 | `pre-commit run` | all twelve hooks passed, on every commit of this branch |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
@@ -1446,15 +1446,15 @@ measured row, the two CI triggers re-evaluated, and the quiet serialized
 re-record of all 217 cells. What follows is what remains, and the first entry is
 new.
 
-1. **The owner decision D-0052 escalates, and it is the phase's blocker.** A
-   tiled result assembled in DRAM cannot be read back, because `operand-defined`
-   and `operand-extent` satisfy a read out of a single written span. The tiling
-   pass declines rather than emitting a program the encoder refuses, so nothing
-   in the suite tiles at `-O2`, and Section 13.3's tiling arm has no subject
-   there. The options are in D-0052 and in D-0050 and each of them changes
-   declared ISA semantics or the format version, which is not a phase's call.
-   **Section 13.3 can still be run**, over the swept budget range and at `-O0`,
-   and it has to say what its tiling arm is measuring.
+1. **D-0052 is decided and fixed, and D-0056 is what replaced it.** The
+   validator accepts a tiled assembly read back inside a declared spill slot,
+   which is `20fc6c1`, and the compiler half is measured and held: tiling now
+   compiles on 167 of the suite's 168 cells, **improves four** of them and takes
+   one away. No rule inside the tiling pass separates the four from the one,
+   because the deciding quantity is the program's sweep line peak. The three ways
+   forward are in D-0056 and the choice between them is the next decision this
+   phase needs. **Section 13.3's tiling arm has a subject either way**: those
+   five cells are exactly where tiling changes something.
 2. **Section 13.3's three arms**, at `-O2`, with arm one in two configurations
    for the two spill heuristics and arm two in two configurations for fusion on
    and off, over the measured budget range of 6000 to 6464 for two models and
