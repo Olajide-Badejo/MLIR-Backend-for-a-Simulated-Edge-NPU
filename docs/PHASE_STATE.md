@@ -1502,6 +1502,15 @@ new.
    at `-O2`.
 4. **The predictions for both, committed before either experiment runs**, in the
    repository's prediction schema, which has a validator.
+5. **D-0054's remaining half, which is a design question and not a line in a
+   set.** The allocator half is fixed and moves nothing. Making
+   `-npu-double-buffer` fire needs the pass to know what the prefetch's doubled
+   residency costs before it commits, because at the frozen tight budgets five
+   of the seven models stop placing. The pass runs before the allocator on
+   purpose and cannot read a peak from there, so the options are a pressure
+   estimate inside the pass, a second decision after allocation, or leaving the
+   row at zero with the reason stated. **The measurement is in the entry** and
+   the choice is an owner's rather than an implementer's.
 
 **The one thing the wiring commit deliberately did not do** is move the suite's
 recorded tight budgets. The tiling disabled row was only checkable at the
