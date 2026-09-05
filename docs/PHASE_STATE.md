@@ -20,18 +20,17 @@ costs more than writing these lines did.
 
 **P13, tiling, double buffering and layout. Incomplete, and this handoff says so
 first.** Branch `phase/p13-tiling`, cut from `main` at `2f59429`, which is the
-P12 merge. Six commits. **Not pushed.** **The gate is not met**, three of the
-four deliverables have not started, and the reason the phase stopped where it did
-is the first commit.
+P12 merge. Twenty nine commits, tip `515560c`. **The gate is not met**, and what
+remains is the wiring commit and the experiments that depend on it.
 
-| Commit | Subject |
-|---|---|
-| `b2b63df` | `test(simulator): the weight preload is already charged once per fold, and D-0045 is not a defect` |
-| `6d662f2` | `build(external): zigzag joins the external tools, on the terms the other two are on` |
-| `f7b32ba` | `feat(dialect): the halo arithmetic P1 declined to write, over the parallel dimensions` |
-| `d8532a0` | `record: the baseline at the tip, and it moves fifteen test names and nothing else` |
-| `e8910f2` | `feat(passes): -npu-tile-to-scratchpad, implemented and deliberately in no level yet` |
-| tip | `docs: the flake is a conditional bound, and the lowering is what tiling waits on` |
+**All three passes now exist and none is in an `-O` level.**
+`-npu-tile-to-scratchpad` at `e8910f2`, `-npu-double-buffer` at `7c0fd44`,
+`-npu-assign-layout` at `0746f53`. They are held back together on purpose:
+putting them in is what moves the cell count, re-derives Section 2's arithmetic
+at six sites, and requires the tiles nothing measurement to be taken again at
+the tree that has all three. Doing that once is one declaration and one
+re-record; doing it three times is three of each, with two intermediate states
+nothing will ever run again.
 
 **The commit order carries meaning and the first commit is the phase.** P13 was
 briefed to fix D-0045 under the full declare then re-record governance, on the
@@ -42,11 +41,24 @@ committed results contradict. Everything the governance sequence would have
 governed is therefore not done, deliberately, and the rest of the phase was
 re planned around that.
 
-`f7b32ba` is the deliverable that did land and it is the one the rest of the
-phase blocks on: the halo arithmetic for tiling every windowed operation in the
-dialect, which P1 declined to write and named the reason for. It lands **before**
-the pass that consumes it, which is the ordering the phase's own commit rule
-asks for.
+**Two negative results, and both are about the machine rather than about a
+pass.** Double buffering is correct, exact, and moves no cycle on a tiled
+program, because Section 5.5's model is a two port dataflow schedule and tiling
+makes a program DMA bound, 1524 against 596, so there is nothing to hide a
+transfer under. Layout assignment answers NCHW at every extent, because the
+stride penalty of 0.5 cycles per element is eight times the 0.0625 a permutation
+costs, so performing a transpose always beats moving the same data strided. Both
+are measured, both are asserted by a test, and both are inputs to Section 13.3
+rather than obstacles to it.
+
+**The third finding is about the compiler.** At `-O2`, fusion hides 30 of the 44
+convolutions and matrix multiplications in the suite inside `npu.fused_op`
+regions, where the tiling pass does not look, and two of the seven models have
+none left visible. That decline is now counted and remarked on rather than
+silent, and Section 13.3's resolution is written down before the experiment runs
+rather than after: the arms stay at `-O2`, and arm two is reported in two
+configurations, with fusion and without, which is the treatment Section 13.3
+already gives arm one.
 
 ## Gate status
 
@@ -55,11 +67,11 @@ asks for.
 | Clause | Status |
 |---|---|
 | Goldens byte identical for the tiling work, exactly | **stands, and it is not yet evidence.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty. Nothing consumes the tiling interface yet, so nothing could have moved them. The claim becomes evidence at the commit that adds `-npu-tile-to-scratchpad` |
-| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **not reached.** Neither pass exists. No entry was written, and writing one before the pass would be declaring a movement nobody has measured |
+| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **answered, and the answer is that there is nothing to declare.** Both passes exist and both were measured. Double buffering reorders instructions and moves no cycle, no byte and no scratchpad byte: 2116 cycles, 1524 DMA, 596 compute, overlap 0.0067, peak 1744, before and after. Layout assignment rewrites nothing on any model in the suite at `-O0` or `-O2`, and the printed IR is identical to its input. Neither is in an `-O` level either, so there are two independent reasons no number moved. An entry declaring a movement that was measured to be zero would be a false declaration |
 | No `scf` operation reaches the lowering, asserted by a lit test | **met for the pass, not yet for a level.** `-npu-tile-to-scratchpad` asserts it about its own function and `test/Transforms/tile-to-scratchpad.mlir` asserts it from outside with a `NOSCF` prefix. It becomes a statement about the lowering when a level runs the pass |
 | A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **not started**, and the numbers it will have to reproduce are recorded below so the next session does not have to re-derive them |
-| The tight budget question answered per model with all three arms of Section 13.3 | **not started.** This is the phase's reason to exist and none of the three arms has been run |
-| The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **not started** |
+| The tight budget question answered per model with all three arms of Section 13.3 | **not started, but no longer blocked and no longer under designed.** This is the phase's reason to exist and none of the three arms has been run. What changed is that the fused region question is settled first rather than discovered mid experiment: the arms stay at `-O2` and arm two is reported in two configurations, with `-npu-fuse-ops` and without, which is written into `docs/PASSES.md` beside the tiling pass |
+| The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **met at the pass, pending at the level.** The delta is zero and the DMA stride term is exactly what makes it zero: Section 5.5 charges layout only through the non unit innermost stride penalty, it charges it to NHWC and never to NCHW because an NHWC tensor is a buffer at NCHW extents with permuted strides, and 0.5 cycles per element against a permutation's 0.0625 makes a physical transpose eight times cheaper at every extent. `CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt` asserts the direction and the factor in the file that owns both constants. What is pending is the ablation row, which needs the level |
 | The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started.** The tool is installed, pinned, recorded and wired into the external tools policy; there is no mapping to export yet, because mappings are what the tiling pass produces |
 
 **Two clauses of the brief around the gate are answered rather than pending, and
@@ -181,16 +193,40 @@ enough to check by hand has exactly one fold.
   `requirements-lock.txt` moved. Recorded in ADR 0003 by version rather than by
   git sha, which is the exception that document already carves out for a package
   index install.
+- **`-npu-double-buffer` is implemented and is in no `-O` level.** Over the
+  tokens, before allocation, per Section 5.1. A `npuisa.dma_load` is hoisted
+  above the computation before it and becomes a `npuisa.dma_load_async` with an
+  `npuisa.await` left where it was. Safety is `npuisa::overlaps` with `Unknown`
+  as a refusal, which is Section 8's rule 4 as code, asked of the analysis rather
+  than of an identity comparison even though this pass runs before allocation
+  where an identity check would happen to be right. The hoist stops at another
+  transfer, because both are charged to the same port and lifting a load above a
+  load moves work along a saturated timeline and hides nothing. The allocation
+  moves with the transfer, because a tile's destination buffer is defined
+  immediately before the load that fills it. Three lit cases plus statistics.
+- **`-npu-assign-layout` is implemented and is in no `-O` level.** The choice,
+  scored on Section 5.5 and counted in `kept-nchw`; the inverse transpose fold
+  Section 12 names; and the sink through a relu that lets the fold reach a pair
+  the graph did not write adjacent. There is deliberately no code that rewrites
+  an operation into NHWC, because the comparison refuses that trade at every
+  shape this machine can hold and a materialisation path would be a branch no
+  input could reach. Five lit cases, three of them negatives, plus statistics.
 - **The suite is still 175 cells and the ablatable set is still 8.** Nothing in
   this branch puts a pass into an `-O` level.
 
-## What tiling is waiting on, which is the next piece and is two changes
+## What tiling was waiting on, all of which has landed
 
-**`-npu-lower-to-npuisa` has no pattern for `tensor.extract_slice` or
+**All three of the changes below are done**, at `633c116` for the lowering and
+`670dd0b` for the format. The section is kept rather than deleted because the
+measurement in it is the evidence for why the lowering had to change the way it
+did, and a later reader asking why the slice enters the scratchpad rather than a
+view of a resident whole should find the number rather than the argument.
+
+**`-npu-lower-to-npuisa` had no pattern for `tensor.extract_slice` or
 `tensor.insert_slice`**, which is what a tiled program is stitched from, so a
-tiled function does not lower at all. `npu-opt --npu-tile-to-scratchpad
---npu-lower-to-npuisa` reports `failed to legalize unresolved materialization`
-on the destination argument. That is the first change and it is the smaller one.
+tiled function did not lower at all. `npu-opt --npu-tile-to-scratchpad
+--npu-lower-to-npuisa` reported `failed to legalize unresolved materialization`
+on the destination argument. That was the first change and the smaller one.
 
 **The second decides whether tiling is worth anything, and it is now a
 measurement rather than an argument.** The conversion today loads each DRAM
@@ -514,17 +550,23 @@ load sensitive bound cannot get back, which is a quiet machine.
 `regression-baseline --check` is the gate that would have caught it if that were
 wrong, and it reports no drift over 42 cells and 21 golden tensors.
 
+**That reasoning expires at the wiring commit and the next session should expect
+to spend the quiet machine there.** Once the three passes are in `-O2` the suite
+is 217 cells rather than 175 and every one of those measurements is of a
+different program, so the whole set is re-run once, serially, at that tree, and
+not before.
+
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
 | `ninja -C build-ndebug -j6` | clean, no warnings |
-| `ninja -C build check-npu` | 26 discovered, 26 passed |
+| `ninja -C build check-npu` | **32 discovered, 32 passed**. 26 at the previous handoff, plus `dma-boundaries` slicing, tiling assembly, `double-buffer.mlir` and `assign-layout.mlir` |
 | `build/bin/NPUInterfaceTests` | 23 passed |
 | `build/bin/NPUTilingTests` | **20 passed**. 12 at P12, plus the eight tiled implementation tests |
 | `build/bin/NPUAllocatorTests` | 29 passed |
 | `build/bin/NPUEncodingTests` | 76 passed, 1 skipped |
-| `build/bin/NPUSimulatorTests` | **56 passed**, 1 skipped. 55 at P12, plus the per fold assertion |
-| `build-ndebug/bin/NPUSimulatorTests` | 56 passed, 1 skipped |
+| `build/bin/NPUSimulatorTests` | **58 passed**, 1 skipped. 55 at P12, plus the per fold assertion, the version 2 strided transfer and the layout crossover |
+| `build-ndebug/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 76 passed, 1 skipped |
 | `python -m pytest test/Python -q -m 'slow or not slow'` | **1082 passed, 18 skipped**. 1076 at P12, plus the six parametrized cases of the mirror's per fold assertion |
 | `mypy` | no issues found in 26 source files |
@@ -532,7 +574,7 @@ wrong, and it reports no drift over 42 cells and 21 golden tensors.
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, 478 of 478 files |
+| `reuse lint` | compliant, 489 of 489 files |
 | `pre-commit run` | all twelve hooks passed, on every commit of this branch |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
@@ -1189,6 +1231,33 @@ root cause the clause demands. **That root cause is withdrawn at P13**, so
 the row is still answered wrong and the reason for it is again open. See
 D-0048. The prediction file itself is not edited, which is the rule, and this
 correction lives here and in `docs/NUMBERS.md` rather than in it.
+
+## What is left in P13, in the order it should be done
+
+1. **The single wiring commit.** All three passes into `-O1` and `-O2` per
+   Section 12's table, each carrying its `ablatable` property, the ablatable set
+   from 8 to 11, the suite from 175 to 217 cells, and the six hardcoded count
+   sites above moved together. The tiles nothing measurement is taken again at
+   that tree before the commit, and a default budget cell that moves is a defect
+   in the wiring rather than a declaration to write.
+2. **The no `scf` assertion as a statement about the lowering**, once a level
+   runs the pass, rather than about the pass alone.
+3. **The tiling disabled ablation row**, which has to reproduce the previous
+   spilling numbers to the cycle. The two rows it has to hit are in the table
+   above: `resnet_block` 17 instructions and 2018.0 cycles with 1 spill, and
+   `inception_block` 22 and 3799.0 with 3.
+4. **Section 13.3's three arms**, at `-O2`, with arm one in two configurations
+   for the two spill heuristics and arm two in two configurations for fusion on
+   and off, over the measured budget range of 6000 to 6464 for two models and
+   4000 to 6000 for the third. ADR 0008's tight budgets are re-measured at that
+   tree rather than quoted from P12.
+5. **The layout delta as an ablation row**, which is the zero this handoff
+   already argues for, arriving as a measured row rather than as an argument.
+6. **The ZigZag comparison under the same mapping**, which is what
+   `npu.tiling_choice` was recorded for.
+7. **The two CI triggers re-evaluated** against a suite that is 217 cells rather
+   than 175.
+8. **The quiet serialized re-record of all 217 cells**, once, at the wired tree.
 
 ## Open questions
 
