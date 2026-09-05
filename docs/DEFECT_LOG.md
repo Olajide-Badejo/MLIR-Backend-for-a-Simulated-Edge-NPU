@@ -3527,13 +3527,35 @@ nothing.
   exactly that separation, and it is the reason this was found by reading the
   numbers rather than by a fault.
 
-- **What a fix would be.** Admit `npuisa::ConstOp` to the prologue, since it is
-  a pure definition whose position carries no meaning beyond the live range it
-  starts, exactly as an allocation's does. That makes the pass fire on every
-  model with a weight, which moves the instruction order of the whole suite and
-  is therefore a declaration, a re-record and its own commit.
+- **What a fix would be, and it was tried on 2026-09-05 and is not this.**
+  Admitting `npuisa::ConstOp` to the prologue is the obvious change: a constant
+  is a pure definition whose position carries no meaning beyond the live range
+  it starts, exactly as an allocation's does. **It was written, built and run,
+  and it produces programs the `npuisa` verifier rejects**:
+
+  ```
+  error: 'npuisa.dma_load_async' op the operation npuisa.dma_store lies between
+  this asynchronous transfer and its npuisa.await and accesses memory
+  overlapping the destination buffer, which is the race the token exists to
+  prevent
+  ```
+
+  **So the pass's own hoist safety analysis is weaker than the verifier that
+  checks its output**, and that gap is the real defect rather than the missing
+  entry in the prologue set. The walk stops at an operation that
+  `npuisa::overlaps` says might touch the destination; the verifier asks the
+  same question of the whole window between the asynchronous load and its await
+  and finds an overlap the walk did not. Which of the two is right, and where
+  the two analyses diverge, is the thing to measure next, and it is a larger
+  question than a one line change to a set.
+
+  **Not committed.** A fix that makes a pass fire and produces programs the
+  verifier refuses is worse than a pass that fires on nothing, and the rule for a
+  red is to read it rather than to work around it. The change moves the
+  instruction order of every model with a weight, so when it does land it needs a
+  declaration, a re-record and its own commit.
   `test/Pipeline/p13-passes-at-o2.mlir` carries the current behaviour as a
-  measured negative so the day it changes, a test says so.
+  measured negative, so the day it changes a test says so.
 
 ### D-0055 the handoff quotes a `--mlir-timing` bound that is not in the code, and reads the wrong one of two bounds
 
