@@ -5700,3 +5700,119 @@ be what enters the scratchpad, which is consistent with Section 8's count of one
 load per DRAM value entering it, since under tiling the values are the slices.
 It is a real change to the conversion and to `dma-boundaries.mlir`, and it is
 where P13 continues.
+
+## 2026-09-05 Phase P13: layout assignment answers NCHW, and the answer is a ratio between two constants
+
+### What the pass is
+
+`-npu-assign-layout` is implemented and is in **no `-O` level**, alongside
+tiling and double buffering, for the reason the pass list gives: putting the
+three in is one commit, because that is where the cell count moves and Section
+2's arithmetic is re-derived, and doing that three times would leave two
+intermediate states nothing will ever run again.
+
+It has three parts. It **scores** the layout question for every rank 4
+operation and counts the answer in `kept-nchw`. It **folds** an inverse
+transpose pair into the value it permuted, which is the half Section 12 names
+as the thing without which the pass only ever adds instructions. And it
+**sinks** a transpose past a relu, which is what lets the fold reach a pair the
+graph did not write adjacent.
+
+### The answer is NCHW everywhere, and it is not close
+
+Section 5.5 charges layout in exactly one place, the non unit innermost stride
+penalty on a transfer, at `kDmaStridedElementCycles = 0.5` cycles per element.
+Section 5.5 also fixes how a layout reaches that term: an NHWC tensor is
+materialised below the tensor level as a buffer at **NCHW extents carrying
+permuted strides**, so its innermost stride is the channel count and every
+transfer of it is charged the penalty, while an NCHW tensor is contiguous and is
+charged nothing.
+
+The only alternative to paying that penalty is to perform the permutation, and a
+permutation is one elementwise pass at `1 / kElementwiseLaneWidth = 0.0625`
+cycles per element. So **performing the permutation is eight times cheaper than
+moving the same data strided**, and it is a ratio rather than a threshold: a
+transfer's other two terms, the bytes and the fixed descriptor cost, are charged
+whichever layout the buffer is in and cancel out of the comparison instead of
+tipping it at some size.
+
+The whole decision is therefore a relation between two constants, and it is
+asserted as one, in `CostModelTest.cpp`, in the file that owns both. That is
+deliberate: the conclusion the report will publish is about the machine and not
+about the pass, so recalibrating either constant has to fail a test rather than
+quietly reverse a published answer.
+
+### The observation that decided the pass's shape
+
+Section 5.5 motivates the stride term with the sentence that without it "a
+strided NCHW gather and a contiguous NHWC burst cost exactly the same". Read on
+its own that sentence describes a machine whose canonical buffer order is NHWC,
+where NCHW is the layout that gathers. This machine's canonical buffer order is
+NCHW: every `npuisa` verifier reads NCHW extents and every kernel indexes them,
+which is the paragraph immediately after, the one that says how the layout
+reaches the term. **The term therefore charges the opposite layout from the one
+the motivating sentence's example names.**
+
+The mechanism paragraph is the normative one here, because it is the one that
+says what the compiler does, and the code follows it. The two sentences are
+worth reconciling in the specification at some point and that is an owner edit
+rather than a code change; it is recorded here so the next reader who notices
+the tension finds it already noticed rather than rediscovering it as a bug.
+
+### What the pass therefore does not contain, which was the design decision
+
+There is no code that rewrites an operation into NHWC. The scoring refuses that
+trade at every shape this machine can hold, so a materialisation path would be a
+branch no input could reach and no test could exercise, and untestable code is
+worse than absent code.
+
+The tempting alternative was to absorb a layout changing transpose into the
+transfer that was going to move the bytes anyway. It is exactly the right
+rewrite and it is exactly `relayout-and-move`, which Section 12 names as a
+future extension, states is not implemented, says needs a descriptor form the
+binary format does not have, and forbids any gate or report claim from depending
+on. Recognising the tempting rewrite as the thing already scoped out is the
+whole of that decision, and the alternative would have been a fourth DMA
+producer against Section 8's invariant.
+
+There is a second thing that would have been needed and it is worth writing down
+because it is not obvious from the dialect: a layout changing transpose does not
+lower. Its two sides become memrefs of the **same** extents differing only in
+their strides, and the `npuisa` transpose verifier asks that result extent `i`
+be input extent `permutation[i]`, which such a pair does not satisfy. So an NHWC
+pipeline is a lowering change as well as a pass, on top of a cost model that
+says it would never be used.
+
+### What it does on the suite
+
+Nothing, on all fourteen model configurations, at both `-O0` and `-O2`: zero
+folds, zero sinks, and the printed IR is identical to the input. The layout
+question is answered four to six times per model and answered NCHW every time.
+`dilated_stack` is the only model that contains a transpose at all, the closing
+NCHW to NHWC permutation Section 15 gives it, and it is left alone: it is the
+last operation before the return, so there is no inverse below it to cancel
+against and no consumer to sink anything through.
+
+So the P13 gate's layout delta is **zero, and the DMA stride term is what makes
+it zero**. That is the gate's "reported whichever way it went" answered with the
+direction it went, and it is the second negative result of this phase after
+double buffering, which is a fact about the machine rather than about either
+pass: this cost model is a two port dataflow schedule with a large stride
+penalty, and both of those properties remove a classic optimization's payoff.
+
+### The negatives are where the tests are
+
+Three of the five lit cases exist to hold a line rather than to show the pass
+working. The load bearing one is a pair of permutations that compose to the
+identity, returning the extents to exactly where they started, whose outer
+result carries `#npu.layout<nhwc>` and whose inner input does not. A fold that
+looked only at the permutations would delete it. It is not a round trip, it is a
+relayout, and deleting it would change what the bytes mean while leaving every
+type in the function looking right. The guard is that the surviving value's type
+must equal the replaced result's exactly, encoding included, which is why the
+fold compares types and not shapes.
+
+The fold also hands the orphaned inner transpose back to its caller rather than
+erasing it where it stands, because the caller is iterating a worklist that may
+still hold it. A fold that left a dead full pass over the data behind would be
+reporting a saving it had not made.

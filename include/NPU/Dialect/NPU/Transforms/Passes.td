@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The four `npu` level passes of Section 12 that Phase P9 lands. Layout
-// assignment, tiling, double buffering and calibration are the four Section 12
-// entries P9 leaves alone, and they are absent here rather than declared empty.
+// The `npu` tensor level passes of Section 12. P9 landed the first four;
+// P13 adds `-npu-assign-layout` and `-npu-tile-to-scratchpad`. Double buffering
+// is an `npuisa` pass and lives in the other Passes.td, because it rewrites the
+// asynchronous transfer tokens and those exist only below the tensor level.
+// Calibration is P14 and is absent here rather than declared empty.
 //
 //===----------------------------------------------------------------------===//
 
@@ -197,6 +199,81 @@ def NPUFuseOps : Pass<"npu-fuse-ops", "::mlir::func::FuncOp"> {
 
   let statistics = [
     Statistic<"fusedRegions", "fused-regions", "npu.fused_op regions formed">,
+  ];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::npu::NPUDialect",
+    "::mlir::tensor::TensorDialect",
+  ];
+}
+
+def NPUAssignLayout : Pass<"npu-assign-layout", "::mlir::func::FuncOp"> {
+  let summary = "Chooses each rank 4 activation's layout and cancels the "
+                "permutations the choice makes redundant.";
+  let description = [{
+    Section 12's `-npu-assign-layout`, at `-O2`, with the inverse transpose
+    fold Section 12 names as the thing without which the pass only ever adds
+    instructions.
+
+    **The choice, and the one term that decides it.** Section 5.5 charges
+    layout in exactly one place: the non unit innermost stride penalty on a
+    transfer. An NHWC tensor is materialised below the tensor level as a buffer
+    at NCHW extents carrying permuted strides, so its innermost stride is the
+    channel count and every transfer of it is charged
+    `kDmaStridedElementCycles` per element. An NCHW tensor is contiguous and is
+    charged nothing. Performing the permutation instead is an elementwise pass
+    at `1 / kElementwiseLaneWidth` cycles per element. Those two numbers are
+    0.5 and 0.0625 on this machine, so **a physical transpose is eight times
+    cheaper than moving the same data strided**, at every extent, and the
+    answer is NCHW for every operation in the suite. The pass counts the
+    operations whose layout it answered rather than staying silent about them,
+    because a decision that was taken and lost and a decision that was never
+    reached look identical from outside otherwise.
+
+    That ratio is the whole of the P13 gate's layout delta, and it is reported
+    as measured rather than as hoped for. It also says exactly what would have
+    to change for the answer to flip, which is `kDmaStridedElementCycles`
+    falling below `1 / kElementwiseLaneWidth`. `CostModelTest.cpp` asserts that
+    crossover directly, in the file that owns both constants, so a later
+    recalibration of either fails a test rather than quietly reversing a
+    published conclusion.
+
+    **The fold.** `transpose(transpose(%x, p), q)` where `q` composed with `p`
+    is the identity is replaced by `%x`, and a transpose whose permutation is
+    the identity is replaced by its input. Both require the surviving value's
+    type to equal the replaced result's exactly, encoding included, so a pair
+    that permutes back to the same extents while changing the layout is **not**
+    folded: that pair is a relayout, and deleting it would change what the
+    bytes mean.
+
+    **The sink.** `relu(transpose(%x, p))` becomes `transpose(relu(%x), p)`,
+    which is what lets the fold reach a pair the graph did not write next to
+    each other. It is exact: a permutation and an elementwise maximum commute
+    element for element, so the two orders produce the same `f32` bits.
+
+    **The binary elementwise forms are deliberately not matched.** Sinking
+    through `npu.add` or `npu.mul` needs both reads permuted by the *same*
+    permutation, and nothing upstream emits such a pair, so a pattern for it
+    would be code no test could reach. That is the rule `-npu-fuse-bias`
+    applies to the commuted bias form, applied here for the same reason.
+
+    **What this pass cannot do, per Section 12.** It changes a layout only by
+    inserting or removing a `npu.transpose`, which is a compute operation and a
+    full pass over the data. Absorbing a layout change into a transfer, so that
+    the bytes are relaid while they are being moved anyway, is
+    `relayout-and-move`, which Section 12 names as a future extension, states is
+    not implemented, and forbids any gate or report claim from depending on.
+    Nothing here depends on it.
+  }];
+
+  let statistics = [
+    Statistic<"foldedPairs", "folded-pairs",
+              "Inverse transpose pairs replaced by the value they permuted">,
+    Statistic<"sunkTransposes", "sunk-transposes",
+              "Transposes moved past an elementwise operation">,
+    Statistic<"keptNCHW", "kept-nchw",
+              "Operations whose layout was scored and answered NCHW">,
   ];
 
   let dependentDialects = [

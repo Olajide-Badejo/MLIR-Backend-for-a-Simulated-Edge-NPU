@@ -338,6 +338,43 @@ TEST(Timelines, SinglePortReproducesTheSum) {
   EXPECT_EQ(result.stats.instructions, overlapped.stats.instructions);
 }
 
+TEST(CostModel, AStridedMoveCostsMoreThanThePermutationThatAvoidsIt) {
+  // **The whole of `-npu-assign-layout`'s decision, as a relation between two
+  // constants.** Section 5.5 charges layout in exactly one place, the non unit
+  // innermost stride penalty, and it charges it to NHWC and never to NCHW: an
+  // NHWC tensor is materialised as a buffer at NCHW extents with permuted
+  // strides, so its innermost stride is the channel count. The alternative to
+  // paying that penalty is to perform the permutation, which is one elementwise
+  // pass. The layout question therefore reduces to a per element race between
+  // `kDmaStridedElementCycles` and `1 / kElementwiseLaneWidth`.
+  //
+  // It is asserted here, in the file that owns both constants, rather than
+  // beside the pass, because the conclusion the report publishes is about the
+  // machine and not about the pass: recalibrating either constant has to fail a
+  // test rather than quietly reverse a published answer.
+  const double stridedPerElement = kDmaStridedElementCycles;
+  const double permutePerElement =
+      1.0 / static_cast<double>(kElementwiseLaneWidth);
+
+  EXPECT_GT(stridedPerElement, permutePerElement);
+  EXPECT_DOUBLE_EQ(stridedPerElement / permutePerElement, 8.0);
+
+  // It is a ratio and not a threshold, so no extent reverses it. A transfer's
+  // other two terms are the bytes and the fixed descriptor cost, and both are
+  // charged whichever layout the buffer is in, so they cancel out of the
+  // comparison rather than tipping it at some size.
+  for (int64_t elements : {int64_t{1}, int64_t{16}, int64_t{90}, int64_t{1024},
+                           int64_t{1} << 20}) {
+    const double strided =
+        dmaCycles(elements * 4, elements, /*innermostStride=*/3);
+    const double contiguous =
+        dmaCycles(elements * 4, elements, /*innermostStride=*/1);
+    EXPECT_DOUBLE_EQ(strided - contiguous,
+                     static_cast<double>(elements) * kDmaStridedElementCycles);
+    EXPECT_GT(strided - contiguous, elementwiseCycles(elements));
+  }
+}
+
 TEST(Timelines, EveryInstructionPaysTheIssueOverhead) {
   // The fixed per instruction overhead of Section 5.5, isolated: a program of
   // nothing but control instructions costs exactly the overhead times the

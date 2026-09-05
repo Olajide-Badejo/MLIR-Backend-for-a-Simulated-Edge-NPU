@@ -9,6 +9,7 @@
 # it.
 
 add_mlir_dialect_library(MLIRNPUTransforms
+        AssignLayout.cpp
         ConstantFold.cpp
         FoldBatchNorm.cpp
         FuseBias.cpp
@@ -35,7 +36,8 @@ add_mlir_dialect_library(MLIRNPUTransforms
         # candidates with the simulator's own cost model rather than a second
         # copy of it. Both dependencies are the point rather than an accident:
         # Section 5.5 puts the constants in one home and says the tiling pass is
-        # what scores against it.
+        # what scores against it. -npu-assign-layout reads the same home, for
+        # the same reason: its whole decision is one term out of that model.
         MLIRSCFDialect
         MLIRSCFTransforms
         MLIRSCFUtils
