@@ -377,6 +377,80 @@ format already carries strides on both sides, so a tile scatters correctly. And
 the tiling pass already emits exactly the `extract_slice` and `insert_slice`
 shapes these patterns consume, at constant offsets, fully unrolled.
 
+## The prediction, answered before the wiring rather than after it
+
+`experiments/predictions/p13-tiling-cell-movement.md`, committed at `33c17bc`
+strictly before the pass was wired into any level and before a cell was measured
+with it wired. **Its main clause is right and the measurement is stronger than
+the bracket asked for.**
+
+### Nothing tiles, at either budget, on any model
+
+The pass run alone over every model's tensor level IR, reading its own
+statistics, as tiled / already fitting / declined:
+
+| Model | Tight budget | at the default 1048576 | at its tight budget |
+|---|---|---|---|
+| `lenet` | 194624 | 0 / 1 / 0 | 0 / 1 / 0 |
+| `depthwise_separable` | 8192 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `resnet_block` | 6464 | 0 / 1 / 0 | 0 / 1 / 0 |
+| `inception_block` | 6144 | 0 / 3 / 0 | 0 / 3 / 0 |
+| `conv_bn_relu_stack` | 6464 | 0 / 1 / 0 | 0 / 1 / 0 |
+| `dilated_stack` | 8064 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `lenet_batched` | 200832 | 0 / 1 / 0 | 0 / 1 / 0 |
+
+**So wiring the pass into `-O2` moves no cell at either budget**, all three new
+ablation rows are zero everywhere, and there is nothing to declare in
+`docs/BREAKING_CHANGES.md` for the wiring commit. The reason is the one the
+prediction gave: ADR 0008's tight budget is the smallest at which a **program**
+allocates, which needs every simultaneously live buffer to fit, and that is a
+stronger requirement than any one operation's working set.
+
+### A second finding the prediction did not make, and it is the more interesting one
+
+**At `-O2` most convolutions are inside `npu.fused_op` regions and the tiling
+pass does not see them.** The pass walks the function's own body and leaves a
+fused region alone, deliberately, because tiling one member of a fused pair
+would put the intermediate back in DRAM and undo what the fusion was for. The
+consequence was not predicted:
+
+| Model | compute ops at `-O0` | fused regions at `-O2` | ops the pass sees at `-O2` |
+|---|---|---|---|
+| `lenet` | 5 | 4 | 1 |
+| `depthwise_separable` | 2 | 2 | **0** |
+| `resnet_block` | 2 | 1 | 1 |
+| `inception_block` | 3 | 0 | 3 |
+| `conv_bn_relu_stack` | 3 | 2 | 1 |
+| `dilated_stack` | 2 | 2 | **0** |
+| `lenet_batched` | 5 | 4 | 1 |
+
+**Two models have no visible compute operation at `-O2` at all.** So even at a
+budget where tiling would fire, `-O2` would tile strictly less than `-O0`, and on
+those two it would tile nothing whatever the budget.
+
+**That is P10's `-canonicalize` finding in a new place**, and it is worth saying
+in the same words: a leave one out ablation cannot see a pass whose work another
+pass has made invisible. Here it is not that another pass did the work, it is
+that another pass hid the operand, and the effect on the ablation table is the
+same: a row of zeros that means something quite different from a pass with
+nothing to do.
+
+### Where tiling does start to fire, which is what Section 13.3 needs
+
+Sweeping the budget down at `-O0`, tiled / fitting / declined:
+
+| Model | tight | 6000 | 4000 | 3000 | 2048 |
+|---|---|---|---|---|---|
+| `resnet_block` | 0 / 2 / 0 | **2** / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
+| `conv_bn_relu_stack` | 0 / 3 / 0 | **1** / 2 / 0 | 1 / 2 / 0 | 2 / 1 / 0 | 2 / 1 / 0 |
+| `inception_block` | 0 / 3 / 0 | 0 / 3 / 0 | **2** / 1 / 0 | 3 / 0 / 0 | 3 / 0 / 0 |
+
+**The threshold sits just below the tight budgets**, between 6000 and 6464 for
+two models and between 4000 and 6000 for the third. That is the range Section
+13.3's experiment has to sweep to have a subject at all, and it is now a measured
+range rather than a guess. ADR 0010 already pointed the same way by recording six
+cells that cannot allocate at batch 4.
+
 ## The numbers the next session needs and should not re-derive
 
 **The tight budget spilling numbers a tiling disabled ablation row has to
