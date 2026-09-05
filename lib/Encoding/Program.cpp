@@ -137,6 +137,35 @@ int64_t Instruction::resultByteSize() const {
   return count * size;
 }
 
+int64_t Instruction::resultAddressedByteSpan() const {
+  // `Operand::addressedByteSpan`'s arithmetic on the write side, written out
+  // rather than shared, because the two read their extents and strides from
+  // differently named fields and a helper taking four arguments would be
+  // harder to check than the eight lines it saved.
+  if (resultShape.size() != resultStrides.size() || resultShape.empty())
+    return -1;
+  int64_t elementSize = elementByteSize(resultElementType);
+  if (elementSize <= 0)
+    return -1;
+  int64_t span = 1;
+  for (size_t index = 0; index < resultShape.size(); ++index) {
+    int64_t extent = resultShape[index];
+    int64_t stride = resultStrides[index];
+    if (extent <= 0 || stride < 0)
+      return -1;
+    int64_t reach = extent - 1;
+    if (stride != 0 && reach > Program::kShapeLimit / stride)
+      return -1;
+    int64_t contribution = reach * stride;
+    if (contribution > Program::kShapeLimit - span)
+      return -1;
+    span += contribution;
+  }
+  if (span > Program::kShapeLimit / elementSize)
+    return -1;
+  return span * elementSize;
+}
+
 llvm::StringRef Program::debugNameFor(uint32_t pc) const {
   // The entries are strictly increasing by program counter, which the
   // `debug-order` check enforces, so this could be a binary search. It is a
@@ -202,6 +231,10 @@ void putInstruction(std::vector<uint8_t> &out,
   put<uint32_t>(out, static_cast<uint32_t>(instruction.resultElementType));
   put<int64_t>(out, instruction.resultAddress);
   putI64Vector(out, instruction.resultShape);
+  // Version 2. It sits beside the shape it belongs to rather than at the end of
+  // the record, because the format has no tags and a reader's only guide to
+  // what a field means is where it is.
+  putI64Vector(out, instruction.resultStrides);
   putCount(out, instruction.operands.size());
   for (const Operand &operand : instruction.operands)
     putOperand(out, operand);
@@ -433,6 +466,8 @@ bool readInstruction(DecodeState &state, Instruction &instruction) {
   if (!state.reader.read(instruction.resultAddress))
     return state.truncated("a result address");
   if (!readI64Vector(state, instruction.resultShape, "a result shape"))
+    return false;
+  if (!readI64Vector(state, instruction.resultStrides, "a result stride vector"))
     return false;
 
   uint32_t operandCount = 0;

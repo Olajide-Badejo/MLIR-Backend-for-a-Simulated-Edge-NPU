@@ -194,6 +194,21 @@ private:
 // The instructions the scaffolding builds by hand.
 //===----------------------------------------------------------------------===//
 
+/// The contiguous, row major strides a shape implies.
+///
+/// **The neutral value of `Instruction::resultStrides`, which version 2
+/// added.** A result that is not a view of anything steps by the product of the
+/// extents below each axis, which is the same rule an operand's strides have
+/// followed since version 1. Every builder below fills it, because the
+/// validator requires a stride per extent on any opcode that has a result and
+/// a scaffolding that left it empty would fail every program it built.
+inline std::vector<int64_t> resultStridesFor(llvm::ArrayRef<int64_t> shape) {
+  std::vector<int64_t> strides(shape.size(), 1);
+  for (size_t index = shape.size(); index-- > 1;)
+    strides[index - 1] = strides[index] * shape[index];
+  return strides;
+}
+
 inline Instruction dmaLoad(int64_t scratchAddress, llvm::ArrayRef<int64_t> shape,
                            Operand source) {
   Instruction instruction;
@@ -202,6 +217,7 @@ inline Instruction dmaLoad(int64_t scratchAddress, llvm::ArrayRef<int64_t> shape
   instruction.resultElementType = source.elementType;
   instruction.resultAddress = scratchAddress;
   instruction.resultShape.assign(shape.begin(), shape.end());
+  instruction.resultStrides = resultStridesFor(shape);
   instruction.operands.push_back(std::move(source));
   return instruction;
 }
@@ -214,6 +230,7 @@ inline Instruction dmaStore(int64_t dramAddress, llvm::ArrayRef<int64_t> shape,
   instruction.resultElementType = source.elementType;
   instruction.resultAddress = dramAddress;
   instruction.resultShape.assign(shape.begin(), shape.end());
+  instruction.resultStrides = resultStridesFor(shape);
   instruction.operands.push_back(std::move(source));
   return instruction;
 }
@@ -227,6 +244,7 @@ inline Instruction compute(Opcode opcode, int64_t resultAddress,
   instruction.resultElementType = ElemType::F32;
   instruction.resultAddress = resultAddress;
   instruction.resultShape.assign(resultShape.begin(), resultShape.end());
+  instruction.resultStrides = resultStridesFor(resultShape);
   instruction.operands = std::move(operands);
   return instruction;
 }

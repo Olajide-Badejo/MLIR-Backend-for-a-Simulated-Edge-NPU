@@ -211,11 +211,19 @@ float activate(const Instruction &instruction, float value) {
 /// `DMA_LOAD` and `DMA_STORE`, which are the same gather with the spaces
 /// exchanged.
 ///
-/// The operand carries strides and the result does not, so a transfer whose
-/// source is strided gathers into a contiguous destination in the operand's own
-/// shape order. That is what a descriptor driven DMA does, and it is why the
-/// stride term of Section 5.5 exists: without it a strided NCHW gather and a
-/// contiguous NHWC burst would cost exactly the same.
+/// **Both sides carry strides from version 2.** Until then the operand carried
+/// them and the result did not, so a transfer gathered from a strided source
+/// into a contiguous destination. That was every transfer this compiler emitted,
+/// because nothing produced a view of a destination; a tiled program produces
+/// one per tile, and a store into a sub region has to **scatter** rather than
+/// lay its bytes down in a run. D-0050 carries what the missing half cost: a
+/// tiled program wrote 160 of the 512 elements it should have, into the wrong
+/// channels, and nothing caught it because an output region is written and
+/// never read.
+///
+/// That is what a descriptor driven DMA does, and it is why the stride term of
+/// Section 5.5 exists: without it a strided NCHW gather and a contiguous NHWC
+/// burst would cost exactly the same.
 ///
 /// It does **not** permute dimensions. A DMA moves bytes and does not change a
 /// layout on the way; `TRANSPOSE` is the only operation on this machine that
@@ -228,8 +236,17 @@ KernelCost transfer(Machine &machine, const Instruction &instruction) {
   if (elements <= 0 || elementSize <= 0)
     return cost;
 
-  const int64_t innermostStride =
+  // **The penalty is charged when either side is uncoalesced**, which it has to
+  // be: a scattered store cannot be coalesced into a burst any more than a
+  // gathered load can. It moves no recorded number, because no program before
+  // version 2 could have a strided result at all.
+  const int64_t sourceInnermost =
       source.strides.empty() ? 1 : source.strides.back();
+  const int64_t resultInnermost = instruction.resultStrides.empty()
+                                      ? 1
+                                      : instruction.resultStrides.back();
+  const int64_t innermostStride =
+      sourceInnermost != 1 ? sourceInnermost : resultInnermost;
   cost.cycles = dmaCycles(elements * elementSize, elements, innermostStride);
 
   if (!requireRank(machine, source, instruction.resultShape.size(),
@@ -243,20 +260,35 @@ KernelCost transfer(Machine &machine, const Instruction &instruction) {
     return cost;
   }
 
+  // Whether a stride vector is the contiguous layout its extents imply. Asked
+  // of both sides from version 2, because the fast path below is only available
+  // when neither side needs walking.
+  auto isContiguous = [](const std::vector<int64_t> &shape,
+                         const std::vector<int64_t> &strides) {
+    if (shape.size() != strides.size())
+      return false;
+    int64_t expected = 1;
+    for (size_t axis = shape.size(); axis-- > 0;) {
+      if (strides[axis] != expected)
+        return false;
+      expected *= shape[axis];
+    }
+    return true;
+  };
+
+  // An empty result stride vector is what every program written before version 2
+  // carried, and it means the contiguous layout. Treating it as such rather than
+  // as a malformed one keeps this kernel readable against a decoded `Instruction`
+  // that a caller built by hand.
+  const bool destinationContiguous =
+      instruction.resultStrides.empty() ||
+      isContiguous(instruction.resultShape, instruction.resultStrides);
+  const bool sourceContiguous = isContiguous(source.shape, source.strides);
+
   // The contiguous case is a single checked span rather than one check per
   // element. It is the common case by a wide margin and it is the one the
   // sentence "a DMA moves bytes" describes literally.
-  bool contiguous = true;
-  int64_t expected = 1;
-  for (size_t axis = source.shape.size(); axis-- > 0;) {
-    if (source.strides[axis] != expected) {
-      contiguous = false;
-      break;
-    }
-    expected *= source.shape[axis];
-  }
-
-  if (contiguous) {
+  if (sourceContiguous && destinationContiguous) {
     machine.copy(instruction.resultSpace, instruction.resultAddress,
                  source.space, source.address, elements * elementSize);
     return cost;
@@ -265,10 +297,19 @@ KernelCost transfer(Machine &machine, const Instruction &instruction) {
   Odometer walk(instruction.resultShape);
   int64_t destination = 0;
   do {
+    // The destination offset is the odometer against the result's own strides
+    // when it has them, and the running count when it does not. Those are the
+    // same number whenever the result is contiguous, which is what makes this
+    // change invisible to every program that predates it.
+    const int64_t destinationOffset =
+        destinationContiguous
+            ? destination
+            : offsetOf(walk.current(), instruction.resultStrides);
     if (!copyElement(machine, instruction.resultSpace,
-                     instruction.resultAddress, destination, source.space,
-                     source.address, offsetOf(walk.current(), source.strides),
-                     elementSize, "DMA element"))
+                     instruction.resultAddress, destinationOffset,
+                     source.space, source.address,
+                     offsetOf(walk.current(), source.strides), elementSize,
+                     "DMA element"))
       return cost;
     ++destination;
   } while (walk.next());

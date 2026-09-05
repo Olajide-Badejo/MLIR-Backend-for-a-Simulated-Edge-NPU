@@ -684,6 +684,16 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                                 std::to_string(instruction.resultShape.size()) +
                                 " extents",
                             at);
+    // Version 2's field takes the same neutral value rule as every other field
+    // an opcode gives no meaning to: empty, and checked rather than assumed.
+    if (!instruction.resultStrides.empty())
+      return validator.fail(
+          Check::AttributeSize,
+          std::string(info.name) +
+              " writes no result, so its result stride vector is empty, and it "
+              "holds " +
+              std::to_string(instruction.resultStrides.size()) + " entries",
+          at);
     if (instruction.resultAddress != 0)
       return validator.fail(Check::ResultAddress,
                             std::string(info.name) +
@@ -700,6 +710,28 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                                 " is empty, holds a non positive extent, or "
                                 "has a product above the shape limit",
                             at);
+    // **Version 2: the result carries a stride per extent and the bound checks
+    // use the reach rather than the count.** A result that is a view of a
+    // larger buffer addresses further than its element count suggests, so a
+    // tile judged in range by its count alone could write past the end of the
+    // memory it sits in. This is `Operand`'s rule, which has held since P5,
+    // arriving on the write side because the write side finally has views.
+    if (instruction.resultStrides.size() != instruction.resultShape.size())
+      return validator.fail(
+          Check::AttributeSize,
+          std::string(info.name) + " writes a result of rank " +
+              std::to_string(instruction.resultShape.size()) +
+              " and its result stride vector holds " +
+              std::to_string(instruction.resultStrides.size()) + " entries",
+          at);
+    int64_t resultSpan = instruction.resultAddressedByteSpan();
+    if (resultSpan < 0)
+      return validator.fail(
+          Check::AttributeValue,
+          "the result strides " + shapeText(instruction.resultStrides) +
+              " against the shape " + shapeText(instruction.resultShape) +
+              " hold a negative entry or reach past the shape limit",
+          at);
     if (instruction.resultAddress < 0)
       return validator.fail(Check::ResultAddress,
                             "the result address is " +
@@ -715,21 +747,22 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                             at);
 
     if (instruction.resultSpace == MemSpace::Dram) {
-      if (!fitsInMemory(instruction.resultAddress, resultBytes,
+      if (!fitsInMemory(instruction.resultAddress, resultSpan,
                         program.dramBytes))
         return validator.fail(Check::DramInRange,
-                              "the result runs from " +
+                              "the result reaches from " +
                                   std::to_string(instruction.resultAddress) +
-                                  " for " + std::to_string(resultBytes) +
+                                  " for " + std::to_string(resultSpan) +
                                   " bytes, past the declared DRAM size of " +
                                   std::to_string(program.dramBytes),
                               at);
-    } else if (!fitsInMemory(instruction.resultAddress, resultBytes,
+    } else if (!fitsInMemory(instruction.resultAddress, resultSpan,
                              program.scratchpadBytes)) {
       return validator.fail(
           Check::ResultInRange,
-          "the result runs from " + std::to_string(instruction.resultAddress) +
-              " for " + std::to_string(resultBytes) +
+          "the result reaches from " +
+              std::to_string(instruction.resultAddress) + " for " +
+              std::to_string(resultSpan) +
               " bytes, past the declared scratchpad size of " +
               std::to_string(program.scratchpadBytes),
           at);

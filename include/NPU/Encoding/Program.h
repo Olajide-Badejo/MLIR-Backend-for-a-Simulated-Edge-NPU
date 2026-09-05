@@ -264,6 +264,22 @@ struct Instruction {
   ElemType resultElementType = ElemType::F32;
   int64_t resultAddress = 0;
   std::vector<int64_t> resultShape;
+  /// The result's stride per dimension, in elements. **Version 2.**
+  ///
+  /// Symmetric with the strides an `Operand` has carried since version 1, and
+  /// added for the reason that asymmetry finally cost something: a tiled
+  /// program writes a sub region of a larger buffer, and until version 2 the
+  /// encoder computed the destination's strides and then discarded them. The
+  /// result was a `DMA_STORE` that wrote a contiguous block where it should
+  /// have scattered, which the validator could not see because an output region
+  /// is written and never read. `docs/BREAKING_CHANGES.md` carries the
+  /// declaration and D-0050 carries the reproduction.
+  ///
+  /// **The neutral value is the contiguous one**, not an empty vector, because
+  /// every opcode with a result gives this field meaning. `attribute-size`
+  /// requires it to have the result's rank, and a buffer that is not a view of
+  /// anything carries the strides its own extents imply.
+  std::vector<int64_t> resultStrides;
 
   std::vector<Operand> operands;
 
@@ -297,7 +313,17 @@ struct Instruction {
   /// The elements the result holds, or -1 when the shape exceeds the limit.
   int64_t resultElementCount() const;
   /// The bytes the result occupies, or -1 when the element count is -1.
+  ///
+  /// This is the count times the element size and says nothing about where the
+  /// bytes sit. It is what an opcode's own shape rules are checked against.
   int64_t resultByteSize() const;
+  /// The half open byte span the result addresses, from `resultAddress`.
+  ///
+  /// `Operand::addressedByteSpan`'s rule applied to the write side: a strided
+  /// result reaches further than its element count suggests, and the bound
+  /// checks have to use the reach rather than the count or a tile of a larger
+  /// buffer would be judged in range while writing past the end of it.
+  int64_t resultAddressedByteSpan() const;
 };
 
 /// One entry of the optional debug section: a program counter and the ONNX
@@ -326,7 +352,15 @@ public:
   /// not bump it, because an opcode value is data inside a layout that did not
   /// move. Section 9.1 names the one future change that is already accounted
   /// for: P14's quantization, whose fields are present from here.
-  static constexpr uint32_t kVersion = 1;
+  /// **Version 2 from Phase P13.** `resultStrides` joined `Instruction`, so the
+  /// layout moved and the version moves with it. `docs/BREAKING_CHANGES.md`
+  /// carries the declaration, written before the commit that caused it, and
+  /// `docs/ISA_MANUAL.md`'s version policy carries the format's own record.
+  ///
+  /// The narrow claim above about P14 is untouched: the element types and the
+  /// requantization pair are still present from version one and P14 still bumps
+  /// nothing. What moved is the number its gate counts from.
+  static constexpr uint32_t kVersion = 2;
 
   /// The cap on every `u32` count field the format has.
   ///

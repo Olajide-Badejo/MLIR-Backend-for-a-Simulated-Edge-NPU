@@ -319,10 +319,19 @@ LogicalResult FunctionEncoder::setResult(Instruction &instruction, Value value,
   FailureOr<Operand> destination = makeOperand(value, at);
   if (failed(destination))
     return failure();
+  // **All five fields, from version 2.** Until then this copied four and
+  // dropped the strides, and the drop was invisible: a destination that was a
+  // view of a larger buffer encoded as though it were the whole of a smaller
+  // one, so a `DMA_STORE` into a sub region wrote a contiguous block instead of
+  // scattering. Nothing caught it, because an output region is written and
+  // never read, and the only reason it never produced a wrong answer is that
+  // nothing emitted a strided destination until tiling did. D-0050 carries the
+  // reproduction: 160 of 512 elements, into the wrong channels.
   instruction.resultSpace = destination->space;
   instruction.resultElementType = destination->elementType;
   instruction.resultAddress = destination->address;
   instruction.resultShape = destination->shape;
+  instruction.resultStrides = destination->strides;
   return success();
 }
 

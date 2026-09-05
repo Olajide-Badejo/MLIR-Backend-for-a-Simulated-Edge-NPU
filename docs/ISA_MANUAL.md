@@ -170,7 +170,7 @@ layout itself.
 
 ## Version policy
 
-`Program::kVersion` starts at **1**.
+`Program::kVersion` starts at **1** and is **2** from Phase P13.
 
 Any change to the layout of the binary bumps it, and a file at a version this
 build does not know is rejected with the `version` check rather than
@@ -254,7 +254,7 @@ not the letters.
 | Field | Type | Meaning |
 |---|---|---|
 | `magic` | `u32` | `0x4E49424E` |
-| `version` | `u32` | `Program::kVersion`, currently 1 |
+| `version` | `u32` | `Program::kVersion`, currently 2 |
 | `scratchpadBytes` | `u64` | the scratchpad the program declares it needs |
 | `dramBytes` | `u64` | the DRAM the program declares it needs |
 
@@ -319,6 +319,7 @@ advisory. A file that sets an activation on `RESHAPE` is rejected, not ignored.
 | `resultElementType` | `u32` | | the result's element type |
 | `resultAddress` | `i64` | 0 | the byte address of the result |
 | `resultRank`, `resultShape` | `u32`, `i64[]` | empty | the result's extents |
+| `resultStrideCount`, `resultStrides` | `u32`, `i64[]` | empty | **version 2**, the result's stride per extent, in elements |
 | `operandCount`, `operands` | `u32`, `Operand[]` | empty | see below |
 | `padCount`, `pads` | `u32`, `i64[]` | empty | four entries, ONNX order |
 | `strideCount`, `strides` | `u32`, `i64[]` | empty | two entries, the window stride |
