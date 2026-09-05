@@ -20,6 +20,13 @@
 // every output position of every tile reads the same input positions it read
 // untiled. What is pinned here is the policy: which operations the pass picks
 // up, what it records about its choice, and that no `scf` operation survives it.
+//
+// **The same IR runs under all three strategies**, and that is what makes the
+// exhaustive search's makespan a number rather than an assertion about itself.
+// Section 13.2 keeps `fixed` and `largest-fit` as named baselines precisely so
+// that the chosen mapping has something to be compared against, and a regret
+// that lives only in a log entry is a regret nobody would notice changing. The
+// `FIXED` and `GREEDY` prefixes pin what each baseline picks and what it costs.
 
 // RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 | FileCheck %s
 // RUN: npu-opt %s --npu-tile-to-scratchpad=budget=1048576 \
@@ -31,6 +38,10 @@
 // RUN:   | FileCheck %s --check-prefix=STATS
 // RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=REMARK
+// RUN: npu-opt %s --npu-tile-to-scratchpad="budget=2048 strategy=fixed" \
+// RUN:   | FileCheck %s --check-prefix=FIXED
+// RUN: npu-opt %s --npu-tile-to-scratchpad="budget=2048 strategy=largest-fit" \
+// RUN:   | FileCheck %s --check-prefix=GREEDY
 
 // -----------------------------------------------------------------------------
 // Positive: a convolution whose working set is 4256 bytes against a budget of
@@ -77,6 +88,37 @@
 // NOSCF-LABEL: func.func @convolution
 // NOSCF-NOT: scf.
 
+// -----------------------------------------------------------------------------
+// The named baselines on the same convolution.
+//
+// `fixed` halves the largest halvable extent until the working set fits, one
+// candidate per halving, and on this shape it lands on the same four tiles the
+// exhaustive search chose: its regret here is zero. `largest-fit` commits to
+// the largest divisor of each axis in the tie break's own order before it looks
+// at the next, takes two output channels by the whole spatial extent, and pays
+// 1790 cycles for it.
+//
+// **Five percent, and it is small on this shape rather than small in general.**
+// The two numbers are asserted side by side so that a change to the cost model
+// or to the candidate order has to move a test rather than a paragraph.
+// -----------------------------------------------------------------------------
+
+// FIXED-LABEL: func.func @convolution
+// FIXED: npu.conv2d
+// FIXED-SAME: makespan_cycles = 1.704000e+03
+// FIXED-SAME: strategy = "fixed"
+// FIXED-SAME: temporal_tiles = array<i64: 1, 1, 4, 4, 8>
+// FIXED-SAME: tile_bytes = 1872
+// FIXED-SAME: tile_count = 4
+
+// GREEDY-LABEL: func.func @convolution
+// GREEDY: npu.conv2d
+// GREEDY-SAME: makespan_cycles = 1.790000e+03
+// GREEDY-SAME: strategy = "largest-fit"
+// GREEDY-SAME: temporal_tiles = array<i64: 1, 1, 2, 8, 8>
+// GREEDY-SAME: tile_bytes = 1832
+// GREEDY-SAME: tile_count = 4
+
 func.func @convolution(%x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>,
                        %b: tensor<8xf32>, %d: tensor<1x8x8x8xf32>)
     -> tensor<1x8x8x8xf32> {
@@ -104,6 +146,7 @@ func.func @convolution(%x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>,
 // CHECK: tensor.extract_slice %arg0[0, 0] [2, 64]
 // CHECK: tensor.extract_slice %arg1[0, 0] [64, 4]
 // CHECK: npu.matmul
+// CHECK-SAME: makespan_cycles = 1.940400e+04
 // CHECK-SAME: temporal_tiles = array<i64: 2, 1, 4, 1, 1>
 // CHECK-SAME: tile_count = 64
 // CHECK: tensor.insert_slice
@@ -114,6 +157,30 @@ func.func @convolution(%x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>,
 
 // NOSCF-LABEL: func.func @matmul
 // NOSCF-NOT: scf.
+
+// -----------------------------------------------------------------------------
+// The named baselines on the matrix multiplication, where they agree with each
+// other and disagree with the search.
+//
+// Both baselines take four rows by two columns and the exhaustive search takes
+// two rows by four columns. The working sets are equal at 1568 bytes and the
+// makespans are not, because the two operands are not the same size: the search
+// wins by 8 cycles out of 19412. **A regret of 0.04 percent is worth asserting
+// for the same reason the 5 percent above is**, which is that it is the number
+// a change to the tie break would move first.
+// -----------------------------------------------------------------------------
+
+// FIXED-LABEL: func.func @matmul
+// FIXED: npu.matmul
+// FIXED-SAME: makespan_cycles = 1.941200e+04
+// FIXED-SAME: temporal_tiles = array<i64: 4, 1, 2, 1, 1>
+// FIXED-SAME: tile_bytes = 1568
+
+// GREEDY-LABEL: func.func @matmul
+// GREEDY: npu.matmul
+// GREEDY-SAME: makespan_cycles = 1.941200e+04
+// GREEDY-SAME: temporal_tiles = array<i64: 4, 1, 2, 1, 1>
+// GREEDY-SAME: tile_bytes = 1568
 
 func.func @matmul(%a: tensor<16x64xf32>, %b: tensor<64x32xf32>,
                   %d: tensor<16x32xf32>) -> tensor<16x32xf32> {
@@ -149,6 +216,16 @@ func.func @matmul(%a: tensor<16x64xf32>, %b: tensor<64x32xf32>,
 
 // NOSCF-LABEL: func.func @fused_region_declines
 // NOSCF-NOT: scf.
+
+// The decline is the policy rather than the search, so it holds under every
+// strategy.
+// FIXED-LABEL: func.func @fused_region_declines
+// FIXED-NOT: tensor.extract_slice
+// FIXED: npu.fused_op
+
+// GREEDY-LABEL: func.func @fused_region_declines
+// GREEDY-NOT: tensor.extract_slice
+// GREEDY: npu.fused_op
 
 // REMARK: a fused region whose working set exceeds the budget is left to the
 // REMARK-SAME: allocator

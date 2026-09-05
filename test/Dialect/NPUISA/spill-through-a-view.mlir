@@ -24,6 +24,8 @@
 // RUN: npu-opt %s --npu-allocate-scratchpad=budget=192 | FileCheck %s
 // RUN: not npu-opt %s --npu-allocate-scratchpad=budget=64 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=WORKING
+// RUN: not npu-opt %s --npu-allocate-scratchpad=budget=64 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=WRITTEN
 
 // -----------------------------------------------------------------------------
 // A buffer read only through a view is spilled, and the view moves to the
@@ -101,3 +103,37 @@ func.func @a_view_only_read_through_does_not_block_the_spill(
 // WORKING-SAME: The peak is at operation
 // WORKING: bytes, live [
 // WORKING-SAME: uses after the peak:
+// -----------------------------------------------------------------------------
+// A view that is **written through** still blocks the spill, and it is the only
+// thing that does.
+//
+// The rewrite that re-bases a read only view onto the reload would send this
+// write into the reload, and the buffer the store put in DRAM would never see
+// it. So the narrow rule refuses it, and the failure says which rule and about
+// which buffer rather than leaving a reader to work it out.
+// -----------------------------------------------------------------------------
+
+// WRITTEN: a view of it is written through, and a reload cannot serve that
+func.func @a_view_written_through_still_blocks_the_spill(
+    %in: memref<4x4xf32, #npu.dram> {npuisa.arg = "in"},
+    %half: memref<2x4xf32, #npu.dram> {npuisa.arg = "in"},
+    %out: memref<4x4xf32, #npu.dram> {npuisa.arg = "out"}) {
+  %a = memref.alloc() : memref<4x4xf32, #npu.scratchpad>
+  npuisa.dma_load %in, %a
+      : memref<4x4xf32, #npu.dram> to memref<4x4xf32, #npu.scratchpad>
+
+  // The write through the view, which is what a reload cannot serve.
+  %view = memref.subview %a[0, 0] [2, 4] [1, 1]
+      : memref<4x4xf32, #npu.scratchpad>
+        to memref<2x4xf32, strided<[4, 1]>, #npu.scratchpad>
+  npuisa.dma_load %half, %view
+      : memref<2x4xf32, #npu.dram>
+        to memref<2x4xf32, strided<[4, 1]>, #npu.scratchpad>
+
+  %e = memref.alloc() : memref<4x4xf32, #npu.scratchpad>
+  npuisa.relu ins(%a : memref<4x4xf32, #npu.scratchpad>)
+              outs(%e : memref<4x4xf32, #npu.scratchpad>)
+  npuisa.dma_store %e, %out
+      : memref<4x4xf32, #npu.scratchpad> to memref<4x4xf32, #npu.dram>
+  return
+}
