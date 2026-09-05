@@ -368,8 +368,19 @@ from its address, not `product(extents)`. That is the rule
 `docs/ARCHITECTURE.md` fixed at P5: a view's byte range comes from its strides,
 so a stride 0 broadcast over eight channels spans eight elements and not one
 hundred and twenty eight. The span is a closed hull rather than an exact set,
-which is the only approximation anywhere in this format's arithmetic and is in
-the safe direction.
+which is the approximation the **bound** checks use and is in the safe
+direction.
+
+**Coverage is exact where the hull is not, and only inside a declared spill
+slot.** From P13 the validator answers `operand-defined` and `operand-extent`
+inside a spill slot by the bytes a read actually touches, run by run, because a
+hull would accept a read of the bytes between the rows of a tile that no write
+ever put anything in. The hull still bounds; the run set covers. Everywhere
+else, the scratchpad included, the older rule stands unchanged: one span per
+write, never merged, because a buffer there has no declared extent of its own
+and a merged range would accept an over read into the buffer next door.
+`docs/BREAKING_CHANGES.md` carries the decision and D-0052 the reproduction that
+asked for it.
 
 ### The debug section
 
@@ -483,8 +494,8 @@ that: the C++ enum and this table come out of the same records.
 | `result-address` | The result address is non negative, is zero when the opcode writes no result, and names the memory space the opcode writes its result in. |
 | `result-in-range` | The result's bytes lie inside the scratchpad the file declares. |
 | `operand-in-range` | Each scratchpad operand's byte span lies inside the scratchpad the file declares, and every operand names the memory space the opcode declares for that slot. |
-| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input or constant region. An output region and a spill slot are places to write, so reading one before writing it is reading whatever the loader left there. |
-| `operand-extent` | The consumer's element need fits the element count actually written to the buffer it reads. Membership alone is not enough: a DMA_STORE reading 100 elements from a 4 element buffer would pass a membership test and then trap. |
+| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input or constant region. An output region is a place to write, so reading one before writing it is reading whatever the loader left there. Inside a declared spill slot the written bytes are tracked exactly, strided writes run by run, so a buffer written in pieces by several instructions is readable once every byte of it has been written and is refused while any interior byte has not. |
+| `operand-extent` | The consumer's need fits the buffer it reads. In the scratchpad that is the element count written at the operand's address, kept as one span per write and never merged, because a buffer there has no declared extent and a merged range would accept an over read into the buffer next door. Inside a declared spill slot it is every byte the read addresses, computed from its strides rather than from its count, lying inside that one slot; a read reaching into the next slot is refused for leaving its region. |
 | `dram-address` | A DRAM address is non negative. |
 | `dram-in-range` | A DRAM access lies inside the declared DRAM size. |
 | `region-offset` | A memory region's DRAM offset is non negative and does not overflow when its size is added. |

@@ -15,6 +15,12 @@
 #                          three hundred deliberately malformed files, every one
 #                          rejected cleanly and none allocating more than a few
 #                          megabytes
+#   SpillSlotCoverageTest.cpp the DRAM half of checks 8 and 9 from P13: a
+#                          buffer written in pieces inside one declared spill
+#                          slot, and the three ways reading it can go wrong.
+#                          Its own file because it has an accepting case, and
+#                          ValidationTest.cpp's contract is that every case in
+#                          it is rejected
 #
 # **The corpus is never called a fuzzer**, here or anywhere else. It is a
 # negative test table whose power is capped at what its author imagined on the
@@ -39,6 +45,7 @@ add_llvm_executable(NPUEncodingTests
         ValidationTest.cpp
         PropertyTest.cpp
         MalformedInputTest.cpp
+        SpillSlotCoverageTest.cpp
         )
 
 llvm_update_compile_flags(NPUEncodingTests)

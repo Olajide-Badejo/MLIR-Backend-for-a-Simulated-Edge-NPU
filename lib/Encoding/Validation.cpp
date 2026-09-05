@@ -88,6 +88,173 @@ private:
   std::map<uint32_t, std::map<int64_t, int64_t>> maps;
 };
 
+/// The byte runs a strided access touches, exactly rather than as a hull.
+///
+/// `Operand::addressedByteSpan` returns the closed hull from the first byte to
+/// the last, which is what a bound check wants and is deliberately an
+/// over approximation. **Coverage wants the opposite**, the bytes actually
+/// touched, because a tile of a larger buffer touches a run per row and skips
+/// the rest, and asking whether a read is covered by a hull would accept a read
+/// of bytes no write ever put anything in.
+///
+/// The innermost dimension is a contiguous run when its stride is one, which is
+/// the shape every view this compiler emits has; anything else degenerates to
+/// one run per element and is still exact.
+///
+/// **Nothing returns when the access has more runs than the cap.** A caller
+/// treats that as "cannot be tracked" and refuses, which is the safe direction:
+/// a file is free to declare a shape with a hundred million rows and this
+/// function must not try to enumerate them. The cap is far above anything this
+/// compiler emits; a whole `1x8x8x8` buffer is sixty four runs.
+constexpr int64_t kMaxCoverageRuns = 1 << 16;
+
+std::optional<std::vector<std::pair<int64_t, int64_t>>>
+byteRuns(int64_t address, const std::vector<int64_t> &shape,
+         const std::vector<int64_t> &strides, int64_t elementSize) {
+  if (shape.empty() || shape.size() != strides.size() || elementSize <= 0 ||
+      address < 0)
+    return std::nullopt;
+
+  const size_t rank = shape.size();
+  const bool innermostIsContiguous = strides[rank - 1] == 1;
+  const size_t outerRank = innermostIsContiguous ? rank - 1 : rank;
+  const int64_t runElements = innermostIsContiguous ? shape[rank - 1] : 1;
+
+  int64_t count = 1;
+  for (size_t index = 0; index < outerRank; ++index) {
+    if (shape[index] <= 0 || strides[index] < 0)
+      return std::nullopt;
+    if (shape[index] > kMaxCoverageRuns / count)
+      return std::nullopt;
+    count *= shape[index];
+  }
+  if (runElements <= 0 || runElements > Program::kShapeLimit / elementSize)
+    return std::nullopt;
+  const int64_t runBytes = runElements * elementSize;
+
+  std::vector<std::pair<int64_t, int64_t>> runs;
+  runs.reserve(static_cast<size_t>(count));
+  std::vector<int64_t> position(outerRank, 0);
+  for (int64_t linear = 0; linear < count; ++linear) {
+    int64_t offset = 0;
+    for (size_t index = 0; index < outerRank; ++index) {
+      const int64_t contribution = position[index] * strides[index];
+      if (contribution > Program::kShapeLimit - offset)
+        return std::nullopt;
+      offset += contribution;
+    }
+    if (offset > Program::kShapeLimit / elementSize)
+      return std::nullopt;
+    const int64_t begin = address + offset * elementSize;
+    if (begin < address || begin > Program::kShapeLimit - runBytes)
+      return std::nullopt;
+    runs.emplace_back(begin, begin + runBytes);
+
+    for (size_t index = outerRank; index-- > 0;) {
+      if (++position[index] < shape[index])
+        break;
+      position[index] = 0;
+    }
+  }
+  return runs;
+}
+
+/// Exact byte coverage inside each declared spill slot.
+///
+/// **This is the DRAM half of ISA checks 8 and 9 and it exists because a spill
+/// slot has an identity the scratchpad does not.** `program.spillSlots` carries
+/// an offset, an element type and a shape per slot, so the validator knows
+/// where each one begins and ends. A read whose address lies inside one is
+/// judged against that slot: every byte it addresses has to lie inside the same
+/// slot, and every one of those bytes has to have been written. Leaving the
+/// slot is refused for leaving it, and reading an interior byte nothing wrote
+/// is refused for reading what nothing wrote.
+///
+/// **The scratchpad is deliberately not covered by this.** There a buffer is an
+/// offset into one arena with no declared extent, so a range that grew to cover
+/// two adjacent buffers would let an over read off the end of the first pass
+/// validation, which is exactly the case `WrittenSpans`'s no merge rule exists
+/// to catch and which `test/Encoding/tiled-assembly-in-scratchpad.mlir` records.
+/// `docs/BREAKING_CHANGES.md` carries the decision and says which side moved.
+///
+/// A slot whose interval count passes the cap stops being tracked and refuses
+/// its reads by name rather than accepting them, because a validator that ran
+/// out of room and said nothing would be the silence Section 19.0 forbids.
+constexpr size_t kMaxIntervalsPerSlot = 1 << 14;
+
+class SlotCoverage {
+public:
+  explicit SlotCoverage(const Program &program) {
+    for (const MemRegion &slot : program.spillSlots) {
+      const int64_t bytes = slot.byteSize();
+      if (bytes <= 0 || slot.offset > static_cast<uint64_t>(INT64_MAX))
+        continue;
+      const auto begin = static_cast<int64_t>(slot.offset);
+      if (bytes > INT64_MAX - begin)
+        continue;
+      bounds.emplace_back(begin, begin + bytes);
+    }
+    covered.resize(bounds.size());
+    saturated.assign(bounds.size(), false);
+  }
+
+  /// The slot this DRAM address lies in, or nothing when it lies in none.
+  std::optional<size_t> slotAt(int64_t address) const {
+    for (const auto &[index, range] : llvm::enumerate(bounds))
+      if (address >= range.first && address < range.second)
+        return index;
+    return std::nullopt;
+  }
+
+  int64_t begin(size_t slot) const { return bounds[slot].first; }
+  int64_t end(size_t slot) const { return bounds[slot].second; }
+  bool isSaturated(size_t slot) const { return saturated[slot]; }
+
+  /// Records `[from, to)` as written, merging with what touches it.
+  void cover(size_t slot, int64_t from, int64_t to) {
+    if (from >= to || saturated[slot])
+      return;
+    std::map<int64_t, int64_t> &intervals = covered[slot];
+    auto next = intervals.upper_bound(from);
+    if (next != intervals.begin()) {
+      auto previous = std::prev(next);
+      if (previous->second >= from) {
+        from = previous->first;
+        to = std::max(to, previous->second);
+        intervals.erase(previous);
+      }
+    }
+    for (auto it = intervals.lower_bound(from); it != intervals.end();) {
+      if (it->first > to)
+        break;
+      to = std::max(to, it->second);
+      it = intervals.erase(it);
+    }
+    intervals[from] = to;
+    if (intervals.size() > kMaxIntervalsPerSlot) {
+      saturated[slot] = true;
+      intervals.clear();
+    }
+  }
+
+  /// Whether every byte of `[from, to)` has been written.
+  bool covers(size_t slot, int64_t from, int64_t to) const {
+    if (from >= to)
+      return true;
+    const std::map<int64_t, int64_t> &intervals = covered[slot];
+    auto next = intervals.upper_bound(from);
+    if (next == intervals.begin())
+      return false;
+    auto entry = std::prev(next);
+    return from >= entry->first && to <= entry->second;
+  }
+
+private:
+  std::vector<std::pair<int64_t, int64_t>> bounds;
+  std::vector<std::map<int64_t, int64_t>> covered;
+  std::vector<bool> saturated;
+};
+
 /// Collects the first failure. Every check below asks this to record and the
 /// caller stops at the first one, because a validator that reported everything
 /// would report a hundred consequences of one truncated shape.
@@ -559,7 +726,8 @@ bool checkShapeSemantics(Validator &validator, const Instruction &instruction,
 }
 
 bool checkInstruction(Validator &validator, const Instruction &instruction,
-                      int64_t at, WrittenSpans &defined) {
+                      int64_t at, WrittenSpans &defined,
+                      SlotCoverage &coverage) {
   const Program &program = validator.program;
 
   // An opcode this build does not know cannot be interpreted at all: it
@@ -825,6 +993,61 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
               " size of " + std::to_string(memorySize(program, operand.space)),
           at);
 
+    // **The DRAM side, when the read lands inside a declared spill slot.** That
+    // is the one place in this format where a buffer has an identity and an
+    // extent of its own, so it is the one place a read can be judged against
+    // exact coverage rather than against a single written span. Everything
+    // else, the scratchpad included, falls through to the rule below unchanged.
+    // `docs/BREAKING_CHANGES.md` carries the decision and D-0052 the
+    // reproduction that asked for it.
+    if (operand.space == MemSpace::Dram) {
+      if (std::optional<size_t> slot = coverage.slotAt(operand.address)) {
+        if (coverage.isSaturated(*slot))
+          return validator.fail(
+              Check::OperandDefined,
+              "operand " + std::to_string(index) + " reads spill slot " +
+                  std::to_string(*slot) +
+                  ", whose written ranges passed the limit of " +
+                  std::to_string(kMaxIntervalsPerSlot) +
+                  " this validator tracks, so its coverage is no longer known",
+              at);
+        auto runs = byteRuns(operand.address, operand.shape, operand.strides,
+                             elementByteSize(operand.elementType));
+        if (!runs)
+          return validator.fail(
+              Check::OperandExtent,
+              "operand " + std::to_string(index) + " with shape " +
+                  shapeText(operand.shape) + " and strides " +
+                  shapeText(operand.strides) +
+                  " addresses more discontiguous runs than the " +
+                  std::to_string(kMaxCoverageRuns) +
+                  " this validator tracks inside a spill slot",
+              at);
+        for (const auto &[from, to] : *runs) {
+          if (from < coverage.begin(*slot) || to > coverage.end(*slot))
+            return validator.fail(
+                Check::OperandExtent,
+                "operand " + std::to_string(index) + " addresses bytes " +
+                    std::to_string(from) + " to " + std::to_string(to) +
+                    ", which leaves spill slot " + std::to_string(*slot) +
+                    ", the region from " + std::to_string(coverage.begin(*slot)) +
+                    " to " + std::to_string(coverage.end(*slot)) +
+                    ". A read is satisfied inside one declared region and never "
+                    "across two",
+                at);
+          if (!coverage.covers(*slot, from, to))
+            return validator.fail(
+                Check::OperandDefined,
+                "operand " + std::to_string(index) + " reads bytes " +
+                    std::to_string(from) + " to " + std::to_string(to) +
+                    " of spill slot " + std::to_string(*slot) +
+                    ", and no instruction has written all of them",
+                at);
+        }
+        continue;
+      }
+    }
+
     std::optional<int64_t> end = defined.spanEndAt(operand.space,
                                                    operand.address);
     if (!end)
@@ -862,9 +1085,35 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
   if (!checkShapeSemantics(validator, instruction, at))
     return false;
 
-  if (info.hasResult)
+  if (info.hasResult) {
     defined.write(instruction.resultSpace, instruction.resultAddress,
                   instruction.resultByteSize());
+
+    // **The write side of the same rule, and it records the reach rather than
+    // the count.** `defined.write` above lays the element count down as one
+    // contiguous run from the address, which is right for a buffer written
+    // whole and wrong for a tile: a `1x8x4x8` tile of a `1x8x8x8` buffer writes
+    // eight runs of a hundred and twenty eight bytes and skips the rows
+    // between. D-0052 measured the two sides disagreeing, 1024 recorded against
+    // 1920 addressed, and this is the half that fixes it, on the DRAM spill
+    // slot side only.
+    //
+    // Bytes that fall outside the slot are not recorded anywhere, so a later
+    // read of them is refused as uncovered. That is the safe direction and it
+    // adds no refusal on the write side, which this change does not declare.
+    if (instruction.resultSpace == MemSpace::Dram) {
+      if (std::optional<size_t> slot =
+              coverage.slotAt(instruction.resultAddress)) {
+        auto runs = byteRuns(instruction.resultAddress, instruction.resultShape,
+                             instruction.resultStrides,
+                             elementByteSize(instruction.resultElementType));
+        if (runs)
+          for (const auto &[from, to] : *runs)
+            if (from >= coverage.begin(*slot) && to <= coverage.end(*slot))
+              coverage.cover(*slot, from, to);
+      }
+    }
+  }
   return true;
 }
 
@@ -950,9 +1199,16 @@ std::optional<ProgramError> Program::validate() const {
   if (!checkRegions(validator, defined))
     return validator.failure;
 
+  // The spill slots' own ranges, read once. A slot is the only DRAM buffer
+  // this format gives an identity and an extent to, which is what lets
+  // checks 8 and 9 be answered there by coverage rather than by a single
+  // written span. It is built after the regions are checked, because a slot
+  // whose shape or offset does not survive `checkRegion` never gets here.
+  SlotCoverage coverage(*this);
+
   for (const auto &[index, instruction] : llvm::enumerate(instructions))
     if (!checkInstruction(validator, instruction, static_cast<int64_t>(index),
-                          defined))
+                          defined, coverage))
       return validator.failure;
 
   if (!checkDebug(validator))
