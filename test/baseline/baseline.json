@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "412aa79c214e55fd4c2351f94b77cd3901b38263",
+  "git_sha": "7c0fd449a98dfa65cf69915c1f7b82589793e4c1",
   "levels": [
     0,
     1,
@@ -1159,7 +1159,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 30,
+      "passed": 31,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1186,6 +1186,7 @@
         "NPU :: Simulator/npu-sim.mlir",
         "NPU :: Smoke/npu-opt-roundtrip.mlir",
         "NPU :: Transforms/constant-fold.mlir",
+        "NPU :: Transforms/double-buffer.mlir",
         "NPU :: Transforms/fold-batchnorm.mlir",
         "NPU :: Transforms/fuse-bias.mlir",
         "NPU :: Transforms/fuse-ops.mlir",
