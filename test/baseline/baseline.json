@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "57d9c344b656c8e4e0776c2e5d16fb988b302fae",
+  "git_sha": "023edcd8aa56cbb7a5f6600d2ef40cd266258067",
   "levels": [
     0,
     1,
@@ -1168,7 +1168,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 35,
+      "passed": 36,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1176,6 +1176,7 @@
         "NPU :: Dialect/NPUISA/alloc-budget-too-small.mlir",
         "NPU :: Dialect/NPUISA/alloc-multiblock.mlir",
         "NPU :: Dialect/NPUISA/alloc-unknown-option.mlir",
+        "NPU :: Dialect/NPUISA/async-window-allocation.mlir",
         "NPU :: Dialect/NPUISA/canonicalize.mlir",
         "NPU :: Dialect/NPUISA/dma-boundaries.mlir",
         "NPU :: Dialect/NPUISA/invalid.mlir",
@@ -1218,8 +1219,8 @@
       ]
     },
     "pytest": {
-      "failed": 1,
-      "passed": 1084,
+      "failed": 0,
+      "passed": 1085,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
