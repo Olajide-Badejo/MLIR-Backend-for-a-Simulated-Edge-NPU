@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "7c0fd449a98dfa65cf69915c1f7b82589793e4c1",
+  "git_sha": "0746f53b1ce7488d68e6ff6727d62700a60e0e2f",
   "levels": [
     0,
     1,
@@ -1067,7 +1067,7 @@
     },
     "NPUSimulatorTests": {
       "failed": 0,
-      "passed": 57,
+      "passed": 58,
       "skipped": 1,
       "tests": [
         "Control.NopAdvancesAndHaltStops",
@@ -1080,6 +1080,7 @@
         "Convolution.DilatedConvolution",
         "Convolution.GroupedConvolution",
         "CostModel.ANarrowTileCostsMorePerMac",
+        "CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt",
         "CostModel.MacsAreRawAndTheOccupancyIsBeside",
         "CostModel.OverlapFractionReachesItsEndpoints",
         "CostModel.TheDmaChargeHasThreeTerms",
@@ -1159,7 +1160,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 31,
+      "passed": 32,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1185,6 +1186,7 @@
         "NPU :: Pipeline/pass-stats.mlir",
         "NPU :: Simulator/npu-sim.mlir",
         "NPU :: Smoke/npu-opt-roundtrip.mlir",
+        "NPU :: Transforms/assign-layout.mlir",
         "NPU :: Transforms/constant-fold.mlir",
         "NPU :: Transforms/double-buffer.mlir",
         "NPU :: Transforms/fold-batchnorm.mlir",
