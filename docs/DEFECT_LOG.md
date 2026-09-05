@@ -3065,6 +3065,47 @@ that reaches this bound reaches it, and the population is every `slow` test that
 runs a cell. That widens what a precondition at P15 has to cover and narrows
 nothing.
 
+**Two more, both on an idle machine, and they change the diagnosis.** The suite
+re-record at the tree where tiling reaches it took three attempts, and the two
+that failed were on a machine whose one minute load average was 0.01 and 0.03:
+
+```
+--mlir-timing reports CSE at 0.5000 ms and this project's instrumentation at
+0.1896 ms, a gap of 0.3104 ms against a bound of 0.3000 ms
+--mlir-timing reports SymbolDCE at 0.4000 ms and this project's instrumentation
+at 0.1441 ms, a gap of 0.2559 ms against a bound of 0.2500 ms
+```
+
+**The busy machine explanation does not cover these.** Nothing was running, and
+the same suite passed on the next attempt with a worst gap of 0.1041 ms. What
+the two have in common is the **pass**: both are fast ones whose printed figure
+is small, where the bound is small too, and both missed by a hair, 0.0104 and
+0.0059 milliseconds.
+
+**And there is an arithmetic observation that fits both exactly, recorded here
+and deliberately not acted on.** The bound is `half_ulp + fraction * printed`,
+which is 0.05 plus half of the figure MLIR **printed**. MLIR prints seconds to
+four decimals, so a printed 0.4000 stands for a true value anywhere in
+[0.3500, 0.4500), and the fraction is applied to the bottom of that interval
+rather than to the top. The term the derivation drops is
+`fraction * half_ulp`, which is **0.025 ms**, and **both idle machine reds are
+inside it**: 0.0104 and 0.0059 are each less than 0.025.
+
+**That is a candidate defect in the bound's derivation and not a licence to
+widen it.** It is the same containment argument D-0043 used, applied to a term
+that argument did not carry, and if it is right the bound should be
+`half_ulp + fraction * (printed + half_ulp)`. **It is not changed here**, for
+two reasons: a bound is a gate, and a phase that changed one while its own runs
+were failing against it would be doing the thing this project's rules exist to
+prevent, whatever the arithmetic said. It is an owner decision with the
+arithmetic written down, and Section 17.9's flake governance at P15 is where it
+belongs.
+
+**Until then the practice is unchanged and it works**: run the measurement on a
+machine that is idle, and if it goes red at this bound read the message, check
+which of the two bounds fired, and run it again. Three attempts is what the P13
+re-record took.
+
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by

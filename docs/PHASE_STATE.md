@@ -63,25 +63,35 @@ addresses lies inside that one slot and has been written. The scratchpad keeps
 the no merge rule. `docs/BREAKING_CHANGES.md` carries the declaration, written
 before the commit, and `20fc6c1` is the commit.
 
-**The compiler half is measured and not committed, and D-0056 is why.** With the
-validator fixed, tiling produces a valid program on 167 of the suite's 168
-cells. It **improves four** of them, and the numbers are the first evidence in
-this project that tiling buys anything on a real model: `conv_bn_relu_stack`
-with fusion ablated goes from a 6432 byte peak to **4640**, `inception_block`
-loses **all three** of its spills, and `lenet` and `lenet_batched` each lose a
-few hundred bytes of peak. It **takes one cell away**: `resnet_block` at its
-tight budget with `-npu-fuse-ops` ablated stops allocating at all, because the
-residual keeps the block's input resident while the tiles run and the assembly
-comes back whole on top of it.
+**The compiler half is in, and the cell that would not place does, because the
+allocator was refusing a legal spill.** D-0056 is the diagnosis and it is not
+the one the escalation guessed. The residual **does** have a view user: it is
+the tiled convolution's input, and under the per slice convention a slice of a
+scratchpad value is a view and no transfer, so tiling pinned it twice over,
+whole resident as the subview base and unspillable because it had view users.
+The spill rule refused any buffer a view was taken of, and what a reload cannot
+serve is only a view that is **written through**, because `spill` re-bases a
+read only view onto the reload with the same call that moves a reader. With the
+rule narrowed the cell places, with one spill, at a peak of 6144 bytes against
+the 6432 the untiled program needs.
 
-**Two rules were tried against that and neither separates the cases**, which is
-the finding rather than the inconvenience. Charging the assembly's re-entry to
-the search's budget made the tiles smaller and the cell still failed. Requiring
-the tiling to be an improvement declined `inception_block`, which was a win, and
-still admitted `resnet_block`, which was the loss. **The quantity that decides
-is the program's sweep line peak and the tiling pass sees one operation**, so no
-rule inside it can be the discriminator. D-0056 has the table, the two rules and
-the three ways forward.
+**No discriminator was written and none was needed.** The two rules the previous
+checkpoint tried and recorded as failures stay recorded; both were trying to
+separate cases that did not need separating. Section 13.2's own trigger, tile
+when the working set exceeds the budget, is what the pass does, and the
+allocator decides what the program costs.
+
+**What tiling costs and buys, over the whole suite.** Thirty one cells move and
+**not one default budget cell moves**. `inception_block` at its tight budget
+goes from 3799.0 cycles with three spills and 21936 DRAM bytes to **3395.0 with
+none and 12720**; `resnet_block` goes from 17 instructions and 2018.0 cycles to
+**21 and 2660.0**. **Tiling helps one model and costs the other**, and the
+mechanism is which operand it relieves: a slice of a **DRAM** value becomes a
+transfer and a slice of a **scratchpad** value becomes a view, so tiling
+relieves an argument or a DRAM assembly and does not relieve an on chip
+producer, which stays whole resident as the base the views are taken of. That
+sentence is in `docs/PASSES.md` beside the pass and in `docs/NUMBERS.md` beside
+the table.
 
 **The commit order carries meaning and the first commit is the phase.** P13 was
 briefed to fix D-0045 under the full declare then re-record governance, on the
@@ -128,7 +138,7 @@ already gives arm one.
 | Goldens byte identical for the tiling work, exactly | **met, and it is evidence now.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty at the tree that has all three passes in `-O2`. It became evidence at the wiring commit, which is what the previous handoff said would make it one |
 | Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **met, and the answer is still that there is nothing to declare.** Measured at the wired tree over the whole suite: **not one counted field of the 175 pre-existing cells moved**, over instructions, cycles, compute and DMA cycles, scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle distance, the overlap fraction and the fragmentation ratio. The 42 cells the run added are the three new ablation rows and had no counterpart to move. An entry declaring a movement measured to be zero would be a false declaration |
 | No `scf` operation reaches the lowering, asserted by a lit test | **met, as a statement about the lowering.** `test/Pipeline/p13-passes-at-o2.mlir` runs `-O2` at a budget where tiling fires and asserts no `scf` operation anywhere in the level's output, and the `NOSCF` prefix in `test/Transforms/tile-to-scratchpad.mlir` is kept beside it |
-| A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **met, to the cycle.** `resnet_block` at its tight budget is 17 instructions, 2018.0 cycles and 1 spill with `-npu-tile-to-scratchpad` ablated and with it present; `inception_block` is 22, 3799.0 and 3. Read out of the committed re-record rather than re-derived |
+| A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **met, to the cycle, and it is a measurement now rather than an identity.** With `-npu-tile-to-scratchpad` ablated, `resnet_block` at its tight budget reads 17 instructions, 2018.0 cycles and 1 spill and `inception_block` reads 22, 3799.0 and 3, which are the figures ADR 0008's budgets were measured against. Their **baselines** moved, because the pass fires: `resnet_block` to 21 and 2660.0 and `inception_block` to 3395.0 with no spills. `test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle` pins the ablated cells exactly and asserts the baselines differ, because a row where the two agreed would be measuring nothing |
 | The tight budget question answered per model with all three arms of Section 13.3 | **not started, and it has a subject now.** The fused region question was settled in advance and stands. D-0052 is fixed, so the format no longer refuses a tiled program, and D-0056 measures five cells where tiling changes something: four where it lowers the peak or removes spills and one where it makes the program unplaceable. That is the population the tiling arm is about, and the arm has to report the fifth as a program the arrangement cannot place rather than as a slower one |
 | The layout delta reported whichever way it went, with the DMA stride term shown to carry it | **met at the level.** The ablation row is zero on every model at both budgets, in all four counted columns, and the DMA stride term is exactly what makes it zero: 0.5 cycles per element strided against a permutation's 0.0625 makes a physical transpose eight times cheaper at every extent this machine can hold. `CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt` asserts the direction and the factor in the file that owns both constants |
 | The ZigZag comparison shown next to its prediction, compared under the same mapping | **not started, and D-0052 changes what it can be over.** The tool is installed, pinned, recorded and wired into the external tools policy. `npu.tiling_choice` is recorded on every tile the pass emits, and the pass emits none inside this suite at `-O2`, so the mappings to export have to come from the swept budget range or from `-O0` |
@@ -1451,15 +1461,14 @@ measured row, the two CI triggers re-evaluated, and the quiet serialized
 re-record of all 217 cells. What follows is what remains, and the first entry is
 new.
 
-1. **D-0052 is decided and fixed, and D-0056 is what replaced it.** The
-   validator accepts a tiled assembly read back inside a declared spill slot,
-   which is `20fc6c1`, and the compiler half is measured and held: tiling now
-   compiles on 167 of the suite's 168 cells, **improves four** of them and takes
-   one away. No rule inside the tiling pass separates the four from the one,
-   because the deciding quantity is the program's sweep line peak. The three ways
-   forward are in D-0056 and the choice between them is the next decision this
-   phase needs. **Section 13.3's tiling arm has a subject either way**: those
-   five cells are exactly where tiling changes something.
+1. **D-0052 and D-0056 are both closed and tiling is in the suite.** The
+   validator accepts a tiled assembly read back inside a declared spill slot and
+   the allocator no longer refuses a legal spill, so all 217 cells compile and
+   thirty one of them moved, all at the tight budgets. **Section 13.3's tiling
+   arm has its subject**: the two models that tile at their tight budgets and
+   the five whose fusion ablated rows tile, with one model helped and one cost.
+   The two follow ups D-0056 records, a pass that consults the allocator and a
+   pass that tiles a chain, are out of P13's budget and carry its evidence.
 2. **Section 13.3's three arms**, at `-O2`, with arm one in two configurations
    for the two spill heuristics and arm two in two configurations for fusion on
    and off, over the measured budget range of 6000 to 6464 for two models and

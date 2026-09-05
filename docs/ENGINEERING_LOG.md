@@ -6043,3 +6043,123 @@ cycle, no DRAM byte, no golden tensor byte. The suite is the same 217 cells at
 the same numbers, `regression-baseline --check` reports no drift in both shapes,
 and the only baseline movement is five test names and five counts, which is the
 composition change the declaration's own list of what does not move predicted.
+## 2026-09-05 Phase P13: the allocator was refusing a legal spill, and tiling reaches the suite
+
+**The question this session was given was why the allocator found no victim, and
+the first thing it did was make the allocator say so.** The failure printed "no
+buffer live across the pressure peak can be spilled" and stopped there, so a
+reader had to reconstruct five predicates over a dozen buffers from the IR to
+find out whether it was right. `spillRefusal` now returns the rule that refused
+a buffer, `isSpillable` is that function asking whether the answer is nothing,
+and the failure prints one line per candidate. On the cell in question:
+
+```
+The peak is at operation 37 and the buffers live across it are:
+  2048 bytes, live [0, 65], 1 uses after the peak: refused, a view is taken of
+    it, and a reload cannot serve a view
+  2048 bytes, live [19, 53], 0 uses after the peak: refused, a view is taken of
+    it, and a reload cannot serve a view
+  1024 bytes, live [34, 41], 1 uses after the peak: refused, it has already been
+    spilled
+  2304 bytes, live [35, 39], 1 uses after the peak: refused, it is itself a
+    reload
+  32 bytes, live [37, 39], 1 uses after the peak: refused, it is itself a reload
+```
+
+**The residual does have a view user, which is what the hypothesis that it had
+none got wrong.** It is the block's input and it is also the first
+convolution's input, so the tiling pass takes a `memref.subview` of it per tile.
+Under the per slice convention a slice of a scratchpad value is a view and no
+transfer, so **tiling pinned that buffer twice over**: whole resident because
+the slices are views of it, and unspillable because it has view users.
+
+### The rule was wider than its reason
+
+`spill` rewrites a buffer's later uses onto the reload with
+`replaceUsesOfWith`, and a view's use of the buffer is its source operand, so
+that call re-bases a view without knowing it is one. What a reload genuinely
+cannot serve is a view that is **written through**: the write would land in the
+reload and the buffer the store put in DRAM would never see it. So the rule is
+now that narrower one, a direct view of the allocation is recorded as a reader,
+and `viewWrittenThrough` replaces `hasViewUser`. The cell places with one spill
+at a peak of 6144 bytes, which is lower than the 6432 the untiled program needs.
+
+**A comment in the collection said exactly why the wide rule was there**: "a use
+through a view is counted for liveness above and makes the buffer unspillable,
+so it never reaches the rewrite that would need to know which of the two names
+to replace". The rewrite did not need to know. That is worth saying because the
+comment was honest about its own reason, and the reason had stopped being true
+when `replaceUsesOfWith` replaced whatever mechanism it was written against.
+
+### What tiling costs and buys, which is the phase's reason to exist
+
+Thirty one cells move and **not one default budget cell moves**. The gate
+clause's ablated cells still read 17/2018.0/1 and 22/3799.0/3 to the cycle, and
+all 21 golden tensors are byte identical, because tiling over parallel
+dimensions splits no reduction.
+
+| Cell, tight budget | before | after |
+|---|---|---|
+| `inception_block` | 3799.0 cycles, 3 spills, 21936 DRAM bytes | **3395.0, 0 spills, 12720** |
+| `resnet_block` | 17 instructions, 2018.0 cycles, 14944 bytes | **21, 2660.0, 19040** |
+
+**Tiling helps one model and costs the other, and the mechanism is which operand
+it relieves.** Under the per slice convention a slice of a **DRAM** value
+becomes a transfer and a slice of a **scratchpad** value becomes a view. So
+tiling relieves the operand that lives in DRAM, an argument or a DRAM assembly,
+and does not relieve an on chip producer, which stays whole resident as the base
+the views are taken of. `conv_bn_relu_stack`'s tiled convolution reads a
+function argument and its peak falls from 6432 bytes to 4640;
+`resnet_block`'s second convolution reads the previous layer's activation and
+gains the tile buffers on top of a residency it did not remove.
+
+**That is the Section 13.3 trade arriving as a table.** An optimizing pipeline
+being worse under memory pressure is the phenomenon the section names, and it is
+now measured rather than anticipated.
+
+### D-0057, found by the first tiled program reaching the roofline
+
+`npuisa_walk` reads operand types with one regular expression whose strided
+branch was `strided<\\[...\\]>`, which requires the closing bracket pair
+immediately. A view that starts at its parent's first byte prints as
+`strided<[512, 64, 8, 1]>` and matched; **one that does not prints as
+`strided<[512, 64, 8, 1], offset: 24>` and did not**, and a tiled operation
+produces one of each.
+
+**The pattern failing is not the defect. The silence is.** `finditer` does not
+raise on a type it cannot match, it yields one fewer, so the operand list came
+out one short and every operand after it moved down a place. On a convolution
+that is an `IndexError`, which is how it was found. On a matrix multiply it
+would have been a wrong reduction extent and a wrong charge with nothing to say
+so. The pattern accepts the offset now, and `_checkOperandCount` compares the
+types read against the operands named, so a type this walker cannot match is a
+`WalkError` rather than a list that quietly lost an entry.
+
+### The CI trigger fired at its third evaluation
+
+P12 recorded it as "P13, because tiling makes functions longer". It was
+evaluated at the wiring commit, where nothing tiled; after the validator fix,
+where the compiler half was held; and here. **Seventeen cells have longer
+functions, the longest went from 25 instructions to 33, and the largest single
+growth is 12 to 30.** The premise is true now, so the step is on, rehearsed red
+first with `--sizes 500` as its own recipe asks.
+
+`kernel_threads` stays off, and its reason is sharper than it was: the kernel's
+team cap is `batch * outputChannels` and these tilings split output **rows**, so
+the cap does not move, and the script measures each model at its default
+configuration where nothing tiles at all.
+
+### The re-record took three attempts and both failures are D-0049
+
+Both on an idle machine, both on a fast pass, both missing by a hair: 0.0104 and
+0.0059 milliseconds. **The busy machine explanation does not cover these**, and
+there is an arithmetic observation that fits both exactly: the bound applies its
+fraction to the figure MLIR **printed** rather than to the largest value that
+figure could stand for, and the term that drops is `fraction * half_ulp`, which
+is 0.025 ms. Both misses are inside it.
+
+**It is written down and not acted on.** A phase that changed a bound while its
+own runs were failing against it would be doing the thing the rule exists to
+prevent, whatever the arithmetic said. Section 17.9's flake governance at P15 is
+where it belongs, and the entry carries the derivation so that session does not
+have to find it again.
