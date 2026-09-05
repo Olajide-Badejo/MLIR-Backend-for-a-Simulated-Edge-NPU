@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "818475cb3b32a68554ebe405517dc730389e0a9f",
+  "git_sha": "80ac24d3b80c3f5f3330204f0417a66283dc021c",
   "levels": [
     0,
     1,
@@ -1215,8 +1215,8 @@
       ]
     },
     "pytest": {
-      "failed": 3,
-      "passed": 1081,
+      "failed": 0,
+      "passed": 1085,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1243,7 +1243,8 @@
         "test.Python.test_benchmarks::test_the_budget_verdict_passes_inside_and_fails_outside",
         "test.Python.test_benchmarks::test_the_committed_run_records_its_own_measured_cost",
         "test.Python.test_benchmarks::test_the_counts_are_what_adr_0010_says",
-        "test.Python.test_benchmarks::test_the_layout_and_double_buffer_rows_are_zero_on_every_model",
+        "test.Python.test_benchmarks::test_the_double_buffer_row_is_the_tiling_row_wherever_the_two_are_coupled",
+        "test.Python.test_benchmarks::test_the_layout_row_is_zero_on_every_model_at_every_budget",
         "test.Python.test_benchmarks::test_the_opt_out_records_a_null_and_a_reason",
         "test.Python.test_benchmarks::test_the_planned_cells_are_the_computed_cross_product",
         "test.Python.test_benchmarks::test_the_run_fails_when_it_exceeds_its_budget",

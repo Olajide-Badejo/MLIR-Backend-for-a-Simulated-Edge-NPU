@@ -528,17 +528,23 @@ def test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle() 
     """The P13 gate clause, asserted about the committed cells.
 
     Section 13.2's fallback for an operation that cannot be tiled is the
-    allocator's spilling, so a suite where `-npu-tile-to-scratchpad` is in `-O2`
-    has to produce the same program as one where it is not, on every cell the
-    pass does not change. **To the cycle, not to a tolerance**, because tiling
-    over parallel dimensions only is exact and a cycle count is an integer count
-    of a deterministic schedule.
+    allocator's spilling, so a cell with `-npu-tile-to-scratchpad` ablated has to
+    reproduce the program the suite had before the pass existed. **To the cycle,
+    not to a tolerance**, because the ablated pipeline is the old one exactly and
+    a cycle count is an integer count of a deterministic schedule.
 
     The two rows below are the ones ADR 0008's tight budgets were measured
     against and are the whole population the clause can be about: only these two
-    models spill at their tight budget. Reading them out of the committed cells
-    rather than re-deriving them is the point, since the clause is about the
-    recorded numbers rather than about what the compiler would produce now.
+    models spill at their tight budget.
+
+    **The clause is about the ablated cell and not about its baseline**, and the
+    difference matters from P13. The baselines moved when the pass started
+    firing: `resnet_block` gained four instructions and 642 cycles and
+    `inception_block` lost 404 cycles and all three spills, which is declared in
+    `docs/BREAKING_CHANGES.md`. A test that pinned both would be asserting that
+    the pass does nothing, which is the opposite of what the row is for. So the
+    ablated cell is pinned exactly and the baseline is asserted to **differ**,
+    because a row where the two agreed would be a row measuring nothing.
     """
     if not (RESULTS_DIR / "resnet_block-O2-tight-n1-fp32-normal.json").is_file():
         pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
@@ -546,21 +552,39 @@ def test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle() 
     for model, expected in SPILLING_AT_THE_TIGHT_BUDGET.items():
         baseline = _counted(_tight_cell(model))
         ablated = _counted(_tight_cell(model, "npu-tile-to-scratchpad"))
-        assert baseline == expected, (
-            f"{model} at its tight budget is {baseline} and ADR 0008 measured "
-            f"its budget against {expected}"
-        )
         assert ablated == expected, (
             f"{model} with the tiling pass ablated is {ablated} rather than "
-            f"{expected}, so the pass moved a cell it should not have"
+            f"{expected}, so the ablated pipeline is not the one the tight "
+            f"budget was measured against"
+        )
+        assert baseline != expected, (
+            f"{model} reads {baseline} with the pass present as well as with it "
+            f"ablated, so the tiling ablation row is measuring nothing"
         )
 
 
-def test_the_layout_and_double_buffer_rows_are_zero_on_every_model() -> None:
-    """The other two P13 ablation rows, over all four counted columns.
+def _columns(cell: dict[str, Any]) -> tuple[Any, ...]:
+    simulation = cell["simulation"]
+    return (
+        cell["instruction_count"],
+        simulation["simulated_cycles"],
+        simulation["spill_count"],
+        simulation["dram_bytes_total"],
+    )
 
-    `docs/NUMBERS.md` gives each of the three zeros a different reason and the
-    reasons are prose. This is the arithmetic under them, and it is asserted over
+
+def _committed_cell(name: str) -> dict[str, Any]:
+    return json.loads((RESULTS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def test_the_layout_row_is_zero_on_every_model_at_every_budget() -> None:
+    """`-npu-assign-layout`'s ablation row, over all four counted columns.
+
+    It is zero because the answer the pass computes is the layout the program
+    already had: Section 5.5 charges a strided move 0.5 cycles per element
+    against a permutation's 0.0625, so a physical transpose is eight times
+    cheaper at every extent this machine can hold and the pass answers NCHW
+    everywhere. That is a result rather than an absence, and it is asserted over
     the columns the table does not print as well as the two it does, because a
     row that was zero in instructions and cycles while DRAM traffic moved would
     read as inert and would not be.
@@ -568,29 +592,53 @@ def test_the_layout_and_double_buffer_rows_are_zero_on_every_model() -> None:
     if not (RESULTS_DIR / "resnet_block-O2-tight-n1-fp32-normal.json").is_file():
         pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
 
-    def columns(cell: dict[str, Any]) -> tuple[Any, ...]:
-        simulation = cell["simulation"]
-        return (
-            cell["instruction_count"],
-            simulation["simulated_cycles"],
-            simulation["spill_count"],
-            simulation["dram_bytes_total"],
-        )
-
     for model in MODELS:
         batch = 4 if model == "lenet_batched" else 1
         for budget in ("default", "tight"):
             name = f"{model}-O2-{budget}-n{batch}-fp32-normal"
-            baseline = json.loads(
-                (RESULTS_DIR / f"{name}.json").read_text(encoding="utf-8")
+            baseline = _committed_cell(name)
+            other = _committed_cell(f"{name}-ablate-npu-assign-layout")
+            assert _columns(other) == _columns(baseline), (
+                f"ablating npu-assign-layout moved {name} from "
+                f"{_columns(baseline)} to {_columns(other)}"
             )
-            for ablated in ("npu-assign-layout", "npu-double-buffer"):
-                other = json.loads(
-                    (RESULTS_DIR / f"{name}-ablate-{ablated}.json").read_text(
-                        encoding="utf-8"
-                    )
-                )
-                assert columns(other) == columns(baseline), (
-                    f"ablating {ablated} moved {name} from "
-                    f"{columns(baseline)} to {columns(other)}"
-                )
+
+
+def test_the_double_buffer_row_is_the_tiling_row_wherever_the_two_are_coupled() -> None:
+    """`-npu-double-buffer`'s ablation row, which is not its own from P13.
+
+    **The coupling is Section 13.2's and this is it as an equality.** The
+    pipeline tells the tiling search whether double buffering is in it, because
+    13.2 sizes the working set for the prefetch, so ablating double buffering
+    also relaxes the search. Wherever that relaxation is what stops the pass
+    firing, the two ablations produce the **same program**, and asserting that
+    is stronger than asserting either row's value: it says the row measures the
+    pair rather than the pass.
+
+    At the default budget nothing is near the budget, so the search answers the
+    same either way and the row is zero. At the tight budget of the two models
+    that tile, ablating either one gives the untiled program.
+    """
+    if not (RESULTS_DIR / "resnet_block-O2-tight-n1-fp32-normal.json").is_file():
+        pytest.skip("no results recorded yet; run experiments/run_benchmarks.py")
+
+    for model in MODELS:
+        batch = 4 if model == "lenet_batched" else 1
+        name = f"{model}-O2-default-n{batch}-fp32-normal"
+        assert _columns(
+            _committed_cell(f"{name}-ablate-npu-double-buffer")
+        ) == _columns(
+            _committed_cell(name)
+        ), f"ablating npu-double-buffer moved {name}, where nothing is near the budget"
+
+    for model in SPILLING_AT_THE_TIGHT_BUDGET:
+        name = f"{model}-O2-tight-n1-fp32-normal"
+        without_prefetch = _columns(_committed_cell(f"{name}-ablate-npu-double-buffer"))
+        without_tiling = _columns(
+            _committed_cell(f"{name}-ablate-npu-tile-to-scratchpad")
+        )
+        assert without_prefetch == without_tiling, (
+            f"on {name}, ablating the prefetch gives {without_prefetch} and "
+            f"ablating the tiling gives {without_tiling}, so the coupling "
+            f"docs/PASSES.md claims beside the row is not what the cells say"
+        )

@@ -251,18 +251,38 @@ ablated cell minus its baseline, so **a positive number is what the pass saves**
 | `-sccp` | 0 | everywhere | 0 |
 | `-symbol-dce` | 0 | everywhere | 0 |
 | `-npu-assign-layout` | 0 | everywhere | 0 |
-| `-npu-tile-to-scratchpad` | 0 | everywhere | 0 |
-| `-npu-double-buffer` | 0 | everywhere | 0 |
+| `-npu-tile-to-scratchpad` | **+404** | `inception_block`, tight | see below |
+| `-npu-double-buffer` | **+404** | `inception_block`, tight | see below |
 
-The rows are identical at both budgets. Every pass is zero on every model not
-named in the "where" column.
+**The first eight rows are identical at both budgets. The last two are not, and
+that is the interesting part of this table now.**
 
-**The last three rows are P13's and every one of them is zero, including the
-`dram_bytes` and `scratchpad_peak_bytes` columns this table does not print.**
-The full four field comparison, instructions, cycles, spills and DRAM bytes, is
-identical to the unablated baseline on all seven models at both budgets, for all
-three passes. Their reasons are below with the other zeros, and they are three
-different reasons.
+| Pass | Model, tight budget | Instructions | Cycles | Spills | DRAM bytes |
+|---|---|---|---|---|---|
+| `-npu-tile-to-scratchpad` | `inception_block` | 0 | **+404.0** | **+3** | **+9216** |
+| `-npu-tile-to-scratchpad` | `resnet_block` | **-4** | **-642.0** | 0 | **-4096** |
+| `-npu-double-buffer` | `inception_block` | 0 | +404.0 | +3 | +9216 |
+| `-npu-double-buffer` | `resnet_block` | -4 | -642.0 | 0 | -4096 |
+
+**A positive number is what the pass saves, so `resnet_block`'s row is negative
+and tiling costs it four instructions and 642 cycles.** On `inception_block` the
+same pass saves 404 cycles, all three spills and 42 percent of the DRAM traffic.
+**Tiling helps one model and costs one, at the only two budgets where it fires**,
+and both directions are the measurement rather than a defect. Both rows are zero
+at the default budget on every model, because nothing there is over budget.
+
+**The two rows are the same numbers and that is not a coincidence.** The
+pipeline tells the tiling search whether `-npu-double-buffer` is in it, because
+Section 13.2 sizes the working set for the prefetch, so ablating the prefetch
+also relaxes the search and stops the pass firing. Ablating either one therefore
+produces the same untiled program, which
+`test_the_double_buffer_row_is_the_tiling_row_wherever_the_two_are_coupled`
+asserts as an equality rather than as two values. **The double buffering row is
+a measurement of the pair**, and D-0054 is why none of it is the overlap: the
+pass still fires on nothing this compiler emits.
+
+`-npu-assign-layout` is still zero everywhere, in all four counted columns, on
+all seven models at both budgets.
 
 **The tiling disabled row reproduces the spilling numbers to the cycle**, which
 is the P13 gate clause that asks for it: `resnet_block` at its tight budget is
@@ -333,23 +353,17 @@ and that is not what any of these rows says.
   direction and the factor in the file that owns both constants. The pass's
   other half, the inverse transpose fold, is nonzero on a program that has an
   inverse pair, and no model in this suite has one after `-npu-fuse-ops`.
-- **`-npu-tile-to-scratchpad` is zero because nothing in the suite is over
-  budget in a shape this ISA can express, and both halves of that matter.**
-  Measured through `-O2` at the wired tree, at both budgets, on all seven
-  models: 0 tiled everywhere. At the **default** budget nothing is over budget
-  at all, which is the reason P13's committed prediction gave and which still
-  holds: ADR 0008's budgets are program level minima, and a program level
-  minimum needs every simultaneously live buffer to fit, which is stronger than
-  any one operation's working set. At the **tight** budgets the search does find
-  operations over budget, and it declines all of them, because a tiled result
-  assembled in DRAM cannot be read back by the operation that consumes it.
-  **That decline is D-0052 and it is the phase's largest finding**: before it,
-  `resnet_block` tiled one convolution and `inception_block` tiled two, and all
-  three programs were refused by this project's own encoder. So this zero is not
-  "tiling is worth nothing", it is "tiling has no expressible subject in this
-  suite at `-O2` yet", and the difference is the whole of Section 13.3's setup.
-- **`-npu-double-buffer` is zero, and it is the third kind of zero again**, which
-  is D-0054. `docs/PASSES.md` records a measured reason for a zero from this
+- **`-npu-tile-to-scratchpad` is zero at the default budget and is not zero at
+  the tight ones, and the default budget zero is the one that needs a reason.**
+  Nothing is over budget at the default budget on any model, which is the reason
+  P13's committed prediction gave and which still holds: ADR 0008's budgets are
+  program level minima, and a program level minimum needs every simultaneously
+  live buffer to fit, which is stronger than any one operation's working set. At
+  the tight budgets the pass fires on two models and the table above is what it
+  did.
+- **`-npu-double-buffer`'s row is not its own**, which is the coupling above,
+  and what remains of it after the coupling is removed is zero for the reason
+  D-0054 gives. `docs/PASSES.md` records a measured reason for a zero from this
   pass: on a hand written tiled convolution it fires, the instruction stream
   genuinely changes, and no cycle moves, because tiling makes a program DMA
   bound, 1524 against 596, and there is nothing to hide a transfer under. **That
