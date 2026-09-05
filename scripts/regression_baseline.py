@@ -59,6 +59,7 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ElementTree
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -263,10 +264,20 @@ def find_lit() -> Path:
 
 @dataclass
 class SuiteResult:
+    """One suite's counts, its test identifiers, and which of them failed.
+
+    **`failures` is the field D-0049 asked for.** Every runner below already
+    knew which test failed, at the moment it counted it, and then threw the
+    name away and kept the total. What a reader of a red `--check` got was
+    `suite pytest: passed 1085 -> 1084`, which says how many and not which, so
+    finding out cost a second run of everything. The names cost a list.
+    """
+
     passed: int = 0
     failed: int = 0
     skipped: int = 0
     tests: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -274,6 +285,7 @@ class SuiteResult:
             "failed": self.failed,
             "skipped": self.skipped,
             "tests": sorted(self.tests),
+            "failures": sorted(self.failures),
         }
 
 
@@ -303,6 +315,7 @@ def run_lit_suite(work: Path) -> SuiteResult:
             result.skipped += 1
         else:
             result.failed += 1
+            result.failures.append(f"{test['name']} ({code})")
     return result
 
 
@@ -331,6 +344,7 @@ def run_gtest_binary(name: str, work: Path) -> SuiteResult | None:
                 result.skipped += 1
             elif test.get("failures"):
                 result.failed += 1
+                result.failures.append(full)
             else:
                 result.passed += 1
     return result
@@ -375,6 +389,7 @@ def run_pytest(work: Path) -> SuiteResult:
                 result.skipped += 1
             elif kinds & {"failure", "error"}:
                 result.failed += 1
+                result.failures.append(f"{case.get('classname')}::{case.get('name')}")
             else:
                 result.passed += 1
     return result
@@ -414,6 +429,7 @@ def run_dash_lint() -> SuiteResult:
             result.passed += 1
         else:
             result.failed += 1
+            result.failures.append(name)
             print(
                 f"regression-baseline: {name} exited {completed.returncode}. "
                 f"Its output follows, because a count of zero says nothing a "
@@ -909,10 +925,125 @@ def oracle_notes(recorded: dict[str, Any], current: dict[str, Any]) -> list[str]
     return notes
 
 
+#: What each kind of drift line is called, keyed by the first word of the line.
+#:
+#: **The summary at the end of a red run is built from this rather than from a
+#: guess about what moved.** Until D-0049 the summary said the same sentence
+#: whatever the difference was, that an optimization moving a cycle count must
+#: not move silently, and a run whose pytest suite went from 1085 passed to 1084
+#: was reported under it. That sentence is right for a cell and wrong for a
+#: failing test, and a reader who believes it looks in the wrong place.
+#:
+#: `test_every_drift_line_starts_with_a_category_the_summary_knows` holds this
+#: table and `compare` in step, so a later phase adding a kind of difference
+#: cannot leave the summary quietly unable to name it.
+DRIFT_CATEGORIES: Final[dict[str, tuple[str, str]]] = {
+    "suite": ("one test suite moved", "{n} test suites moved"),
+    "cell": ("one benchmark cell moved", "{n} benchmark cells moved"),
+    "golden": ("one golden tensor moved", "{n} golden tensors moved"),
+    "levels": (
+        "the set of optimization levels changed",
+        "the set of optimization levels changed",
+    ),
+    "GENERATOR_VERSION": (
+        "the model generator's version changed",
+        "the model generator's version changed",
+    ),
+}
+
+
+def drift_subject(line: str) -> tuple[str, str]:
+    """A drift line's category and the thing it is about.
+
+    Every line `compare` writes is `<category> <subject>: <what moved>`, or
+    `<category>: <what moved>` for the two differences that can only happen
+    once. So the head is everything before the first colon, its first word is
+    the category and its second, where there is one, names the subject.
+
+    **The subject is what the summary counts, and counting lines instead is the
+    fault the rehearsal found.** One suite that goes red produces a line per
+    moved count, a line naming the failing tests and a line per test added, and
+    a summary counting lines reported ten test suites moving where one had. A
+    cell has the same shape: one line per field it moved.
+    """
+    head = line.split(":", 1)[0]
+    words = head.split()
+    if len(words) >= 2 and words[0] in DRIFT_CATEGORIES:
+        return words[0], words[1]
+    return words[0].rstrip(":"), words[0].rstrip(":")
+
+
+def drift_category(line: str) -> str:
+    """What kind of difference a drift line is."""
+    return drift_subject(line)[0]
+
+
+def what_moved(drift: list[str]) -> str:
+    """One sentence naming what moved, and the advice that fits it.
+
+    Both halves matter. The count of each kind is what a reader needs first,
+    and the advice differs: a moved suite is a test that changed its answer and
+    is fixed, and a moved cell or golden is a number that must be declared
+    before it is re-recorded. Printing the second sentence over the first is
+    what D-0049 recorded.
+    """
+    subjects: dict[str, set[str]] = {}
+    for line in drift:
+        category, subject = drift_subject(line)
+        subjects.setdefault(category, set()).add(subject)
+    counted = Counter({name: len(seen) for name, seen in subjects.items()})
+
+    parts: list[str] = []
+    for category, (one, many) in DRIFT_CATEGORIES.items():
+        total = counted.get(category, 0)
+        if total == 1:
+            parts.append(one)
+        elif total > 1:
+            parts.append(many.format(n=total))
+
+    unknown = sum(
+        total for name, total in counted.items() if name not in DRIFT_CATEGORIES
+    )
+    if unknown:
+        parts.append(
+            f"{unknown} difference(s) this summary has no name for, which is "
+            f"itself worth fixing in DRIFT_CATEGORIES"
+        )
+    if not parts:
+        parts.append("something moved and the lines above are all there is")
+
+    advice: list[str] = []
+    if counted.get("suite"):
+        advice.append(
+            "A suite that moved is a test that changed its answer, and the "
+            "identifiers printed above are which ones. Fix the test or the "
+            "code; a baseline is never re-recorded around a red suite."
+        )
+    if counted.get("cell") or counted.get("golden"):
+        advice.append(
+            "An optimization that moves a cycle count is not necessarily "
+            "wrong, but it must never move silently. Re-record in its own "
+            "commit, after declaring the intended movement in "
+            "docs/BREAKING_CHANGES.md."
+        )
+    if counted.get("levels") or counted.get("GENERATOR_VERSION"):
+        advice.append(
+            "The cells above are not the cells the baseline recorded, so read "
+            "the two lines that say so before reading anything else."
+        )
+
+    return " ".join([", ".join(parts) + ".", *advice])
+
+
 def compare(
     recorded: dict[str, Any], current: dict[str, Any], goldens: dict[str, Any]
 ) -> list[str]:
-    """Every difference, as one line each. Empty means no drift."""
+    """Every difference, as one line each. Empty means no drift.
+
+    **Every line begins with its category**, which is the first word and is one
+    of `DRIFT_CATEGORIES`. `what_moved` reads that word, and the test named
+    beside the table is what keeps the two from drifting apart.
+    """
     import numpy as np
 
     drift: list[str] = []
@@ -979,11 +1110,37 @@ def compare(
             current
         )
         compared = ("passed", "failed", "skipped") if same_environment else ("failed",)
-        for field_name in compared:
-            if before[name][field_name] != after[name][field_name]:
+        moved = [
+            field_name
+            for field_name in compared
+            if before[name][field_name] != after[name][field_name]
+        ]
+        for field_name in moved:
+            drift.append(
+                f"suite {name}: {field_name} {before[name][field_name]} -> "
+                f"{after[name][field_name]}"
+            )
+
+        # **A count that moved says how many and not which**, and D-0049 is
+        # what that cost: a `--check` whose pytest suite reported 1084 passed
+        # where the tree has 1085 named neither the suite's failing test nor
+        # its message, so finding out took a second run of everything. The
+        # runners knew the identifier at the moment they counted it. A baseline
+        # recorded before this field existed carries no `failures` key, which
+        # is read as an empty list rather than as a regression from zero,
+        # exactly as every other field this schema has grown.
+        if moved:
+            failing = sorted(after[name].get("failures", []))
+            if failing:
                 drift.append(
-                    f"suite {name}: {field_name} {before[name][field_name]} -> "
-                    f"{after[name][field_name]}"
+                    f"suite {name}: the tests that failed in this run are "
+                    + ", ".join(failing)
+                )
+            elif after[name]["failed"]:
+                drift.append(
+                    f"suite {name}: {after[name]['failed']} failed and this "
+                    f"run recorded no identifier for any of them, which is a "
+                    f"runner that counts without naming"
                 )
         missing = sorted(set(before[name]["tests"]) - set(after[name]["tests"]))
         added = sorted(set(after[name]["tests"]) - set(before[name]["tests"]))
@@ -1142,12 +1299,7 @@ def check() -> int:
     for line in drift:
         print(f"    {line}")
     print()
-    print(
-        "regression-baseline: FAIL. An optimization that moves a cycle count "
-        "is not necessarily wrong, but it must never move silently. Re-record "
-        "in its own commit, after declaring the intended movement in "
-        "docs/BREAKING_CHANGES.md."
-    )
+    print(f"regression-baseline: FAIL. {what_moved(drift)}")
     return 1
 
 
@@ -1172,7 +1324,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline, goldens = measure()
         write(baseline, goldens)
         failed = {
-            name: result["failed"]
+            name: result["failures"] or result["failed"]
             for name, result in baseline["suites"].items()
             if result["failed"]
         }

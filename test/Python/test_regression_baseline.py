@@ -304,6 +304,163 @@ def test_a_baseline_without_an_environment_reads_as_the_developer_machine(
     }
 
 
+def test_a_moved_suite_count_names_the_tests_that_failed(
+    empty_goldens: Path,
+) -> None:
+    """D-0049's tooling half, and the whole of what the field is for.
+
+    A count that moved says how many and not which. The run that found this
+    reported `suite pytest: passed 1085 -> 1084` and named neither the test nor
+    its message, so recovering it took a second run of everything.
+    """
+    recorded = minimal()
+    current = minimal()
+    current["suites"]["check-npu"]["passed"] = 1
+    current["suites"]["check-npu"]["failed"] = 1
+    current["suites"]["check-npu"]["failures"] = ["b"]
+
+    drift = baseline.compare(recorded, current, {})
+
+    assert any("passed 2 -> 1" in line for line in drift)
+    named = [line for line in drift if "the tests that failed" in line]
+    assert len(named) == 1
+    assert named[0].endswith("are b")
+
+
+def test_a_baseline_older_than_the_failures_field_is_not_a_regression(
+    empty_goldens: Path,
+) -> None:
+    """The same rule the cell comparison has, applied to the suite record.
+
+    A baseline recorded before this field existed carries no `failures` key.
+    That is the schema growing, so it is read as an empty list and the counts
+    still compare exactly.
+    """
+    recorded = minimal()
+    current = minimal()
+    assert "failures" not in recorded["suites"]["check-npu"]
+    assert baseline.compare(recorded, current, {}) == []
+
+
+def test_a_suite_that_counts_a_failure_without_naming_it_says_so(
+    empty_goldens: Path,
+) -> None:
+    """A runner that lost the identifier is reported rather than passed over.
+
+    The line is about the runner and not about the tree, which is the
+    distinction the silence rule of Section 19.0 asks for: the alternative is a
+    red that mentions a failure and nothing about it.
+    """
+    recorded = minimal()
+    current = minimal()
+    current["suites"]["check-npu"]["passed"] = 1
+    current["suites"]["check-npu"]["failed"] = 1
+
+    drift = baseline.compare(recorded, current, {})
+
+    assert any("counts without naming" in line for line in drift)
+
+
+def test_every_drift_line_starts_with_a_category_the_summary_knows(
+    empty_goldens: Path, tmp_path: Path
+) -> None:
+    """What keeps `what_moved` from being a parser of a producer it cannot see.
+
+    The summary reads the first word of every line `compare` writes. If a later
+    phase adds a kind of difference and does not add its name to the table, the
+    summary counts it as unrecognised rather than as nothing, and this test is
+    what makes that a red instead of a quiet miscount.
+    """
+    import numpy as np
+
+    np.save(tmp_path / "golden" / "out.npy", np.zeros(4, dtype=np.float32))
+
+    recorded = minimal()
+    current = minimal()
+    current["levels"] = [0]
+    current["generator_version"] = "9.9.9"
+    current["suites"]["check-npu"]["failed"] = 1
+    current["cells"][0]["cycles"] = 1.0
+    del current["cells"][1]
+
+    drift = baseline.compare(recorded, current, {"out": np.ones(4, dtype=np.float32)})
+
+    assert drift
+    for line in drift:
+        assert baseline.drift_category(line) in baseline.DRIFT_CATEGORIES, line
+
+
+def test_the_summary_names_the_suite_rather_than_a_cycle_count() -> None:
+    """The sentence that was wrong, replaced by one that fits what moved.
+
+    Both halves are asserted, because the old sentence is still the right one
+    for a cell and the fault was that it was the only one.
+    """
+    suite_only = baseline.what_moved(["suite pytest: passed 1085 -> 1084"])
+    assert "one test suite moved" in suite_only
+    assert "changed its answer" in suite_only
+    assert "cycle count" not in suite_only
+
+    cell_only = baseline.what_moved(["cell lenet-O0-default: cycles 1 -> 2"])
+    assert "one benchmark cell moved" in cell_only
+    assert "docs/BREAKING_CHANGES.md" in cell_only
+
+    both = baseline.what_moved(
+        [
+            "suite pytest: passed 1085 -> 1084",
+            "cell lenet-O0-default: cycles 1 -> 2",
+            "golden lenet: shape (1,) -> (2,)",
+        ]
+    )
+    assert "one test suite moved" in both
+    assert "one benchmark cell moved" in both
+    assert "one golden tensor moved" in both
+
+
+def test_a_category_the_table_has_no_name_for_is_counted_rather_than_dropped() -> None:
+    """The unrecognised branch, driven, because a summary that silently
+    undercounts is the failure this table exists to prevent."""
+    summary = baseline.what_moved(["manifest something: 1 -> 2"])
+    assert "no name for" in summary
+
+
+def test_the_summary_counts_subjects_and_not_lines() -> None:
+    """What the rehearsal of the red branch found, before it was committed.
+
+    One suite going red writes a line per moved count, a line naming the tests
+    that failed, and a line per test added. The first version of this summary
+    counted those lines and announced that ten test suites had moved, where one
+    had. The same shape applies to a cell, which writes a line per field.
+    """
+    one_suite = baseline.what_moved(
+        [
+            "suite pytest: passed 1085 -> 1090",
+            "suite pytest: failed 0 -> 2",
+            "suite pytest: the tests that failed in this run are a::b, c::d",
+            "suite pytest: test added: e::f",
+            "suite pytest: test added: g::h",
+        ]
+    )
+    assert "one test suite moved" in one_suite
+    assert "10 test suites" not in one_suite
+
+    one_cell = baseline.what_moved(
+        [
+            "cell lenet-O0-default: instructions 25 -> 26",
+            "cell lenet-O0-default: cycles 1.0 -> 2.0",
+        ]
+    )
+    assert "one benchmark cell moved" in one_cell
+
+    two_suites = baseline.what_moved(
+        [
+            "suite pytest: failed 0 -> 1",
+            "suite check-npu: failed 0 -> 1",
+        ]
+    )
+    assert "2 test suites moved" in two_suites
+
+
 def test_a_deleted_test_is_drift(empty_goldens: Path) -> None:
     """The failure mode a suite count alone does not catch.
 

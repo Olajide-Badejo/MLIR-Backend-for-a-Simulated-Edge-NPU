@@ -3111,6 +3111,81 @@ machine that is idle, and if it goes red at this bound read the message, check
 which of the two bounds fired, and run it again. Three attempts is what the P13
 re-record took.
 
+**Two more at the verification of the tiling checkpoint, and between them they
+say the entry has a tooling problem as well as a bound problem.**
+
+**The first** was a `bash scripts/regression-baseline.sh --check` started
+immediately after a `build-ndebug` link, so the machine was draining rather than
+idle. The pytest suite inside it reported **1084 passed and 1 failed** where the
+tree has 1085 tests, and the check exited 1. Re-run once the machine was idle:
+**1085 passed, no drift, exit 0**, and a standalone full pytest between the two
+also reported 1085 passed. **Which test failed is not recoverable**, because
+`--check` compares and prints suite *counts*: the drift line said
+`suite pytest: passed 1085 -> 1084` and `failed 0 -> 1`, and the summary that
+follows every red says an optimization that moves a cycle count must not move
+silently, which is the wrong sentence for this red and names nothing that moved.
+
+**The second** was a plain full pytest run at `364d803` on a machine whose one
+minute load average was 0.16 and whose fifteen minute average was 2.86, so it was
+draining in the same way. Same shape: **1084 passed, 1 failed**. This time the
+name survived, because pytest prints a short summary:
+`test_a_rerun_reproduces_the_external_fields_too`, which drives a whole model's
+cells through `run_benchmarks.main` and therefore reaches this bound once per
+cell. **The message did not survive**, because the battery tailed four lines of
+`pytest -q`.
+
+**Idle it does not reproduce, under load it does.** Three runs of that test alone
+with the load at 0.58 and falling: green, 47 seconds each. Four runs under this
+entry's own twenty four busy loops: **one red in four**, and it is this bound in
+the upper direction:
+
+```
+--mlir-timing reports NPUFuseOps at 8.2000 ms and this project's instrumentation
+at 3.8351 ms, a gap of 4.3649 ms against a bound of 4.1500 ms, which is 0.0500 ms
+of display rounding plus 50% of MLIR's figure.
+```
+
+**So the population is confirmed again and the diagnosis is unchanged**: any
+`slow` test that runs a cell reaches this bound, the condition the bound assumes
+is not checked, and the fix is the precondition above rather than a wider number.
+
+**What did change here is the tooling, and it is the third time this entry has
+recorded a lost failure text.** The first observation lost its message to a
+script that tailed three lines; the sixth lost its message to a script that
+tailed two; this one lost its message to a battery that tailed four, and the
+`--check` sighting lost the test's **name** as well, to a comparison that carries
+only counts. Being careful has now failed four times, so
+`scripts/regression_baseline.py` records the identifier of every test that failed
+in each suite, prints them beside any suite count that moved, and ends a red run
+by naming what moved rather than always naming a cycle count. **No bound, count
+or comparison moved with it**; what changed is what a reader of the log is told.
+
+**The change was rehearsed against a deliberately failing test before it was
+committed, and the rehearsal found a fault in the change.** The prediction,
+written first, was three drift lines and a final line naming a test suite. The
+run wrote ten lines and ended with **"10 test suites moved"** where one had: the
+summary was counting drift **lines**, and one red suite writes a line per moved
+count, a line naming the tests that failed, and a line per test added. It counts
+distinct subjects now, and
+`test_the_summary_counts_subjects_and_not_lines` pins the case that was wrong.
+Re-run after the fix, the same injection gives
+
+```
+regression-baseline: FAIL. one test suite moved. A suite that moved is a test
+that changed its answer, and the identifiers printed above are which ones. Fix
+the test or the code; a baseline is never re-recorded around a red suite.
+```
+
+with the failing test named a line above it, and exit 1. **The tree was restored
+and `git status` is clean of it.**
+
+**The first run of the new field caught a red nobody had aimed it at, and it was
+one of this entry's own.** Beside the injected failure it named
+`test_the_run_fails_when_it_exceeds_its_budget`, which is the test the sixth
+observation above records and whose message was lost the first time it went red.
+That is the field doing the one job it was added for, on its first run, before
+anybody went looking.
+
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by

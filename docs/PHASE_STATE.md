@@ -1143,16 +1143,60 @@ them was importable would be wrong in the direction that matters.
 > chooses split output **rows**, so the number of independent output tiles an
 > instruction has does not move. And `kernel_threads.py` measures each model at
 > its default configuration, where **nothing tiles at all**, so the instructions
-> it hands the kernel are the same ones. The table moved from 0.96 to 4.00 to
-> 0.90 to 3.98 between two runs at this tree, **with the output bytes equal on
-> every model at every thread count**, which is the host and not the kernel.
-> **Not wired.**
+> it hands the kernel are the same ones. The table read 0.96 to 4.00, then 0.90
+> to 3.98, then 0.84 to 3.68 over three runs at this tree, **with the output
+> bytes equal on every model at every thread count in every one of them**, which
+> is the host and not the kernel. **Not wired.**
 >
 > **What would fire it** is now sharper than "P13's tiling": a change to the
 > kernel's loop nest, or a tiling that splits the output channel axis, which
 > would move the team cap. P14's integer kernels are the next candidate. The
 > recipe is unchanged: add it to `nightly.yml` beside `full-matrix`, not to
 > `ci.yml`.
+
+### 0a. The fault P13 injected, with the prediction written first
+
+**The regression baseline's red branch, driven by a deliberately failing test.**
+It is not a CI activation and needs no trigger; it is here because the branch's
+red path was changed, and a message nobody has seen printed is a message nobody
+knows is right.
+
+**What changed.** `scripts/regression_baseline.py` records the identifier of
+every test that failed in each suite and prints them beside any suite count that
+moved, and the final line of a red run names what moved rather than always
+naming a cycle count. D-0049 is why: a `--check` whose pytest suite reported
+1084 passed where the tree has 1085 named neither the suite's failing test nor
+its message, and the summary underneath it talked about cycle counts.
+
+*Predicted:* `test/Python/test_a_deliberate_failure.py` with one failing test
+makes `--check` print `suite pytest: failed 0 -> 1`, a line naming
+`test.Python.test_a_deliberate_failure::test_the_check_names_the_test_that_failed`
+as the test that failed, the same identifier again as a test added, and a final
+line naming a test suite rather than a cycle count. `passed` does not move, no
+cell line and no golden line, exit 1.
+
+*Result:* every clause held **except the final line, which said "10 test suites
+moved" where one had.** The summary was counting drift lines, and one red suite
+writes a line per moved count, a line naming the failing tests and a line per
+test added. It counts distinct subjects now, and
+`test_the_summary_counts_subjects_and_not_lines` is the case that was wrong.
+Re-run after the fix, on an idle machine, the injection gives eleven lines, the
+failing test named among them, and
+
+```
+regression-baseline: FAIL. one test suite moved. A suite that moved is a test
+that changed its answer, and the identifiers printed above are which ones. Fix
+the test or the code; a baseline is never re-recorded around a red suite.
+```
+
+with exit 1. Restored, tree clean. **The prediction was wrong about the count
+and the rehearsal is what found it**, which is the whole argument for driving a
+message rather than reading it.
+
+**And the first run of the new field caught a red nobody aimed it at.** Beside
+the injected failure it named `test_the_run_fails_when_it_exceeds_its_budget`,
+which is one of D-0049's own sightings and whose message was lost the first time
+it went red.
 
 ### 0. Reproducing the CI image locally, which is now a standing recipe
 
