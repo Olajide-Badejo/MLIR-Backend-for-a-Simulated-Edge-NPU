@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "670dd0b1ce58e506fcd820a5b7311d2c66872cca",
+  "git_sha": "bec9d8e2514829f57ebc7b70db77ca36d11b49cb",
   "levels": [
     0,
     1,
@@ -1159,7 +1159,7 @@
     },
     "check-npu": {
       "failed": 0,
-      "passed": 29,
+      "passed": 30,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1180,6 +1180,7 @@
         "NPU :: Encoding/diagnostics.mlir",
         "NPU :: Encoding/dram-subview.mlir",
         "NPU :: Encoding/objdump.mlir",
+        "NPU :: Encoding/tiled-assembly-in-scratchpad.mlir",
         "NPU :: Pipeline/opt-levels.mlir",
         "NPU :: Pipeline/pass-stats.mlir",
         "NPU :: Simulator/npu-sim.mlir",
