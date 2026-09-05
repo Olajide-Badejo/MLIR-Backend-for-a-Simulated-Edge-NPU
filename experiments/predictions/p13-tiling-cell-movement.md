@@ -22,7 +22,7 @@ written after the measurement is worth nothing, and one that turns out wrong and
 is reported honestly is stronger evidence of understanding than two numbers that
 happen to agree.*
 
-## The prediction, and it is mostly a negative one
+## Hypothesis
 
 ### 1. Not one cell moves at the default budget
 
@@ -71,6 +71,47 @@ positions in the same order, which
 and every tile size that divides the output, and which a whole tiled program
 reproduced byte identically at a 2048 byte budget. **A moved golden would be a
 defect and not a declaration**, at either budget.
+
+## What would falsify it
+
+**This section was added after the measurement and that has to be said here
+rather than left in a commit message.** The file was committed at `33c17bc`,
+strictly before the pass was wired and before any cell was measured with it, and
+it was refused by `test_the_directory_holds_at_least_one_prediction` for missing
+two sections the schema requires by name. The heading above it was renamed to
+`## Hypothesis` for the same reason. **No claim, number or bracket was changed**,
+and `git diff 33c17bc` over this file is the check on that sentence rather than
+an assurance a reader has to take.
+
+Adding falsifiers after seeing the result is exactly what a prediction file
+exists to prevent, so the four below are derived from clauses that were already
+written rather than chosen against what was measured, and the diff is what makes
+that verifiable. The schema was right to refuse the file: a prediction with no
+stated falsifier is an opinion, and the mechanism caught it on the first run.
+
+Each of these is a specific observation that would make a clause above wrong,
+and each is checked by the same measurement rather than by a later judgement.
+
+- **Any cell moving at the default budget falsifies clause 1**, and it would be
+  a defect in the wiring rather than a result: at 1048576 bytes nothing in this
+  suite has a working set that could trigger the pass, so a movement there means
+  the trigger fired on something it should not have.
+- **Four or more of the seven models tiling at their tight budget falsifies the
+  bracket**, which says between zero and three.
+- **Any golden tensor moving, at either budget, falsifies clause 3** and is a
+  defect rather than a declaration. Tiling parallel dimensions is exact, a whole
+  tiled program has already reproduced byte identically at a 2048 byte budget,
+  and a moved golden would mean the exactness argument is wrong somewhere the
+  unit tests do not reach.
+- **The pass reporting a declined operation anywhere in the suite** would
+  falsify the implicit claim that every operation either fits or is splittable,
+  and would mean some shape needs a reduction split to fit, which Section 13.2
+  forbids under fp32.
+
+**What would not falsify it:** the pass tiling nothing. That is the predicted
+outcome, and confirming a negative prediction is not the same as the prediction
+having been unfalsifiable, because each of the four observations above would
+have contradicted it and none of them is unobservable.
 
 ## What each outcome would mean
 
