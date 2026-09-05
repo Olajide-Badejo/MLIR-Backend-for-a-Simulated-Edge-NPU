@@ -30,6 +30,8 @@
 // checked is what the lowering produced.
 
 // RUN: npu-opt %s --npu-lower-to-npuisa | FileCheck %s
+// RUN: npu-opt %s --npu-tile-to-scratchpad=budget=2048 --npu-lower-to-npuisa \
+// RUN:   | FileCheck %s --check-prefix=TILED
 
 // =============================================================================
 // One argument, one constant, one result: two loads in, one store out, and
@@ -230,4 +232,66 @@ func.func @the_lowering_emits_no_asynchronous_transfer(%x: tensor<1x8x4x4xf32>)
   %r = npu.relu ins(%x : tensor<1x8x4x4xf32>) outs(%d : tensor<1x8x4x4xf32>)
        -> tensor<1x8x4x4xf32>
   return %r : tensor<1x8x4x4xf32>
+}
+
+// =============================================================================
+// **The invariant under tiling, which is the same sentence over a different set
+// of values.** The header above already names tiling as the third permitted DMA
+// producer; this is where that stops being a promise.
+//
+// One `npuisa.dma_load` per DRAM value entering the scratchpad still holds
+// exactly, and what changes is which values those are. A tiled program's
+// operands are **slices**, so each tile loads the sub region it reads and
+// nothing loads the whole argument: a whole load would be a transfer nothing
+// reads, which Section 8 makes a bug, and it would put back on chip the very
+// buffer the tiling exists to keep off it.
+//
+// The store side is the other half of the same rule. **A tiled result is
+// assembled in DRAM**, one `npuisa.dma_store` per tile straight into its place
+// in the out parameter, because a result that had to be split is not
+// reassembled in the memory it did not fit in.
+//
+// The convolution below has a working set of 4256 bytes against the 2048 the
+// run line gives it, so it is split four ways.
+// =============================================================================
+
+// TILED-LABEL: func.func @tiling_loads_the_slice_and_stores_the_tile(
+// TILED-SAME:      %[[X:[^:]*]]: memref<1x4x8x8xf32, #npu.dram> {npuisa.arg = "in"},
+//
+// **No whole argument load.** The activation is read one halo window at a time
+// and the filter one channel group at a time, so the first thing that happens
+// to an argument is a subview and not a transfer.
+// TILED-NOT:     npuisa.dma_load %[[X]],
+//
+// The first tile: a sub region of each operand into a buffer of its own.
+// TILED:         memref.subview %[[X]][0, 0, 0, 0] [1, 4, 5, 8]
+// TILED:         %[[TILE:[a-z_0-9]+]] = memref.alloc() : memref<1x4x5x8xf32, #npu.scratchpad>
+// TILED-NEXT:    npuisa.dma_load %{{[a-z_0-9]+}}, %[[TILE]]
+//
+// The tile computes into its own contiguous buffer, which is what lets the
+// allocator reuse the offsets once the tile is done with them.
+// TILED:         %[[OUT:[a-z_0-9]+]] = memref.alloc() : memref<1x4x4x8xf32, #npu.scratchpad>
+// TILED:         npuisa.conv2d
+// TILED-SAME:      outs(%[[OUT]]
+//
+// And leaves for its place in DRAM, through a strided view of the out
+// parameter rather than through a scratchpad buffer the tiles share.
+// TILED:         memref.subview %{{[a-z_0-9]+}}[0, 0, 0, 0] [1, 4, 4, 8]
+// TILED-NEXT:    npuisa.dma_store %[[OUT]],
+//
+// **Nothing assembles in the scratchpad.** There is no allocation at the whole
+// result's extents anywhere in the function, which is the property the design
+// decision turns on and the one a reader should be able to check by eye.
+// TILED-NOT:     memref.alloc() : memref<1x8x8x8xf32, #npu.scratchpad>
+func.func @tiling_loads_the_slice_and_stores_the_tile(
+    %x: tensor<1x4x8x8xf32>, %w: tensor<8x4x3x3xf32>, %b: tensor<8xf32>)
+    -> tensor<1x8x8x8xf32> {
+  %d = tensor.empty() : tensor<1x8x8x8xf32>
+  %r = npu.conv2d ins(%x, %w, %b : tensor<1x4x8x8xf32>, tensor<8x4x3x3xf32>,
+                                   tensor<8xf32>)
+                  outs(%d : tensor<1x8x8x8xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x8x8x8xf32>
+  return %r : tensor<1x8x8x8xf32>
 }

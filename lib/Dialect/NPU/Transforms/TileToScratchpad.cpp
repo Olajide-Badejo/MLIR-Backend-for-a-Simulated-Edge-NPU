@@ -684,8 +684,44 @@ LogicalResult applyTiling(IRRewriter &rewriter, TilingInterface op,
                                         resultOffsets, resultSizes)))
       return failure();
 
-    for (Operation *tile : tiled->tiledOps)
+    for (Operation *tile : tiled->tiledOps) {
       tile->setAttr("npu.tiling_choice", record);
+
+      // **A tile's destination is its own buffer, not a slice of the shared
+      // one**, and this is where that is arranged. `getTiledImplementation`
+      // slices every operand including the destination, which is the right
+      // answer at tensor level: a tile of the iteration space is a tile of the
+      // result. Below tensor level it is the wrong one twice over. A slice of a
+      // destination is a **read** of a buffer nothing has written, which
+      // Section 8 makes a bug rather than a style question, and it makes every
+      // tile write into one shared buffer, which is the scratchpad assembly the
+      // lowering refuses by design.
+      //
+      // A fresh `tensor.empty` at the tile's extents is what the tile actually
+      // wants: its own contiguous allocation, dead after the tile that used it,
+      // which is what makes the sweep line peak fall to one tile's working set
+      // rather than staying at the whole operation's. The `tensor.insert_slice`
+      // below still assembles the result, and the lowering turns that into one
+      // transfer per tile into DRAM.
+      auto destinationStyle = dyn_cast<DestinationStyleOpInterface>(tile);
+      if (!destinationStyle || destinationStyle.getNumDpsInits() != 1)
+        continue;
+      OpOperand *init = &*destinationStyle.getDpsInitsMutable().begin();
+      Value sliced = init->get();
+      auto tileType = dyn_cast<RankedTensorType>(sliced.getType());
+      if (!tileType)
+        continue;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(tile);
+      Value fresh = tensor::EmptyOp::create(rewriter, loc, tileType.getShape(),
+                                            tileType.getElementType(),
+                                            tileType.getEncoding());
+      init->set(fresh);
+      if (auto slice = sliced.getDefiningOp<tensor::ExtractSliceOp>())
+        if (slice->use_empty())
+          rewriter.eraseOp(slice);
+    }
 
     SmallVector<OpFoldResult> strides(resultOffsets.size(),
                                       rewriter.getIndexAttr(1));

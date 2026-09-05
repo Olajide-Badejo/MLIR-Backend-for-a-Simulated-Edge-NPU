@@ -817,9 +817,29 @@ public:
     // gone. An argument nothing reads gets no load: a transfer whose result is
     // never used is DRAM traffic, and Section 8 makes unexplained DRAM traffic
     // a bug rather than a style question.
+    // **An argument every use of which is a slice is not loaded whole**, which
+    // is the per slice convention stated where it is decided. Section 8 counts
+    // one load per DRAM value entering the scratchpad, and under tiling the
+    // values are the slices: loading the whole argument as well would be a
+    // transfer nothing reads, which Section 8 makes a bug rather than a style
+    // question, and it would put back in the scratchpad exactly the buffer the
+    // tiling exists to keep out of it. With the whole operands resident the
+    // sweep line peak is the untiled working set to the byte, which is measured
+    // in `docs/ARCHITECTURE.md`.
+    //
+    // **An argument with any non slice use is still loaded whole**, and the
+    // conservative reading is the correct one: the whole value does enter the
+    // scratchpad in that case, and its slices are then views of the resident
+    // copy at no transfer cost.
     SmallVector<bool> isRead;
-    for (BlockArgument argument : function.getArguments())
-      isRead.push_back(!argument.use_empty());
+    for (BlockArgument argument : function.getArguments()) {
+      const bool everyUseIsASlice =
+          !argument.use_empty() &&
+          llvm::all_of(argument.getUsers(), [](Operation *user) {
+            return isa<tensor::ExtractSliceOp, tensor::InsertSliceOp>(user);
+          });
+      isRead.push_back(!argument.use_empty() && !everyUseIsASlice);
+    }
 
     rewriter.inlineRegionBefore(function.getBody(), lowered.getBody(),
                                 lowered.getBody().end());
@@ -873,9 +893,18 @@ public:
 
     auto outParameters = function.getArguments().take_back(op.getNumOperands());
     for (auto [source, destination] :
-         llvm::zip_equal(adaptor.getOperands(), outParameters))
-      npuisa::DmaStoreOp::create(rewriter, op.getLoc(), buffer(source),
-                                 destination);
+         llvm::zip_equal(adaptor.getOperands(), outParameters)) {
+      Value resolved = buffer(source);
+      // **A tiled result is already in the out parameter and needs no store.**
+      // Its tiles were written straight into it, one `npuisa.dma_store` each,
+      // because a value assembled from pieces is assembled in DRAM. A store
+      // here would be the out parameter copied onto itself, which is a DRAM to
+      // DRAM transfer this machine has no instruction for and would be a
+      // no operation if it did.
+      if (resolved == destination)
+        continue;
+      npuisa::DmaStoreOp::create(rewriter, op.getLoc(), resolved, destination);
+    }
 
     rewriter.replaceOpWithNewOp<func::ReturnOp>(op, ValueRange{});
     return success();
@@ -931,8 +960,221 @@ public:
   LogicalResult
   matchAndRewrite(tensor::EmptyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // **A destination that tiles are inserted into is an assembly buffer and
+    // belongs in DRAM**, which is the decision `docs/PHASE_STATE.md` records:
+    // tiling runs because the value does not fit on chip, so the result it
+    // assembles is not put back in the memory it did not fit in.
+    if (Value out = assembledInto(op)) {
+      // **The chain ends at a return, so the buffer the tiles write is the out
+      // parameter the function already gained for that result.** Allocating a
+      // second DRAM buffer and copying would need a DRAM to DRAM transfer,
+      // which this machine has no instruction for; the DMA of Section 8 moves
+      // bytes between the two memories and never within one.
+      rewriter.replaceOp(op, out);
+      return success();
+    }
+    if (isAssemblyBuffer(op)) {
+      // An assembled value nothing returns needs a DRAM buffer of its own. It
+      // is marked the way the allocator marks a spill slot, and the name is
+      // accurate rather than borrowed: a spill slot is a DRAM buffer holding a
+      // value the scratchpad could not hold, which is exactly what this is. The
+      // encoder places it by that predicate and needs no change.
+      auto slot = memref::AllocOp::create(rewriter, op.getLoc(),
+                                          dramTypeOf(op.getType()));
+      slot->setAttr("npuisa.spill_slot", rewriter.getUnitAttr());
+      rewriter.replaceOp(op, slot.getResult());
+      return success();
+    }
     rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op, scratchpadTypeOf(op.getType()));
+    return success();
+  }
+
+private:
+  /// Whether any tile is inserted into this destination.
+  static bool isAssemblyBuffer(tensor::EmptyOp op) {
+    return llvm::any_of(op.getResult().getUsers(), [&](Operation *user) {
+      auto insert = dyn_cast<tensor::InsertSliceOp>(user);
+      return insert && insert.getDest() == op.getResult();
+    });
+  }
+
+  /// The out parameter this assembly buffer's chain is returned through, or a
+  /// null value when it is not returned.
+  ///
+  /// The walk is over the original tensor values, which are still intact: a
+  /// `tensor.empty` comes before the inserts that write it and before the
+  /// return that carries it, and the conversion legalizes in pre order, so
+  /// nothing downstream has been rewritten when this runs. The enclosing
+  /// function **has** been rewritten, which is what makes its out parameters
+  /// available to find.
+  static Value assembledInto(tensor::EmptyOp op) {
+    Value current = op.getResult();
+    while (true) {
+      tensor::InsertSliceOp next;
+      for (Operation *user : current.getUsers()) {
+        auto insert = dyn_cast<tensor::InsertSliceOp>(user);
+        if (insert && insert.getDest() == current) {
+          next = insert;
+          break;
+        }
+      }
+      if (!next)
+        break;
+      current = next.getResult();
+    }
+
+    for (Operation *user : current.getUsers()) {
+      auto ret = dyn_cast<func::ReturnOp>(user);
+      if (!ret)
+        continue;
+      auto function = ret->getParentOfType<func::FuncOp>();
+      if (!function || function.getNumArguments() < ret.getNumOperands())
+        continue;
+      const unsigned firstOut =
+          function.getNumArguments() - ret.getNumOperands();
+      for (auto [index, operand] : llvm::enumerate(ret.getOperands()))
+        if (operand == current)
+          return function.getArgument(firstOut + index);
+    }
+    return {};
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// The tiles.
+//
+// `-npu-tile-to-scratchpad` stitches a tiled program out of
+// `tensor.extract_slice` and `tensor.insert_slice`, and these two patterns give
+// them meaning below the tensor level. **The rule they implement is one
+// sentence: the slice is what enters the scratchpad.**
+//
+// Section 8 counts one `npuisa.dma_load` per DRAM value entering the
+// scratchpad, and under tiling the values are the slices rather than the whole
+// arguments. That is the same invariant applied to a different set of values
+// rather than a relaxation of it, and `docs/ARCHITECTURE.md` carries the
+// argument with the measurement behind it: with the whole operands resident and
+// the tiles as views of them, the sweep line peak is the untiled working set to
+// the byte, so tiling would move instructions and cycles and leave pressure
+// exactly where it was.
+//===----------------------------------------------------------------------===//
+
+/// Whether a converted buffer lives in DRAM, or nothing when it is not a memref.
+std::optional<bool> isDramBuffer(Value buffer) {
+  auto type = dyn_cast<MemRefType>(buffer.getType());
+  if (!type)
+    return std::nullopt;
+  return isa_and_present<npu::DramAttr>(type.getMemorySpace());
+}
+
+/// `tensor.extract_slice`: a view when the bytes are already on chip, and a
+/// transfer when they are not.
+///
+/// **Two cases and the memory space decides which.** A slice of a DRAM value is
+/// a sub region the machine has to fetch, so it becomes a `memref.subview` of
+/// the DRAM buffer, a scratchpad allocation at the tile's own extents, and one
+/// `npuisa.dma_load` between them. A slice of something already in the
+/// scratchpad is a view and nothing else: the bytes are on chip, and a
+/// scratchpad to scratchpad DMA is not representable in this ISA and would be
+/// wrong if it were.
+///
+/// The allocation is at the tile's extents and is **contiguous**, which is what
+/// makes the arrangement worth having: a tile's operands are its own buffers,
+/// they die with the tile that used them, and the allocator's sweep line sees a
+/// peak near one tile's working set rather than the whole operation's.
+class ExtractSliceOpLowering : public NPULowering<tensor::ExtractSliceOp> {
+public:
+  using NPULowering<tensor::ExtractSliceOp>::NPULowering;
+
+  LogicalResult
+  matchAndRewrite(tensor::ExtractSliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value source = buffer(adaptor.getSource());
+
+    std::optional<bool> dram = isDramBuffer(source);
+    if (!dram)
+      return rewriter.notifyMatchFailure(
+          op, "the sliced value did not convert to a memref");
+
+    auto sourceType = cast<MemRefType>(source.getType());
+    auto viewType = cast<MemRefType>(memref::SubViewOp::inferResultType(
+        sourceType, op.getStaticOffsets(), op.getStaticSizes(),
+        op.getStaticStrides()));
+    Value view = memref::SubViewOp::create(rewriter, loc, viewType, source,
+                                           op.getMixedOffsets(),
+                                           op.getMixedSizes(),
+                                           op.getMixedStrides());
+
+    if (!*dram) {
+      rewriter.replaceOp(op, view);
+      return success();
+    }
+
+    Value tile =
+        memref::AllocOp::create(rewriter, loc, scratchpadTypeOf(op.getType()));
+    npuisa::DmaLoadOp::create(rewriter, loc, view, tile);
+    rewriter.replaceOp(op, tile);
+    return success();
+  }
+};
+
+/// `tensor.insert_slice`: the tile leaves the scratchpad for its place in DRAM.
+///
+/// **A tiled result is assembled in DRAM and never in the scratchpad**, which is
+/// the decision `docs/PHASE_STATE.md` records and this pattern enforces. The
+/// short reason is that tiling exists because the value did not fit on chip, so
+/// a result that had to be split has no business being reassembled in the memory
+/// it did not fit in. The long one is that checks 8 and 9 refuse a buffer
+/// written in pieces and read whole, and a tiled assembly is not distinguishable
+/// from an over read by addresses alone.
+///
+/// **The refusal is here rather than left to the encoder**, and that placement
+/// is the point: a compiler that emitted a program its own encoder rejects would
+/// report the problem three tools away from the pass that caused it.
+class InsertSliceOpLowering : public NPULowering<tensor::InsertSliceOp> {
+public:
+  using NPULowering<tensor::InsertSliceOp>::NPULowering;
+
+  LogicalResult
+  matchAndRewrite(tensor::InsertSliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value destination = buffer(adaptor.getDest());
+    Value tile = buffer(adaptor.getSource());
+
+    std::optional<bool> dram = isDramBuffer(destination);
+    if (!dram)
+      return rewriter.notifyMatchFailure(
+          op, "the destination did not convert to a memref");
+
+    if (!*dram)
+      return op.emitError()
+             << "a tiled result is being assembled in the scratchpad, and this "
+                "compiler assembles one in DRAM. Tiling runs because the value "
+                "does not fit on chip, so a result that had to be split is not "
+                "reassembled in the memory it did not fit in, and a buffer "
+                "written in pieces and read whole is refused by the binary's "
+                "own operand-defined and operand-extent checks. "
+                "test/Encoding/tiled-assembly-in-scratchpad.mlir records the "
+                "program this refuses and the reasoning";
+
+    auto destinationType = cast<MemRefType>(destination.getType());
+    auto viewType = cast<MemRefType>(memref::SubViewOp::inferResultType(
+        destinationType, op.getStaticOffsets(), op.getStaticSizes(),
+        op.getStaticStrides()));
+    Value view = memref::SubViewOp::create(rewriter, loc, viewType, destination,
+                                           op.getMixedOffsets(),
+                                           op.getMixedSizes(),
+                                           op.getMixedStrides());
+
+    npuisa::DmaStoreOp::create(rewriter, loc, tile, view);
+
+    // The assembled value **is** the destination buffer. Every tile writes a
+    // disjoint part of it, so the insert's result denotes the same bytes the
+    // destination does, and the next insert in the chain takes it as its own
+    // destination.
+    rewriter.replaceOp(op, destination);
     return success();
   }
 };
@@ -1132,7 +1374,15 @@ struct NPULowerToNPUISAPass
     target.addLegalDialect<func::FuncDialect, memref::MemRefDialect,
                            npuisa::NPUISADialect>();
     target.addIllegalDialect<npu::NPUDialect>();
-    target.addIllegalOp<tensor::EmptyOp>();
+    // The three `tensor` operations this pipeline can produce. `tensor.empty`
+    // is the destination of every compute operation and has been illegal since
+    // P4; the two slices arrive with tiling at P13 and are what a tiled program
+    // is stitched from. Naming them rather than making the whole dialect
+    // illegal keeps the refusal specific: a `tensor` operation this compiler
+    // does not emit is a bug in whatever produced it, and a target that made
+    // every one of them illegal would report that as a missing pattern.
+    target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
+                        tensor::InsertSliceOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([](func::FuncOp function) {
       return function.getFunctionType().getNumResults() == 0 &&
              llvm::none_of(function.getArgumentTypes(),
@@ -1146,7 +1396,8 @@ struct NPULowerToNPUISAPass
     patterns.add<FuncOpLowering, ReturnOpLowering, ConstantOpLowering,
                  EmptyOpLowering, Conv2DOpLowering, MatMulOpLowering,
                  ReluOpLowering, ReshapeOpLowering, TransposeOpLowering,
-                 ConcatOpLowering>(converter, context, state);
+                 ConcatOpLowering, ExtractSliceOpLowering,
+                 InsertSliceOpLowering>(converter, context, state);
     patterns.add<ElementwiseBinaryLowering<npu::AddOp, npuisa::AddOp>,
                  ElementwiseBinaryLowering<npu::MulOp, npuisa::MulOp>>(
         converter, context, state);
