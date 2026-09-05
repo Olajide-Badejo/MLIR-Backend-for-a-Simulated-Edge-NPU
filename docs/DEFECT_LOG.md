@@ -32,7 +32,21 @@ precondition.
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
 `Program::kVersion` bump, which P14's gate forbids by name and which the
 format's own design claim says should never be needed. An owner level conflict
-between three documents rather than a phase's call.
+between three documents rather than a phase's call. **Its first two parts were
+fixed later in P13**, the DRAM view chain walk and `resultStrides` at format
+version 2; the third, the write model, is what is still open, and D-0052 is
+what it costs now that the passes are in a level.
+
+**D-0052's remainder**, a tiled result assembled in DRAM cannot be read back.
+The compiler is fixed: `-npu-tile-to-scratchpad` declines rather than emitting
+a program the encoder refuses, and it is counted and says why. What is open is
+whether the ISA should be able to express the read, which is D-0050's question
+and the owner's.
+
+**D-0054**, `-npu-double-buffer` fires on nothing this compiler emits, so its
+ablation row is zero for a reason that is not the one `docs/PASSES.md` gives
+for the pass. Recorded rather than fixed, because a fix makes the pass fire and
+moves numbers, which is a declaration and a re-record of its own.
 
 ## Resolved
 
@@ -3136,3 +3150,283 @@ the way a stale comment is never merely cosmetic.
   Writing the patterns without the write model would have produced a compiler
   that emits programs the encoder refuses, which is a worse state than one that
   does not emit them.
+### D-0051 `-cse` merges the tiling destination with every other destination of its shape
+
+- **Found:** 2026-09-05, phase P13, by wiring `-npu-tile-to-scratchpad` into
+  `-O2` and running the suite, rather than by reading either pass.
+- **Status:** **fixed**, in the same commit that wired the pass in.
+  `applyTiling` builds the assembled result into a fresh `tensor.empty` rather
+  than into the destination the untiled operation had.
+
+- **The mechanism, which is two correct passes and one shared value.** At `-O2`
+  the pipeline runs `-cse` before the tiling pass, and `tensor.empty` is pure
+  with no operands, so CSE merges every `tensor.empty` of the same type in a
+  function into one value. That is CSE doing its job. The lowering decides
+  whether a `tensor.empty` is a **DRAM assembly buffer** by asking whether any
+  tile is inserted into it, in `EmptyOpLowering::isAssemblyBuffer`, and that
+  question is asked of the value. So a destination the tiling pass assembles
+  into is also, in general, the destination of every other operation in the
+  function with that result shape, and the answer reaches all of them.
+
+- **What that produces.** Every operation sharing the value is given a DRAM
+  destination instead of a scratchpad one, which is a compute instruction
+  writing off chip. On `resnet_block` at its tight budget, in the first program
+  of the suite where tiling fired, four unrelated operations shared the value.
+
+- **The fix, and it restores rather than invents.** The assembled result is
+  built into a `tensor.empty` this pass creates, at the same type. That is what
+  the untiled program had before `-cse` merged the destinations, so the
+  aliasing property the pass depends on is the one the program started with. The
+  orphaned original is erased when the rewrite leaves it with no reader, because
+  Section 12 puts the two canonicalizations around fusion and there is none
+  between this pass and the lowering, so a dead `tensor.empty` reaching the
+  conversion becomes a scratchpad allocation for a value nothing writes and
+  nothing reads.
+
+- **The reproduction is recorded as it was found and cannot be run at the
+  current tip, and saying so is the point.** D-0052 landed in the same commit
+  and makes the tiling pass decline any operation whose assembled result is read
+  by another operation, which is exactly the shape `resnet_block` had. Nothing
+  in the suite now reaches this path. A two operation program that shares a
+  destination and tiles was written to reproduce it in the small, and it does
+  **not** fail: `EmptyOpLowering`'s out parameter special case absorbs the
+  shared value when the assembly is returned, which is the only shape D-0052
+  leaves. So the guard below is kept without a live reproduction, and this entry
+  says that rather than implying one exists.
+
+  ```
+  npu-opt <model>.mlir --pass-pipeline='builtin.module(npu-O2{budget=6464})'
+  ```
+
+- **Why it is kept anyway.** The classification is value based and `-cse` makes
+  the value shared; the fix costs one `tensor.empty` that the conversion turns
+  into the allocation the assembly needed regardless. An unguarded assumption
+  here is worse than a guard whose failure the current suite cannot reach, which
+  is the same reading `docs/PHASE_STATE.md` gives the two uncovered decline paths
+  in the tiling interface.
+
+- **The shape it shares with earlier entries.** D-0034 was two operations
+  sharing one destination and therefore one buffer. This is that again, one
+  level up: not two operations the frontend wrote against one destination, but
+  every operation of a shape, merged by a pass whose merging is correct, read by
+  a later pass that took the value's identity to mean something about its
+  ownership.
+
+### D-0052 a tiled result assembled in DRAM cannot be read back, so the tiling pass declines to produce one
+
+- **Found:** 2026-09-05, phase P13, by wiring the three passes into `-O2` and
+  running the suite. The first tiled program the suite produced did not encode.
+- **Status:** **the compiler is fixed and the underlying constraint is open and
+  escalated.** `-npu-tile-to-scratchpad` now declines an operation whose
+  assembled result is read by anything, which keeps this compiler from emitting
+  a program its own encoder refuses. Whether the ISA should be able to express
+  the read is D-0050's question and is the owner's.
+
+- **Reproduce.** At the tree where the three passes are in `-O2` and the pass
+  did not yet decline:
+
+  ```
+  python experiments/run_benchmarks.py --models resnet_block --force
+  ```
+
+  ```
+  npu-translate: error: the encoder produced a program that does not validate:
+  operand-extent: operand 0 reads 2048 bytes from 10944 and the buffer written
+  there ends at 11968 (instruction 14)
+  ```
+
+  Instruction 14 is the `npuisa.dma_load` that brings the assembled convolution
+  result back on chip for the `npuisa.mul` that reads it. The assembly is 2048
+  bytes and was written by two `npuisa.dma_store`s of 1024 bytes each.
+
+- **Why it is not a bug in the assembly decision.** `docs/PHASE_STATE.md`
+  records the choice to assemble a tiled result in DRAM rather than in the
+  scratchpad, and gives as one reason that "nothing is ever written in pieces
+  and read whole". **That sentence is true of the tiles and false of the
+  consumer**, and the gap between the two is this entry. The decision assumed
+  the next layer loads the slices it needs. The next layer is not tiled, so it
+  loads the whole value, and `WrittenSpans` deliberately does not merge adjacent
+  spans, so a read that spans two of the writes is refused by `operand-extent`.
+  Merging them is precisely the relaxation D-0050 records and declines.
+
+- **The measurement that settles the scope, and it is the useful part.** The
+  refusal is not about DRAM against scratchpad and not about strides:
+
+  - A **matching** tiled consumer does not help either. A tile of a `1x8x8x8`
+    result over rows is `1x8x4x8` with the parent's strides, whose addressed
+    span is 1920 bytes while the write recorded 1024, the element count. The
+    write side records `resultByteSize`, the count, and the read side computes
+    `addressedByteSpan`, the reach. For a contiguous buffer they agree and for a
+    strided tile they do not.
+  - A **scratchpad** assembly is refused by the same rule, which is what
+    `test/Encoding/tiled-assembly-in-scratchpad.mlir` already records.
+  - The **one** shape that encodes is an assembly nothing reads: a
+    `tensor.empty` whose insert chain reaches `func.return` is mapped straight
+    to the out parameter, the tiles are stored into the output region, and an
+    output region is never read. `test/Pipeline/p13-passes-at-o2.mlir` carries
+    that case and it compiles, encodes and runs.
+
+- **So the rule the pass now applies is exactly the shape that is expressible**:
+  tile an operation over budget when every user of its result is `func.return`,
+  and otherwise decline with a remark naming this entry. Declining is Section
+  13.2's own answer to a tile that is not expressible, and the allocator's
+  spilling is the fallback. It is counted in `declined` rather than being
+  silent.
+
+- **What it costs, measured rather than estimated.** At `-O2` on this suite, at
+  both budgets, on all seven models: **nothing tiles**. Before the decline rule,
+  `resnet_block` tiled one convolution at its tight budget and `inception_block`
+  tiled two, and all three of those programs were refused by the encoder. So the
+  cost of the rule is not a slower compiler, it is that Section 13.3's tiling
+  arm has no subject inside the suite at `-O2` until either a consumer chain
+  tiles with its producer or the ISA can express the read.
+
+- **What a fix would have to be**, which is D-0050's list unchanged, plus the
+  observation this entry adds: the write side would also have to record the
+  reach rather than the count for a strided result, or the read side the count,
+  because today the two sides of the same buffer are measured differently.
+  **Recording the reach as written would be a widening of a declared check** and
+  is not something a phase may do.
+
+- **What is right about the current behaviour.** Nothing miscompiles and nothing
+  is silent. The encoder refused before the decline rule and the pass declines
+  after it, with a remark that names the reason and the entry.
+
+### D-0053 an argument whose every use is a whole value slice is never loaded, and the conversion then folds the slice away
+
+- **Found:** 2026-09-05, phase P13, while building a reproduction for D-0051.
+  Not by the suite, which does not reach it.
+- **Status:** **fixed**, in the wiring commit.
+
+- **The mechanism.** `FuncOpLowering` decides whether to load a function
+  argument whole by asking whether every use of it is a slice, on the stated
+  reasoning that an argument read only through slices should not also be
+  transferred whole. `getTiledImplementation` slices **every** operand of the
+  operation it tiles, including the ones the tiling did not split, so a
+  convolution tiled over its output rows asks for a `tensor.extract_slice` of
+  the whole filter at full extent. That is a slice by type and not by content,
+  and the dialect conversion driver folds an identity `tensor.extract_slice`
+  away before any pattern sees it. The argument is therefore never loaded and
+  the folded slice hands the compute instruction the DRAM buffer directly.
+
+- **Reproduce.** A convolution whose filter is a function argument rather than a
+  constant, tiled:
+
+  ```
+  npu-opt shared-empty.mlir --pass-pipeline='builtin.module(npu-O2{budget=6464})'
+  ```
+
+  ```
+  error: 'npuisa.conv2d' op operand #1 must be a statically shaped memref in the
+  Scratchpad memory space, but got 'memref<8x8x3x3xf32, #npu.dram>'
+  ```
+
+- **Why the suite never saw it.** Every convolution filter and every matmul
+  right hand side in the seven models is an `npu.constant`, and
+  `ConstantOpLowering` gives a constant its own scratchpad buffer and one load.
+  The hole is reachable only by a model whose weights arrive as arguments, which
+  is a shape the ONNX importer can produce and this suite happens not to.
+
+- **The fix.** A use is a slice use only when it is a **proper** sub region,
+  which is asked by comparing the slice's type against the argument's. An
+  identity slice is the whole value and counts as an ordinary read, so the
+  argument is loaded and every consumer resolves to the resident copy, which is
+  Section 8's one load per DRAM value entering the scratchpad unchanged.
+
+- **The shape.** A predicate asked before a fold that changes the thing being
+  predicated on. The answer was right about the IR in front of it and wrong
+  about the IR the next stage would see, which is D-0035's shape from the other
+  direction and is why the fix is a sharper question rather than a later one.
+
+### D-0054 `-npu-double-buffer` fires on nothing this compiler emits, so its ablation row is a zero about the pair rather than about the pass
+
+- **Found:** 2026-09-05, phase P13, by reading the pass statistics of the wired
+  level rather than by a failure. `prefetched` is 0 and `not-hoisted` is every
+  transfer, on all seven models at both budgets.
+- **Status:** **open, recorded, and deliberately not fixed in this commit**,
+  because a fix makes the pass fire and moves numbers, and this commit's claim
+  is that it moves none.
+
+- **The two reasons, and neither of them is the overlap being worthless.**
+
+  1. **Every argument load is in the entry block, consecutively.**
+     `FuncOpLowering` loads every argument it reads at the top of the function,
+     so the transfers are adjacent and the hoist stops at another transfer. That
+     stop is correct and the pass says why: both are charged to the same DMA
+     port, so lifting a load above a load moves work along a saturated timeline
+     and hides nothing.
+  2. **A constant's load does have a computation before it, and is declined for
+     a different reason.** `prologueOf` collects the operations a transfer may
+     take with it and admits `memref::AllocOp` and `memref::SubViewOp` only, so
+     an `npuisa.const` cannot move with the load that reads it, and
+     `hoistIsDominanceSafe` then refuses a hoist that would leave the load's own
+     source defined after it. A constant is the one transfer in these programs
+     that sits behind a computation, and it is the one the prologue cannot
+     carry.
+
+- **Why this is worth an entry rather than a line in a table.** The ablation row
+  for `-npu-double-buffer` is zero on every model at both budgets, and
+  `docs/PASSES.md` already carries a measured reason for a zero: on a hand
+  written tiled convolution the pass fires, the instruction stream genuinely
+  changes, and no cycle moves, because a tiled program is DMA bound. **That
+  reason is true and is not the reason the suite's row is zero.** The suite's
+  row is zero because the pass fires on nothing at all. Two different zeros,
+  reported identically, which is the P10 `-canonicalize` finding in a third
+  place.
+
+- **What is right about the current behaviour.** The statistic is the thing that
+  makes this visible rather than silent: `not-hoisted` counts every transfer the
+  pass looked at and declined, so a pass that ran and answered no reads
+  differently from a pass that was not in the pipeline. Section 19.0 asks for
+  exactly that separation, and it is the reason this was found by reading the
+  numbers rather than by a fault.
+
+- **What a fix would be.** Admit `npuisa::ConstOp` to the prologue, since it is
+  a pure definition whose position carries no meaning beyond the live range it
+  starts, exactly as an allocation's does. That makes the pass fire on every
+  model with a weight, which moves the instruction order of the whole suite and
+  is therefore a declaration, a re-record and its own commit.
+  `test/Pipeline/p13-passes-at-o2.mlir` carries the current behaviour as a
+  measured negative so the day it changes, a test says so.
+
+### D-0055 the handoff quotes a `--mlir-timing` bound that is not in the code, and reads the wrong one of two bounds
+
+- **Found:** 2026-09-05, phase P13, by reading the run's own output against the
+  code that produces it while recording the fourth data point the handoff asked
+  for.
+- **Status:** **fixed here**, in `docs/PHASE_STATE.md` and `docs/NUMBERS.md`. No
+  bound moved and no code changed.
+
+- **What the code has.** `cross_check_against_mlir_timing` has two bounds
+  pointing in opposite directions. The **deficit** bound catches the
+  instrumentation reading above MLIR and is `report.half_ulp_ms`, which is
+  `10 ** (3 - decimals) / 2` and is **0.0500 ms** at the four decimals MLIR
+  prints seconds to. That is D-0043's, and D-0043's own entry says the bound
+  went from 0.15 ms per pass to 0.05. The **upper** bound catches the gap the
+  other way and is `half_ulp + TIMING_GAP_FRACTION * mlir_figure`, so it is a
+  different number for every pass. There is no 0.2000 anywhere.
+
+- **What the handoff said.** That "the worst `--mlir-timing` gap was 0.1856 ms
+  against D-0043's 0.2000 bound", with 0.1577 and 0.1177 quoted the same way
+  from P11, and a note that the margin was narrowing across the three. The
+  figure `run_benchmarks.py` prints as "worst instrumentation against
+  --mlir-timing gap" is `CrossCheck.worst_gap_ms`, which is the **upper**
+  direction. So three readings of one bound were recorded as a trend in the
+  other, and the bound they were compared against does not exist.
+
+- **The reading corrected.** P13's quiet run measures a worst upper gap of
+  **0.2430 ms**, at `NPULowerToNPUISA` in `lenet-O2-tight-n1-fp32-normal`, and
+  it is green, because that pass's own allowance is 0.05 plus half of what MLIR
+  timed it at. **The deficit bound had no red on any of the 217 cells**, which
+  is the statement D-0043 wanted and the one nobody was making: every cell's
+  worst deficit is at or under 0.0500 ms.
+
+- **The shape, and it is this project's most repeated one.** A number that
+  arrived through a channel which lost which of two quantities it was, and three
+  successive handoffs that carried it forward without asking the code. It is
+  D-0048's shape in a document rather than in an entry: checkable from inside
+  the artefact the whole time, in one grep, and nothing ever asked.
+
+- **What is not being changed.** `TIMING_GAP_FRACTION` stays at 0.5 and
+  `half_ulp_ms` stays derived. A misread bound is corrected by reading it
+  correctly.
