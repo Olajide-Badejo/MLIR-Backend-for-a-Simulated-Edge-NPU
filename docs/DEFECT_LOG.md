@@ -4168,3 +4168,66 @@ the one minute number alone is what three of these four reds have in common.
   ablatable set and for the same reason. The rename is the one to make, and it
   moves an attribute string in every tiled program's IR, so it belongs at the
   start of a phase rather than at the end of one.
+
+### D-0062 `tiling_choices` is null on all 217 cells, with a reason that stopped being true at the wiring commit
+
+- **Found:** 2026-09-06, phase P13, at the close, by checking the one page that
+  claims to be a complete account of what has been measured against the cells it
+  is an account of.
+- **Status:** **open, carried into P14 with the reproduction.** Not fixed here,
+  and the reason is a rule rather than a budget: filling it moves a recorded
+  field on the cells where tiling fires, which is a declaration in
+  `docs/BREAKING_CHANGES.md` followed by a re-record in its own commit, and this
+  phase's close is explicitly not a re-record.
+
+- **Reproduce:**
+
+  ```
+  python3 -c "
+  import json, pathlib
+  cells = list(pathlib.Path('experiments/results').glob('*.json'))
+  print(len(cells), 'cells')
+  print(sum(json.loads(c.read_text())['simulation']['tiling_choices'] is None
+            for c in cells), 'null')
+  print(json.loads(cells[0].read_text())['simulation']['tiling_choices_null_reason'])
+  "
+  ```
+
+  217 cells, 217 null, and the reason reads
+
+  > P13, with -npu-tile-to-scratchpad. No pass in any -O level tiles yet, so
+  > there are no choices to record rather than an empty list of them.
+
+- **Why that is wrong now.** `-npu-tile-to-scratchpad` went into `-O2` at
+  `8f79972` and it tiles: `resnet_block` and `inception_block` at their tight
+  budgets, and the tight budget rows of five more models wherever
+  `-npu-fuse-ops` is ablated. **There are choices to record.**
+  `docs/NUMBERS.md`'s "what is not here" table says the field arrives at P13, and
+  P13 is closing without it.
+
+- **And a re-record alone would not have filled it.** `run_benchmarks.py` writes
+  `simulation.update(null("tiling_choices"))` unconditionally: there is no code
+  that reads `npu.tiling_choice` off the compiled program and puts it in the
+  cell. So this is a gap in the recorder rather than a stale file, which is worth
+  separating, because "run it again" is the fix for a stale file and is not the
+  fix for this.
+
+- **What the fix is, in the order it has to happen.** Read the mapping attribute
+  in `run_benchmarks.py`, the way `experiments/zigzag_same_mapping.py` already
+  does at the npu stage, and record one entry per tiled layer. Remove the null
+  reason from `NULL_REASONS` in the same commit, because a field carrying both a
+  value and a reason is refused by the loader. Declare the movement, then
+  re-record the 217 cells in its own commit on a quiet machine.
+
+- **What it costs to leave.** Nothing that any published number depends on: no
+  table in `docs/NUMBERS.md` reads the field, the mappings the Section 16.5
+  comparison used come from the compiler directly and are committed under
+  `experiments/results-zigzag/mappings/`, and the null is honest about being a
+  null. What it costs is the claim that the results are a complete account of
+  what has been measured, which is the claim `docs/NUMBERS.md` makes about
+  itself, and that page now says so rather than implying otherwise.
+
+- **The shape, and it is this phase's own.** A field whose reason was written
+  when it was true, and which nothing re-read when the thing it described
+  changed. It is D-0055's shape and D-0059's and D-0061's: checkable from inside
+  the artefact the whole time, in one command, and nothing ever asked.

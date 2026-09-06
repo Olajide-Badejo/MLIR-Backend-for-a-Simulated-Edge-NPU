@@ -6478,3 +6478,104 @@ The bounded run took 59.1 seconds and 747 MiB against a stated ceiling of 8192,
 so the rule about stopping and recording why did not fire. It exists in the code
 anyway, checked before every layer, because a bound that is only written in a
 document is not a bound.
+
+## 2026-09-06 Phase P13, closing: what a phase about tiling turned out to be about
+
+**P13 was briefed to fix D-0045 under full declare then re-record governance, on
+the stated understanding that fixing it changes the cost model. Its first commit
+is the measurement that says there is nothing there to fix.** The charge already
+does what the entry says it does not, and the entry's own reproduction quotes a
+cell the committed results contradict. Everything the governance sequence would
+have governed was therefore not done, deliberately, and the phase was re planned
+around that on its first day. **No constant in `CostModel.h` or its Python mirror
+moved on this branch**, which is a diff rather than a claim.
+
+### The phase's result is two negative numbers and both are the machine's
+
+**`-npu-double-buffer` is correct, fires on one to four transfers per model,
+declines the hoists whose doubled residency would not place, and moves zero
+cycles on every cell of the suite.** The reason is Section 5.5: the schedule is a
+two port dataflow, so an instruction starts when its port frees and its operands
+are ready rather than when it is written, and both halves of a prefetch are on
+the same DMA port. Tiling then makes every program DMA bound, 1524 cycles against
+596 on the hand written case, so there is nothing to hide a transfer under. That
+is now written down for the owner as a contradiction between what Section 5.1
+asks the pass to achieve and what Section 5.5 permits.
+
+**`-npu-assign-layout` answers NCHW at every extent in the suite**, and the reason
+is a ratio between two constants rather than a property of these models: a
+strided element costs 0.5 cycles and a permuted one 0.0625, so performing a
+transpose beats moving the same data strided by eight times, at every size this
+machine can hold.
+
+**Neither zero is a pass that does not work.** Both are passes that work and
+whose value this machine's model does not price, and both were found by reading
+the numbers rather than by a failure.
+
+### What tiling actually does, which took four defects to be able to ask
+
+D-0050, D-0052, D-0053 and D-0056 all stood between the pass being implemented
+and the pass being measurable. The last of them is the one worth repeating: the
+allocator refused to spill any buffer a **view** was taken of, and what a reload
+genuinely cannot serve is only a view that is **written through**. Tiling takes a
+`memref.subview` per tile, so tiling pinned its own operand twice over, whole
+resident and unspillable, and the fix is a narrower rule and a cell that places
+at 6144 bytes where the untiled program needs 6432.
+
+**Then the experiment could run, and its answer is that tiling helps one model,
+costs another, and extends no model's budget range at all.** `inception_block`
+wins 404 cycles, three spills and 42 percent of its DRAM traffic.
+`resnet_block` loses 642 cycles, because the operand its budget runs out on is
+the block's own residual, which is on chip, and a slice of a scratchpad value is
+a view rather than a transfer. **That one sentence, the per slice convention,
+decides every row of the table**, and it is the same sentence that explains the
+spill refusal above, arriving from the other direction.
+
+**And the largest single effect in the experiment is a pass ordering.** Fusion
+puts thirty of the suite's forty four compute operations inside regions the
+tiling pass does not look into, so every crossover except one exists only with
+`-npu-fuse-ops` ablated. Fusion is worth more than tiling on these models, so the
+answer is not to reorder them, and it is left as an open question with the
+measurement beside it rather than tuned away.
+
+### The external tool caught the export rather than the compiler
+
+Section 16.5's cross check is the one place in this phase where an outside
+opinion had something to say, and what it said was that **my export was wrong**.
+The first version put the reduction innermost inside a tile, reading
+`npu.tiling_choice.loop_order` as though it described the whole nest; ZigZag's
+search answered that a nest with the output positions innermost was 57 percent
+cheaper, and that nest is what `cost_model.gemm_charge` actually walks.
+Correcting it moved the geometric mean of the comparison from 0.880 to 1.160 and
+took the layers where ZigZag prefers its own mapping from 26 of 42 to one.
+
+**The transferable part is not that a cross check is useful.** It is that the
+attribute the cross check reads was **incomplete in a way that reads as
+complete**, and the only reason a wrong number was not published is that the tool
+disagreed loudly enough to be investigated. That is D-0061 and its resolution is
+a rename.
+
+### What the phase's own numbers say about the suite
+
+The two matmuls fold identically on both sides of the comparison, because 400
+divides by sixteen and 120 by fifteen, and there the two independently written
+cost models agree to **five percent and to nothing**: 14402 against 15116, 15498
+against 15509. Where the fold differs they disagree by up to 3.05 times, and the
+two terms that carry it are separable and each has a control: the per transfer
+descriptor, isolated on one layer at two, four and eight tiles, and the array
+fold, which this machine packs unevenly and ZigZag can only divide.
+
+**ADR 0008's budgets were re-measured at this tree and did not move**, which is
+the answer that ADR owed after saying "tiling lands at P13". 473 compilations,
+every floor at `-O2` equal to its frozen budget with the pass in or out.
+
+### 15 defects, and the shape they share
+
+D-0048 through D-0062, 15 of them with no number
+unused. The shape that recurs is not a bug in an algorithm: it is **a claim that was checkable from inside the artefact the
+whole time and that nothing ever checked**. D-0048 is a defect entry that quotes
+a cell the results contradict. D-0055 is three handoffs reading one bound and
+naming another. D-0059 is a driver that states a rule two lines above the code
+that breaks it. D-0061 is an attribute that names half a loop nest. Each was
+found by reading the artefact against itself, and each cost a test that should
+always have existed.

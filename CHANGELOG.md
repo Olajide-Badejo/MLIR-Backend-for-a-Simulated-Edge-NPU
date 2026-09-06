@@ -6,17 +6,22 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
-### Phase P13: tiling, double buffering, layout (in progress)
+### Phase P13: tiling, double buffering, layout
 
-**This phase is incomplete and the section says so first**, because a changelog
-that reads as though a phase finished is worse than no entry. Section 13.3's
-three arms and the Section 16.5 ZigZag cross check have both run now and are
-recorded in `docs/NUMBERS.md`; what remains is the Section 2 carve out, which is
-an owner decision rather than work.
+**Complete pending merge, and the gate is met on all seven clauses.** Section
+13.3's three arms and the Section 16.5 ZigZag cross check both ran, are recorded
+in `docs/NUMBERS.md` beside the predictions they answer, and both answer several
+of their own clauses in the negative. **Two things are left and both are the
+owner's**: the Section 2 carve out, which is a paragraph to apply with the
+numbers measured, and the Section 5.5 contradiction, which is whether a pass that
+is correct and can never move a cycle should be asked for as written. Both are
+stated with their measurements in `docs/PHASE_STATE.md`.
 
 **All three passes are in `-O2`**, the ablatable set is eleven, the suite is 217
-cells, and the suite has been re-recorded twice: once at the wiring commit and
-once at the tree where tiling reaches it. **No golden tensor byte moved at
+cells, and the suite has been re-recorded **three times**: at the wiring commit,
+at the tree where tiling reaches the suite, and at the tree where the prefetch
+starts firing. Nothing after the third moved a counted field, which is why there
+is no fourth: `regression-baseline --check` at the final tip reports no drift. **No golden tensor byte moved at
 either.** At the wiring commit **not one counted field of the 175 pre-existing
 cells moved**, so there was nothing to declare for it and a declaration of a
 movement measured to be zero would have been a false one. At the second, **31

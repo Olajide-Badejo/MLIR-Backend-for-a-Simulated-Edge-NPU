@@ -819,8 +819,24 @@ what has been measured rather than a selection of what came out well.
 
 | Field | Arrives at |
 |---|---|
-| `tiling_choices` | P13 |
+| `tiling_choices` | **still null at P13's close, which is D-0062** |
 | `quant_boundary_crossings`, `per_layer_sqnr_db`, `max_abs_error_vs_fp32_simulated` | P14 |
+
+**The first row is the one this page has to be careful about.** P13 said the
+field arrives at P13, and it has not: all 217 cells carry null, and the reason
+they carry says no pass in any `-O` level tiles yet, which stopped being true
+when `-npu-tile-to-scratchpad` entered `-O2`. **The pass does tile and the
+choices exist**; what does not exist is code in `run_benchmarks.py` that reads
+them into a cell, so a re-record would not have filled it either. Filling it
+moves a recorded field and is therefore a declaration followed by a re-record in
+its own commit, which P13's close deliberately is not. D-0062 carries the
+reproduction and the order the fix has to happen in.
+
+**The mappings themselves are not missing**, which is worth saying beside that
+row: `experiments/results-zigzag/mappings/` holds all 42 of them in ZigZag and
+Timeloop form, read off the compiler at the npu stage, and Section 16.5's
+comparison is over exactly those. What is missing is the field in the cell, not
+the measurement.
 
 The three groups P11 filled left this table when they were filled:
 `roofline_bound_cycles`, `operational_intensity` and `roofline_verdict`;

@@ -1665,8 +1665,8 @@ is the first phase in which the tool that set it is present.
 
 ## Defects
 
-**Ten new at P13, D-0048 to D-0057**, and the first of them is in this file's
-sibling. Every defect before D-0047 was in code, in a test, or in a claim about
+**15 new at P13, D-0048 to D-0062**, with no number
+unused in the range, and the first of them is in this file's sibling. Every defect before D-0047 was in code, in a test, or in a claim about
 one; D-0047 was in the build. D-0048 is in the **defect log itself**, which is
 the document the project relies on to be right about what is wrong with it.
 
@@ -1835,9 +1835,11 @@ answer could take.
 
 ## Open questions
 
-**Fourteen, and five are new at P13.** One from P12 is answered. The two newest
-are the ZigZag comparison's, and they are stated first because they are the ones
-a reader of this handoff has not seen anywhere else.
+**Sixteen, and seven are new at P13.** One from P12 is answered. **Four of the
+seven arrived in the phase's last two days**, three from the Section 16.5
+comparison and one from checking this project's own account of itself against the
+cells it is an account of. They are stated first because they are the ones a
+reader of this handoff has not seen anywhere else.
 
 **Whether the tiling search should be able to block a reduction, which is
 D-0060.** On one layer of 42, `lenet_batched`'s matmul at 199872 bytes, ZigZag's
@@ -1859,6 +1861,16 @@ ZigZag's search found a nest 57 percent cheaper and the nest it found was this
 machine's own. The rename to `tile_loop_order` is honest and free and moves an
 attribute string in every tiled program's IR, so it belongs at the start of a
 phase rather than the end of one.
+
+**Whether the suite should record the mappings it now has, which is D-0062.**
+`simulation.tiling_choices` is null on all 217 cells and the reason it carries
+says no pass in any `-O` level tiles yet, which stopped being true at the wiring
+commit. `run_benchmarks.py` writes that null unconditionally, so a re-record
+would not have filled it either. Filling it is a declaration plus a re-record in
+its own commit, which this close deliberately is not, and the mappings
+themselves are committed under `experiments/results-zigzag/mappings/` rather than
+lost. **It is the one thing `docs/NUMBERS.md` said would arrive at P13 and did
+not**, and that page now says so on the row instead of implying otherwise.
 
 **Whether the fusion and tiling conflict should be resolved, and by whom.** As
 the compiler stands, `-npu-tile-to-scratchpad` extends no model's budget range by
