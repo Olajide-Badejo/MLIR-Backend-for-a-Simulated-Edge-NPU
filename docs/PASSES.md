@@ -19,14 +19,21 @@ The numbers come from `experiments/results/`, one JSON per cell, produced by
 `experiments/run_benchmarks.py`, and every entry names the files its row comes
 from so a reader can check it rather than trust it.
 
-**Read the zeros with the prose beside them.** Six of the eight ablatable passes
-have a delta of zero on every model at every budget, and the six zeros do not
-mean the same thing. Two are structural and would be zero on any program this
-compiler can currently emit; three are properties of this model suite; and one,
-`-canonicalize`, is a pass doing substantial work that the ablation cannot see
-because another pass would have done it. A table of deltas with no prose beside
-it would report those six identically, which is why each entry below carries its
-own reason and why `docs/NUMBERS.md` repeats them next to the table itself.
+**Read the zeros with the prose beside them.** Seven of the eleven ablatable
+passes have a delta of zero on every model at every budget, and the seven zeros
+do not mean the same thing. Two are structural and would be zero on any program
+this compiler can currently emit; one is numerically and structurally inert by
+design; two are properties of this model suite; one, `-canonicalize`, is a pass
+doing substantial work that the ablation cannot see because another pass would
+have done it; and one, `-npu-assign-layout`, is a pass whose answer is the layout
+the program already had. A table of deltas with no prose beside it would report
+all seven identically, which is why each entry below carries its own reason and
+why `docs/NUMBERS.md` repeats them next to the table itself.
+
+**The two rows that are not zero at P13 are one measurement rather than two.**
+`-npu-tile-to-scratchpad` and `-npu-double-buffer` read the same numbers because
+the pipeline couples them, which the section on the coupling below sets out; the
+overlap contributes none of it, for the reason D-0054 gives.
 
 **What P9 measured one pass at a time still stands beside the ablation**, and
 where both exist they agree: `-npu-fold-batchnorm`'s eight instructions and 212
@@ -75,15 +82,50 @@ they land.
 | `-cse` | O2 | yes | P9 | upstream, wired in |
 | `-sccp` | O2 | yes | P9 | upstream, wired in |
 | `-symbol-dce` | O2 | yes | P9 | upstream, wired in |
+| `-npu-assign-layout` | O2 | yes | P13 | implemented |
+| `-npu-tile-to-scratchpad` | O2 | yes | P13 | implemented |
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
+| `-npu-double-buffer` | O2 | yes | P13 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
 
-**Eight ablatable, and Section 12's eleven is that plus three.**
-`-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` are
-excluded from P9 by name in the roadmap and arrive at P13; `-npu-calibrate` is
-never in a default `-O` level. Nothing below claims a row for any of them,
-because a level that named a pass nothing implements would give Section 16.2's
-ablation table a row it could not fill.
+**Eleven ablatable, which is Section 12's own number.** The three P13 rows went
+into `-O2` in one commit, so the ablatable set is eleven, the suite is 217 cells
+and the ablation half of Section 2's arithmetic agrees exactly at 154.
+`-npu-calibrate` is P14 and is never in a default `-O` level, which is why
+eleven rather than twelve. The table's order is the order `-O2` runs them, which
+is why `-npu-double-buffer` sits between the lowering and the allocator: it
+rewrites asynchronous transfer tokens, and those exist only below the
+conversion.
+
+**The three went in together, on purpose.** Putting one in is what moves the
+cell count, re-derives Section 2's arithmetic at six sites, and requires the
+tiles nothing measurement to be taken again at the tree that has all three.
+Doing that once is one re-record; doing it three times is three, with two
+intermediate states nothing would ever run again.
+
+**`-npu-tile-to-scratchpad` and `-npu-double-buffer` are coupled, and the
+coupling is Section 13.2's rather than this wiring's.** The pipeline tells the
+tiling search whether double buffering is in the pipeline, because 13.2 makes
+the doubled working set the search's problem: a tiling that fits only without
+the prefetch silently defeats the pass that adds it. So **ablating
+`-npu-double-buffer` also relaxes the tiling search, and its row measures the
+pass together with the sizing it forces.** That is stated here because a reader
+of the ablation table would otherwise attribute the whole row to the overlap.
+The measured size of the coupling is in `docs/NUMBERS.md`: at the tight budgets
+it changes which operations the search finds over budget, and therefore which it
+tiles, and at the default budget it changes nothing because nothing is near the
+budget.
+
+**What each of the three is, in a sentence.** `-npu-assign-layout` scores the
+rank 4 layout question on Section 5.5 and answers NCHW every time, then cancels
+the permutations that answer makes redundant with the inverse transpose fold.
+`-npu-tile-to-scratchpad` splits an operation whose working set exceeds the
+budget, enumerating the mapping space exhaustively and scoring on the Section
+5.5 makespan, declining rather than splitting an fp32 reduction, and leaving no
+`scf` operation behind. `-npu-double-buffer` hoists a transfer above the
+computation before it so the two overlap. Their own sections below carry the
+before and after IR, where each does not fire, and what each was measured to be
+worth.
 
 ---
 
@@ -573,6 +615,385 @@ cloned into the body even if it were tempting.
 - **The producer is a pool.** Pooling reads a window rather than one element, so
   there is no elementwise activation to keep on chip with it, and a region
   around a pool alone would state a fusion that did not happen.
+
+---
+
+## `-npu-assign-layout`
+
+Chooses each rank 4 activation's layout and cancels the permutations the choice
+makes redundant. Implemented in `lib/Dialect/NPU/Transforms/AssignLayout.cpp`.
+
+**Ablatable: yes.** **Delta, measured over the 217 cell suite: zero, on every
+model at both budgets, in instructions, cycles, spills and DRAM bytes, and the
+DMA stride term is exactly what makes it zero.** P13 predicted that from Section
+5.5 before wiring the pass into `-O2` and the ablation row now says it from a
+run: `experiments/results/*-O2-*-ablate-npu-assign-layout.json` against the
+unablated cell beside each of them.
+
+**The choice is one term of the cost model and nothing else.** Section 5.5
+charges layout in one place: the non unit innermost stride penalty on a
+transfer, `kDmaStridedElementCycles`, 0.5 cycles per element. Section 5.5 also
+fixes how a layout reaches that term: an NHWC tensor is materialised below the
+tensor level as a buffer at NCHW extents carrying permuted strides, so its
+innermost stride is the channel count and every transfer of it is charged the
+penalty, while an NCHW tensor is contiguous and is charged nothing. The only
+alternative to paying it is to perform the permutation, which is one elementwise
+pass at `1 / kElementwiseLaneWidth`, 0.0625 cycles per element.
+
+**So a physical transpose is eight times cheaper than moving the same data
+strided, at every extent**, and the answer to the layout question on this
+machine is NCHW for every operation in the suite. It is a ratio and not a
+threshold: a transfer's other two terms, the bytes and the fixed descriptor
+cost, are charged whichever layout the buffer is in and cancel out of the
+comparison rather than tipping it at some size.
+`CostModelTest.cpp::CostModel.AStridedMoveCostsMoreThanThePermutationThatAvoidsIt`
+asserts both the direction and the factor, in the file that owns the two
+constants, so a later recalibration fails a test rather than quietly reversing
+this paragraph.
+
+**The pass counts the questions it answered.** `kept-nchw` is the number of
+operations whose layout was scored, and it is a statistic rather than silence
+because a decision that was taken and lost and a decision that was never reached
+are indistinguishable from outside otherwise. A reader who wants the number the
+other way round has the ratio above and the element counts in
+`experiments/results/`, which is a computation and is labelled as one, not a
+simulated run of a program this compiler declines to emit.
+
+**What it cannot do, and why that is not a gap.** It changes a layout only by
+inserting or removing a `npu.transpose`, which is a compute operation and a full
+pass over the data. Absorbing a layout change into a transfer that was moving
+the bytes anyway is `relayout-and-move`, which Section 12 names as a future
+extension, states is not implemented, and forbids any gate or report claim from
+depending on. Nothing here depends on it, and there is deliberately no code that
+rewrites an operation into NHWC: the comparison above refuses that trade at
+every shape this machine can hold, so a materialisation path would be a branch
+no input could reach and no test could exercise.
+
+### Before and after
+
+```mlir
+%d0 = tensor.empty() : tensor<1x8x8x3xf32>
+%t = npu.transpose ins(%x : tensor<1x3x8x8xf32>) outs(%d0 : tensor<1x8x8x3xf32>)
+                   {permutation = array<i64: 0, 2, 3, 1>} -> tensor<1x8x8x3xf32>
+%d1 = tensor.empty() : tensor<1x8x8x3xf32>
+%r = npu.relu ins(%t : tensor<1x8x8x3xf32>) outs(%d1 : tensor<1x8x8x3xf32>)
+     -> tensor<1x8x8x3xf32>
+%d2 = tensor.empty() : tensor<1x3x8x8xf32>
+%b = npu.transpose ins(%r : tensor<1x8x8x3xf32>) outs(%d2 : tensor<1x3x8x8xf32>)
+                   {permutation = array<i64: 0, 3, 1, 2>} -> tensor<1x3x8x8xf32>
+```
+
+becomes
+
+```mlir
+%d1 = tensor.empty() : tensor<1x3x8x8xf32>
+%r = npu.relu ins(%x : tensor<1x3x8x8xf32>) outs(%d1 : tensor<1x3x8x8xf32>)
+     -> tensor<1x3x8x8xf32>
+```
+
+Two steps, and both are needed. The relu **sinks** above the transpose, which is
+exact because a permutation and an elementwise maximum each read one element to
+write one and therefore commute. That makes the two transposes adjacent, and the
+inverse transpose **fold** replaces the pair with the value it permuted. The
+leftover `tensor.empty` destinations have no users and `-canonicalize` removes
+them, which is the canonicalization Section 12 puts beside these passes.
+
+### Where it does not fire
+
+Section 12's negative test rule, in `test/Transforms/assign-layout.mlir`.
+
+- **Two permutations that do not compose to the identity.** `[0, 2, 3, 1]` twice
+  lands on N, W, C, H, which is a different tensor even though it is back to
+  being rank 4.
+- **An inverse pair that is a relayout rather than a round trip**, and this is
+  the load bearing one. The permutations compose to the identity and the extents
+  return to where they started, but the result carries `#npu.layout<nhwc>` and
+  the input does not, so the pair means "the same extents read the other way
+  round". Deleting it would change what the bytes mean while leaving every type
+  looking right. The guard is that the surviving value's type must equal the
+  replaced result's **exactly, encoding included**.
+- **A transpose that two operations read.** Sinking rewrites the transpose to
+  consume the moved operation's result, so a second reader would find its
+  operand changed underneath it. The alternative is to duplicate the transpose,
+  and duplicating a full pass over the data to enable a fold that removes one is
+  not a trade this pass makes on its own.
+- **`npu.add` and `npu.mul` are not sunk through at all.** It would need both
+  reads permuted by the same permutation, and nothing upstream emits such a
+  pair, so the pattern would be code no test could reach. That is the rule
+  `-npu-fuse-bias` applies to the commuted bias form, applied here for the same
+  reason.
+
+---
+
+## `-npu-tile-to-scratchpad`
+
+Splits a convolution or matmul whose working set exceeds the scratchpad budget
+into tiles that fit. Implemented in
+`lib/Dialect/NPU/Transforms/TileToScratchpad.cpp`, consuming the
+`TilingInterface` that P1 implemented.
+
+**Ablatable: yes.** **Delta over the 217 cell suite: zero at the default budget
+on every model, and not zero at the tight budgets, where 31 cells move.** A
+positive number is what the pass saves: on `inception_block` at its tight budget
+the pass is worth **404.0 cycles, all three spills and 9216 DRAM bytes**, and on
+`resnet_block` at its tight budget it **costs 4 instructions, 642.0 cycles and
+4096 DRAM bytes**. **Delta on a hand written convolution at a budget tight enough
+to trigger it, which is where the pass can be seen doing its work in isolation:
+peak scratchpad 4256 bytes to 1744, instructions 6 to 21, cycles 782 to 2116,
+output byte identical.**
+
+**The default budget zero is the one that needs a reason, and it is not "the
+budgets are too generous".** At the **default** budget nothing is over budget at
+all, which is what P13's committed prediction said and why: ADR 0008's budgets
+are program level minima, which need every simultaneously live buffer to fit, and
+that is a stronger requirement than any one operation's working set. At the
+**tight** budgets the search finds operations over budget on five of the seven
+models and tiles them.
+
+**For one commit it declined every one of them, and that is D-0052.** A tiled
+result is assembled in DRAM by one store per tile, and the binary's
+`operand-defined` and `operand-extent` checks satisfied a read out of a single
+written span, so an assembled value another operation read was refused by the
+encoder. The owner's answer was region scoped coverage on the DRAM side of both
+checks, which is in `docs/BREAKING_CHANGES.md`; with it the assembly can be read
+back and the decline rule keeps only the shape the format still cannot express.
+`test/Encoding/tiled-result-returned.mlir` carries a tiled result that is the
+function's own from the tensor level through the encoder and the disassembler,
+and `test/Encoding/tiled-assembly-in-scratchpad.mlir` is the refusal beside it,
+which is the scratchpad case and is unchanged.
+
+**Which operand tiling relieves, which is the mechanism the table above turns
+on.** Under the per slice convention a slice of a **DRAM** value becomes a
+transfer and a slice of a **scratchpad** value becomes a view. So tiling
+relieves the operand that lives in DRAM, an argument or a DRAM assembly, and it
+does **not** relieve an on chip producer, which stays whole resident as the base
+the tile views are taken of. That is why `conv_bn_relu_stack` wins, where the
+tiled convolution reads a function argument, and why `resnet_block`'s second
+convolution does not, where it reads the previous layer's activation and gains
+the tile buffers on top of a residency it did not remove. D-0056 has the
+measurement and the allocator change that let the second case place at all.
+
+**It is exact, and the goldens say so rather than the argument.** Only parallel
+dimensions are split, so no reduction is reassociated and no `f32` sum changes
+order. The P13 gate asks for byte identical goldens from the tiling work and
+that is what it gets: the tiled and untiled runs of the case above produce the
+same bytes, not the same bytes to a tolerance.
+
+**What it costs is what it is for.** Tiling multiplies transfers while leaving
+the MAC count alone, so a tiled program is DMA bound: 1524 DMA cycles against
+596 compute in the case above. It buys a scratchpad peak that fits a budget the
+untiled program does not, and it pays for that in traffic. That trade is the
+subject of Section 13.3's three arms rather than something this pass decides
+alone.
+
+**It fires nowhere at the default budget and on five of the seven models at the
+tight ones.** `experiments/predictions/p13-tiling-cell-movement.md` predicted
+that it would fire nowhere at either, and at the tree that prediction was
+adjudicated against it was right, for a reason it did not give: the format could
+not express what the pass produced. The prediction is not edited and the
+adjudication is in `docs/NUMBERS.md`. What the same measurement says now is that
+the threshold sits just below the tight budgets rather than above them, so the
+two published budgets sit on either side of the interesting range, which is what
+gives Section 13.3 a sweep to run.
+
+### Before and after
+
+A convolution whose working set is 4256 bytes, at a 2048 byte budget, becomes
+four tiles over the output channel axis, each with its own `tensor.extract_slice`
+of the operands and `tensor.insert_slice` of the result, and each carrying the
+chosen mapping as a `npu.tiling_choice` attribute so a reader can see what the
+search decided rather than inferring it from the shapes. The loops are generated
+as `scf.for` through the upstream driver and then fully unrolled, because the
+ISA has no branches; `test/Transforms/tile-to-scratchpad.mlir` carries the lit
+assertion that none survives.
+
+### Where it does not fire
+
+- **An operation already inside the budget**, counted as `already-fitting`. A
+  pass that tiled unconditionally would pass every positive test and multiply
+  the traffic of every model.
+- **An fp32 reduction dimension.** Splitting the reduction of a convolution or a
+  matmul changes the summation order and therefore the bits. It is available
+  behind `allow-reduction-tiling`, which carries its own golden set per Section
+  13.2, and it is off by default.
+- **An operation over budget that no permitted tiling fits**, counted as
+  `declined` and left for the allocator to spill. Declining is a decision and it
+  is counted rather than silent.
+- **The output spatial axes, under `halo=cache`.** That is Section 13.3's third
+  arm: the choice between paying for a halo and not creating one.
+- **An operation inside a `npu.fused_op` region**, counted as `declined` with a
+  remark that says why. The next section is what that costs and what Section
+  13.3 does about it.
+
+### Fusion hides most of the suite's convolutions from tiling
+
+**The number first.** At `-O2`, fusion puts 30 of the 44 convolutions and matrix
+multiplications in the fourteen model configurations inside `npu.fused_op`
+regions, where this pass does not look. Two of the seven models,
+`depthwise_separable` and `dilated_stack`, have **none** left visible at all.
+`inception_block` has all three of its visible. The rest have one each.
+
+**Why the pass does not look inside.** A fused region is `IsolatedFromAbove` and
+its entire purpose is to keep the intermediate between a convolution and its
+activation in the scratchpad. Tiling the convolution without the activation
+beside it would put that intermediate back into DRAM, which is the thing the
+fusion existed to prevent. Tiling the pair together is the correct rewrite and
+it needs `npu.fused_op` to implement `TilingInterface` itself, composing its
+members' tiled implementations. **Section 12 does not require that and neither
+does Section 13**, so it is recorded here as future work rather than built now.
+It is a real design change and not an oversight: the interface would have to
+tile a region whose members are tiled at different domains.
+
+**What Section 13.3 does about it, decided before the experiment ran rather
+than after.** The three arms run at `-O2` and stay there, because Section 13.3's
+premise is explicitly that an *optimizing* pipeline can be slower than `-O0`
+under pressure, and `-O2` is that pipeline; moving the arms to a level without
+fusion would answer a different question from the one asked.
+
+Within that, **arm two, tile, is reported in two configurations**, which is the
+treatment Section 13.3 already gives arm one when it says spilling is "run under
+both heuristics of Section 13.1, which is two configurations of one arm rather
+than two arms". The two are `-O2` as it stands, where tiling sees fourteen of
+the forty four operations, and `-O2` with `-npu-fuse-ops` left out, where it
+sees all of them. The first is what the compiler does today. The second is what
+tiling is worth when nothing hides the operations from it, and the gap between
+them is the measured cost of the fusion and tiling conflict rather than a
+caveat in prose.
+
+That keeps the arm non vacuous on all seven models, which matters because
+Section 13.3 says in as many words that a two arm result is reported as an
+incomplete experiment rather than as the experiment. A tiling arm reporting zero
+on `depthwise_separable` and `dilated_stack` without saying why would be
+reporting the fusion pass and calling it a tiling result, and that is exactly
+the shape of claim this project's `declined` statistic exists to prevent.
+
+---
+
+## `-npu-double-buffer`
+
+Hoists a `npuisa.dma_load` above the computation before it and turns it into a
+`npuisa.dma_load_async` with a `npuisa.await` left where it was, so the transfer
+runs underneath that computation. Implemented in
+`lib/Dialect/NPUISA/Transforms/DoubleBuffer.cpp`, over the tokens and **before
+allocation** per Section 5.1, since the doubled working set has to be visible to
+the allocator.
+
+**Ablatable: yes.** **The pass fires, on one to four transfers per model, and
+its own contribution to the cycle count is zero.** Those are two measurements
+rather than one sentence, and keeping them apart is the point of this entry: for
+two commits the row was zero because the pass fired on nothing, which is a
+different statement and is D-0054.
+
+**What it fires on.** `prefetched` runs from 1 to 4 per model at the default
+budget and from 0 to 3 at the tight ones, and the transfer it moves is always the
+same kind: the load of a convolution's weight, which is the one transfer in these
+programs that has a computation before it rather than another transfer. Every
+argument load sits in the entry block beside the other argument loads, where the
+walk correctly stops at another transfer, because both are charged to the same
+DMA port and lifting a load above a load moves work along a saturated timeline.
+
+**What it declines, and that half is what makes the first half safe.** A hoist
+doubles the prefetched operand's residency, and at the ADR 0008 tight budgets
+that doubling is what five of the seven models could not place. **A prefetch that
+cannot be placed is not a prefetch**, and those budgets are frozen, so the pass
+asks before it commits: it takes the live intervals the allocator collects, moves
+the definitions that would travel with the transfer to where it is going, and
+runs the allocator's own `assignOffsets` over them at the same budget, the same
+strategy and the same alignment. A set that does not place is counted as
+`would-not-fit`, which reads differently from `not-hoisted` and differently again
+from a pass that never ran.
+
+**The sweep line peak is not that question and the difference is 56 bytes.**
+Section 13.1 makes the peak a lower bound on any placement and makes the spill
+trigger "offset assignment failed" rather than "peak exceeded budget". Under a
+peak rule `dilated_stack` accepted a prefetch whose peak of 8028 fitted its 8064
+byte budget, and the arena then needed 8084 and the cell did not compile.
+`test/Pipeline/p13-passes-at-o2.mlir` carries both answers at one budget: a weight
+load that runs under a relu, and a weight load over a pooling whose 5440 byte
+arena has no room for 1080 more.
+
+**Delta, measured on the tiled convolution above, which is where the pass does
+fire: zero cycles, and the encoded instruction stream genuinely changes.** One `DMA_LOAD` moves from position 23 to position 11, three transfers
+are reordered, and the totals do not move at all: 2116 cycles, 1524 DMA, 596
+compute, overlap fraction 0.0067, before and after, with the output byte
+identical either way. The scratchpad peak does not move either, 1744 bytes with
+and without.
+
+**That zero is a measurement and it has a structural reason, and the reason is
+about this machine rather than about these programs.** Section 5.5's model starts
+an instruction at the later of its port becoming free and its last operand
+becoming ready, which is a dataflow schedule and not a program order one, so
+reordering two instructions charged to different ports changes no start time.
+**A transfer hidden under a computation saves cycles only where hiding it
+shortens the longer of the two timelines**, and a hoist shortens neither: the
+same transfers are issued in the same order on the same port, and the same
+computations on theirs. On a tiled program the DMA timeline is the longer of the
+two, 1524 against 596, because tiling multiplies transfers while leaving the MAC
+count alone, so there is nothing to hide under there either.
+
+**What the rewrite buys on this machine is therefore the live range, and a live
+range is a cost.** That is why the pass has a decline rule at all and why the
+ablation row's instruction and cycle columns are the tiling coupling rather than
+the overlap. It is an input to Section 13.3, which asks what the overlap is
+worth, and the answer this cost model gives is zero cycles for a longer
+residency.
+
+### Before and after
+
+```mlir
+%a = memref.alloc() : memref<8x8xf32, #npu.scratchpad>
+npuisa.dma_load %x, %a : ... to ...
+npuisa.relu ins(%a : ...) outs(%c : ...)
+%b = memref.alloc() : memref<8x8xf32, #npu.scratchpad>
+npuisa.dma_load %y, %b : ... to ...
+npuisa.relu ins(%b : ...) outs(%d : ...)
+```
+
+becomes
+
+```mlir
+%a = memref.alloc() : memref<8x8xf32, #npu.scratchpad>
+npuisa.dma_load %x, %a : ... to ...
+%b = memref.alloc() : memref<8x8xf32, #npu.scratchpad>
+%t = npuisa.dma_load_async %y, %b : ... to ...
+npuisa.relu ins(%a : ...) outs(%c : ...)
+npuisa.await %t
+npuisa.relu ins(%b : ...) outs(%d : ...)
+```
+
+**The allocation moves with the transfer, and that is not a liberty.** A tile's
+destination buffer is defined immediately before the load that fills it, so a
+hoist that left it behind would move nothing at all. Extending that buffer's
+live range is exactly what double buffering costs, which is why Section 5.1 puts
+this pass before the allocator rather than after it.
+
+### Where it does not fire
+
+Section 12's negative test rule, in `test/Transforms/double-buffer.mlir`, and
+at the level in `test/Pipeline/p13-passes-at-o2.mlir`.
+
+- **The prefetched destination would not place**, counted as `would-not-fit`
+  rather than as `not-hoisted`, because a transfer the pass looked at and priced
+  is not the same answer as one it had nothing to overlap with. The test is the
+  allocator's own offset assignment at the allocator's own budget, strategy and
+  alignment.
+- **There is nothing to hide the transfer under.** A load with no computation
+  before it in its block stays where it is.
+- **The computation before it touches the buffer the transfer fills**, which is
+  Section 8's rule 4 asked of `npuisa::overlaps` rather than of an identity
+  comparison, with `Unknown` treated as a refusal. This pass runs before
+  allocation, where distinct allocations really are distinct and an identity
+  check would happen to be right; it asks the analysis anyway, because a pass
+  that was correct only because of where it sits in the pipeline is one pipeline
+  edit away from being wrong.
+- **The walk stops at another transfer**, and stopping is the answer rather than
+  a limitation. Both are charged to the same port, so lifting a load above
+  another load moves work from one end of a saturated timeline to the other,
+  hides nothing, and extends a buffer's live range for a benefit it is not
+  getting. One computation deep is the whole of what the rewrite is for.
+- **The hoist would not dominate its own operands.** Moving a pure operation
+  earlier cannot break a later use; what has to be checked is that its own
+  operands still reach it.
 
 ---
 
@@ -1169,7 +1590,7 @@ reason rather than a convention:
 | Rule | Why |
 |---|---|
 | exactly one writer | the semantics are a store after *the* definition, and a buffer written twice has two |
-| no view of it | a view is a second SSA name for the same bytes, and rewriting only the direct uses would leave the view reading a buffer whose contents had moved |
+| no view **written through** it | a view is a second SSA name for the same bytes. A view that is only read is re-based onto the reload by the same call that moves a reader, so it is served; a view that is written through is not, because the write would land in the reload and be lost. The wider rule, refusing any buffer a view was taken of, refused legal spills, which is D-0056 |
 | not a reload, and not already spilled | both would let the loop spill its own output, which is how a spill loop fails to terminate |
 | at least one read after the write | spilling a buffer nothing reads later adds a transfer and shortens no live range |
 | an identity layout | `dma_store` requires its operands to agree, and a permuted buffer has no DRAM counterpart without deciding what order to write it in. That decision belongs to the relayouting transfer Section 12 marks as a future extension |
@@ -1178,6 +1599,18 @@ reason rather than a convention:
 `npuisa.spill_slot`. This is the one place in the compiler that allocates DRAM,
 and it amends the P4 sentence in `docs/ARCHITECTURE.md` that nothing below the
 tensor level does; the amendment is recorded there as a marked P5 extension.
+
+**A buffer an asynchronous transfer is filling belongs to the DMA engine until
+the `npuisa.await`, and this pass owes that belief in two places.** The store
+goes after the await rather than after the issue, because a store between the
+two halves copies out whatever part of the transfer had landed; and the live
+range reaches the await rather than the last operation that names the buffer,
+because nothing names an in flight destination between the two halves, so a
+range that stopped at the issue would let the sweep line hand those bytes to a
+buffer defined inside the window. Both are Section 8's rule 4 seen from the
+allocator's side, and both were wrong until D-0054 measured them.
+`test/Dialect/NPUISA/async-window-allocation.mlir` is the pair of programs that
+catch them.
 
 ### The function attributes it sets
 

@@ -70,7 +70,9 @@ inline bool operator==(const Instruction &lhs, const Instruction &rhs) {
          lhs.resultSpace == rhs.resultSpace &&
          lhs.resultElementType == rhs.resultElementType &&
          lhs.resultAddress == rhs.resultAddress &&
-         lhs.resultShape == rhs.resultShape && lhs.operands == rhs.operands &&
+         lhs.resultShape == rhs.resultShape &&
+         lhs.resultStrides == rhs.resultStrides &&
+         lhs.operands == rhs.operands &&
          lhs.pads == rhs.pads && lhs.strides == rhs.strides &&
          lhs.dilations == rhs.dilations && lhs.kernel == rhs.kernel &&
          lhs.group == rhs.group && lhs.axes == rhs.axes &&
@@ -140,6 +142,10 @@ inline Instruction instruction(Opcode opcode, MemSpace resultSpace,
   out.resultSpace = resultSpace;
   out.resultElementType = type;
   out.resultAddress = address;
+  // Version 2's field, at its neutral value. A result that is not a view of
+  // anything carries the strides its own extents imply, which is the same rule
+  // the operand builder above has followed since version 1.
+  out.resultStrides = contiguousStrides(shape);
   out.resultShape = std::move(shape);
   return out;
 }
@@ -284,6 +290,11 @@ inline std::vector<CountField> countFields(const Program &program) {
     at += 4 + 4 + 4 + 4;  // opcode, activation, result space, result type
     at += 8;              // result address
     vectorAt(item.resultShape, where + " result rank");
+    // Version 2. The offsets this walk hands the malformed corpus are what its
+    // truncation and count corruption cases are aimed at, so a field added to
+    // the record and not to this walk would silently move every case in the
+    // corpus past the byte it meant to hit.
+    vectorAt(item.resultStrides, where + " result stride rank");
     count(static_cast<uint32_t>(item.operands.size()), where + " operands");
     for (size_t operandIndex = 0; operandIndex < item.operands.size();
          ++operandIndex) {

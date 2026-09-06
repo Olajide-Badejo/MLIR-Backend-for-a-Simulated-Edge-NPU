@@ -198,6 +198,7 @@ TEST(Validation, ResultShapeCatchesAReshapeThatLosesElements) {
   program.instructions[2].operands.front() =
       operand(MemSpace::Scratchpad, ElemType::F32, 64, {4});
   program.instructions[2].resultShape = {4};
+  program.instructions[2].resultStrides = {1};
   program.outputs.front().shape = {4};
 
   EXPECT_EQ(expectRejected(program), Check::ResultShape);
@@ -206,9 +207,11 @@ TEST(Validation, ResultShapeCatchesAReshapeThatLosesElements) {
   // assertion above about the element count and not about anything else.
   Program agreeing = program;
   agreeing.instructions[1].resultShape = {16};
+  agreeing.instructions[1].resultStrides = {1};
   agreeing.instructions[2].operands.front() =
       operand(MemSpace::Scratchpad, ElemType::F32, 64, {16});
   agreeing.instructions[2].resultShape = {16};
+  agreeing.instructions[2].resultStrides = {1};
   agreeing.outputs.front().shape = {16};
   EXPECT_FALSE(agreeing.validate().has_value());
 }

@@ -440,15 +440,21 @@ def test_at_least_one_committed_result_names_a_prediction() -> None:
     # Every ablation row is evidence for the deltas, and so is each unablated
     # `-O2` cell they are taken against. Counted rather than asserted loosely, so
     # that a wiring change which quietly stopped tagging the baselines is red.
-    assert len(ablation) == 126
+    #
+    # **168 from P13, where it was 126.** The three passes Section 12 names and
+    # P9 excluded went into `-O2` in one commit, so the ablatable set is eleven
+    # rather than eight and the ablation rows are 154 rather than 112. The
+    # fourteen baselines they are taken against did not move: they are the
+    # unablated `-O2` cells, one per model per budget, and 154 + 14 is 168.
+    assert len(ablation) == 168
     assert (
-        sum(1 for cell in ablation if cell["cell"]["ablated_pass"] is not None) == 112
+        sum(1 for cell in ablation if cell["cell"]["ablated_pass"] is not None) == 154
     )
 
     # And every remaining cell names the divergence prediction, which is what
     # "every cell carries a SCALE-Sim number" means when it is checked rather
     # than said.
-    assert len(divergence) == len(results) - 126
+    assert len(divergence) == len(results) - 168
     assert all(cell["cell"]["ablated_pass"] is None for cell in divergence)
 
 

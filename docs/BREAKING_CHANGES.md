@@ -42,6 +42,125 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-06, Phase P13: `-npu-double-buffer` starts firing, and declines the prefetches that would not place
+
+**Written before the commit that causes it.** The commit that changes the pass
+is the next one; this entry is what makes a pass that has fired on nothing since
+it landed start moving recorded fields a decision rather than an explanation.
+
+**Why, in one paragraph.** D-0054 recorded that the pass fires on nothing this
+compiler emits, for a reason that is not the overlap being worthless: every
+argument load sits in the entry block beside the other argument loads, where the
+hoist correctly stops at another transfer, so the one transfer with a
+computation before it is the load of a weight, and its source is an
+`npuisa.const` that `prologueOf` would not let move with it. Admitting
+`npuisa::ConstOp` to the prologue makes the pass fire on one to four transfers
+per model. It also makes **five of the seven models stop placing at their ADR
+0008 tight budgets**, because a prefetched weight is resident across the
+computation it hides under, and those budgets are frozen. **A prefetch that
+cannot be placed is not a prefetch**, so the pass now asks what the doubling
+costs before it commits to it.
+
+**The rule, exactly, because a pass that declines has to say what it declines
+on.** Before committing a hoist, the pass takes the live intervals the allocator
+itself collects, moves the definition of every allocation that would travel with
+the transfer to the point the transfer is moving to, and runs the allocator's own
+`assignOffsets` over the result at the same budget, the same strategy and the
+same alignment. A set that does not place is a decline, counted as
+`would-not-fit` beside `not-hoisted`, so a pass that answered no reads
+differently from one that never asked.
+
+**The sweep line peak was tried as that rule first and is not enough**, and the
+measurement is why this entry is worth reading. Section 13.1 says the peak is a
+lower bound on any placement and that the allocator's spill trigger is therefore
+"offset assignment failed" and never "peak exceeded budget". Under a peak rule
+`dilated_stack` at its tight budget of 8064 accepted a prefetch that left a peak
+of 8028, which fits, and the arena then needed 8084 and **the cell did not
+compile**. 56 bytes of alignment is the difference between a lower bound and an
+answer, and a change that takes a cell away is not one this phase ships.
+
+**What the pass answers now, measured at this tree per model, as prefetched /
+not hoisted / would not fit.**
+
+| Model | at the default 1048576 | at its tight budget |
+|---|---|---|
+| `lenet` | 4 / 7 / 0 | 3 / 7 / 1 |
+| `depthwise_separable` | 1 / 4 / 0 | 1 / 4 / 0 |
+| `resnet_block` | 2 / 4 / 0 | **0** / 6 / 1 |
+| `inception_block` | 2 / 5 / 0 | 1 / 8 / 0 |
+| `conv_bn_relu_stack` | 2 / 4 / 0 | 1 / 4 / 1 |
+| `dilated_stack` | 1 / 4 / 0 | **0** / 4 / 1 |
+| `lenet_batched` | 4 / 7 / 0 | 3 / 7 / 1 |
+
+**Which fields this predicts will move.**
+
+| Field | Prediction |
+|---|---|
+| `npuisa_op_counts` | **moves on every `-O2` cell where the pass hoists at least one transfer.** `npuisa.dma_load` falls by the number prefetched, and `npuisa.dma_load_async` and `npuisa.await` appear with that count. It is the same transfer named differently |
+| `simulation.fragmentation_ratio` | **moves on six of the seven default budget baselines**, every model but `depthwise_separable`, because the prefetched destination is live longer and the arena is packed differently. Sweep line peak and high water mark, measured: `lenet` 194560 to 194896 and 194592 to 194960; `resnet_block` 8480 to 8512 and 8480 to 8544; `inception_block` 6728 unchanged and 6848 to 6856; `conv_bn_relu_stack` 6432 to 6560 in both; `dilated_stack` 8008 to 8028 and 8036 to 8084; `lenet_batched` 200800 to 201136 and 200800 to 201168 |
+| the same, at the **tight** budgets | **does not move on any model.** A tight budget is the smallest at which the program places, so a hoist that raises the peak does not place and is declined, and only a hoist that costs nothing survives there. That is the decline rule doing exactly what it was written for, and it is the sharpest prediction in this entry |
+| `instruction_count` | **does not move anywhere.** `npuisa.await` encodes to nothing and `npuisa.dma_load_async` encodes to `DMA_LOAD`, because the wait is a property of the dialect level and not of the machine. A function does not get longer from a reorder |
+| `simulated_cycles`, `compute_cycles`, `dma_cycles`, `overlap_fraction` | **do not move anywhere.** Section 5.5 starts an instruction at the later of its port becoming free and its last operand becoming ready, which is a dataflow schedule rather than a program order one, so reordering two instructions charged to different ports moves no start time. `docs/PASSES.md` already carries that measured on a hand written tiled convolution: 2116 cycles, 1524 DMA and 596 compute, before and after |
+| `dram_bytes_read`, `dram_bytes_written`, `macs`, `scratchpad_elements_read`, `scratchpad_elements_written`, `spill_count` | **do not move anywhere.** No transfer is added or removed and no spill count moves in the measurement above |
+| the 21 golden tensors | **byte identical.** A reorder of a transfer and a computation changes no arithmetic, so the numerics move by exactly zero rather than by less than a tolerance |
+| `max_abs_error_vs_onnxruntime` | **does not move**, for the same reason |
+| the 14 `-ablate-npu-double-buffer` cells | **do not move at all**, because the pass is not in those pipelines and the tiling coupling is unchanged |
+| `content_hash`, and `npuResultsContentHash` with it | moves on all 217 cells, because it is a hash over the compiler sources and they moved. That is provenance rather than a measurement, and it moves on every code commit |
+
+**What does not move, and this list is the point of the entry.**
+
+- **No bound, tolerance or threshold.** `GOLDEN_TOLERANCE` stays zero,
+  `TIMING_GAP_FRACTION` stays 0.5, and the coverage thresholds stay where they
+  are.
+- **ADR 0008's suite tight budgets are not re-measured and do not move.** They
+  are the reason the pass declines rather than the thing that gives way.
+- **No cost model constant**, and no file under `include/NPU/Simulator`,
+  `lib/CostModel` or `python/npu_frontend/cost_model.py`.
+- **`Program::kVersion` stays 2** and the corpus is not reseeded.
+
+**Why the regression is worth taking.** The alternative is a pass that has been
+in `-O2` since the wiring commit and has never once fired, whose ablation row is
+entirely the tiling coupling, and whose only measurement is a negative about the
+pair. Section 13.3 asks what overlapping a transfer with a computation is worth
+on this machine, and a pass that never overlaps anything cannot answer it. What
+this entry buys is a row that measures the pass.
+
+**A default budget cell moving is not the wiring defect the tiling entry
+named.** That rule was about `-npu-tile-to-scratchpad`, where nothing is over
+budget at the default budget, so a default budget cell moving would have meant
+the search firing where it had nothing to do. Here the default budget is where
+the pass has the most room, and a default budget cell that moves is the pass
+working.
+
+**Outcome, written after the re-record and kept apart from the predictions
+above, which are not edited.** The causing commit is `4e9816d` and the record is
+the commit after it. All 217 cells were re-run once, serially, on a quiet
+machine, and every field of every cell was diffed against the recorded one.
+
+| Prediction | Verdict |
+|---|---|
+| `npuisa_op_counts` moves wherever a transfer is prefetched | **met**, on **138** cells. `lenet-O2-default-n1-fp32-normal` reads `npuisa.dma_load` 11 to 7 with `npuisa.dma_load_async` 4 and `npuisa.await` 4 beside it, which is the same eleven transfers named differently |
+| the fragmentation ratio moves on six of the seven default budget baselines | **met**, and **56** default budget cells move it once each baseline's eleven ablation rows are counted with it |
+| it does not move on any tight budget cell | **wrong, on one cell of the 217.** `conv_bn_relu_stack-O2-tight-n1-fp32-normal-ablate-npu-fold-batchnorm` goes from 1.1834 to **1.0**, which is the arena becoming exactly the peak rather than a cost. The reasoning behind the clause was about the seven **baselines**: a tight budget is the smallest at which **that** program places, so a hoist that raises its peak cannot place and is declined. An ablation row is a different program run at the baseline's budget, so it has slack there, and this one had enough room for a prefetch that happens to pack better than the program without it |
+| `instruction_count` moves nowhere | **met**, on all 217 |
+| `simulated_cycles`, `compute_cycles`, `dma_cycles` and `overlap_fraction` move nowhere | **met**, on all 217 |
+| traffic in both directions, MACs, scratchpad elements and spill counts move nowhere | **met**, on all 217 |
+| the 21 golden tensors are byte identical | **met.** `git status` on `test/baseline/golden` is empty at the re-recorded tree |
+| `max_abs_error_vs_onnxruntime` does not move | **met**, on all 217 |
+| the 14 `-ablate-npu-double-buffer` cells do not move | **met.** Not one of them moved a counted field; each moved `content_hash` alone, which every cell did |
+| `content_hash` moves on all 217 | **met** |
+
+**Nothing outside the predicted set moved**, which is the clause this entry
+exists to make checkable. Over instructions, cycles, compute and DMA cycles,
+traffic in both directions, MACs, scratchpad elements read and written, spill
+count, spill DMA count, the fragmentation ratio outside those 57 cells and the
+oracle distance, the diff over all 217 cells is empty.
+
+**The one wrong clause is worth more than the ten right ones**, and it is the
+reason a prediction is written per field rather than per pass: the mechanism
+behind it was sound and its scope was not, and only running it over the ablation
+rows could have said so.
+
 ### 2026-09-01, Interphase P9b: `dilated_stack` gains the separate bias add, and every one of its cells moves
 
 **Written before the commit that causes it.** The commit that changes the model
@@ -212,7 +331,9 @@ the bias to the same `f32` accumulator the unfused program stores and then adds
 to. `-npu-fuse-ops` is bit exact because `-npu-lower-to-npuisa` flattens the
 region into the instruction stream the unfused chain produced.
 `test/Python/test_transform_passes.py::test_fold_batchnorm_is_the_only_pass_that_moves_a_number`
-runs each of the eight ablatable passes alone and asserts it.
+runs each ablatable pass alone and asserts it. That was eight passes when this
+entry was written and is eleven from P13, because the test sweeps the set the
+driver reports rather than a list written beside it.
 
 **Why the regression is worth taking.** Folding a batch norm into the
 convolution before it is the single largest structural saving available at this
@@ -309,3 +430,227 @@ come from different builds is a table nobody can reproduce.
 That is Section 17.6's declare then re-record, and the reason it is three commits
 rather than two is that `git log` is the only thing that can tell a decision from
 an explanation.
+
+### 2026-09-05, Phase P13: checks 8 and 9 gain region scoped coverage on the DRAM side, so that a tiled result can be read
+
+**Written before the commit that causes it.** The validator commit and the
+compiler commit that follows it are the next two; this entry is what makes the
+change to two **declared** checks a decision rather than an explanation.
+
+**Why, in one paragraph.** `Program::kVersion` went to 2 so that a buffer could
+be written in pieces, and the entry below promised that checks 8 and 9 would
+move from "one written count per address" to "written ranges per buffer". **Only
+the format half of that landed.** The validator kept the single span rule, so a
+tiled result assembled in DRAM is written by one store per tile and then refused
+the moment anything reads it: `operand-extent: operand 0 reads 2048 bytes from
+10944 and the buffer written there ends at 11968`. D-0052 has the reproduction
+and the three measurements that settle its scope. This entry is the other half
+of the bump, decided by the owner, and it needs **no further version bump**
+because no encoded byte moves: what changes is what the validator makes of bytes
+the format already carries.
+
+**The rule, exactly, because a declared check is worth stating precisely.**
+
+- **The scratchpad side does not change.** Buffers there have no identity, the
+  arena is one run of offsets, and the no merge rule is the only thing that can
+  catch an over read that runs off the end of one buffer and into the next.
+  `test/Encoding/tiled-assembly-in-scratchpad.mlir` stays a refusal and stays
+  the reason.
+- **The DRAM side gains region scoped coverage, and only inside a declared spill
+  slot.** `program.spillSlots` carries an offset, an element type and a shape per
+  slot, so each slot has its own extent and its own identity. For a read whose
+  address lies inside one slot, the validator accepts when **every byte the read
+  addresses lies inside that one slot** and **every one of those bytes has been
+  written**. A read that reaches into the next slot is refused for leaving its
+  region; a read of interior bytes no write covered is refused for reading what
+  nothing wrote.
+- **The bytes are computed exactly from the strides on both sides, run by run**,
+  not from an element count laid down as one contiguous span. That closes the
+  asymmetry D-0052 measured, where a strided tile write recorded 1024 bytes as a
+  run while the matching read addressed a reach of 1920.
+- **Inputs and constants stay defined whole before the first instruction, and
+  outputs stay never read.** Those three region kinds are untouched.
+
+**What moves.**
+
+| Thing | From | To |
+|---|---|---|
+| ISA check 8, `operand-defined` | one written span per address, in every space | unchanged on the scratchpad; exact byte coverage inside one declared spill slot on the DRAM side |
+| ISA check 9, `operand-extent` | the read's span fits the one span written at its address | unchanged on the scratchpad; every addressed byte inside one slot and covered, on the DRAM side |
+| `include/NPU/Encoding/NPUISADescription.td` | the two check texts above | the texts that say which side changed |
+| `docs/ISA_MANUAL.md`, `docs/ISA_OPCODES.json` | generated from the old text | regenerated, `check-isa-staleness.sh` clean |
+| `-npu-tile-to-scratchpad`'s decline rule | every user of the result is `func.return` | a DRAM assembled result may be read, whole or by slices |
+| `test/Dialect/NPUISA/dma-boundaries.mlir` | Section 8's count without an assembly that re-enters the scratchpad | with one, entering once |
+
+**Which cells this predicts will move, and by how much.** Measured at the tree
+that had the passes wired and the decline rule not yet written, where tiling
+really fired and the encoder refused the programs:
+
+| Cell | Prediction |
+|---|---|
+| `resnet_block-O2-tight-n1-fp32-normal` | one convolution tiles into two. Instructions rise from 17; the allocator's peak stays 6432 and the spill count stays 1 |
+| `inception_block-O2-tight-n1-fp32-normal` | two convolutions tile into four. Instructions rise from 22; the peak stays 6144 and **the spill count is predicted to fall from 3 to 0**, because tiling is what relieves the pressure that was spilling |
+| the nine other `-O2` tight ablation rows on each of those two models | move with their baselines |
+| `-ablate-npu-tile-to-scratchpad` on both | **must not move**, and must still read 17 / 2018.0 / 1 and 22 / 3799.0 / 3 to the cycle. That is the gate clause and this entry does not license it to move |
+| `-ablate-npu-double-buffer` on both | **not predicted to move**, because ablating it relaxes the tiling search and nothing tiles without the prefetch's contribution |
+| **every default budget cell, on all seven models** | **must not move.** Nothing is over budget at the default budget, so a default budget cell that moves is a wiring defect and not this declaration |
+| the other five models at either budget | must not move |
+
+**What does not move, and this list is the point of the entry.**
+
+- **Not one golden tensor byte.** Tiling over parallel dimensions splits no
+  reduction and reassociates no `f32` sum, so the tiled program computes the same
+  bytes. **This is the P13 gate's first clause becoming evidence**: until now the
+  goldens were byte identical because nothing consumed the tiling interface.
+- **`Program::kVersion` stays 2** and no encoded byte moves, so
+  `test_binary_stability` is untouched and the corpus is not reseeded. What a
+  corpus seed can do is change **verdict**, which is the declared effect and is
+  listed seed by seed in the validator commit.
+- **No cost model constant**, and no file under `include/NPU/Simulator`,
+  `lib/CostModel` or `python/npu_frontend/cost_model.py`.
+- **No bound, tolerance or threshold.** `GOLDEN_TOLERANCE` stays zero,
+  `TIMING_GAP_FRACTION` stays 0.5, the coverage thresholds stay where they are,
+  and ADR 0008's suite tight budgets are **not** re-measured here.
+
+**Why the regression is worth taking.** The alternative is a compiler whose
+tiling pass declines every operation it could tile, which is what P13 shipped
+one commit ago and recorded as D-0052. Section 13.3's tiling arm has no subject
+without this, so the phase's reason to exist is what the change buys. The
+narrower alternative, relaxing the no merge rule everywhere, was considered at
+D-0050 and refused: it would give up refusing a read of two exactly adjacent
+buffers as one, in the space where buffers have no identity. **Scoping the
+relaxation to a declared region is what makes it a completion of the version 2
+decision rather than a weakening of it.**
+
+**Outcome, written after the fact and kept apart from the predictions above,
+which are not edited.** The validator half landed and is `20fc6c1`. **The
+compiler half did not, so none of the cells above moved**, and the entry stands
+as a declaration whose causing commit was held back rather than as one that
+failed to predict.
+
+Compiling all 168 cells at the tree that used the fix measured what the entry
+did not ask about: tiling now produces a valid program everywhere except one
+cell, `resnet_block` at its tight budget with `-npu-fuse-ops` ablated, where the
+allocator refuses at a sweep line peak of 7456 bytes against 6464. Four other
+cells improve, including a peak of 4640 against 6432 on `conv_bn_relu_stack` and
+three spills removed from `inception_block`. **No rule inside the tiling pass
+separates the four from the one**, because the deciding quantity is the
+program's sweep line peak and the pass sees one operation. D-0056 carries the
+measurement, the two rules that were tried and failed, and the three ways
+forward.
+
+**And then the compiler half did land, one checkpoint later, so the rest of this
+outcome is what it moved.** D-0056's answer was that the allocator was refusing
+a legal spill: its rule refused a buffer any view was taken of, and what a
+reload cannot serve is only a view that is **written through**. With that rule
+narrowed, the cell that would not place places, at a peak of 6144 bytes against
+the 6432 the untiled program needs.
+
+**31 cells moved and not one of them is a default budget cell**, which is the
+line this entry drew and which held. The prediction above named `resnet_block`
+and `inception_block` and said the other five models must not move. **That last
+clause is wrong**, and the reason is one the prediction did not think through:
+ablating `-npu-fuse-ops` un-hides the convolutions fusion was covering, so the
+tiling pass sees them on every model, and eight further tight budget ablation
+rows move with it. The eight are `conv_bn_relu_stack` ablating
+`npu-fold-batchnorm` and `npu-fuse-ops`, `depthwise_separable` and `lenet` and
+`lenet_batched` ablating `npu-fuse-ops`, and `dilated_stack` ablating
+`npu-fuse-bias` and `npu-fuse-ops`. The prediction is not edited; this is the
+adjudication.
+
+**The direction is not one sided and that is the finding rather than the
+disappointment.** `inception_block` at its tight budget goes from 3799.0 cycles
+with 3 spills and 21936 DRAM bytes to **3395.0 with none and 12720**.
+`resnet_block` goes from 17 instructions and 2018.0 cycles to **21 and 2660.0**.
+Tiling helps one model and costs four, which is the trade Section 13.3 exists to
+quantify.
+
+**What did not move, and it is the whole list this entry promised.** No default
+budget cell. No golden tensor byte. No `max_abs_error_vs_onnxruntime`. The
+tiling disabled ablation cells still read 17 / 2018.0 / 1 and 22 / 3799.0 / 3 to
+the cycle, which is the gate clause; what moved there is the row's delta,
+because the baseline moved, which is an ablation row becoming a measurement.
+
+### 2026-09-05, Phase P13: `Program::kVersion` goes to 2, so that a buffer can be written in pieces
+
+**Written before the commit that causes it.** The commits that change the format
+are the next ones; this entry is what makes the bump a decision rather than an
+explanation. It is the first version bump this format has had.
+
+**Why, in one paragraph.** `-npu-tile-to-scratchpad` splits an operation that
+does not fit the scratchpad into tiles, and every tile writes a piece of one
+buffer. The binary cannot express that, and D-0050 records the three refusals it
+takes to find out: a sub region of a DRAM argument has no address the encoder can
+name; `Instruction` carries `resultShape` and no `resultStrides`, so a strided
+write is not representable; and ISA checks 8 and 9 ask whether a consumer's need
+fits **the count written to the buffer it reads**, which assumes a buffer is
+written whole by one instruction. The third is the binding one: a **contiguous**
+channel tile, which needs no strides at all, is refused by the same rule.
+
+**What moves.**
+
+| Thing | From | To |
+|---|---|---|
+| `Program::kVersion` | 1 | **2** |
+| the `.nbin` header's `version` word | 1 | 2, in every file this build writes |
+| `Instruction` | `resultShape` only | `resultShape` **and `resultStrides`** |
+| ISA check 8, `operand-defined` | one written count per address | written **ranges** per buffer |
+| ISA check 9, `operand-extent` | the same | the same |
+| `fuzz/corpus/*.nbin` | version 1 seeds | regenerated at version 2 |
+| `FrozenConstants.TheFormatsNumbers` | asserts `kVersion == 1` | asserts 2, in the same commit |
+| `docs/ISA_MANUAL.md` | "currently 1" and the generated check table | 2 and the regenerated table |
+
+**What does not move, and this list is the point of the entry.**
+
+- **Not one simulated number.** No cycle count, no DRAM byte count, no
+  instruction count, no MAC count, no utilization, no energy or area figure. The
+  version word is a header field; nothing downstream of it reads differently.
+- **Not one golden tensor byte.** `test/baseline/golden` is expected to be
+  untouched by every commit in this sequence, and a moved golden here would be a
+  defect rather than a declared movement.
+- **No cost model constant**, and no file under `include/NPU/Simulator` or
+  `python/npu_frontend/cost_model.py`.
+- **Nothing about P14's claim.** The format's own version policy says the
+  element types are present from version one "together with `requantMultiplier`
+  and `requantShift`, and those specific fields **and nothing broader** are what
+  let Phase P14 land without bumping `kVersion`". Those six fields are untouched
+  here. **P14 still bumps nothing**, and its gate's clause that
+  `Program::kVersion` is unmoved is a statement about what P14 does, which
+  remains true. What this bump changes is the number that clause is measured
+  from, and the record says so here rather than leaving P14 to discover it.
+
+**Why the baseline moves at all, and in which direction.** The only baseline
+movement this sequence causes is **composition**: new tests for the new field and
+for the range tracking rules, so the suite counts and the recorded test names
+grow. That is not a regression and would not need this entry on its own. The
+entry exists because the format's own version policy in `docs/ISA_MANUAL.md`
+says a bump invalidates the seed corpus, and regenerating committed artifacts is
+a deliberate movement of things this repository has promised to keep stable.
+
+**Why the regression is worth taking.** Without it, tiling cannot be lowered at
+all. Measured on a two tile convolution, the arrangement the bump enables takes
+the sweep line peak from **4224 bytes to 1728**, where 4224 is the untiled
+working set to the byte; without it a tiled program either does not encode or
+splits instructions while leaving the peak exactly where it was. Section 13.3's
+experiment, which is the reason this phase exists, has no subject in either case.
+
+**What is deliberately not done.** The version is bumped once, to 2, and the
+layout change is the single field the write model needs. No field is added
+speculatively against a later phase, which is the discipline that kept the
+version at 1 through six phases and is the reason P14 costs nothing.
+
+**The order these commits land in.**
+
+1. This entry, in its own commit, touching `docs/BREAKING_CHANGES.md` and the
+   version policy prose in `docs/ISA_MANUAL.md`, and nothing else.
+2. The format change: `resultStrides` written and read, checks 8 and 9 tracking
+   ranges, the frozen version test moving with it in the same commit, and the
+   generated artifacts regenerated so the staleness gate stays green.
+3. `dramAddressOf` learning the view chain walk, which needs no format change
+   and is separated from the one that does.
+4. The corpus reseed and the malformed corpus extension, in their own commit.
+5. The baseline re-record, in its own commit, after all of it.
+
+That is Section 17.6's declare then re-record, and the reason the format change
+and the address resolution are separate commits is that only one of them is a
+format change and a reader should not have to untangle which.

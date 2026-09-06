@@ -116,6 +116,77 @@ TEST(CostModel, ANarrowTileCostsMorePerMac) {
   EXPECT_GT(half.effectiveMacs, static_cast<double>(half.macs));
 }
 
+/// The number of weight tiles a `k` by `n` matrix folds into on this array.
+///
+/// Written out here rather than taken from the model, because a test that asked
+/// the model how many folds it thought there were would agree with itself.
+int64_t foldCount(int64_t k, int64_t n) {
+  const int64_t dim = kArrayDim;
+  return ((k + dim - 1) / dim) * ((n + dim - 1) / dim);
+}
+
+TEST(CostModel, TheWeightPreloadIsChargedOncePerFold) {
+  // **This test exists because D-0045 said the opposite.** That entry recorded
+  // that `gemmCharge` "computes delta once per instruction and applies it to
+  // every tile, so the sixteen cycle pipeline fill is amortised across the whole
+  // layer no matter how many times the array is actually refilled". The premise
+  // is true and the conclusion does not follow from it, which is why the claim
+  // survived a reading of the code.
+  //
+  // Applying the same *fraction* to every tile does not charge the fill once. At
+  // the f32 peak the array's area and the peak are the same number, so
+  // `utilization * peak` is exactly `rows * columns` and a tile's charge reduces
+  // to
+  //
+  //     tileMacs / (utilization * delta * peak) = m / delta = m + kWeightPreloadCycles
+  //
+  // for every tile, whole or partial. With `T` folds the instruction is charged
+  // `T * (m + kWeightPreloadCycles)`, which is the fill counted `T` times: once
+  // per refill, which is what a weight stationary array does and what SCALE-Sim
+  // charges.
+  //
+  // The two accountings are asserted apart rather than only the right one
+  // asserted, because they agree whenever there is exactly one fold, and every
+  // shape small enough to check by hand has exactly one fold.
+  const int64_t peak = kPeakMacsPerCycleF32;
+
+  struct Case {
+    int64_t m, k, n;
+  };
+  // The last two are D-0045's own reproduction shape and the narrow tail of the
+  // fully connected layer Section 5.5 names.
+  const Case cases[] = {{64, 16, 16},  {64, 32, 16}, {196, 27, 6},
+                        {1024, 9, 1},  {64, 72, 8},  {16, 256, 120}};
+
+  for (const Case &shape : cases) {
+    const ComputeCharge charge =
+        gemmCharge(shape.m, shape.k, shape.n, peak);
+    const int64_t folds = foldCount(shape.k, shape.n);
+
+    const double perFold =
+        static_cast<double>(folds) *
+        (static_cast<double>(shape.m) + kWeightPreloadCycles);
+    const double oncePerInstruction =
+        static_cast<double>(folds) * static_cast<double>(shape.m) +
+        kWeightPreloadCycles;
+
+    EXPECT_NEAR(charge.cycles, perFold, 1e-9 * perFold)
+        << "m=" << shape.m << " k=" << shape.k << " n=" << shape.n
+        << ": the charge stopped being the per fold accounting";
+
+    if (folds > 1) {
+      // The discriminating half. Without it this test would pass against a
+      // model that had been changed to charge the fill once.
+      EXPECT_GT(charge.cycles, oncePerInstruction)
+          << "m=" << shape.m << " k=" << shape.k << " n=" << shape.n
+          << ": the charge became the once per instruction accounting";
+      EXPECT_NEAR(charge.cycles - oncePerInstruction,
+                  static_cast<double>(folds - 1) * kWeightPreloadCycles,
+                  1e-9 * perFold);
+    }
+  }
+}
+
 TEST(CostModel, OverlapFractionReachesItsEndpoints) {
   // Fully serialized: the total is the sum, so nothing was hidden.
   EXPECT_DOUBLE_EQ(overlapFraction(100.0, 40.0, 140.0), 0.0);
@@ -265,6 +336,43 @@ TEST(Timelines, SinglePortReproducesTheSum) {
   EXPECT_DOUBLE_EQ(result.stats.dmaCycles, overlapped.stats.dmaCycles);
   EXPECT_DOUBLE_EQ(result.stats.computeCycles, overlapped.stats.computeCycles);
   EXPECT_EQ(result.stats.instructions, overlapped.stats.instructions);
+}
+
+TEST(CostModel, AStridedMoveCostsMoreThanThePermutationThatAvoidsIt) {
+  // **The whole of `-npu-assign-layout`'s decision, as a relation between two
+  // constants.** Section 5.5 charges layout in exactly one place, the non unit
+  // innermost stride penalty, and it charges it to NHWC and never to NCHW: an
+  // NHWC tensor is materialised as a buffer at NCHW extents with permuted
+  // strides, so its innermost stride is the channel count. The alternative to
+  // paying that penalty is to perform the permutation, which is one elementwise
+  // pass. The layout question therefore reduces to a per element race between
+  // `kDmaStridedElementCycles` and `1 / kElementwiseLaneWidth`.
+  //
+  // It is asserted here, in the file that owns both constants, rather than
+  // beside the pass, because the conclusion the report publishes is about the
+  // machine and not about the pass: recalibrating either constant has to fail a
+  // test rather than quietly reverse a published answer.
+  const double stridedPerElement = kDmaStridedElementCycles;
+  const double permutePerElement =
+      1.0 / static_cast<double>(kElementwiseLaneWidth);
+
+  EXPECT_GT(stridedPerElement, permutePerElement);
+  EXPECT_DOUBLE_EQ(stridedPerElement / permutePerElement, 8.0);
+
+  // It is a ratio and not a threshold, so no extent reverses it. A transfer's
+  // other two terms are the bytes and the fixed descriptor cost, and both are
+  // charged whichever layout the buffer is in, so they cancel out of the
+  // comparison rather than tipping it at some size.
+  for (int64_t elements : {int64_t{1}, int64_t{16}, int64_t{90}, int64_t{1024},
+                           int64_t{1} << 20}) {
+    const double strided =
+        dmaCycles(elements * 4, elements, /*innermostStride=*/3);
+    const double contiguous =
+        dmaCycles(elements * 4, elements, /*innermostStride=*/1);
+    EXPECT_DOUBLE_EQ(strided - contiguous,
+                     static_cast<double>(elements) * kDmaStridedElementCycles);
+    EXPECT_GT(strided - contiguous, elementwiseCycles(elements));
+  }
 }
 
 TEST(Timelines, EveryInstructionPaysTheIssueOverhead) {

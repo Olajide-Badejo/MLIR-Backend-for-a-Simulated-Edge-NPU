@@ -437,14 +437,20 @@ def CheckOperandInRange : ISACheck<7, "operand-in-range",
     "for that slot.">;
 def CheckOperandDefined : ISACheck<8, "operand-defined",
     "Each operand's bytes were written by an earlier instruction, or belong to "
-    "a declared input or constant region. An output region and a spill slot "
-    "are places to write, so reading one before writing it is reading whatever "
-    "the loader left there.">;
+    "a declared input or constant region. An output region is a place to write, "
+    "so reading one before writing it is reading whatever the loader left "
+    "there. Inside a declared spill slot the written bytes are tracked exactly, "
+    "strided writes run by run, so a buffer written in pieces by several "
+    "instructions is readable once every byte of it has been written and is "
+    "refused while any interior byte has not.">;
 def CheckOperandExtent : ISACheck<9, "operand-extent",
-    "The consumer's element need fits the element count actually written to "
-    "the buffer it reads. Membership alone is not enough: a DMA_STORE reading "
-    "100 elements from a 4 element buffer would pass a membership test and "
-    "then trap.">;
+    "The consumer's need fits the buffer it reads. In the scratchpad that is "
+    "the element count written at the operand's address, kept as one span per "
+    "write and never merged, because a buffer there has no declared extent and "
+    "a merged range would accept an over read into the buffer next door. Inside "
+    "a declared spill slot it is every byte the read addresses, computed from "
+    "its strides rather than from its count, lying inside that one slot; a read "
+    "reaching into the next slot is refused for leaving its region.">;
 def CheckDramAddress : ISACheck<10, "dram-address",
     "A DRAM address is non negative.">;
 def CheckDramInRange : ISACheck<11, "dram-in-range",

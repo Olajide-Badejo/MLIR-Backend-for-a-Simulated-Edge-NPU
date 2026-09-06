@@ -674,6 +674,46 @@ jobs:
           python3 scripts/build-model-ir.py
           python3 scripts/check-reachability.py
 
+      # ---- the allocator's growth curve. ON at P13, and here is its trigger. -
+      #
+      # **P12 recorded this step's trigger as "P13, because tiling makes
+      # functions longer, which moves the crossover with the genuinely quadratic
+      # offset assignment scan toward the measured range", and P13 measured it.**
+      # Seventeen cells of the suite have longer functions than they did before
+      # tiling reached them, the longest went from 25 instructions to 33, and the
+      # largest single growth is 12 to 30 on `dilated_stack` with fusion ablated.
+      # The curve this step fits is over synthetic sizes rather than over the
+      # suite, so what the trigger buys is not a bigger n; it is that the pass
+      # this curve is about now runs on programs whose length the compiler
+      # chooses rather than only on programs the frontend wrote.
+      #
+      # **It is a fitted slope within one run on one host**, not a wall clock
+      # compared across hosts, which is why it may be gated at all on a
+      # heterogeneous runner pool. The exponent is measured at each of four
+      # sizes in the same process, and `--check` compares it against a ceiling
+      # that is the midpoint between the two hypotheses Section 13.1 names.
+      #
+      # **Rehearsed red before being switched on**, which is P12's own recipe:
+      # `--check --sizes 500` is the branch with no fit and it exits 1 saying a
+      # growth exponent needs at least two sizes. That rehearsal is recorded in
+      # docs/PHASE_STATE.md with its output.
+      #
+      # It sits here on purpose: after check-reachability, which builds the model
+      # IR, and before regression-baseline --check, which is documented as
+      # running last because it needs everything the job has.
+      - name: "allocator growth curve (activation table: P13, on)"
+        run: |
+          set -euo pipefail
+          if [ ! -f experiments/compile_time_benchmark.py ]; then
+            echo "::error::experiments/compile_time_benchmark.py is missing."
+            echo "compile-time: this step is ON from P13, so an unsatisfied"
+            echo "compile-time: guard means a file moved rather than a phase"
+            echo "compile-time: that has not arrived."
+            exit 1
+          fi
+          export PYTHONPATH="/opt/llvm/python_packages/mlir_core:${PWD}/python"
+          python3 experiments/compile_time_benchmark.py --check
+
       # ---- the external cross validation tools. OFF at P11, and it says so. --
       #
       # **Section 19.0's rule is that a step which is off says so in the run
@@ -705,19 +745,27 @@ jobs:
       - name: "external cross validation (activation table: P11, off)"
         run: |
           set -euo pipefail
-          echo "external: OFF at P11. SCALE-Sim and Accelergy are not in this"
-          echo "external: image, so experiments/roofline.py,"
+          echo "external: OFF at P11. SCALE-Sim, Accelergy and ZigZag are not in"
+          echo "external: this image, so experiments/roofline.py,"
           echo "external: experiments/scalesim_export.py and"
           echo "external: experiments/accelergy_energy.py are run on the"
           echo "external: development machine and their answers are committed in"
           echo "external: experiments/results/."
-          if python3 -c "import scalesim" 2>/dev/null; then
-            echo "::error::scalesim is importable in this image."
-            echo "external: this step is OFF because the tools are absent. If"
-            echo "external: they are present, the step should be ON and running"
-            echo "external: them, not printing that it is not."
-            exit 1
-          fi
+          # ZigZag joins this assertion at P13, on the same terms as the other
+          # two: it is in `EXTERNAL_TOOLS`, so an image that gained it while this
+          # step still printed that the tools are absent would be exactly the
+          # silence Section 19.0 forbids. The loop reads the names rather than
+          # repeating one `if` three times, because a fourth tool arriving and
+          # being asserted in two of three places is the shape of D-0032.
+          for module in scalesim accelergy zigzag; do
+            if python3 -c "import ${module}" 2>/dev/null; then
+              echo "::error::${module} is importable in this image."
+              echo "external: this step is OFF because the tools are absent. If"
+              echo "external: they are present, the step should be ON and running"
+              echo "external: them, not printing that it is not."
+              exit 1
+            fi
+          done
           echo "external: confirmed absent, which is what this step asserts."
 
       # ---- regression-baseline --check. ON at P9b. -------------------------

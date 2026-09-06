@@ -170,7 +170,7 @@ layout itself.
 
 ## Version policy
 
-`Program::kVersion` starts at **1**.
+`Program::kVersion` starts at **1** and is **2** from Phase P13.
 
 Any change to the layout of the binary bumps it, and a file at a version this
 build does not know is rejected with the `version` check rather than
@@ -186,6 +186,41 @@ any *other* layout change still bumps the version. A version bump at that point
 would invalidate the binary stability test and every seed in the fuzz corpus in
 the same commit that introduced quantization, which is a migration worth
 spending six unused fields to avoid.
+
+### Version 2, declared at Phase P13
+
+**A change to the layout is coming and this section is written before it lands.**
+`docs/BREAKING_CHANGES.md` carries the decision; this is the format's own record
+of it, so that a reader of this manual is not the last to hear.
+
+**What forces it.** A tiled program writes one buffer in pieces, and version 1
+cannot express that. Three things are in the way and the third is the binding
+one, which D-0050 records in full: an `Instruction` carries `resultShape` and no
+`resultStrides`, so a strided write is not representable; and checks 8 and 9 ask
+whether a consumer's need fits **the count written to the buffer it reads**,
+which assumes one instruction wrote the whole buffer. A **contiguous** channel
+tile, which needs no strides at all, is refused by that rule too, so it is the
+write model rather than the layout that binds.
+
+**What version 2 adds**, and it is deliberately the smallest thing that works:
+
+- `resultStrides` on `Instruction`, symmetric with the strides an `Operand` has
+  carried since version 1;
+- checks 8 and 9 tracking written **ranges** per buffer rather than one count per
+  address. That is strictly more precise than the present rule and still refuses
+  everything the present rule refuses.
+
+**Nothing else is added.** No field is put in speculatively against a later
+phase, which is the discipline that kept this format at version 1 for six phases
+and is the reason the paragraph above still holds: **the six fields P14 needs are
+untouched, and P14 still bumps nothing.** Its gate's clause that
+`Program::kVersion` is unmoved is a statement about what P14 does and it stays
+true; what moves is the number that clause counts from.
+
+**What a version 2 build does with a version 1 file** is what it does with any
+unknown version: refuses it by name, through the `version` check. There is no tag
+mechanism and therefore no migration path, which is why the version policy above
+is written the way it is.
 
 ## The binary layout
 
@@ -219,7 +254,7 @@ not the letters.
 | Field | Type | Meaning |
 |---|---|---|
 | `magic` | `u32` | `0x4E49424E` |
-| `version` | `u32` | `Program::kVersion`, currently 1 |
+| `version` | `u32` | `Program::kVersion`, currently 2 |
 | `scratchpadBytes` | `u64` | the scratchpad the program declares it needs |
 | `dramBytes` | `u64` | the DRAM the program declares it needs |
 
@@ -284,6 +319,7 @@ advisory. A file that sets an activation on `RESHAPE` is rejected, not ignored.
 | `resultElementType` | `u32` | | the result's element type |
 | `resultAddress` | `i64` | 0 | the byte address of the result |
 | `resultRank`, `resultShape` | `u32`, `i64[]` | empty | the result's extents |
+| `resultStrideCount`, `resultStrides` | `u32`, `i64[]` | empty | **version 2**, the result's stride per extent, in elements |
 | `operandCount`, `operands` | `u32`, `Operand[]` | empty | see below |
 | `padCount`, `pads` | `u32`, `i64[]` | empty | four entries, ONNX order |
 | `strideCount`, `strides` | `u32`, `i64[]` | empty | two entries, the window stride |
@@ -332,8 +368,19 @@ from its address, not `product(extents)`. That is the rule
 `docs/ARCHITECTURE.md` fixed at P5: a view's byte range comes from its strides,
 so a stride 0 broadcast over eight channels spans eight elements and not one
 hundred and twenty eight. The span is a closed hull rather than an exact set,
-which is the only approximation anywhere in this format's arithmetic and is in
-the safe direction.
+which is the approximation the **bound** checks use and is in the safe
+direction.
+
+**Coverage is exact where the hull is not, and only inside a declared spill
+slot.** From P13 the validator answers `operand-defined` and `operand-extent`
+inside a spill slot by the bytes a read actually touches, run by run, because a
+hull would accept a read of the bytes between the rows of a tile that no write
+ever put anything in. The hull still bounds; the run set covers. Everywhere
+else, the scratchpad included, the older rule stands unchanged: one span per
+write, never merged, because a buffer there has no declared extent of its own
+and a merged range would accept an over read into the buffer next door.
+`docs/BREAKING_CHANGES.md` carries the decision and D-0052 the reproduction that
+asked for it.
 
 ### The debug section
 
@@ -447,8 +494,8 @@ that: the C++ enum and this table come out of the same records.
 | `result-address` | The result address is non negative, is zero when the opcode writes no result, and names the memory space the opcode writes its result in. |
 | `result-in-range` | The result's bytes lie inside the scratchpad the file declares. |
 | `operand-in-range` | Each scratchpad operand's byte span lies inside the scratchpad the file declares, and every operand names the memory space the opcode declares for that slot. |
-| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input or constant region. An output region and a spill slot are places to write, so reading one before writing it is reading whatever the loader left there. |
-| `operand-extent` | The consumer's element need fits the element count actually written to the buffer it reads. Membership alone is not enough: a DMA_STORE reading 100 elements from a 4 element buffer would pass a membership test and then trap. |
+| `operand-defined` | Each operand's bytes were written by an earlier instruction, or belong to a declared input or constant region. An output region is a place to write, so reading one before writing it is reading whatever the loader left there. Inside a declared spill slot the written bytes are tracked exactly, strided writes run by run, so a buffer written in pieces by several instructions is readable once every byte of it has been written and is refused while any interior byte has not. |
+| `operand-extent` | The consumer's need fits the buffer it reads. In the scratchpad that is the element count written at the operand's address, kept as one span per write and never merged, because a buffer there has no declared extent and a merged range would accept an over read into the buffer next door. Inside a declared spill slot it is every byte the read addresses, computed from its strides rather than from its count, lying inside that one slot; a read reaching into the next slot is refused for leaving its region. |
 | `dram-address` | A DRAM address is non negative. |
 | `dram-in-range` | A DRAM access lies inside the declared DRAM size. |
 | `region-offset` | A memory region's DRAM offset is non negative and does not overflow when its size is added. |

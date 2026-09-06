@@ -160,4 +160,90 @@ def NPUAllocateScratchpad
   ];
 }
 
+def NPUDoubleBuffer : Pass<"npu-double-buffer", "::mlir::func::FuncOp"> {
+  let summary = "Overlaps a transfer with the computation before it.";
+  let description = [{
+    Section 5.1's optional double buffering over asynchronous DMA tokens,
+    **running before allocation and not after**. That order is the whole reason
+    the pass has a fixed place in the pipeline: double buffering doubles the
+    working set of the prefetched operand, because the next tile's buffer is
+    live while the current tile computes, and the allocator has to see the
+    doubled set or it places a program that cannot fit and spills the wrong
+    buffers.
+
+    A `npuisa.dma_load` is hoisted above the computation that precedes it and
+    becomes a `npuisa.dma_load_async`, with an `npuisa.await` left where the
+    load was. The transfer then runs underneath that computation instead of
+    after it, which is what the two port cost model of Section 5.5 charges: a
+    program whose transfers and computations overlap reports an
+    `overlap_fraction` above zero, and one whose transfers all wait reports
+    zero.
+
+    **Four conditions, and the third is the one that makes it safe.**
+
+    - The load's own operands have to be available at the earlier point, so the
+      hoist stops at whatever defines its source or its destination.
+    - There has to be something to overlap with. A load hoisted past nothing is
+      an asynchronous operation whose `await` is the next operation, which
+      canonicalizes straight back to the synchronous form, so the pass declines
+      rather than emitting a token nothing gains from.
+    - **Nothing between the asynchronous operation and its await may touch the
+      destination**, which is Section 8's rule 4 and is decided by
+      `npuisa::overlaps` rather than by comparing SSA values. Two different
+      views over one buffer are distinct values and one shared region of memory,
+      and an identity check cannot see the race. An `Unknown` answer stops the
+      hoist, because "I cannot prove these overlap" and "these are disjoint" are
+      different answers and only one of them is safe.
+    - The destination must not be read between the two points either, for the
+      same reason stated from the other side: the hardware owns those bytes for
+      the whole of that window.
+
+    **It moves no golden by itself and that is worth saying.** The instruction
+    stream is the same instructions in a different order with one token added,
+    the encoder emits `DMA_LOAD` for both forms because the machine's DMA engine
+    is asynchronous either way, and the arithmetic each kernel performs is
+    untouched. What moves is when a transfer is charged against the compute
+    timeline, which is a scheduling result and shows up in `overlap_fraction`
+    and in the cycle total, never in an output tensor.
+  }];
+
+  let options = [
+    Option<"budget", "budget", "int64_t", /*default=*/"-1",
+           "The scratchpad budget in bytes, against which a prefetch's doubled "
+           "residency is priced. Minus one means the function's own "
+           "npuisa.scratchpad_budget attribute, or the allocator's default. It "
+           "is the allocator's budget because there is one budget on this "
+           "machine.">,
+    Option<"strategy", "strategy", "std::string", /*default=*/"\"pack\"",
+           "The offset assignment strategy the prefetch is priced under. It is "
+           "the allocator's, for the same reason the budget is: the question "
+           "this pass asks is whether the allocator will be able to place the "
+           "program it is about to produce.">,
+    Option<"alignment", "alignment", "int64_t", /*default=*/"64",
+           "The byte alignment of every assigned offset, as the allocator uses "
+           "it. Alignment is not a detail here: it is what separates the sweep "
+           "line peak from a placement, and D-0054 measured a program that "
+           "fits the peak and does not fit the arena.">,
+  ];
+
+  let statistics = [
+    Statistic<"prefetched", "prefetched",
+              "Transfers made asynchronous and hoisted above a computation">,
+    Statistic<"notHoisted", "not-hoisted",
+              "Transfers with nothing safe to overlap, left synchronous">,
+    Statistic<"wouldNotFit", "would-not-fit",
+              "Transfers with something to hide under whose prefetched "
+              "destination would put the function's peak over the budget. It "
+              "is not called declined, because -npu-tile-to-scratchpad already "
+              "has a statistic of that name and a reader of one log should not "
+              "have to work out which pass a count belongs to">,
+  ];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::memref::MemRefDialect",
+    "::mlir::npuisa::NPUISADialect",
+  ];
+}
+
 #endif // NPUISA_PASSES

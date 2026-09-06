@@ -78,7 +78,14 @@ TEST(FrozenConstants, OpcodeValuesNeverMove) {
 }
 
 TEST(FrozenConstants, TheFormatsNumbers) {
-  EXPECT_EQ(Program::kVersion, 1u);
+  // **2 from Phase P13, and the assertion moves with the constant in the same
+  // commit**, which is the P9 pattern: a frozen constant test that lagged the
+  // constant it freezes would be a test nobody could trust in either
+  // direction. `docs/BREAKING_CHANGES.md` carries the declaration, written
+  // before the commit that caused it. The reason is D-0050: the format could
+  // not express a buffer written in pieces, which is what a tiled program does,
+  // and `Instruction` gained `resultStrides` for it.
+  EXPECT_EQ(Program::kVersion, 2u);
   EXPECT_EQ(Program::kMagic, 0x4E49424Eu);
   EXPECT_EQ(Program::kMaxCount, 1u << 28);
   EXPECT_EQ(Program::kMaxCount, 268435456u);

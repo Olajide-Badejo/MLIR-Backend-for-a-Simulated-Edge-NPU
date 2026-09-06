@@ -1,0 +1,3572 @@
+{
+  "comparisons": [
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 4672,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        2,
+        8
+      ],
+      "tile_count": 8,
+      "tile_bytes": 3472,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 3564.0,
+      "zigzag_cycles": 1822.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.41499093700258527,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 2",
+        "C, 2",
+        "FX, 3",
+        "OY, 4",
+        "K, 2"
+      ],
+      "searched_cycles": 1742.0,
+      "searched_margin": 0.043907793633369926,
+      "searched_ordering": [
+        "OY, 2",
+        "K, 2",
+        "OX, 8",
+        "C, 2",
+        "OY, 4",
+        "FX, 3"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 4928,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1838.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.053871287003858015,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1798.0,
+      "searched_margin": 0.02176278563656148,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "OX, 8",
+        "FX, 3",
+        "K, 2"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 6000,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05361045199970249,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 6144,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05601353199745063,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 6272,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.09605305800505448,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 6400,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        8,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6288,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          8
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 1478.0,
+      "zigzag_cycles": 1934.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05174146400531754,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 8",
+        "C, 2",
+        "FX, 3",
+        "K, 2"
+      ],
+      "searched_cycles": 1934.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "K, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "conv_bn_relu_stack",
+      "budget": 6464,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        8,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6432,
+      "spatial_mapping": {
+        "D1": [
+          "K, 8"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1400.0,
+      "zigzag_cycles": 1166.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.375,
+      "seconds": 0.05397858600190375,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1166.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "depthwise_separable",
+      "budget": 8064,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 16,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 1,
+        "FX": 1
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        16,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 4672,
+      "spatial_mapping": {
+        "D1": [
+          "K, 16"
+        ],
+        "D2": [
+          "C, 8",
+          "FY, 1",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1052.0,
+      "zigzag_cycles": 480.0,
+      "zigzag_ideal_cycles": 32.0,
+      "zigzag_ideal_temporal_cycles": 64.0,
+      "array_fill_here": 0.5,
+      "array_fill_zigzag": 0.5,
+      "seconds": 0.05274047399871051,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "OY, 2"
+      ],
+      "searched_cycles": 480.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 2",
+        "OY, 2",
+        "OY, 2",
+        "OX, 2",
+        "OX, 2",
+        "OX, 2"
+      ]
+    },
+    {
+      "model": "depthwise_separable",
+      "budget": 8192,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 16,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 1,
+        "FX": 1
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        16,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 4672,
+      "spatial_mapping": {
+        "D1": [
+          "K, 16"
+        ],
+        "D2": [
+          "C, 8",
+          "FY, 1",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1052.0,
+      "zigzag_cycles": 480.0,
+      "zigzag_ideal_cycles": 32.0,
+      "zigzag_ideal_temporal_cycles": 64.0,
+      "array_fill_here": 0.5,
+      "array_fill_zigzag": 0.5,
+      "seconds": 0.049952464003581554,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "OY, 2"
+      ],
+      "searched_cycles": 480.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 2",
+        "OY, 2",
+        "OY, 2",
+        "OX, 2",
+        "OX, 2",
+        "OX, 2"
+      ]
+    },
+    {
+      "model": "dilated_stack",
+      "budget": 7936,
+      "layer": "conv0",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 7,
+        "G": 1,
+        "OY": 11,
+        "OX": 13,
+        "C": 4,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        1,
+        11,
+        13
+      ],
+      "tile_count": 7,
+      "tile_bytes": 6096,
+      "spatial_mapping": {
+        "D1": [
+          "K, 1"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          13
+        ],
+        [
+          "OY",
+          11
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "K",
+          7
+        ]
+      ],
+      "here_cycles": 3876.0,
+      "zigzag_cycles": 6487.0,
+      "zigzag_ideal_cycles": 141.0,
+      "zigzag_ideal_temporal_cycles": 3003.0,
+      "array_fill_here": 0.328125,
+      "array_fill_zigzag": 0.046875,
+      "seconds": 0.05158239199954551,
+      "evaluated_ordering": [
+        "OX, 13",
+        "OY, 11",
+        "FX, 3",
+        "K, 7"
+      ],
+      "searched_cycles": 6486.0,
+      "searched_margin": 0.00015415446277169725,
+      "searched_ordering": [
+        "K, 7",
+        "OY, 11",
+        "OX, 13",
+        "FX, 3"
+      ]
+    },
+    {
+      "model": "dilated_stack",
+      "budget": 7936,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 5,
+        "G": 1,
+        "OY": 3,
+        "OX": 6,
+        "C": 7,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        5,
+        3,
+        3
+      ],
+      "tile_count": 2,
+      "tile_bytes": 7004,
+      "spatial_mapping": {
+        "D1": [
+          "K, 5"
+        ],
+        "D2": [
+          "C, 1",
+          "FY, 3",
+          "FX, 3"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          3
+        ],
+        [
+          "OY",
+          3
+        ],
+        [
+          "C",
+          7
+        ],
+        [
+          "OX",
+          2
+        ]
+      ],
+      "here_cycles": 1177.0,
+      "zigzag_cycles": 466.0,
+      "zigzag_ideal_cycles": 23.0,
+      "zigzag_ideal_temporal_cycles": 126.0,
+      "array_fill_here": 0.3076171875,
+      "array_fill_zigzag": 0.17578125,
+      "seconds": 0.05025603200192563,
+      "evaluated_ordering": [
+        "OX, 3",
+        "OY, 3",
+        "C, 7",
+        "OX, 2"
+      ],
+      "searched_cycles": 466.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 3",
+        "OX, 3",
+        "OX, 2",
+        "C, 7"
+      ]
+    },
+    {
+      "model": "dilated_stack",
+      "budget": 8064,
+      "layer": "conv0",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 7,
+        "G": 1,
+        "OY": 11,
+        "OX": 13,
+        "C": 4,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        1,
+        11,
+        13
+      ],
+      "tile_count": 7,
+      "tile_bytes": 6096,
+      "spatial_mapping": {
+        "D1": [
+          "K, 1"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          13
+        ],
+        [
+          "OY",
+          11
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "K",
+          7
+        ]
+      ],
+      "here_cycles": 3876.0,
+      "zigzag_cycles": 6487.0,
+      "zigzag_ideal_cycles": 141.0,
+      "zigzag_ideal_temporal_cycles": 3003.0,
+      "array_fill_here": 0.328125,
+      "array_fill_zigzag": 0.046875,
+      "seconds": 0.05005140200955793,
+      "evaluated_ordering": [
+        "OX, 13",
+        "OY, 11",
+        "FX, 3",
+        "K, 7"
+      ],
+      "searched_cycles": 6486.0,
+      "searched_margin": 0.00015415446277169725,
+      "searched_ordering": [
+        "K, 7",
+        "OY, 11",
+        "OX, 13",
+        "FX, 3"
+      ]
+    },
+    {
+      "model": "dilated_stack",
+      "budget": 8064,
+      "layer": "conv1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 5,
+        "G": 1,
+        "OY": 3,
+        "OX": 6,
+        "C": 7,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        5,
+        3,
+        3
+      ],
+      "tile_count": 2,
+      "tile_bytes": 7004,
+      "spatial_mapping": {
+        "D1": [
+          "K, 5"
+        ],
+        "D2": [
+          "C, 1",
+          "FY, 3",
+          "FX, 3"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          3
+        ],
+        [
+          "OY",
+          3
+        ],
+        [
+          "C",
+          7
+        ],
+        [
+          "OX",
+          2
+        ]
+      ],
+      "here_cycles": 1177.0,
+      "zigzag_cycles": 466.0,
+      "zigzag_ideal_cycles": 23.0,
+      "zigzag_ideal_temporal_cycles": 126.0,
+      "array_fill_here": 0.3076171875,
+      "array_fill_zigzag": 0.17578125,
+      "seconds": 0.053313027005060576,
+      "evaluated_ordering": [
+        "OX, 3",
+        "OY, 3",
+        "C, 7",
+        "OX, 2"
+      ],
+      "searched_cycles": 466.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 3",
+        "OX, 3",
+        "OX, 2",
+        "C, 7"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4000,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 4,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 1,
+        "FX": 1
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 2704,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 8",
+          "FY, 1",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 806.0,
+      "zigzag_cycles": 264.0,
+      "zigzag_ideal_cycles": 8.0,
+      "zigzag_ideal_temporal_cycles": 64.0,
+      "array_fill_here": 0.125,
+      "array_fill_zigzag": 0.125,
+      "seconds": 0.05051976299728267,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "OY, 2"
+      ],
+      "searched_cycles": 264.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 2",
+        "OY, 2",
+        "OY, 2",
+        "OX, 2",
+        "OX, 2",
+        "OX, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4000,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        2,
+        4,
+        8
+      ],
+      "tile_count": 6,
+      "tile_bytes": 3912,
+      "spatial_mapping": {
+        "D1": [
+          "K, 2"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          3
+        ]
+      ],
+      "here_cycles": 2767.0,
+      "zigzag_cycles": 2498.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 1152.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.09375,
+      "seconds": 0.05486068500613328,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 3"
+      ],
+      "searched_cycles": 2490.0,
+      "searched_margin": 0.0032025620496397116,
+      "searched_ordering": [
+        "OY, 2",
+        "K, 3",
+        "OX, 8",
+        "C, 2",
+        "OY, 4",
+        "FX, 3"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4000,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        1,
+        2,
+        8
+      ],
+      "tile_count": 8,
+      "tile_bytes": 3940,
+      "spatial_mapping": {
+        "D1": [
+          "K, 1"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 3798.0,
+      "zigzag_cycles": 5362.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 2560.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.0390625,
+      "seconds": 0.052704608999192715,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 2",
+        "C, 4",
+        "FX, 5",
+        "OY, 4",
+        "K, 2"
+      ],
+      "searched_cycles": 5298.0,
+      "searched_margin": 0.011935844834017158,
+      "searched_ordering": [
+        "C, 2",
+        "OY, 8",
+        "OX, 8",
+        "K, 2",
+        "C, 2",
+        "FX, 5"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4608,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 4,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 1,
+        "FX": 1
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 2704,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 8",
+          "FY, 1",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 806.0,
+      "zigzag_cycles": 264.0,
+      "zigzag_ideal_cycles": 8.0,
+      "zigzag_ideal_temporal_cycles": 64.0,
+      "array_fill_here": 0.125,
+      "array_fill_zigzag": 0.125,
+      "seconds": 0.05037131400604267,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "OY, 2"
+      ],
+      "searched_cycles": 264.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 2",
+        "OY, 2",
+        "OY, 2",
+        "OX, 2",
+        "OX, 2",
+        "OX, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4608,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        3,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4332,
+      "spatial_mapping": {
+        "D1": [
+          "K, 3"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2031.0,
+      "zigzag_cycles": 1818.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.140625,
+      "seconds": 0.05194115599442739,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1782.0,
+      "searched_margin": 0.019801980198019802,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 4608,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        1,
+        2,
+        8
+      ],
+      "tile_count": 8,
+      "tile_bytes": 3940,
+      "spatial_mapping": {
+        "D1": [
+          "K, 1"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 3798.0,
+      "zigzag_cycles": 5378.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 2560.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.0390625,
+      "seconds": 0.054191653995076194,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 2",
+        "C, 4",
+        "FX, 5",
+        "OY, 4",
+        "K, 2"
+      ],
+      "searched_cycles": 5378.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 8",
+        "OX, 8",
+        "K, 2",
+        "FX, 5",
+        "C, 2",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 5120,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 4,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 1,
+        "FX": 1
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 2704,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 8",
+          "FY, 1",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 806.0,
+      "zigzag_cycles": 264.0,
+      "zigzag_ideal_cycles": 8.0,
+      "zigzag_ideal_temporal_cycles": 64.0,
+      "array_fill_here": 0.125,
+      "array_fill_zigzag": 0.125,
+      "seconds": 0.049634328999673016,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "OY, 2"
+      ],
+      "searched_cycles": 264.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 2",
+        "OY, 2",
+        "OY, 2",
+        "OX, 2",
+        "OX, 2",
+        "OX, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 5120,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        3,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4332,
+      "spatial_mapping": {
+        "D1": [
+          "K, 3"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2031.0,
+      "zigzag_cycles": 1818.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.140625,
+      "seconds": 0.05169862099864986,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1782.0,
+      "searched_margin": 0.019801980198019802,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 5120,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        2,
+        2,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4808,
+      "spatial_mapping": {
+        "D1": [
+          "K, 2"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          4
+        ]
+      ],
+      "here_cycles": 2326.0,
+      "zigzag_cycles": 2818.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 1280.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.078125,
+      "seconds": 0.05117284000152722,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 2",
+        "C, 4",
+        "FX, 5",
+        "OY, 4"
+      ],
+      "searched_cycles": 2818.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "FX, 5",
+        "C, 2",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 5632,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        6,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 5592,
+      "spatial_mapping": {
+        "D1": [
+          "K, 6"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1295.0,
+      "zigzag_cycles": 1098.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.28125,
+      "seconds": 0.05170613099471666,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1098.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 5632,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        2,
+        2,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4808,
+      "spatial_mapping": {
+        "D1": [
+          "K, 2"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          4
+        ]
+      ],
+      "here_cycles": 2326.0,
+      "zigzag_cycles": 2818.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 1280.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.078125,
+      "seconds": 0.05677845199534204,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 2",
+        "C, 4",
+        "FX, 5",
+        "OY, 4"
+      ],
+      "searched_cycles": 2818.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "FX, 5",
+        "C, 2",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 6000,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        6,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 5592,
+      "spatial_mapping": {
+        "D1": [
+          "K, 6"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1295.0,
+      "zigzag_cycles": 1098.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.28125,
+      "seconds": 0.0527795139933005,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1098.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 6000,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        2,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 5960,
+      "spatial_mapping": {
+        "D1": [
+          "K, 2"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1772.5,
+      "zigzag_cycles": 2818.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 1280.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.078125,
+      "seconds": 0.05345131500507705,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 4",
+        "FX, 5",
+        "OY, 2"
+      ],
+      "searched_cycles": 2818.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "FX, 5",
+        "C, 2",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 6144,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 6,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        6,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 5592,
+      "spatial_mapping": {
+        "D1": [
+          "K, 6"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1295.0,
+      "zigzag_cycles": 1098.0,
+      "zigzag_ideal_cycles": 108.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.3375,
+      "array_fill_zigzag": 0.28125,
+      "seconds": 0.05486170400399715,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1098.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "inception_block",
+      "budget": 6144,
+      "layer": "node_conv2d_2",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 2,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 5,
+        "FX": 5
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        2,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 5960,
+      "spatial_mapping": {
+        "D1": [
+          "K, 2"
+        ],
+        "D2": [
+          "C, 2",
+          "FY, 5",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          4
+        ],
+        [
+          "FX",
+          5
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1772.5,
+      "zigzag_cycles": 2818.0,
+      "zigzag_ideal_cycles": 100.0,
+      "zigzag_ideal_temporal_cycles": 1280.0,
+      "array_fill_here": 0.1201923076923077,
+      "array_fill_zigzag": 0.078125,
+      "seconds": 0.05470817899913527,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 4",
+        "FX, 5",
+        "OY, 2"
+      ],
+      "searched_cycles": 2818.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "FX, 5",
+        "C, 2",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "lenet",
+      "budget": 194240,
+      "layer": "node_linear",
+      "kind": "matmul",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "C": 400,
+        "D": 1,
+        "K": 120
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        30,
+        1,
+        1
+      ],
+      "tile_count": 4,
+      "tile_bytes": 51440,
+      "spatial_mapping": {
+        "D1": [
+          "K, 15"
+        ],
+        "D2": [
+          "C, 16"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "K",
+          2
+        ],
+        [
+          "C",
+          25
+        ],
+        [
+          "K",
+          4
+        ]
+      ],
+      "here_cycles": 14402.0,
+      "zigzag_cycles": 15116.0,
+      "zigzag_ideal_cycles": 188.0,
+      "zigzag_ideal_temporal_cycles": 200.0,
+      "array_fill_here": 0.9375,
+      "array_fill_zigzag": 0.9375,
+      "seconds": 0.05197639099787921,
+      "evaluated_ordering": [
+        "K, 2",
+        "C, 25",
+        "K, 4"
+      ],
+      "searched_cycles": 15116.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "K, 2",
+        "K, 2",
+        "K, 2",
+        "C, 5",
+        "C, 5"
+      ]
+    },
+    {
+      "model": "lenet",
+      "budget": 194624,
+      "layer": "node_linear",
+      "kind": "matmul",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "C": 400,
+        "D": 1,
+        "K": 120
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        30,
+        1,
+        1
+      ],
+      "tile_count": 4,
+      "tile_bytes": 51440,
+      "spatial_mapping": {
+        "D1": [
+          "K, 15"
+        ],
+        "D2": [
+          "C, 16"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "K",
+          2
+        ],
+        [
+          "C",
+          25
+        ],
+        [
+          "K",
+          4
+        ]
+      ],
+      "here_cycles": 14402.0,
+      "zigzag_cycles": 15116.0,
+      "zigzag_ideal_cycles": 188.0,
+      "zigzag_ideal_temporal_cycles": 200.0,
+      "array_fill_here": 0.9375,
+      "array_fill_zigzag": 0.9375,
+      "seconds": 0.05351372800942045,
+      "evaluated_ordering": [
+        "K, 2",
+        "C, 25",
+        "K, 4"
+      ],
+      "searched_cycles": 15116.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "K, 2",
+        "K, 2",
+        "K, 2",
+        "C, 5",
+        "C, 5"
+      ]
+    },
+    {
+      "model": "lenet_batched",
+      "budget": 199872,
+      "layer": "node_linear",
+      "kind": "matmul",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "C": 400,
+        "D": 4,
+        "K": 120
+      },
+      "temporal_tiles": [
+        4,
+        1,
+        60,
+        1,
+        1
+      ],
+      "tile_count": 2,
+      "tile_bytes": 110000,
+      "spatial_mapping": {
+        "D1": [
+          "K, 15"
+        ],
+        "D2": [
+          "C, 16"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "D",
+          4
+        ],
+        [
+          "K",
+          4
+        ],
+        [
+          "C",
+          25
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 15498.0,
+      "zigzag_cycles": 15449.0,
+      "zigzag_ideal_cycles": 750.0,
+      "zigzag_ideal_temporal_cycles": 800.0,
+      "array_fill_here": 0.9375,
+      "array_fill_zigzag": 0.9375,
+      "seconds": 0.05392917600693181,
+      "evaluated_ordering": [
+        "D, 4",
+        "K, 4",
+        "C, 25",
+        "K, 2"
+      ],
+      "searched_cycles": 12680.0,
+      "searched_margin": 0.17923490193540034,
+      "searched_ordering": [
+        "D, 2",
+        "K, 4",
+        "K, 2",
+        "C, 5",
+        "D, 2",
+        "C, 5"
+      ]
+    },
+    {
+      "model": "lenet_batched",
+      "budget": 200832,
+      "layer": "node_linear",
+      "kind": "matmul",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "C": 400,
+        "D": 4,
+        "K": 120
+      },
+      "temporal_tiles": [
+        4,
+        1,
+        60,
+        1,
+        1
+      ],
+      "tile_count": 2,
+      "tile_bytes": 110000,
+      "spatial_mapping": {
+        "D1": [
+          "K, 15"
+        ],
+        "D2": [
+          "C, 16"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "D",
+          4
+        ],
+        [
+          "K",
+          4
+        ],
+        [
+          "C",
+          25
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 15498.0,
+      "zigzag_cycles": 15509.0,
+      "zigzag_ideal_cycles": 750.0,
+      "zigzag_ideal_temporal_cycles": 800.0,
+      "array_fill_here": 0.9375,
+      "array_fill_zigzag": 0.9375,
+      "seconds": 0.054692019999492913,
+      "evaluated_ordering": [
+        "D, 4",
+        "K, 4",
+        "C, 25",
+        "K, 2"
+      ],
+      "searched_cycles": 15509.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "D, 2",
+        "D, 2",
+        "K, 4",
+        "K, 2",
+        "C, 5",
+        "C, 5"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6000,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05479428901162464,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6000,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05333106800389942,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6144,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05116146898944862,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6144,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05210013399482705,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6272,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.24570900200342294,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6272,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        4,
+        8
+      ],
+      "tile_count": 4,
+      "tile_bytes": 4752,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 2136.0,
+      "zigzag_cycles": 1870.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05325146100949496,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2",
+        "K, 2"
+      ],
+      "searched_cycles": 1822.0,
+      "searched_margin": 0.025668449197860963,
+      "searched_ordering": [
+        "OY, 4",
+        "C, 2",
+        "OY, 2",
+        "K, 2",
+        "FX, 3",
+        "OX, 8"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6400,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        8,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6288,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          8
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 1478.0,
+      "zigzag_cycles": 1934.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.051746392986387946,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 8",
+        "C, 2",
+        "FX, 3",
+        "K, 2"
+      ],
+      "searched_cycles": 1934.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "K, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6400,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        4,
+        8,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6288,
+      "spatial_mapping": {
+        "D1": [
+          "K, 4"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          8
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "K",
+          2
+        ]
+      ],
+      "here_cycles": 1478.0,
+      "zigzag_cycles": 1934.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 768.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.1875,
+      "seconds": 0.05178550099662971,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 8",
+        "C, 2",
+        "FX, 3",
+        "K, 2"
+      ],
+      "searched_cycles": 1934.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 8",
+        "K, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6464,
+      "layer": "node_conv2d",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        8,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6432,
+      "spatial_mapping": {
+        "D1": [
+          "K, 8"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1400.0,
+      "zigzag_cycles": 1166.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.375,
+      "seconds": 0.05417144300008658,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1166.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    },
+    {
+      "model": "resnet_block",
+      "budget": 6464,
+      "layer": "node_conv2d_1",
+      "kind": "conv2d",
+      "configurations": [
+        "tile-fused-cache",
+        "tile-fused-recompute",
+        "tile-unfused-cache",
+        "tile-unfused-recompute"
+      ],
+      "loop_sizes": {
+        "B": 1,
+        "K": 8,
+        "G": 1,
+        "OY": 8,
+        "OX": 8,
+        "C": 8,
+        "FY": 3,
+        "FX": 3
+      },
+      "temporal_tiles": [
+        1,
+        1,
+        8,
+        4,
+        8
+      ],
+      "tile_count": 2,
+      "tile_bytes": 6432,
+      "spatial_mapping": {
+        "D1": [
+          "K, 8"
+        ],
+        "D2": [
+          "C, 4",
+          "FY, 3",
+          "FX, 1"
+        ]
+      },
+      "temporal_ordering": [
+        [
+          "OX",
+          8
+        ],
+        [
+          "OY",
+          4
+        ],
+        [
+          "C",
+          2
+        ],
+        [
+          "FX",
+          3
+        ],
+        [
+          "OY",
+          2
+        ]
+      ],
+      "here_cycles": 1400.0,
+      "zigzag_cycles": 1166.0,
+      "zigzag_ideal_cycles": 144.0,
+      "zigzag_ideal_temporal_cycles": 384.0,
+      "array_fill_here": 0.45,
+      "array_fill_zigzag": 0.375,
+      "seconds": 0.05490630000713281,
+      "evaluated_ordering": [
+        "OX, 8",
+        "OY, 4",
+        "C, 2",
+        "FX, 3",
+        "OY, 2"
+      ],
+      "searched_cycles": 1166.0,
+      "searched_margin": 0.0,
+      "searched_ordering": [
+        "OY, 4",
+        "OY, 2",
+        "OX, 4",
+        "OX, 2",
+        "FX, 3",
+        "C, 2"
+      ]
+    }
+  ],
+  "summary": {
+    "layers": 42,
+    "wall_clock_seconds": 59.091,
+    "peak_memory_mb": 746.8,
+    "memory_ceiling_mb": 8192,
+    "ratio_min": 0.5975,
+    "ratio_max": 3.053,
+    "ratio_geometric_mean": 1.1597,
+    "reads_above_on": 28,
+    "reads_below_on": 14,
+    "material_fraction": 0.1,
+    "materially_better_on": 1,
+    "materially_better_layers": [
+      "lenet_batched node_linear at 199872"
+    ]
+  }
+}

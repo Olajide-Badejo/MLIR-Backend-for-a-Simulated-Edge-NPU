@@ -565,7 +565,10 @@ def test_the_ablatable_set_is_read_from_the_compiler_and_is_not_written_here() -
     The list below is the one the compiler reports today. It is compared rather
     than used: a pass added to `-O2` and marked ablatable makes this red, which
     is a prompt to add its ablation row and its `docs/PASSES.md` entry, and that
-    is the failure the rule exists to produce.
+    is the failure the rule exists to produce. **It produced exactly that
+    failure at P13**, when the three passes below `symbol-dce` went into `-O2`
+    together, which is the tripwire working rather than the tripwire being in
+    the way.
     """
     assert ablatable_passes(2) == [
         "npu-constant-fold",
@@ -576,6 +579,9 @@ def test_the_ablatable_set_is_read_from_the_compiler_and_is_not_written_here() -
         "cse",
         "sccp",
         "symbol-dce",
+        "npu-assign-layout",
+        "npu-tile-to-scratchpad",
+        "npu-double-buffer",
     ]
     assert ablatable_passes(0) == [], (
         "-O0's two passes are both marked not ablatable, because removing "

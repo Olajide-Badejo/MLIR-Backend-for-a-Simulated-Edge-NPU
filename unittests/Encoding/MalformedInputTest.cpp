@@ -228,7 +228,19 @@ void Corpus::build() {
   }
 
   // ---- Versions the decoder does not accept. ------------------------------
-  for (uint32_t version : {0u, 2u, 99u, 0xFFFFFFFFu})
+  //
+  // **The list is written against `kVersion` rather than as literals, which is
+  // the P13 correction.** It used to read `{0, 2, 99, 0xFFFFFFFF}`, and when
+  // the format went to version 2 the second of those stopped being a malformed
+  // case and became the real one: the corpus quietly held a file that was
+  // supposed to be rejected and was not. The test caught it, which is what a
+  // corpus is for, and the fix is to say what is meant. **`kVersion - 1` is
+  // version 1, and it is in the list on purpose**: a version 2 build rejects a
+  // version 1 file rather than reinterpreting it, because there are no tags in
+  // this format and therefore no way to skip a field a reader does not
+  // recognise.
+  for (uint32_t version : {0u, Program::kVersion - 1, Program::kVersion + 1,
+                           99u, 0xFFFFFFFFu})
     addMutated("version " + std::to_string(version),
                [&](std::vector<uint8_t> &bytes) {
                  writeU32(bytes, 4, version);
@@ -341,6 +353,37 @@ void Corpus::build() {
   addFromProgram("empty result shape", [](Program &program) {
     program.instructions[1].resultShape = {};
   });
+
+  // ---- The result strides, which version 2 added. -------------------------
+  //
+  // The truncation and count corruption cases for the new vector arrive on
+  // their own, because the byte offset walk in `TestPrograms.h` was taught the
+  // field and every case that aims at a vector's boundaries is generated from
+  // that walk. These are the ones nothing generates: the field's **semantics**,
+  // which is that it holds one non negative stride per extent and that the
+  // reach it implies is what the bound checks use.
+  addFromProgram("result strides shorter than the result rank",
+                 [](Program &program) {
+                   program.instructions[1].resultStrides = {1};
+                 });
+  addFromProgram("result strides longer than the result rank",
+                 [](Program &program) {
+                   program.instructions[1].resultStrides = {16, 4, 1};
+                 });
+  addFromProgram("negative result stride", [](Program &program) {
+    program.instructions[1].resultStrides = {-4, 1};
+  });
+  addFromProgram("result strides on an opcode with no result",
+                 [](Program &program) {
+                   // The `HALT` at the end, which gives the field no meaning
+                   // and must therefore carry its neutral value.
+                   program.instructions.back().resultStrides = {1};
+                 });
+  addFromProgram("result stride reaches past the shape limit",
+                 [](Program &program) {
+                   program.instructions[1].resultStrides = {int64_t{1} << 40,
+                                                            1};
+                 });
   addFromProgram("shape product overflows, large extent first",
                  [](Program &program) {
                    program.instructions[1].resultShape = {int64_t{1} << 40,

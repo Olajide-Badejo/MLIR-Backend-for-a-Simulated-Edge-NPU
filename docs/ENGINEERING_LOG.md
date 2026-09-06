@@ -5256,3 +5256,1388 @@ kernels compile with OpenMP. The script's contribution over that is the seven
 real models, which is worth a nightly rather than a per push step. Trigger: the
 first phase that changes the convolution kernel's loop nest, which is P13's
 tiling or P14's integer kernels.
+
+## 2026-09-04 Phase P13: the defect that was handed forward twice did not exist
+
+### The brief, and why it changed in the first hour
+
+P13 was briefed to fix D-0045 under the full declare then re-record governance:
+an entry in `docs/BREAKING_CHANGES.md` in its own commit, the `CostModel.h`
+change with its Python mirror, the divergence terms re-measured, a baseline
+re-record in its own commit, and the pre-registered band of
+`p11-scalesim-divergence.md` re-versioned against the new constants because
+Section 16.3 requires it. Every one of those steps is conditional on a charge
+moving, and none of them ran, because the charge is already what D-0045 says it
+is not.
+
+**The practice that found it is D-0047's, applied to D-0047's own successor
+phase**: measure the thing before changing it. The difference here is that the
+measurement took six lines of arithmetic rather than `nm` on an object file.
+
+### The arithmetic
+
+D-0045 says `gemmCharge` "computes `delta = m / (m + kWeightPreloadCycles)`
+**once per instruction** and applies it to every tile, so the sixteen cycle
+pipeline fill is amortised across the whole layer no matter how many times the
+array is actually refilled". The premise is true. The conclusion does not follow
+from it, and that is why the claim survived somebody reading the code: the line
+it describes is exactly the line that is there.
+
+`FrozenConstants.TheCostModelsNumbers` already asserts that the f32 peak is the
+array's area, `kPeakMacsPerCycleF32 == kArrayDim * kArrayDim`. So for any tile,
+whole or partial, `utilization * peak` is exactly `tileRows * tileColumns`, and
+the tile's charge reduces:
+
+```
+tileMacs / (utilization * delta * peak)
+    = (m * rows * columns) / (rows * columns * delta)
+    = m / delta
+    = m + kWeightPreloadCycles
+```
+
+With `T` folds the instruction is charged `T * (m + kWeightPreloadCycles)`. That
+is the fill counted `T` times, once per refill, which is what a weight
+stationary array does and what SCALE-Sim charges. **Applying the same fraction
+to every tile is not the same operation as counting the fill once**, and the
+entry moved from the first to the second in one sentence.
+
+Checked numerically as well, over every combination of `m` in
+{1, 2, 7, 16, 64, 196, 1024}, `k` in {1, 8, 16, 17, 72, 144, 256} and `n` in
+{1, 6, 8, 16, 17, 120, 256}. **343 shapes, and the charge equals the explicit per
+fold accounting on all 343.** It differs from the once per instruction
+accounting on every shape with more than one fold, by exactly
+`(folds - 1) * kWeightPreloadCycles`. On D-0045's own `72 by 8` weight matrix at
+`m = 64`, five folds, that is 400 cycles against 336.
+
+### The reproduction does not reproduce either, and the reason is the budget
+
+D-0045 names `resnet_block-O2-default-n1-fp32-normal`, layer `node_conv2d`, and
+quotes SCALE-Sim at **1465 cycles, overall utilization 0.098**. The committed
+result for that cell and that layer says something else, and has since P11:
+
+```
+                                          scalesim   utilization   stalls
+resnet_block-O2-default-n1  node_conv2d        549        0.2623        0
+resnet_block-O2-tight-n1    node_conv2d       1465        0.0983      916
+```
+
+**1465 is the same layer at the tight budget, and 1465 minus 916 is 549.** The
+entry crossed a tight budget SCALE-Sim reading with a default budget analytical
+one. Both pairs are internally consistent, which is what made the mistake
+invisible: `36864 / (1465 * 256)` is 0.0983 and `36864 / (549 * 256)` is 0.2623,
+so each pair reconciles against the same MAC count and `check_the_same_arithmetic`
+passes on both.
+
+This project's own 478 is a **DMA bound** figure rather than a compute one. The
+layer's `analytical_compute_cycles` is 404, of which 400 is the array and 4 is
+the issue overhead; 478 is what the layer costs on the port that binds it, which
+at the default budget is the transfer. So the entry compared 478 cycles of mostly
+DMA against 1465 cycles of which 916 is SCALE-Sim waiting on memory, and
+attributed the whole difference to the weight preload.
+
+The 916 is not one layer's anomaly. Across the 550 layer rows of the committed
+suite, **66 carry SCALE-Sim stall cycles and every one of the 66 is a tight
+budget cell**; the 308 default budget rows carry none at all. Their median
+divergence is -72.42 percent against +11.59 percent for the 484 that do not
+stall, and the suite's total stall is 107206 cycles.
+
+### What this says about the decomposition, which is the part worth carrying
+
+The stall term enters `decompose()` **twice, with opposite signs**.
+`array_fragmentation` is `analytical_compute - (matched_total - stalls)`, so the
+stalls enter it positively; `double_buffering` is
+`max(0, dma - compute) - stalls`, so they enter it negatively. They cancel in the
+total, exactly, by construction.
+
+That is worth stating beside the near cancellation the P11 report leads with.
+`docs/NUMBERS.md` records double buffering at +442289 and array fragmentation at
+-435825 and calls the near equality "the single most useful thing this comparison
+produced". It is still a real finding, and the sign structure is part of it: the
+cancellation is partly a property of how the two terms are written and not only
+of the physics. Neither term is wrong. Both subtract the same stall count so that
+memory time is charged once rather than twice, which is the double count the
+first version of `decompose` made and its comment records.
+
+**The stalls are not the size of either term.** 107206 against 442289 and 435825
+is under a quarter, so removing them would not collapse either column. What they
+are is the whole of the tight budget cells' extra divergence, and they are the
+reason a layer's gap looks like a factor of three at one budget and 1.36 at the
+other while the analytical charge does not move at all.
+
+### What is still open, and it is the question D-0045 was reaching for
+
+The two tools do disagree about the compute time of the same MAC count, with the
+stalls already removed on SCALE-Sim's side. The widest rows:
+
+```
+model               layer          macs    this project   SCALE-Sim   ratio
+dilated_stack       conv1          5670           140.0        1211    8.65
+dilated_stack       conv0         36036           481.0        3672    7.63
+inception_block     node_conv2d_2 25600          1044.0        6407    6.14
+conv_bn_relu_stack  conv1         36864           404.0        1465    3.63
+inception_block     node_conv2d    2048           473.0         109    0.23
+```
+
+The last row is the other direction and is the 1 by 1 convolution the P11
+prediction got right about the mechanism: this project charges 4.34 times what
+SCALE-Sim does there. The dilation approximation already has its own term and its
+own second SCALE-Sim run at the true tap extent, so it is accounted for
+separately and is not the answer to the `dilated_stack` rows either.
+
+**Whatever the mechanism is, it is not the weight preload**, because both tools
+charge that once per fold. The next phase to look at it should start by measuring
+the charge rather than by reading it, which is the whole of what this session
+adds to the question.
+
+### The two assertions, and why the frozen constants test could not have caught it
+
+`FrozenConstants.TheCostModelsNumbers` pins `kWeightPreloadCycles` at 16.0 and
+says nothing about where the 16 is charged. **The accounting was never under any
+assertion at all**, which is why a claim that contradicted it could stand for two
+phases in the file that exists to be the audit trail.
+
+`CostModel.TheWeightPreloadIsChargedOncePerFold` and
+`test_the_weight_preload_is_charged_once_per_fold` assert the per fold accounting
+**and assert it apart from the once per instruction accounting**. The second half
+is the one that matters: the two accountings agree whenever there is exactly one
+fold, and every shape small enough to check by hand has exactly one fold. A test
+that only asserted the right answer would pass against the wrong model on every
+example a reader would think to write down.
+
+### The rehearsal, prediction written first
+
+*Predicted:* pull `delta` out of the per tile divisor and add
+`kWeightPreloadCycles` once at the end of `gemmCharge`, which is the model
+D-0045 describes, and the new test goes red on the four multi fold cases while
+`FrozenConstants.TheCostModelsNumbers` stays **green**, because no constant
+moved.
+
+*Result:* exactly that. The test named each shape and printed the difference:
+16 cycles on `64 by 32 by 16`, 16 on `196 by 27 by 6`, 64 on D-0045's
+`64 by 72 by 8`, and 2032 on the `16 by 256 by 120` tail of a fully connected
+layer, each of them `(folds - 1) * 16`. The two single fold cases stayed green,
+which is the reason the discriminating assertion is there.
+
+`test_the_mirror_reproduces_the_machines_own_numbers` went red in the same tree,
+because the machine moved and the Python mirror did not. **The mirror's own copy
+of the per fold assertion stayed green**, since it tests the mirror rather than
+the machine, and that asymmetry is worth recording: the mirror against machine
+test is what couples the two, and neither per fold assertion alone would have
+noticed a change made on only one side. Restored, tree clean.
+
+### The halo arithmetic P1 declined to write
+
+Section 7.2 has `TilingInterface` implemented at P1 and consumed at P13 so that
+an interface bug and a policy bug cannot be mistaken for each other. P1 wrote the
+introspection half for every operation and the generation half for the
+elementwise ones, and returned failure on the windowed ones with a comment saying
+the halo arithmetic belonged with the phase that would exercise it, because a
+wrong tile is worse than no tile.
+
+That arithmetic is now here, for the convolution, both pools and the matmul,
+**over the parallel dimensions only**. It landed before the pass that consumes
+it, which is the order this phase's commits are in.
+
+**Section 13.2's restriction lives in the interface rather than in the pass.**
+The interface is what knows whether a tile of the domain is expressible; a pass
+that had to know it would be a second copy of the same judgement. A tile that
+splits the input channel, the kernel window or a matmul's inner dimension is
+declined, because under fp32 addition is not associative and re associating the
+accumulation moves every golden file. Declining is a result rather than a
+failure and the fallback is the allocator's spilling, which is Section 13.2's own
+wording.
+
+**The exactness property is asserted rather than described**, and it is what lets
+the P13 gate ask for goldens byte identical rather than for a tolerance. For
+every output position of every tile, the window touches the same input positions
+it touched untiled, and the positions lying outside the input are the same ones.
+The second half is the one an average pool depends on: it divides by the number
+of elements that actually contributed rather than by the window area, so a tile
+that turned a real element into a padded one would move a divisor rather than
+only a sum. `Conv2DEveryTileReadsTheSamePositionsAsTheWhole` checks both over
+five window shapes, every tile size that divides the output and every offset,
+and it reads the slice offset off the operation the model built rather than
+deriving it from the pads the model reported, so the two halves of the model have
+to agree with each other rather than each with itself.
+
+**One assertion moved with the level and one lifetime bug was found by the
+harness.** `WindowedTileGenerationIsDeclinedRatherThanGuessed` asked for every
+domain extent to be one, which splits the reduction as well as the parallel
+dimensions, so it would have gone on passing against the new model for a reason
+it did not state. It is rewritten rather than deleted, and both halves are now
+asserted. Separately, the sweep parses five modules in one test and the first
+version kept a tile alive across a reparse, which destroys values that still have
+uses; MLIR asserted on it immediately, which is the kind of harness failure worth
+having.
+
+### ZigZag, installed and wired but not yet used
+
+Section 16.5 blocks the cross check on an install, so it was started before
+anything else in the phase, as Section 23 has the project do for P11's tools.
+`zigzag-dse` 3.8.5, which imports as `zigzag`, four seconds of wall clock against
+the two minutes P11's six installs took. Nothing in `requirements-lock.txt`
+moved: seven pins resolved as already satisfied and five packages arrived that no
+committed result was measured under and nothing in this repository imports.
+
+**Section 16.5 asks for the 3.11 floor to be reconciled with the recorded build
+environment, and it resolves the other way from the one that section
+anticipates.** This environment is 3.14.4, which is above the floor rather than
+below it, so there is nothing to reconcile: the wheel is `py3-none-any` and
+installed with no build step of its own. The floor `zigzag-dse` sets is the
+reason `requires-python` has said 3.11 since P0, and this is the first phase in
+which the tool that set it is present. The other trap Section 16.5 names, that
+`pip install timeloop` fetches an unrelated periodic task scheduling library, is
+not one this project can fall into: it installs no Timeloop at all.
+
+It goes in `EXTERNAL_TOOLS` rather than beside it, so every consumer of that
+table follows with no further edits. That is D-0046's fix used rather than worked
+around. `test_the_real_table_is_the_two_tools_this_project_installs` went red on
+the addition, which is what it is for.
+
+**The CI assertion was widened and rehearsed four ways with the prediction
+written first.** This machine, all three present: exits 1 naming `scalesim`. The
+CI shape, all three absent: exits 0. Only ZigZag present: exits 1 naming
+`zigzag`. And the fourth, which is the one that makes the change worth making:
+the **old** step body against that third shape printed "confirmed absent" in an
+image that has ZigZag in it. That is the silence Section 19.0 forbids, arriving
+through the one tool the assertion did not name.
+
+### One flake, observed once and not reproduced
+
+`test_the_opt_out_records_a_null_and_a_reason` failed once during the first full
+battery run of this session and has not failed since: green alone, green with its
+own file, and green in two subsequent full suite runs at 1082 passed and 18
+skipped. **It is recorded rather than dismissed**, because the test asserts
+`run_benchmarks.main(...) == 0` and the harness returns 1 on a finding, and one
+of the findings it can produce is D-0043's `--mlir-timing` cross check, whose
+bound is principled and **load sensitive**. A full suite run is the heaviest load
+this repository puts on the machine.
+
+That is a hypothesis and not a measurement, because the failure text was not
+captured; the battery script tailed three lines and the reason was above them.
+**The lesson is the script's, and it is fixed by capturing the failure rather
+than by rerunning until it is green.** P12's handoff said to read a red at that
+bound as the next data point rather than as noise, and this session cannot say
+whether it was one. Recorded here so P14 can, and the flake governance of Section
+17.9 at P15 is where a test that does this twice belongs.
+
+## 2026-09-04 Phase P13: the tiling pass, and the flake that was a conditional bound
+
+### What the pass is, and the one line that matters about it
+
+`-npu-tile-to-scratchpad` is implemented and is in **no `-O` level**. It fires
+only when an operation's working set exceeds the budget, enumerates the mapping
+space exhaustively with capacity pruning, scores candidates on Section 5.5's two
+port makespan through the simulator's own `gemmCharge` and `dmaCycles`, records
+the chosen mapping on every tile, declines rather than splitting an fp32
+reduction, and leaves no `scf` behind.
+
+It is in no level because `-npu-lower-to-npuisa` cannot lower a tiled function.
+Wiring it in would take every model in the suite from compiling to not compiling
+at every budget tight enough to trigger it, so the ablatable set stays at eight
+and Section 2's arithmetic stays where it is.
+
+### The cost model moved house
+
+`CostModel.cpp` is now `lib/CostModel`, built as `NPUCostModel`, which links
+nothing. Section 5.5 says the one home "is also what the tiling pass scores
+against, so the project has exactly one cost function rather than a modelled one
+and a heuristic one that can disagree"; before this the only way for a pass to
+reach `gemmCharge` was to link `NPUSimulator`, which would have put the machine,
+its kernels, its memory and its OpenMP runtime on the link line of `npu-opt`.
+**A compiler has no business linking a simulator**, which is the same argument
+`lib/Simulator/CMakeLists.txt` already makes in the other direction about a
+simulator linking MLIR. Its own directory rather than a second target beside the
+simulator, because LLVM enforces one target per directory and discourages the
+opt out for a reason this project agrees with.
+
+### The tiles cannot be emitted as loops, and the reason is in the dialect
+
+Section 13.2 describes the tiled loops as emitted with `scf` and then fully
+unrolled inside the pass. The first version did exactly that, with
+`scf::tileUsingSCF` and `loopUnrollFull`, and it failed at the first tile.
+
+`tileUsingSCF` calls `getTiledImplementation` with the loop's **induction
+variable** as the offset, because the tile has to be built once inside a body
+that runs many times. **A convolution tile at a dynamic offset is not
+representable in this dialect.** The first tile of an axis carries the leading
+pad, the last carries the trailing one, the tiles between carry neither, and
+`pads` is a static `DenseI64ArrayAttr`, so one loop body cannot stand for tiles
+that disagree about it. The interface declines a non constant offset, which is
+the refusal written at P13 with the halo arithmetic, and this is the other end of
+it.
+
+So the grid is walked at compile time and every tile is materialised at a
+constant offset, which is what full unrolling produces anyway. **The observable
+contract that description exists for is met exactly**: the tiles are fully
+unrolled, no `scf` operation survives, the pass asserts that about its own
+function, and the lit test asserts it from outside. What is not met is the
+intermediate step, and it is not met because it cannot be.
+
+That assertion earned its place immediately: the first failed run left an
+`scf.for` behind, and the pass said so by name rather than letting the lowering
+report something unrelated three passes later.
+
+### Two bugs the tests caught, and the second is the interesting one
+
+The pass printed a budget of 64 as `@`. Streaming a tablegen pass option into a
+`Diagnostic` picks the character overload, and 64 is `@` in ASCII. It is D-0043's
+shape in miniature, a value arriving through a channel that loses information,
+and the diagnostic that told a reader the wrong number would have been the only
+place anybody saw it. The fix is a plain `int64_t` copy with a comment saying
+why it exists.
+
+The second was in the search. The byte model computed a tile's input extent as
+`(tile - 1) * stride + effectiveKernel` and did not clamp it to the input the
+operation actually has. Under same padding a tile covering a whole axis was
+therefore priced as reading **more rows than the axis contains**, because the
+window runs off both edges and the padding is not fetched.
+
+**That is not conservative in a safe direction.** It made the search believe
+that not splitting an axis costs more memory than the whole operand does, which
+pushed it to split axes it did not need to split and made `halo=cache` decline
+budgets it could have met. With the clamp, the same convolution goes from eight
+tiles at a makespan of 2988 cycles to four at 1704. The fix shares one helper
+between the thing that decides whether a candidate fits and the thing that
+decides whether it is good, so the two cannot disagree about what a tile is.
+
+**It was found by a lit test asserting an exact choice rather than a property.**
+A test that had checked only "it tiled" would have passed against both.
+
+### The regret of the named baselines, which is now a number
+
+On the eight channel convolution at a 2048 byte budget: exhaustive scores 1704,
+`fixed` ties at 1704, `largest-fit` scores 1790. That is 5 percent, and it is
+small on this shape rather than small in general; the point of keeping the two
+baselines is that the exhaustive result has something to be compared against
+rather than only asserted about.
+
+### Section 13.3's third arm, as far as it goes honestly
+
+The halo boolean is implemented and its limits are written into the pass
+description rather than left to the report. `halo=recompute` allows the two
+output spatial axes to be split, so adjacent tiles re-read the overlapping input
+rows and the halo is paid for in DMA per tile. `halo=cache` refuses to split
+them, so no halo is created and none is re-read.
+
+**What `halo=cache` is not is a scratchpad resident halo carried from one tile
+to the next.** That needs a transfer whose source is the previous tile's buffer
+and a cost model term for a partially reused operand, and this machine has
+neither. The boolean is the choice between **paying** the halo and **not
+creating** one, which is the cheap version Section 13.3 asks for, and any
+comparison reported from it has to say so.
+
+The lit test makes the tradeoff a measurement: `halo=cache` tiles four ways at
+2048 bytes and declines at 768, where `halo=recompute` splits the rows two at a
+time and fits in 720. Not creating a halo costs the ability to shrink the input
+at all, and the budget where that stops being affordable is a number.
+
+### D-0049: the flake was a bound whose precondition is not checked
+
+The single unexplained red from earlier in this phase was reproduced
+deliberately: twenty four busy loops against twenty eight hardware threads, eight
+runs, **one red**; three runs on the idle machine, none, on top of four clean
+full suite runs earlier.
+
+```
+--mlir-timing reports Canonicalizer at 4.5000 ms and this project's
+instrumentation at 0.4496 ms, a gap of 4.0504 ms against a bound of 2.3000 ms
+```
+
+**It is not the bound P12 asked P13 to watch**, and the distinction is the useful
+part of the finding. `cross_check_against_mlir_timing` has two bounds pointing in
+opposite directions. The **deficit** bound catches the instrumentation reading
+above MLIR, is derived from the print quantum, and is D-0043's, whose margin
+narrowed across 0.1577, 0.1177 and 0.1856 ms against 0.2000. This is the
+**upper** bound, `half_ulp` plus fifty percent of MLIR's figure. Nothing here is
+a fourth data point on the other one, and recording it as one would have put a
+wrong number into the only place that number is tracked.
+
+**The code already contains the argument for what is wrong.** The upper bound's
+premise is that the gap *is* the instrumentation's own operation walk, and
+`pass_stats.py` already refuses to check it under a traced interpreter, on the
+stated grounds that a tracer stretches everything else inside MLIR's window so
+the gap stops being the walk. A busy machine does the same thing for the same
+reason: MLIR's timer is wall clock and brackets the whole pass, so time the
+process spends descheduled lands inside MLIR's window and not inside this
+project's. 4.5000 ms for a canonicalization this project measured at 0.4496 is
+not a canonicalization that took four milliseconds.
+
+**It is left open deliberately.** The fix is a precondition, not a wider bound:
+measure the process's own CPU time against the wall clock and skip the upper
+bound when the process did not have the processor, exactly as it is already
+skipped under a tracer, with the deficit bound left active because its premise
+survives either way. `TIMING_GAP_FRACTION` must not move to a number chosen to
+make a run green, which is the rule this project already applies to D-0043's
+bound and which applies here for the same reason.
+
+**Where it matters is CI rather than here.** The test carries `slow`, CI's
+`pytest slow cells` step runs slow tests, and the runners are shared four vCPU
+machines. A developer machine with nothing on it is the least likely place for
+this to fire, which is D-0037 and D-0040's shape a third time: a check whose
+behaviour depends on the machine, validated on the machine where it behaves.
+
+**The cost of nearly losing it is worth recording.** The first observation went
+into a battery script that tailed three lines of output, so the message was gone
+before anybody read it and the session recorded the flake as unexplained. What
+turned it into an entry was capturing the whole failure, and the price of not
+doing that the first time was running everything again.
+
+### What tiling is waiting on, stated so it is not rediscovered
+
+`-npu-lower-to-npuisa` has no pattern for `tensor.extract_slice` or
+`tensor.insert_slice`, so a tiled function does not lower. That is the smaller of
+the two changes.
+
+The larger one decides whether tiling is worth anything. The conversion loads
+each DRAM function argument into the scratchpad **once, whole**, and records it
+so every consumer reads the same resident buffer. Under that arrangement a tiled
+program's slices are views of buffers that are already resident: tiling would
+split the compute instruction and leave the scratchpad footprint exactly where it
+was, and the ablation row would show instructions moving and cycles moving and
+pressure not moving at all. For tiling to relieve pressure the **slice** has to
+be what enters the scratchpad, which is consistent with Section 8's count of one
+load per DRAM value entering it, since under tiling the values are the slices.
+It is a real change to the conversion and to `dma-boundaries.mlir`, and it is
+where P13 continues.
+
+## 2026-09-05 Phase P13: layout assignment answers NCHW, and the answer is a ratio between two constants
+
+### What the pass is
+
+`-npu-assign-layout` is implemented and is in **no `-O` level**, alongside
+tiling and double buffering, for the reason the pass list gives: putting the
+three in is one commit, because that is where the cell count moves and Section
+2's arithmetic is re-derived, and doing that three times would leave two
+intermediate states nothing will ever run again.
+
+It has three parts. It **scores** the layout question for every rank 4
+operation and counts the answer in `kept-nchw`. It **folds** an inverse
+transpose pair into the value it permuted, which is the half Section 12 names
+as the thing without which the pass only ever adds instructions. And it
+**sinks** a transpose past a relu, which is what lets the fold reach a pair the
+graph did not write adjacent.
+
+### The answer is NCHW everywhere, and it is not close
+
+Section 5.5 charges layout in exactly one place, the non unit innermost stride
+penalty on a transfer, at `kDmaStridedElementCycles = 0.5` cycles per element.
+Section 5.5 also fixes how a layout reaches that term: an NHWC tensor is
+materialised below the tensor level as a buffer at **NCHW extents carrying
+permuted strides**, so its innermost stride is the channel count and every
+transfer of it is charged the penalty, while an NCHW tensor is contiguous and is
+charged nothing.
+
+The only alternative to paying that penalty is to perform the permutation, and a
+permutation is one elementwise pass at `1 / kElementwiseLaneWidth = 0.0625`
+cycles per element. So **performing the permutation is eight times cheaper than
+moving the same data strided**, and it is a ratio rather than a threshold: a
+transfer's other two terms, the bytes and the fixed descriptor cost, are charged
+whichever layout the buffer is in and cancel out of the comparison instead of
+tipping it at some size.
+
+The whole decision is therefore a relation between two constants, and it is
+asserted as one, in `CostModelTest.cpp`, in the file that owns both. That is
+deliberate: the conclusion the report will publish is about the machine and not
+about the pass, so recalibrating either constant has to fail a test rather than
+quietly reverse a published answer.
+
+### The observation that decided the pass's shape
+
+Section 5.5 motivates the stride term with the sentence that without it "a
+strided NCHW gather and a contiguous NHWC burst cost exactly the same". Read on
+its own that sentence describes a machine whose canonical buffer order is NHWC,
+where NCHW is the layout that gathers. This machine's canonical buffer order is
+NCHW: every `npuisa` verifier reads NCHW extents and every kernel indexes them,
+which is the paragraph immediately after, the one that says how the layout
+reaches the term. **The term therefore charges the opposite layout from the one
+the motivating sentence's example names.**
+
+The mechanism paragraph is the normative one here, because it is the one that
+says what the compiler does, and the code follows it. The two sentences are
+worth reconciling in the specification at some point and that is an owner edit
+rather than a code change; it is recorded here so the next reader who notices
+the tension finds it already noticed rather than rediscovering it as a bug.
+
+### What the pass therefore does not contain, which was the design decision
+
+There is no code that rewrites an operation into NHWC. The scoring refuses that
+trade at every shape this machine can hold, so a materialisation path would be a
+branch no input could reach and no test could exercise, and untestable code is
+worse than absent code.
+
+The tempting alternative was to absorb a layout changing transpose into the
+transfer that was going to move the bytes anyway. It is exactly the right
+rewrite and it is exactly `relayout-and-move`, which Section 12 names as a
+future extension, states is not implemented, says needs a descriptor form the
+binary format does not have, and forbids any gate or report claim from depending
+on. Recognising the tempting rewrite as the thing already scoped out is the
+whole of that decision, and the alternative would have been a fourth DMA
+producer against Section 8's invariant.
+
+There is a second thing that would have been needed and it is worth writing down
+because it is not obvious from the dialect: a layout changing transpose does not
+lower. Its two sides become memrefs of the **same** extents differing only in
+their strides, and the `npuisa` transpose verifier asks that result extent `i`
+be input extent `permutation[i]`, which such a pair does not satisfy. So an NHWC
+pipeline is a lowering change as well as a pass, on top of a cost model that
+says it would never be used.
+
+### What it does on the suite
+
+Nothing, on all fourteen model configurations, at both `-O0` and `-O2`: zero
+folds, zero sinks, and the printed IR is identical to the input. The layout
+question is answered four to six times per model and answered NCHW every time.
+`dilated_stack` is the only model that contains a transpose at all, the closing
+NCHW to NHWC permutation Section 15 gives it, and it is left alone: it is the
+last operation before the return, so there is no inverse below it to cancel
+against and no consumer to sink anything through.
+
+So the P13 gate's layout delta is **zero, and the DMA stride term is what makes
+it zero**. That is the gate's "reported whichever way it went" answered with the
+direction it went, and it is the second negative result of this phase after
+double buffering, which is a fact about the machine rather than about either
+pass: this cost model is a two port dataflow schedule with a large stride
+penalty, and both of those properties remove a classic optimization's payoff.
+
+### The negatives are where the tests are
+
+Three of the five lit cases exist to hold a line rather than to show the pass
+working. The load bearing one is a pair of permutations that compose to the
+identity, returning the extents to exactly where they started, whose outer
+result carries `#npu.layout<nhwc>` and whose inner input does not. A fold that
+looked only at the permutations would delete it. It is not a round trip, it is a
+relayout, and deleting it would change what the bytes mean while leaving every
+type in the function looking right. The guard is that the surviving value's type
+must equal the replaced result's exactly, encoding included, which is why the
+fold compares types and not shapes.
+
+The fold also hands the orphaned inner transpose back to its caller rather than
+erasing it where it stands, because the caller is iterating a worklist that may
+still hold it. A fold that left a dead full pass over the data behind would be
+reporting a saving it had not made.
+## 2026-09-05 Phase P13: the wiring commit, and the tiled program the encoder refuses
+
+**The three passes went into `-O2` together and the suite was re-recorded once at
+that tree.** The ablatable set is eleven, which is Section 12's own number with
+nothing subtracted from it, the suite is 217 cells, and the ablation half of
+Section 2's arithmetic agrees exactly at 154. **Not one counted field of the 175
+pre-existing cells moved**, over instructions, cycles, compute and DMA cycles,
+scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle
+distance, the overlap fraction and the fragmentation ratio. All 21 golden tensors
+are byte identical. There is nothing to declare in `docs/BREAKING_CHANGES.md` and
+writing an entry anyway would be a false declaration.
+
+**The wiring found five defects, which is the argument for wiring a pass into a
+level rather than testing it beside one.** Each of the three passes had lit
+tests, statistics and a measured delta before this session, and each was correct
+about the program it was handed. What none of them could see is the pipeline:
+what `-cse` does to the values the tiling pass reads, what the conversion driver
+folds before a pattern sees it, what the encoder does with a buffer written in
+pieces, and what the lowering's own transfer layout leaves for double buffering
+to work on.
+
+### D-0052, which changes the phase rather than the commit
+
+**A tiled result assembled in DRAM cannot be read back.** The first tiled program
+this suite produced, `resnet_block` at its tight budget, did not encode:
+
+```
+operand-extent: operand 0 reads 2048 bytes from 10944 and the buffer written
+there ends at 11968 (instruction 14)
+```
+
+Instruction 14 is the load that brings the assembled convolution back on chip for
+the multiply that reads it. The assembly is 2048 bytes and was written by two
+stores of 1024, and `WrittenSpans` deliberately does not merge adjacent spans,
+because merging them is what would let an over read off the end of one buffer and
+into the next pass validation.
+
+**The decision this contradicts is one of P13's own, and the contradiction is one
+sentence deep.** `docs/PHASE_STATE.md` chose DRAM assembly over weakening checks
+8 and 9, and gave as a reason that "nothing is ever written in pieces and read
+whole". That is true of the tiles and false of the consumer. The decision assumed
+the next layer loads the slices it needs; the next layer is not tiled, so it loads
+the whole value.
+
+**Three measurements settle the scope**, and they are the reason this is D-0052
+rather than a patch. A **matching** tiled consumer does not help, because the
+write side records `resultByteSize`, the element count, and the read side computes
+`addressedByteSpan`, the stride reach, and for a strided tile those differ, 1024
+against 1920 on the case above. A **scratchpad** assembly is refused by the same
+rule, which `test/Encoding/tiled-assembly-in-scratchpad.mlir` already records. And
+the **one** shape that does encode is an assembly nothing reads: a tiled operation
+whose result is the function's own, whose tiles are stored straight into the out
+parameter, which never gets read back.
+
+**So the pass declines**, which is Section 13.2's own answer to a tile that is not
+expressible, and the allocator's spilling is the fallback. The alternative was a
+compiler that emits programs its own encoder refuses, reported three tools away
+from the pass that caused it.
+
+**What it costs is measured rather than estimated.** Before the rule,
+`resnet_block` tiled one convolution at its tight budget and `inception_block`
+tiled two, and every one of those three programs was refused. After it, nothing
+in the suite tiles at `-O2` at either budget, which is what the committed
+prediction said, for a reason the prediction did not give. **Section 13.3's
+tiling arm has no subject inside the suite until the ISA question is decided, and
+that is not a phase's decision.**
+
+### The wired tree changes the tiles nothing measurement's premise, and the table had to be taken again
+
+The pass alone at its own defaults is not what the suite compiles. The pipeline
+hands the tiling search the allocator's budget and tells it that
+`-npu-double-buffer` is in the pipeline, which doubles the prefetched operand's
+contribution per Section 13.2, so an operation that fits without the prefetch is
+over budget with it.
+
+**The default budget column did not move and that is the check that mattered.** A
+default budget cell that moved would have been a wiring defect rather than a
+declaration to write. The tight budget column moved in its `declined` count on
+every model, and ablating `-npu-double-buffer` moves it back, which is the
+coupling made visible: **ablating double buffering also relaxes the tiling
+search, so its ablation row measures the pass together with the sizing it
+forces.** That is Section 13.2's coupling rather than this wiring's, and
+`docs/PASSES.md` says so beside the row.
+
+### Two zeros that look identical and are not, again
+
+**`-npu-double-buffer` fires on nothing this compiler emits**, which is D-0054.
+`docs/PASSES.md` already carried a measured reason for a zero from this pass: on a
+hand written tiled convolution it fires, the instruction stream genuinely changes,
+and no cycle moves, because tiling makes a program DMA bound. **That reason is
+true and is not the suite's reason.** On the suite `prefetched` is 0 and
+`not-hoisted` is every transfer, because every argument load sits in the entry
+block beside the other argument loads, where the walk correctly stops at another
+transfer, and a constant's load is the one transfer with a computation before it
+and the one whose `npuisa.const` the prologue cannot carry.
+
+**This is P10's `-canonicalize` finding for the third time**, and the general
+statement is now worth making: in this project a zero ablation row has meant a
+pass with nothing to do, a pass whose work another pass would do, a pass whose
+answer is the input it was given, a pass whose subject the binary format cannot
+express, and a pass that fires on nothing. Five mechanisms, one printed value.
+
+### A bound that was quoted three times and is not in the code
+
+**D-0055.** `cross_check_against_mlir_timing` has two bounds pointing in opposite
+directions. The deficit bound is `half_ulp_ms`, which is 0.0500 ms at the four
+decimals of seconds MLIR prints, and it is D-0043's. The upper bound is that plus
+half of MLIR's own figure, so it is a different number for every pass. **There is
+no 0.2000 anywhere.** Three handoffs recorded 0.1577, 0.1177 and 0.1856 as a
+narrowing margin against "D-0043's 0.2000 bound"; all three are readings of the
+**upper** gap, which is what `run_benchmarks.py` prints, and the bound they were
+compared against does not exist.
+
+P13's quiet run measures a worst upper gap of 0.2430 ms, green against that
+pass's own allowance, and **no cell of the 217 came within a red of the deficit
+bound**, which is the statement D-0043 wanted and that nobody was making. Nothing
+was widened; a misread bound is corrected by reading it correctly.
+
+### The first attempt at the re-record went red, and it is D-0049's fifth point
+
+It died on the upper bound with a gap of 0.6897 ms against 0.5000, on a machine
+with nothing running but a one minute load average still around 3 from the builds
+seconds before. Ninety seconds of settling brought it to 0.74 and the run
+completed clean. **The bound was not touched.** D-0049's own claim is that the
+upper bound's premise, that the gap is this instrumentation's operation walk, does
+not survive a machine that is not idle, and a machine still draining a build is
+not idle however empty the process table looks.
+## 2026-09-05 Phase P13: the format learns to read a buffer written in pieces, and the compiler does not use it yet
+
+**The owner decided D-0052 and the decision is region scoped coverage on the
+DRAM side of checks 8 and 9, with no version bump.** Inside a declared spill
+slot the validator now tracks exact byte coverage, strided writes run by run,
+and accepts a read when every byte it addresses lies inside that one slot and
+has been written. The scratchpad keeps the no merge rule, because a buffer there
+has no declared extent and a merged range would accept an over read into the
+buffer next door. That asymmetry is the whole decision: **a spill slot has an
+identity and the scratchpad arena does not**, and the relaxation goes exactly as
+far as the identity does.
+
+**No encoded byte moves, which is why no version moves.** Version 2 was declared
+so that a buffer could be written in pieces, and that declaration's own table
+promised checks 8 and 9 would go from "one written count per address" to
+"written ranges per buffer". **Only the format half landed.** This is the other
+half of a decision already taken rather than a new one, and saying so is what
+makes the absence of a bump defensible rather than convenient.
+
+**It also closes the count against reach asymmetry**, on the DRAM spill slot
+side only. A strided store recorded its element count as one contiguous run
+while the matching read computed its stride reach: 1024 against 1920 on the case
+D-0052 measured. Both sides now use the bytes actually touched, and the
+scratchpad side is untouched.
+
+### What the corpus said, which is nothing, and why that is worth printing
+
+All 778 seeds were run through the validator at the parent and at the fix.
+**Zero verdict flips.** Not one seed exercises a spill slot read at all, so the
+corpus could neither confirm nor contradict the change. That is a fact about the
+corpus rather than about the change, and it is the reason the five unit tests in
+`SpillSlotCoverageTest.cpp` exist and are written as four verdicts rather than as
+four refusals: a corpus that cannot reach a rule cannot be the evidence for it.
+
+### The compiler half is measured and held, and D-0056 is the reason
+
+With the validator fixed, `-npu-tile-to-scratchpad` can tile an operation whose
+result another operation reads. Compiling all 168 cells at that tree says what
+one cell could not.
+
+**It improves four of them**, and these are the first numbers in this project
+that say tiling buys anything on a real model:
+
+| Cell, at its tight budget | with tiling | tiling ablated |
+|---|---|---|
+| `conv_bn_relu_stack` ablate `npu-fuse-ops` | peak **4640** | peak 6432 |
+| `inception_block` | **0 spills** | 3 spills |
+| `lenet` ablate `npu-fuse-ops` | peak 194200 | peak 194560 |
+| `lenet_batched` ablate `npu-fuse-ops` | peak 199840 | peak 200800 |
+
+**And it takes one away.** `resnet_block` at its tight budget with fusion
+ablated stops allocating: the residual keeps the block's input resident across
+both convolutions, so tiling the second adds the tile buffers on top of an
+activation it does not remove, and the assembly comes back on chip whole above
+that. Sweep line peak 7456 against a budget of 6464.
+
+**Two rules were written against that and both are recorded because both
+failed.** Charging the assembly's re-entry to the search's budget made the tiles
+smaller and the cell failed again with a 256 byte buffer unplaced instead of a
+1024 byte one. Requiring the tiling to be an improvement, tile peak plus
+re-entry against the untiled working set, **declined `inception_block`**, which
+was one of the wins, and **still admitted `resnet_block`**, which was the loss.
+
+**A rule that is both too strict and too weak is a wrong discriminator**, and
+the reason it is wrong is worth more than the two attempts: the quantity that
+decides is the **program's** sweep line peak, and the tiling pass sees one
+operation. On `resnet_block` the deciding byte belongs to a different operation
+and is live for a reason, the residual, that the tiled operation has no view of.
+Section 13.2 sizes a tile's working set against the budget, which is the right
+unit for choosing **between** tilings and the wrong one for choosing **whether**
+to tile.
+
+So the compiler half is not committed. The tree that ships is the one where all
+168 cells compile, the four wins are left on the table and said so, and D-0056
+carries the three ways forward: the pass consults the allocator, the consumer
+chain tiles with its producer, or it stays as it is.
+
+### D-0054's one line fix is not one line, and the verifier said so
+
+Admitting `npuisa.const` to the double buffering prologue is the obvious change
+and it was written, built and run. It produces programs this project's own
+verifier rejects: a `dma_store` lands between the asynchronous load and its
+await and overlaps the destination, which is the race the token exists to
+prevent.
+
+**So the pass's hoist safety walk is weaker than the verifier that checks its
+output**, and that gap is the defect rather than the missing entry in a set.
+Both ask `npuisa::overlaps`; the walk asks it of the operations it steps over
+and the verifier asks it of the whole window. Where the two diverge is the thing
+to measure, and it is larger than a change to an `isa<>` list. Not committed,
+because a pass that fires and emits programs the verifier refuses is worse than
+a pass that fires on nothing.
+
+### What this run did not spend
+
+**The quiet machine.** Nothing moved a measured quantity: no cell field, no
+cycle, no DRAM byte, no golden tensor byte. The suite is the same 217 cells at
+the same numbers, `regression-baseline --check` reports no drift in both shapes,
+and the only baseline movement is five test names and five counts, which is the
+composition change the declaration's own list of what does not move predicted.
+## 2026-09-05 Phase P13: the allocator was refusing a legal spill, and tiling reaches the suite
+
+**The question this session was given was why the allocator found no victim, and
+the first thing it did was make the allocator say so.** The failure printed "no
+buffer live across the pressure peak can be spilled" and stopped there, so a
+reader had to reconstruct five predicates over a dozen buffers from the IR to
+find out whether it was right. `spillRefusal` now returns the rule that refused
+a buffer, `isSpillable` is that function asking whether the answer is nothing,
+and the failure prints one line per candidate. On the cell in question:
+
+```
+The peak is at operation 37 and the buffers live across it are:
+  2048 bytes, live [0, 65], 1 uses after the peak: refused, a view is taken of
+    it, and a reload cannot serve a view
+  2048 bytes, live [19, 53], 0 uses after the peak: refused, a view is taken of
+    it, and a reload cannot serve a view
+  1024 bytes, live [34, 41], 1 uses after the peak: refused, it has already been
+    spilled
+  2304 bytes, live [35, 39], 1 uses after the peak: refused, it is itself a
+    reload
+  32 bytes, live [37, 39], 1 uses after the peak: refused, it is itself a reload
+```
+
+**The residual does have a view user, which is what the hypothesis that it had
+none got wrong.** It is the block's input and it is also the first
+convolution's input, so the tiling pass takes a `memref.subview` of it per tile.
+Under the per slice convention a slice of a scratchpad value is a view and no
+transfer, so **tiling pinned that buffer twice over**: whole resident because
+the slices are views of it, and unspillable because it has view users.
+
+### The rule was wider than its reason
+
+`spill` rewrites a buffer's later uses onto the reload with
+`replaceUsesOfWith`, and a view's use of the buffer is its source operand, so
+that call re-bases a view without knowing it is one. What a reload genuinely
+cannot serve is a view that is **written through**: the write would land in the
+reload and the buffer the store put in DRAM would never see it. So the rule is
+now that narrower one, a direct view of the allocation is recorded as a reader,
+and `viewWrittenThrough` replaces `hasViewUser`. The cell places with one spill
+at a peak of 6144 bytes, which is lower than the 6432 the untiled program needs.
+
+**A comment in the collection said exactly why the wide rule was there**: "a use
+through a view is counted for liveness above and makes the buffer unspillable,
+so it never reaches the rewrite that would need to know which of the two names
+to replace". The rewrite did not need to know. That is worth saying because the
+comment was honest about its own reason, and the reason had stopped being true
+when `replaceUsesOfWith` replaced whatever mechanism it was written against.
+
+### What tiling costs and buys, which is the phase's reason to exist
+
+Thirty one cells move and **not one default budget cell moves**. The gate
+clause's ablated cells still read 17/2018.0/1 and 22/3799.0/3 to the cycle, and
+all 21 golden tensors are byte identical, because tiling over parallel
+dimensions splits no reduction.
+
+| Cell, tight budget | before | after |
+|---|---|---|
+| `inception_block` | 3799.0 cycles, 3 spills, 21936 DRAM bytes | **3395.0, 0 spills, 12720** |
+| `resnet_block` | 17 instructions, 2018.0 cycles, 14944 bytes | **21, 2660.0, 19040** |
+
+**Tiling helps one model and costs the other, and the mechanism is which operand
+it relieves.** Under the per slice convention a slice of a **DRAM** value
+becomes a transfer and a slice of a **scratchpad** value becomes a view. So
+tiling relieves the operand that lives in DRAM, an argument or a DRAM assembly,
+and does not relieve an on chip producer, which stays whole resident as the base
+the views are taken of. `conv_bn_relu_stack`'s tiled convolution reads a
+function argument and its peak falls from 6432 bytes to 4640;
+`resnet_block`'s second convolution reads the previous layer's activation and
+gains the tile buffers on top of a residency it did not remove.
+
+**That is the Section 13.3 trade arriving as a table.** An optimizing pipeline
+being worse under memory pressure is the phenomenon the section names, and it is
+now measured rather than anticipated.
+
+### D-0057, found by the first tiled program reaching the roofline
+
+`npuisa_walk` reads operand types with one regular expression whose strided
+branch was `strided<\\[...\\]>`, which requires the closing bracket pair
+immediately. A view that starts at its parent's first byte prints as
+`strided<[512, 64, 8, 1]>` and matched; **one that does not prints as
+`strided<[512, 64, 8, 1], offset: 24>` and did not**, and a tiled operation
+produces one of each.
+
+**The pattern failing is not the defect. The silence is.** `finditer` does not
+raise on a type it cannot match, it yields one fewer, so the operand list came
+out one short and every operand after it moved down a place. On a convolution
+that is an `IndexError`, which is how it was found. On a matrix multiply it
+would have been a wrong reduction extent and a wrong charge with nothing to say
+so. The pattern accepts the offset now, and `_checkOperandCount` compares the
+types read against the operands named, so a type this walker cannot match is a
+`WalkError` rather than a list that quietly lost an entry.
+
+### The CI trigger fired at its third evaluation
+
+P12 recorded it as "P13, because tiling makes functions longer". It was
+evaluated at the wiring commit, where nothing tiled; after the validator fix,
+where the compiler half was held; and here. **Seventeen cells have longer
+functions, the longest went from 25 instructions to 33, and the largest single
+growth is 12 to 30.** The premise is true now, so the step is on, rehearsed red
+first with `--sizes 500` as its own recipe asks.
+
+`kernel_threads` stays off, and its reason is sharper than it was: the kernel's
+team cap is `batch * outputChannels` and these tilings split output **rows**, so
+the cap does not move, and the script measures each model at its default
+configuration where nothing tiles at all.
+
+### The re-record took three attempts and both failures are D-0049
+
+Both on an idle machine, both on a fast pass, both missing by a hair: 0.0104 and
+0.0059 milliseconds. **The busy machine explanation does not cover these**, and
+there is an arithmetic observation that fits both exactly: the bound applies its
+fraction to the figure MLIR **printed** rather than to the largest value that
+figure could stand for, and the term that drops is `fraction * half_ulp`, which
+is 0.025 ms. Both misses are inside it.
+
+**It is written down and not acted on.** A phase that changed a bound while its
+own runs were failing against it would be doing the thing the rule exists to
+prevent, whatever the arithmetic said. Section 17.9's flake governance at P15 is
+where it belongs, and the entry carries the derivation so that session does not
+have to find it again.
+### D-0054's diagnosis was wrong, and the pass it accused had it right
+
+The entry said the double buffering pass's hoist walk must be weaker than the
+verifier that checks its output, because a probe that admitted `npuisa::ConstOp`
+to the prologue made the pass fire and produced this:
+
+```
+error: 'npuisa.dma_load_async' op the operation npuisa.dma_store lies between
+this asynchronous transfer and its npuisa.await and accesses memory overlapping
+the destination buffer, which is the race the token exists to prevent
+```
+
+That is a reasonable reading of the message and it is the wrong one. **The
+question the message answers is where the store came from, and nothing asked
+it.** The probe was re-run with the IR dumped after the pass rather than at the
+end of the pipeline, and the window between the asynchronous load of the second
+convolution's weight and its await holds an allocation, a convolution, an
+allocation, a relu, an allocation and a pooling, and no transfer at all. The
+walk stopped exactly where the verifier would have stopped it, and the same walk
+breaks on `DmaStoreOp` unconditionally, so it could not have let one through.
+
+Dumping after `-npu-allocate-scratchpad` instead shows the refused program being
+built, two instructions after the issue:
+
+```
+%12 = npuisa.dma_load_async(%9, %11)
+%13 = memref.alloc() {npuisa.spill_slot} : memref<16x6x5x5xf32, #npu.dram>
+      npuisa.dma_store(%11, %13)
+```
+
+**The allocator spilled the buffer the transfer was still filling, and it copied
+it out at the issue.** `spill` puts the store `setInsertionPointAfter(writer)`,
+and the writer of a prefetched buffer is the asynchronous load. That is not a
+diagnostic problem: the spilled copy holds whatever part of the transfer had
+landed, which is a race the simulator would reproduce faithfully and silently.
+
+**The second mistake was in the same belief and was invisible.** Twenty six
+lines further on, a reload of a different weight is placed at offset 0, which is
+where the in flight destination is. `collect` ends a live range at the last
+operation that **names** the buffer, and no operation names an in flight
+destination between the two halves, because the await names the token. So the
+range ended at the issue and the sweep line handed those bytes away. The
+verifier caught this one too, once the first was fixed, and it would not have
+caught it at all if the offsets had merely been adjacent rather than equal.
+
+**One belief, stated twice, and `DoubleBuffer.cpp` had the correct statement all
+along.** Its comment about the buffer the hardware will own for the whole window
+between the two halves is the rule; the allocator did not have it. `completionOf`
+is that sentence in the allocator, and the two places that needed it are one line
+each.
+
+The test is the pair of programs that fail against the allocator as it was: the
+first with the store between the halves, the second with a `dma_load` at the in
+flight destination's offset. Both messages are the verifier's own.
+
+### And the ConstOp change is still not made, for a reason that is a number
+
+With the allocator correct, the probe produces programs the verifier accepts and
+the pass fires on one to four transfers per model. It also stops five of the
+seven models placing at their tight budgets:
+
+| model | tight budget | peak with the prefetch |
+| --- | --- | --- |
+| `conv_bn_relu_stack` | 6464 | 6560 |
+| `dilated_stack` | 8064 | 9268 |
+| `lenet` | 194624 | 234880 |
+| `lenet_batched` | 200832 | 246080 |
+| `resnet_block` | 6464 | 8736 |
+
+**That is double buffering's cost showing up exactly where Section 5.1 said it
+would.** The pass doubles the residency of the operand it prefetches, the
+allocator has to see the doubled set, and ADR 0008's budgets were measured on
+programs that had no prefetch in them. The order is right and is not what is
+missing. What is missing is a way for the pass to ask what the doubling costs
+before it commits to it, and a pass that runs before the allocator cannot answer
+that from where it stands. It is a design question with a measurement behind it
+now, which is a better place than it was.
+
+### The two named tiling baselines get a test, four phases after they got a log entry
+
+`fixed` and `largest-fit` exist so the exhaustive search has something to be
+compared against, and the comparison lived in a paragraph: 1704, 1704 and 1790
+on the eight channel convolution. Nothing ran them. The same file now runs all
+three strategies over the same IR, and the matrix multiplication turns out to
+have a regret too, eight cycles out of 19412 with the baselines agreeing with
+each other and losing to the search. Both numbers are small and both are the
+first thing a change to the tie break would move.
+**And it is what closed the coverage red**, which is the part worth saying out
+loud. C++ line coverage was 84.9 against a threshold of 85, and the two searches
+are about eighty five lines that no test reached. The threshold did not move and
+nothing was written to touch a line for its own sake: the missing test was one
+the file should always have had, and the measurement came back at **86.0**, from
+5866 lines of 6824. A coverage number that goes up because a real assertion was
+added is the only kind worth having.
+
+## 2026-09-06 Phase P13: the three arms, and the pass that leaves two of them nothing to do
+
+**The predictions went in first, which is the one part of the protocol that
+cannot be recovered afterwards.** `experiments/predictions/p13-three-arms.md`
+and `experiments/predictions/p13-zigzag-same-mapping.md` are at `b302661`; the
+two scripts that answer them are at `f2c2cdf` and `c08d42e`, both descendants of
+it. Section 17.8 asks for the ancestry rather than for a date written in a
+header, and `git merge-base --is-ancestor b302661 c08d42e` is the whole check. I
+wrote six clauses I expected to be right and four of them are not, which is what
+a prediction is for.
+
+### The floors first, because Section 13.3 needed to know whether it was standing on stale numbers
+
+ADR 0008 fixed the seven tight budgets on 2026-08-31 against a tree with no
+tiling pass in it, and closed by saying the remedy it could not reach lands at
+P13. It has landed, so before running anything I re-measured the same quantity:
+the lowest budget at which each model still produces a program, at the
+allocator's 64 byte quantum, at `-O2`, with tiling ablated, and with fusion
+ablated. 473 compilations.
+
+**At `-O2` not one of the seven floors moved**, and taking the tiling pass out
+did not move them either. The frozen budgets are still exactly the floors. That
+is the answer I wanted least and trust most: the pass has neither invalidated
+ADR 0008 nor given anyone a reason to reopen it.
+
+**With fusion ablated four of them fall**, by 1792, 384, 960 and 320 bytes, and
+that is the first appearance of the effect that turns out to dominate the whole
+experiment.
+
+### One cell is why the tool is not a bisection
+
+`conv_bn_relu_stack` with fusion ablated does not place at 4928 and does place at
+4736 and at 4672. **Allocatability is not monotone in the budget.** I had assumed
+it was, because the allocator's own behaviour is monotone: a buffer set that
+places in N bytes places in N plus 64.
+
+The assumption is true and the conclusion does not follow, because **the budget
+is an input to the tiling pass as well**. A smaller budget makes the search
+choose smaller tiles, which is a different buffer set, which can place where the
+larger budget's buffer set could not. The composition is what a bisection over
+the level is actually searching, and the composition is not monotone.
+
+So `bisect_floor` is followed by `verify_window`, which tests ten quanta below
+whatever the bisection returned, and `descend`, which walks down from the lowest
+of those that placed until 24 consecutive budgets have failed. Every search
+function takes an `Allocates = Callable[[int], bool]` predicate rather than a
+tool path, which is what let the tests drive all three over synthetic shapes
+including this one, instead of over whichever models happen to be non monotone
+this week.
+
+### The two cells the suite publishes, and the convention that decides both
+
+Arm one spills, arm two tiles, arm three drops the halo. At each model's frozen
+budget, with six configurations per point:
+
+- `inception_block` at 6144: spilling costs 3799.0 cycles, 21936 DRAM bytes and
+  three spills; tiling costs 3395.0 cycles, 12720 DRAM bytes and none. **Tiling
+  wins by 404 cycles.**
+- `resnet_block` at 6464: spilling costs 2018.0 cycles over 17 instructions;
+  tiling costs 2660.0 over 21. **Tiling loses by 642 cycles**, and the reason is
+  the per slice convention: the operand the budget runs out on is the block's own
+  residual, which is on chip, and a slice of a scratchpad value is a view rather
+  than a transfer. The producer stays whole resident, the tile buffers are added
+  on top of a residency tiling cannot remove, and the program pays for both.
+
+**That is the same sentence as the spill refusal in the entry above**, arriving
+from the other direction. There the residual was refused as a spill victim
+because a view was taken of it, until the rule was narrowed to views written
+through; here it cannot be relieved by tiling at all, because the views the
+tiling takes are views of it and a view moves nothing off chip. One convention,
+two costs, and both of them are in the suite now.
+
+### Fusion is the largest single effect and neither arm was designed to measure it
+
+As the compiler stands, **tiling extends no model's range by a single byte**.
+Every crossover in Section 13.3's table except `inception_block`'s exists only
+with `-npu-fuse-ops` ablated. Thirty of the suite's forty four compute
+operations are inside fused regions and the tiling pass does not look inside one,
+so on five of seven models arm two is handed nothing to work on at any budget.
+`inception_block` is the exception because its three convolutions have no
+consumer fusion ever folded them into.
+
+I predicted this gap would be the largest effect in arm two and it is. What I did
+not predict is that it would be large enough to be the answer to Section 13.3's
+own question, which is a defect shaped observation rather than a measurement:
+the pass ordering means the compiler cannot use the remedy ADR 0008 named for it
+without giving up a pass that is worth more.
+
+### Arm three was predicted to do nothing and it moves five models
+
+I wrote that recompute against cache "changes nothing at any budget in the swept
+range", reasoning that the search would not take spatial splits. It does.
+`halo=cache` moves the answer on five of the seven models, by up to 2240 cycles
+on `conv_bn_relu_stack` at 4928, and on `dilated_stack` with fusion ablated it is
+**cheaper** than recompute: 26 instructions against 30, 4691.5 cycles against
+4929.2, 13372 DRAM bytes against 14092. On that model the halo costs more than
+the tiling it buys. That is the third arm answering a question in the direction
+nobody put it.
+
+### Three plumbing mistakes, all of them the same mistake
+
+**The two new options do not go to the same stage.** `halo` belongs to
+`-npu-tile-to-scratchpad`, a tensor level pass, so it goes on the `npu` stage;
+`spill-heuristic` belongs to the allocator, which is in the other half, so it
+does not. `compile.py` already had the rule written above the budget option, an
+option belongs on a stage some pass of which can consume it, and following it was
+the entire fix.
+
+**`ablate` takes a space and not a comma.** `npu-O2{budget=6464
+ablate=npu-fuse-ops}` is the form; a comma parses into the pass name, the level
+ablates nothing, and the run completes with plausible numbers in it. The symptom
+is the only one it has: the ablated column read identical to the unablated one on
+all seven models, which is not a result, it is a configuration that did not
+happen.
+
+**The statistic is `tiled-ops` and not `tiled`.** Reading a statistic by a name
+nothing publishes returns a zero that looks like a pass deciding no.
+
+All three are the same error, which is writing an interface down from memory
+beside the file that defines it. The floor tool's `FROZEN` dictionary has a test
+that asserts it equals `{name: spec.tight_budget for ...}` off the registry for
+exactly this reason, and that test is the one that caught me writing
+`tight_scratchpad_budget`, which is not the field's name either.
+
+### What the crossover rule had to say out loud
+
+Section 13.3 requires that a program an arm cannot place is reported as that and
+never as a slower one, so `crossover` compares placement before it compares
+cycles: an arm that produces a program where the other produces none has
+overtaken it, and no cycle count is comparable with an absence. Where both place,
+cycles decide, and **a tie is read as tiling not overtaking**, because the burden
+is on the arm that adds transfers. All three arms ran on all seven models, so
+this is not the two arm result Section 13.3 says must be reported as incomplete.
+
+## 2026-09-06 Phase P13: ZigZag under the same mapping, and the export that described a different machine
+
+**Section 16.5 asks for cost under one mapping and forbids two totals from two
+mappers, and the difference between those turns out to be a property of the
+input file rather than of the intention.** ZigZag treats a temporal ordering as a
+hint when it does not multiply out and runs its own search instead, silently. So
+an export that dropped a factor anywhere would produce exactly the comparison the
+section forbids and would look identical from the outside.
+
+Two things stop that here. `check_complete` asserts, dimension by dimension,
+that the temporal factors times the spatial factor equal the layer's size, before
+ZigZag is called. And after the call the evaluated nest is read back off ZigZag's
+own `CostModelEvaluation` and compared to the one that was handed over. All 42
+layers pass both.
+
+### Getting the mapping out needed the compiler fixed first
+
+`npu.tiling_choice` lives in the tensor level IR, and `--emit npu` was dropping
+the budget, so the stage a caller can read had no tiling in it at any budget.
+That is D-0059 and it is three lines. The file already stated the rule the
+omission broke, two lines above the code that broke it.
+
+The join needs both stages anyway: a tiled operation carries the **tile's**
+shape, and the layer it came from is only in the untiled program. The location
+survives the rewrite, so the name is what joins them, and there is a test that
+says so rather than a comment.
+
+### The export was wrong and ZigZag is what found it
+
+The first version put the reduction innermost inside a tile, reading
+`loop_order = "domain"` as though it described the whole nest. ZigZag's own
+engine then answered that a different nest was **57 percent cheaper** on
+`resnet_block`, `conv_bn_relu_stack` and `inception_block`, and preferred its own
+mapping on 26 of the 42 layers.
+
+**It was right, and the nest it preferred is what this machine does.**
+`cost_model.gemm_charge` walks the reduction in bands of sixteen, the columns in
+bands of sixteen, and streams every activation row through each loaded band. The
+rows are the innermost loop. My export had described an array that reloads its
+weights at every output position, which is a different machine, and the number I
+would have published about the compiler would have been about my own file.
+
+Correcting it moved the geometric mean from 0.880 to 1.160 and took the layers
+where ZigZag prefers its own mapping from 26 to **1**. That is what a cross check
+is for, and it is worth saying plainly that it caught me rather than the
+compiler. The attribute that let me get it wrong is D-0061.
+
+### What the comparison says once it is honest
+
+Over 42 tiled layers, this project reads between 0.598 and 3.053 times ZigZag
+under the same mapping, geometric mean 1.160, above on 28 and below on 14. The
+prediction said above on every layer between 1.2 and 6 times with a mean between
+1.5 and 4, and three of its clauses are wrong.
+
+**Two terms pull in opposite directions and both have a clean control.**
+
+The **descriptor** is the one the prediction named: 64 cycles per transfer here,
+none in ZigZag. On `conv_bn_relu_stack`'s `conv1`, the same 36864 MACs at the
+same fill ratio at every budget, the ratio reads 0.76 at two tiles, 1.14 at four
+and 1.96 at eight. That is the term isolated on one layer with everything else
+held.
+
+The **fold** is the one it did not have. This project packs a reduction of 72
+into five bands of at most sixteen; ZigZag unrolls a divisor, and 72 has no
+factor near sixteen, so its array runs emptier and its compute term grows. On
+`dilated_stack`'s `conv0` the fill is 0.328 here against 0.047 there and the
+ratio is 0.60.
+
+**And the control that matters most.** The two matmuls fold identically on both
+sides, because 400 divides by sixteen and 120 by fifteen. There the two cost
+models agree to **five percent and to nothing**: 14402 against 15116 on `lenet`,
+15498 against 15509 on `lenet_batched`. When the array is filled the same way,
+two independently written cost models produce the same number for the same
+mapping. That is the strongest single result of this comparison and it was not
+predicted in either direction.
+
+### The tools that were not run, and the ceiling that was not reached
+
+Timeloop is not installed and no Timeloop number appears anywhere. The mapping is
+exported in its form, 42 files, because Section 16.5 asks for both forms, and an
+exported mapping is an artefact rather than a result.
+
+The bounded run took 59.1 seconds and 747 MiB against a stated ceiling of 8192,
+so the rule about stopping and recording why did not fire. It exists in the code
+anyway, checked before every layer, because a bound that is only written in a
+document is not a bound.
+
+## 2026-09-06 Phase P13, closing: what a phase about tiling turned out to be about
+
+**P13 was briefed to fix D-0045 under full declare then re-record governance, on
+the stated understanding that fixing it changes the cost model. Its first commit
+is the measurement that says there is nothing there to fix.** The charge already
+does what the entry says it does not, and the entry's own reproduction quotes a
+cell the committed results contradict. Everything the governance sequence would
+have governed was therefore not done, deliberately, and the phase was re planned
+around that on its first day. **No constant in `CostModel.h` or its Python mirror
+moved on this branch**, which is a diff rather than a claim.
+
+### The phase's result is two negative numbers and both are the machine's
+
+**`-npu-double-buffer` is correct, fires on one to four transfers per model,
+declines the hoists whose doubled residency would not place, and moves zero
+cycles on every cell of the suite.** The reason is Section 5.5: the schedule is a
+two port dataflow, so an instruction starts when its port frees and its operands
+are ready rather than when it is written, and both halves of a prefetch are on
+the same DMA port. Tiling then makes every program DMA bound, 1524 cycles against
+596 on the hand written case, so there is nothing to hide a transfer under. That
+is now written down for the owner as a contradiction between what Section 5.1
+asks the pass to achieve and what Section 5.5 permits.
+
+**`-npu-assign-layout` answers NCHW at every extent in the suite**, and the reason
+is a ratio between two constants rather than a property of these models: a
+strided element costs 0.5 cycles and a permuted one 0.0625, so performing a
+transpose beats moving the same data strided by eight times, at every size this
+machine can hold.
+
+**Neither zero is a pass that does not work.** Both are passes that work and
+whose value this machine's model does not price, and both were found by reading
+the numbers rather than by a failure.
+
+### What tiling actually does, which took four defects to be able to ask
+
+D-0050, D-0052, D-0053 and D-0056 all stood between the pass being implemented
+and the pass being measurable. The last of them is the one worth repeating: the
+allocator refused to spill any buffer a **view** was taken of, and what a reload
+genuinely cannot serve is only a view that is **written through**. Tiling takes a
+`memref.subview` per tile, so tiling pinned its own operand twice over, whole
+resident and unspillable, and the fix is a narrower rule and a cell that places
+at 6144 bytes where the untiled program needs 6432.
+
+**Then the experiment could run, and its answer is that tiling helps one model,
+costs another, and extends no model's budget range at all.** `inception_block`
+wins 404 cycles, three spills and 42 percent of its DRAM traffic.
+`resnet_block` loses 642 cycles, because the operand its budget runs out on is
+the block's own residual, which is on chip, and a slice of a scratchpad value is
+a view rather than a transfer. **That one sentence, the per slice convention,
+decides every row of the table**, and it is the same sentence that explains the
+spill refusal above, arriving from the other direction.
+
+**And the largest single effect in the experiment is a pass ordering.** Fusion
+puts thirty of the suite's forty four compute operations inside regions the
+tiling pass does not look into, so every crossover except one exists only with
+`-npu-fuse-ops` ablated. Fusion is worth more than tiling on these models, so the
+answer is not to reorder them, and it is left as an open question with the
+measurement beside it rather than tuned away.
+
+### The external tool caught the export rather than the compiler
+
+Section 16.5's cross check is the one place in this phase where an outside
+opinion had something to say, and what it said was that **my export was wrong**.
+The first version put the reduction innermost inside a tile, reading
+`npu.tiling_choice.loop_order` as though it described the whole nest; ZigZag's
+search answered that a nest with the output positions innermost was 57 percent
+cheaper, and that nest is what `cost_model.gemm_charge` actually walks.
+Correcting it moved the geometric mean of the comparison from 0.880 to 1.160 and
+took the layers where ZigZag prefers its own mapping from 26 of 42 to one.
+
+**The transferable part is not that a cross check is useful.** It is that the
+attribute the cross check reads was **incomplete in a way that reads as
+complete**, and the only reason a wrong number was not published is that the tool
+disagreed loudly enough to be investigated. That is D-0061 and its resolution is
+a rename.
+
+### What the phase's own numbers say about the suite
+
+The two matmuls fold identically on both sides of the comparison, because 400
+divides by sixteen and 120 by fifteen, and there the two independently written
+cost models agree to **five percent and to nothing**: 14402 against 15116, 15498
+against 15509. Where the fold differs they disagree by up to 3.05 times, and the
+two terms that carry it are separable and each has a control: the per transfer
+descriptor, isolated on one layer at two, four and eight tiles, and the array
+fold, which this machine packs unevenly and ZigZag can only divide.
+
+**ADR 0008's budgets were re-measured at this tree and did not move**, which is
+the answer that ADR owed after saying "tiling lands at P13". 473 compilations,
+every floor at `-O2` equal to its frozen budget with the pass in or out.
+
+### 15 defects, and the shape they share
+
+D-0048 through D-0062, 15 of them with no number
+unused. The shape that recurs is not a bug in an algorithm: it is **a claim that was checkable from inside the artefact the
+whole time and that nothing ever checked**. D-0048 is a defect entry that quotes
+a cell the results contradict. D-0055 is three handoffs reading one bound and
+naming another. D-0059 is a driver that states a rule two lines above the code
+that breaks it. D-0061 is an attribute that names half a loop nest. Each was
+found by reading the artefact against itself, and each cost a test that should
+always have existed.
+
+## 2026-09-06 Phase P13: the growth curve step proved red on the trigger it guards
+
+**Section 19.1 asks for a step to be shown failing on the trigger it will
+actually run under, and the local rehearsal cannot reach that.** P12's recipe
+proves the guard can fail; it does not prove that CI reports the failure, that
+the job stops, or that the other four jobs are unaffected. Those are properties
+of the workflow rather than of the script, and the only way to measure them is to
+open a pull request and read what comes back.
+
+**The prediction was written into the commit that causes the failure, before any
+run existed.** Branch `phase/p13-rehearsal-growth-curve`, one commit `8156253`,
+cut from the closing tip `49bf65b`, editing **only the arguments of the step
+named "allocator growth curve (activation table: P13, on)"** to
+`--check --sizes 500`. It predicted: `build-and-test` fails at that step; the log
+ends with the no fit message after a table carrying exactly one row, size 500,
+1002 operations, 500 buffers, with the step and residual columns empty because
+neither is defined on a single point; `lint`, `sanitizers`, `ndebug` and
+`coverage` stay green; and the steps after the growth curve do not run at all,
+which is the external cross validation assertion and `regression-baseline
+--check`.
+
+**The allocator was not touched and that is the part worth repeating.** P12
+recorded that making the offset assignment scan quadratic to drive this step red
+would be measuring a different program rather than proving this one's guard
+works. **The rehearsal drives the guard, not the thing it guards**, which is why
+the fault is one flag in a workflow file and not a line of C++.
+
+| Gate | Fault | Red | Restored |
+|---|---|---|---|
+| `allocator growth curve`, `pull_request` | `--sizes 500` on the step's own command | `build-and-test` failed at that step in 9m50s, exit 1, four other jobs green | the branch is deleted and `phase/p13-tiling` never carried the flag |
+
+**Measured, and every clause of the prediction held.** The pull request run is
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/34037636675>,
+from draft pull request 21,
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/pull/21>,
+head `phase/p13-rehearsal-growth-curve` at `8156253`, base `main`. The step's log
+ends with
+
+```
+--check has no fit to check. Measure at two sizes or more, at sizes large
+enough for the pass to take a measurable time.
+No fit: a growth exponent needs at least two sizes and a nonzero pass time at
+every one of them.
+Process completed with exit code 1
+```
+
+after the one row table, exactly as predicted. `lint`, `ndebug`, `sanitizers` and
+`coverage` were green, every step before the growth curve passed, and the steps
+after it did not run.
+
+**A second sample arrived without being asked for**, because CI also runs on
+`push` to `phase/**`, so pushing the branch fired
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/34037402488>
+first, with the same red at the same step and the same message. It is recorded
+because it happened. **It is not the proof**: Section 19.1 names the
+`pull_request` trigger and the run above is the one on it.
+
+**So the step is proven both ways on the runner it guards**: green on
+33994477434, 34023218917, 34030451953 and 34037620630, red on 34037636675. The
+pull request was closed unmerged and the branch deleted, which is the whole
+lifetime a proof of failure is supposed to have.

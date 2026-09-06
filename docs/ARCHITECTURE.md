@@ -337,6 +337,17 @@ strictly about adjacency. An await two operations later with a harmless operatio
 in between is a transfer that really does overlap some work, and folding it would
 undo a scheduling decision somebody made on purpose.
 
+Rule 4 is a rule about a **window**, and everything downstream of the pass that
+opens one has to read it that way. The scratchpad allocator is the case that got
+it wrong: it took the operation that names a buffer as the point the buffer
+stops being written, which for an asynchronous transfer is the issue rather than
+the await, and it therefore both placed a spill store inside the window and
+handed the window's bytes to a buffer defined inside it. Neither is a diagnostic
+problem. A transfer's destination belongs to the DMA engine for the whole window
+whether or not anything in the IR names it there, which is why the allocator now
+asks for the await and measures the live range to it. D-0054 has the program and
+the two messages.
+
 ### Why `TilingInterface` lives on `npu` and not here
 
 `TilingInterface` is implemented on the `npu` tensor operations at P1. It is
@@ -366,6 +377,128 @@ tell an interface bug from a policy bug. P2 implements
 `DestinationStyleOpInterface` and `MemoryEffectOpInterface` on the `npuisa` side
 and nothing tiling related, because there is nothing on the memref side for
 `TilingInterface` to be useful on.
+
+**What P1 left and P13 finished.** P1 implemented the introspection half for
+every operation and the generation half for the elementwise ones, and returned
+failure from `getTiledImplementation` on the windowed operations, on the stated
+grounds that the halo arithmetic belonged with the pass that would exercise it
+and that a wrong tile is worse than no tile. P13 owns that arithmetic and it is
+now implemented for the convolution, both pools and the matmul, **over the
+parallel dimensions only**: batch, group, per group output channel and the two
+output spatial axes for a convolution, batch, channel and the two spatial axes
+for a pool, and both of M and N for a matmul.
+
+**A tile that splits the reduction is declined**, which is Section 13.2's rule
+and not a gap. Under fp32 addition is not associative, so splitting the input
+channel, the kernel window or a matmul's inner dimension re associates the
+accumulation and moves every golden file; that is permitted only behind
+`allow-reduction-tiling`, with a documented deterministic accumulation order and
+its own golden set. Under INT8 with INT32 accumulation the same split is bit
+exact by construction and the restriction lifts, which is P14's to take.
+
+**The property that makes a parallel tile exact is asserted rather than
+described.** For every output position of every tile, the window touches the same
+input positions it touched untiled, and the positions that lie outside the input
+are the same ones. The second half is what an average pool depends on, because it
+divides by the number of elements that actually contributed rather than by the
+window area, so a tile that turned a real element into a padded one would move a
+divisor rather than only a sum.
+`NPUTiledImplementationTest.Conv2DEveryTileReadsTheSamePositionsAsTheWhole`
+checks it over five window shapes, every tile size that divides the output, and
+every offset.
+
+### What enters the scratchpad under tiling, and where a tiled result is assembled
+
+*Added at P13, when `-npu-tile-to-scratchpad` needed the lowering to make its
+tiles worth something.*
+
+Section 8's boundary invariant is that **exactly one `npuisa.dma_load` is
+emitted per DRAM value entering the scratchpad**, and that exactly three passes
+may produce DMA: the lowering, spilling, and tiling. The third was written down
+before tiling existed. This is what it means now that it does.
+
+**Before P13 the lowering loaded each read argument whole**, once, at function
+entry, and every consumer read the same resident copy. That is right for an
+untiled program: the argument is one value, it enters the scratchpad once, and
+one load is what the invariant asks for.
+
+**It is wrong for a tiled one, and the difference is measured rather than
+argued.** A tiled convolution's operands are slices. If the whole argument is
+resident, a slice is a view of bytes already on chip, so the transform splits
+one compute instruction into several and leaves the footprint where it was.
+Measured on a two tile convolution, whole operand loads against per slice ones:
+
+| Arrangement | Sweep line peak |
+|---|---|
+| whole arguments resident, tiles as views of them | **4224 bytes** |
+| the slice is what enters the scratchpad | **1728 bytes** |
+
+4224 is the untiled working set to the byte, which is the point: under the first
+arrangement the allocator sees the same buffers it always saw and the peak
+cannot move. **Tiling that does not change the peak is not tiling, it is loop
+splitting.**
+
+**So under tiling the DRAM values entering the scratchpad are the slices**, and
+one load per slice is the same invariant over a different set of values rather
+than a relaxation of it. Three rules follow and each is checked:
+
+- **An argument every use of which is a slice is not loaded whole.** A whole
+  load would be a transfer nothing reads, which Section 8 makes a bug rather
+  than a style question, and it would put back on chip the buffer the tiling
+  exists to keep off it.
+- **An argument with any non slice use is still loaded whole**, and its slices
+  are then views of the resident copy at no transfer cost. The conservative
+  reading is the correct one: the whole value does enter the scratchpad then.
+- **A slice of something already in the scratchpad is a view and never a
+  transfer.** A scratchpad to scratchpad DMA is not representable in this ISA
+  and would be wrong if it were.
+
+#### A tiled result is assembled in DRAM
+
+**The result of a tiled operation is assembled in DRAM, never in the
+scratchpad.** Each tile computes into its own contiguous buffer and leaves
+through one `npuisa.dma_store` into its place in the destination.
+
+The reason is not primarily about the checks, and it is worth putting the
+plainest form first: **tiling runs because the value does not fit on chip, so a
+result that had to be split has no business being reassembled in the memory it
+did not fit in.** The DRAM round trip is a cost the program accepted when it
+tiled.
+
+The binary agrees, and would have forced the same answer. Checks 8 and 9,
+`operand-defined` and `operand-extent`, ask whether a consumer's need fits what
+was written to the buffer it reads, and a scratchpad assembly is a buffer
+written in pieces and read whole. `WrittenSpans` deliberately does not merge
+adjacent spans, because merging them would let an over read that runs off the
+end of one buffer and into the next pass validation. **A tiled assembly and that
+over read are not distinguishable by addresses**, and addresses are all a
+validator has: the binary carries region identity for DRAM, in its declared
+input, output, constant and spill regions, and none for the scratchpad, which is
+one arena of offsets. Permitting the assembly would have meant weakening a
+declared check; assembling in DRAM costs nothing the program had not already
+spent.
+
+**Two consequences worth stating.** The refusal lives in the lowering rather
+than in the encoder, so a program that tried to assemble on chip is reported by
+the pass that produced it rather than three tools later;
+`test/Encoding/tiled-assembly-in-scratchpad.mlir` records the program this
+refuses. And when the assembled value is returned, the destination **is** the
+out parameter the function gained for that result, because allocating a second
+DRAM buffer and copying would need a DRAM to DRAM transfer this machine has no
+instruction for.
+
+**And it lands where the evaluation wants it.** Section 13.3 compares spilling
+against tiling against recompute, and the DRAM traffic a tiled assembly makes is
+exactly the quantity those arms measure. Putting the assembly in DRAM does not
+hide a cost from the experiment; it puts the cost in the column the experiment
+reads. On the two tile convolution above, tiling to a 2048 byte budget takes the
+peak from 4256 bytes to 1744 and the DRAM bytes read from 2208 to 4928, and the
+output is **byte identical**, which is what makes the trade measurable rather
+than a matter of opinion.
+
+`test/Dialect/NPUISA/dma-boundaries.mlir` asserts all of it at the point the
+invariant holds, immediately after lowering and before allocation, with a tiled
+function beside the untiled ones.
 
 ### Registration, and the shape of a forgotten one
 
@@ -565,7 +698,16 @@ Later phases inherit these as decisions, not as suggestions:
 - Destination passing with exactly one trailing `outs` on every compute
   instruction, no results, and both interfaces implemented.
 - Byte offsets as `memref.view` SSA operands over a flat buffer. Not attributes.
-- Exactly three producers of DMA. A fourth is a defect until this list is amended.
+- Exactly three producers of DMA. A fourth is a defect until this list is
+  amended. **P13 adds a transfer to the first of them rather than a fourth
+  producer**, and the distinction is what keeps the list closed: when a tiled
+  result assembled in DRAM is read by another operation, the lowering brings it
+  back with one `npuisa.dma_load`. That is **one per DRAM value entering the
+  scratchpad**, which is Section 8's own count applied to a value the compiler
+  did not use to produce, and not one per reader: the transfer is recorded, so
+  a second consumer is given the first consumer's copy.
+  `test/Dialect/NPUISA/dma-boundaries.mlir` pins it with a convolution read
+  twice and exactly one load between the stores and the readers.
 - The overlap rule decided on effects plus byte ranges. A future pass that needs
   to ask whether two buffers alias calls `mlir::npuisa::overlaps` and honours all
   three of its answers, including `Unknown`. An identity comparison anywhere in

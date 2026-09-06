@@ -73,10 +73,14 @@ else()
     "it does not depend on the thread count.")
 endif()
 
+# `CostModel.cpp` used to be a source of this library and moved to
+# `lib/CostModel` at P13, when `-npu-tile-to-scratchpad` became a second caller
+# of the same charges. `NPUCostModel` links nothing, so depending on it here
+# costs this library nothing, and it is what stops a compiler pass having to
+# link a simulator to reach the arithmetic Section 5.5 says they must share.
 add_mlir_library(NPUSimulator
         Simulator.cpp
         Kernels.cpp
-        CostModel.cpp
         Memory.cpp
 
         DEPENDS
@@ -84,6 +88,7 @@ add_mlir_library(NPUSimulator
 
         LINK_LIBS PUBLIC
         NPUEncoding
+        NPUCostModel
 
         LINK_COMPONENTS
         Support

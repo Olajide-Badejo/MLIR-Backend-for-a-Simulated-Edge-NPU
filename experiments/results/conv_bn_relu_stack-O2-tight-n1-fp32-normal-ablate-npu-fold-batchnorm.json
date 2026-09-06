@@ -26,12 +26,12 @@
     "scratchpad_budget": "tight",
     "scratchpad_budget_bytes": 6464
   },
-  "content_hash": "28ff6469ed9f340b4b23abfd2a582734deb1dec9b19f5c103527c0ef69970170",
+  "content_hash": "5393d0951f88744cb474bc1bbdb5d7cda4ab3f54ccd90c0c4d600b98e73aeef3",
   "deltas": {
-    "dram_bytes_total": 128,
-    "instruction_count": 8,
+    "dram_bytes_total": 4224,
+    "instruction_count": 12,
     "macs": 0,
-    "simulated_cycles": 212.0
+    "simulated_cycles": 728.0
   },
   "external": {
     "area_mm2": 2.18091166,
@@ -40,16 +40,16 @@
       "main_memory": 0.0,
       "scratchpad": 0.052141099999999996
     },
-    "energy_pj": 2849853.5856,
+    "energy_pj": 3122869.9008,
     "energy_pj_per_component": {
       "mac_array": 2499785.92,
-      "main_memory": 273408.0,
-      "scratchpad": 76659.6656
+      "main_memory": 535552.0,
+      "scratchpad": 87531.98079999999
     },
     "scalesim_approximations": [],
-    "scalesim_covered_cycle_fraction": 0.6149982059562253,
-    "scalesim_covered_op_fraction": 0.13636363636363635,
-    "scalesim_cycles": 1730,
+    "scalesim_covered_cycle_fraction": 0.602657987523732,
+    "scalesim_covered_op_fraction": 0.15384615384615385,
+    "scalesim_cycles": 1043,
     "scalesim_cycles_per_layer": [
       {
         "analytical_compute_cycles": 164.0,
@@ -59,7 +59,7 @@
         "macs": 13824,
         "name": "conv0",
         "op": "conv2d",
-        "position": 3,
+        "position": 4,
         "relative_divergence": 0.4063926940639269,
         "scalesim_arithmetic_matched_cycles": 219,
         "scalesim_cycles": 219,
@@ -67,19 +67,34 @@
         "scalesim_stall_cycles": 0
       },
       {
-        "analytical_compute_cycles": 404.0,
-        "analytical_cycles": 404.0,
-        "analytical_dma_cycles": 282.0,
-        "divergence_cycles": -1061.0,
-        "macs": 36864,
+        "analytical_compute_cycles": 244.0,
+        "analytical_cycles": 414.0,
+        "analytical_dma_cycles": 414.0,
+        "divergence_cycles": 25.0,
+        "macs": 18432,
         "name": "conv1",
         "op": "conv2d",
         "position": 11,
-        "relative_divergence": -0.7242320819112628,
-        "scalesim_arithmetic_matched_cycles": 1465,
-        "scalesim_cycles": 1465,
-        "scalesim_overall_utilization": 0.09829351535836178,
-        "scalesim_stall_cycles": 916
+        "relative_divergence": 0.06426735218508997,
+        "scalesim_arithmetic_matched_cycles": 389,
+        "scalesim_cycles": 389,
+        "scalesim_overall_utilization": 0.18508997429305915,
+        "scalesim_stall_cycles": 0
+      },
+      {
+        "analytical_compute_cycles": 244.0,
+        "analytical_cycles": 244.0,
+        "analytical_dma_cycles": 132.0,
+        "divergence_cycles": -145.0,
+        "macs": 18432,
+        "name": "conv1",
+        "op": "conv2d",
+        "position": 13,
+        "relative_divergence": -0.37275064267352187,
+        "scalesim_arithmetic_matched_cycles": 389,
+        "scalesim_cycles": 389,
+        "scalesim_overall_utilization": 0.18508997429305915,
+        "scalesim_stall_cycles": 0
       },
       {
         "analytical_compute_cycles": 21.0,
@@ -89,7 +104,7 @@
         "macs": 32,
         "name": "head",
         "op": "matmul",
-        "position": 20,
+        "position": 24,
         "relative_divergence": 2.152173913043478,
         "scalesim_arithmetic_matched_cycles": 46,
         "scalesim_cycles": 46,
@@ -122,119 +137,140 @@
       {
         "analytical_cycles": 70.0,
         "name": "bn0",
-        "op": "dma_load",
-        "position": 4,
+        "op": "dma_load_async",
+        "position": 3,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "bn0",
+        "op": "dma_load_async",
+        "position": 5,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       },
       {
         "analytical_cycles": 36.0,
         "name": "bn0",
         "op": "mul",
-        "position": 5,
+        "position": 6,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
-        "analytical_cycles": 70.0,
-        "name": "bn0",
-        "op": "dma_load",
-        "position": 6,
+        "analytical_cycles": 212.0,
+        "name": "dma_load_async_7",
+        "op": "dma_load_async",
+        "position": 7,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       },
       {
         "analytical_cycles": 36.0,
         "name": "bn0",
         "op": "add",
-        "position": 7,
+        "position": 8,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
         "analytical_cycles": 36.0,
         "name": "relu0",
         "op": "relu",
-        "position": 8,
+        "position": 9,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
         "analytical_cycles": 70.0,
-        "name": "dma_load_9",
-        "op": "dma_load",
-        "position": 9,
-        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
-      },
-      {
-        "analytical_cycles": 212.0,
         "name": "dma_load_10",
         "op": "dma_load",
         "position": 10,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       },
       {
+        "analytical_cycles": 132.0,
+        "name": "conv1",
+        "op": "dma_store",
+        "position": 12,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "conv1",
+        "op": "dma_store",
+        "position": 14,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
         "analytical_cycles": 70.0,
         "name": "bn1",
         "op": "dma_load",
-        "position": 12,
+        "position": 15,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 196.0,
+        "name": "bn1",
+        "op": "dma_load",
+        "position": 16,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "bn1",
+        "op": "dma_load_async",
+        "position": 17,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       },
       {
         "analytical_cycles": 36.0,
         "name": "bn1",
         "op": "mul",
-        "position": 13,
+        "position": 18,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
-        "analytical_cycles": 70.0,
-        "name": "bn1",
-        "op": "dma_load",
-        "position": 14,
+        "analytical_cycles": 76.0,
+        "name": "dma_load_async_19",
+        "op": "dma_load_async",
+        "position": 19,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       },
       {
         "analytical_cycles": 36.0,
         "name": "bn1",
         "op": "add",
-        "position": 15,
+        "position": 20,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
         "analytical_cycles": 36.0,
         "name": "relu1",
         "op": "relu",
-        "position": 16,
+        "position": 21,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
         "analytical_cycles": 36.0,
         "name": "pooled",
         "op": "pool_avg",
-        "position": 17,
+        "position": 22,
         "reason": "SCALE-Sim does not model pooling at all, which is the second mechanism the divergence prediction names."
       },
       {
         "analytical_cycles": 4.5,
         "name": "flat",
         "op": "reshape",
-        "position": 18,
+        "position": 23,
         "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
       },
       {
-        "analytical_cycles": 76.0,
-        "name": "dma_load_19",
-        "op": "dma_load",
-        "position": 19,
-        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
-      },
-      {
         "analytical_cycles": 69.0,
-        "name": "dma_store_21",
+        "name": "dma_store_25",
         "op": "dma_store",
-        "position": 21,
+        "position": 25,
         "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
       }
     ],
     "technology_node": "45nm"
   },
-  "instruction_count": 23,
+  "instruction_count": 27,
   "manifest": {
     "calibration_methodology_version": null,
     "calibration_methodology_version_null_reason": "P14, with the calibration pass.",
@@ -252,7 +288,7 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "dcf913fb8a0003e101a927dfd62aeea5068c4003",
+    "git_sha": "4e9816d7c93375d51c5aba236a98bef5501eb5b2",
     "llvm_tag": "LLVM version 22.1.8",
     "registered_estimators": [
       "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
@@ -263,10 +299,10 @@
       "CactiDRAM",
       "CactiSRAM"
     ],
-    "run_order_position": 72,
+    "run_order_position": 52,
     "run_order_seed": 20260901,
     "technology_node": "45nm",
-    "timestamp": "2026-09-04T00:56:08.117744+00:00",
+    "timestamp": "2026-09-06T00:16:08.044787+00:00",
     "tool_shas": {
       "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
       "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
@@ -288,17 +324,19 @@
     "wall_clock_note": "every wall clock in this file was measured on the host named by cpu_model, under whatever else that machine was doing. The counted metrics are exact and reproduce on any host; the timed ones are a measurement of this one and are recorded with an interval for that reason."
   },
   "normalized": {
-    "edp": 3.911424046236,
-    "energy_pj_per_inference": 2849853.5856,
-    "macs_per_dram_byte": 11.872659176029963,
+    "edp": 5.8975398076608005,
+    "energy_pj_per_inference": 3122869.9008,
+    "macs_per_dram_byte": 6.061185468451243,
     "units_convention": "one multiply accumulate is two operations. FLOPs is never reported for an integer cell: the integer kernels arrive at P14 and a floating point operation count over them would be a unit that does not apply. macs is the raw count and is the only one Accelergy ever sees; effective_macs is the utilization scaled figure the cycle charge used, and utilization and delta are recorded beside it so the charge can be reconstructed rather than trusted."
   },
   "npuisa_op_counts": {
     "npuisa.add": 2,
+    "npuisa.await": 5,
     "npuisa.const": 9,
-    "npuisa.conv2d": 2,
-    "npuisa.dma_load": 10,
-    "npuisa.dma_store": 1,
+    "npuisa.conv2d": 3,
+    "npuisa.dma_load": 6,
+    "npuisa.dma_load_async": 5,
+    "npuisa.dma_store": 3,
     "npuisa.matmul": 1,
     "npuisa.mul": 2,
     "npuisa.pool_avg": 1,
@@ -339,10 +377,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.21558960000000002,
-        "ci95_low_ms": 0.135639375,
-        "iqr_ms": 0.02268975000000001,
-        "median_ms": 0.1478965,
+        "ci95_high_ms": 0.216476875,
+        "ci95_low_ms": 0.134348875,
+        "iqr_ms": 0.00601999999999997,
+        "median_ms": 0.1399065,
         "n_trials": 10
       }
     },
@@ -379,10 +417,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.523656325,
-        "ci95_low_ms": 0.27375967500000004,
-        "iqr_ms": 0.02053450000000001,
-        "median_ms": 0.28968499999999997,
+        "ci95_high_ms": 0.31911667499999996,
+        "ci95_low_ms": 0.27850335,
+        "iqr_ms": 0.012227749999999982,
+        "median_ms": 0.306909,
         "n_trials": 10
       }
     },
@@ -419,10 +457,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 2,
       "timing": {
-        "ci95_high_ms": 0.171939225,
-        "ci95_low_ms": 0.100550625,
-        "iqr_ms": 0.02856974999999999,
-        "median_ms": 0.106634,
+        "ci95_high_ms": 0.1103036,
+        "ci95_low_ms": 0.10018735000000001,
+        "iqr_ms": 0.006225500000000009,
+        "median_ms": 0.1061075,
         "n_trials": 10
       }
     },
@@ -459,10 +497,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 3,
       "timing": {
-        "ci95_high_ms": 0.19752022500000002,
-        "ci95_low_ms": 0.100178725,
-        "iqr_ms": 0.012289500000000009,
-        "median_ms": 0.1055905,
+        "ci95_high_ms": 0.112620625,
+        "ci95_low_ms": 0.100202575,
+        "iqr_ms": 0.004872500000000002,
+        "median_ms": 0.105558,
         "n_trials": 10
       }
     },
@@ -499,10 +537,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 4,
       "timing": {
-        "ci95_high_ms": 0.4182713,
-        "ci95_low_ms": 0.234852675,
-        "iqr_ms": 0.028650499999999968,
-        "median_ms": 0.247853,
+        "ci95_high_ms": 0.2975182,
+        "ci95_low_ms": 0.246704575,
+        "iqr_ms": 0.008054750000000055,
+        "median_ms": 0.2553145,
         "n_trials": 10
       }
     },
@@ -539,10 +577,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 5,
       "timing": {
-        "ci95_high_ms": 0.245165325,
-        "ci95_low_ms": 0.151755525,
-        "iqr_ms": 0.029232000000000008,
-        "median_ms": 0.16028900000000001,
+        "ci95_high_ms": 0.24084187500000004,
+        "ci95_low_ms": 0.153668075,
+        "iqr_ms": 0.01055150000000002,
+        "median_ms": 0.162092,
         "n_trials": 10
       }
     },
@@ -581,10 +619,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 6,
       "timing": {
-        "ci95_high_ms": 0.39751142500000003,
-        "ci95_low_ms": 0.2285906,
-        "iqr_ms": 0.01684575000000002,
-        "median_ms": 0.24490800000000001,
+        "ci95_high_ms": 0.5090366250000001,
+        "ci95_low_ms": 0.23064755,
+        "iqr_ms": 0.023434499999999997,
+        "median_ms": 0.2427955,
         "n_trials": 10
       }
     },
@@ -623,36 +661,17 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 7,
       "timing": {
-        "ci95_high_ms": 0.14933172500000003,
-        "ci95_low_ms": 0.129808825,
-        "iqr_ms": 0.007338499999999998,
-        "median_ms": 0.13559549999999998,
+        "ci95_high_ms": 0.21948362500000002,
+        "ci95_low_ms": 0.129050175,
+        "iqr_ms": 0.021034250000000004,
+        "median_ms": 0.14172649999999998,
         "n_trials": 10
       }
     },
     {
-      "anchor_op": "builtin.module",
-      "name": "npu-lower-to-npuisa",
+      "anchor_op": "func.func",
+      "name": "npu-assign-layout",
       "ops_after": {
-        "builtin.module": 1,
-        "func.func": 1,
-        "func.return": 1,
-        "memref.alloc": 21,
-        "memref.reinterpret_cast": 4,
-        "npuisa.add": 2,
-        "npuisa.const": 9,
-        "npuisa.conv2d": 2,
-        "npuisa.dma_load": 10,
-        "npuisa.dma_store": 1,
-        "npuisa.matmul": 1,
-        "npuisa.mul": 2,
-        "npuisa.pool_avg": 1,
-        "npuisa.relu": 2,
-        "npuisa.reshape": 1
-      },
-      "ops_after_total": 59,
-      "ops_before": {
-        "builtin.module": 1,
         "func.func": 1,
         "func.return": 1,
         "npu.avg_pool2d": 1,
@@ -664,15 +683,171 @@
         "npu.reshape": 1,
         "tensor.empty": 3
       },
-      "ops_before_total": 28,
-      "pass_name": "NPULowerToNPUISA",
+      "ops_after_total": 27,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.avg_pool2d": 1,
+        "npu.batch_norm": 2,
+        "npu.constant": 13,
+        "npu.conv2d": 2,
+        "npu.matmul": 1,
+        "npu.relu": 2,
+        "npu.reshape": 1,
+        "tensor.empty": 3
+      },
+      "ops_before_total": 27,
+      "pass_name": "NPUAssignLayout",
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 8,
       "timing": {
-        "ci95_high_ms": 0.6750053,
-        "ci95_low_ms": 0.580842425,
-        "iqr_ms": 0.030908000000000047,
-        "median_ms": 0.625067,
+        "ci95_high_ms": 0.146725075,
+        "ci95_low_ms": 0.10877355,
+        "iqr_ms": 0.008764750000000002,
+        "median_ms": 0.11415800000000001,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-tile-to-scratchpad",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.avg_pool2d": 1,
+        "npu.batch_norm": 2,
+        "npu.constant": 13,
+        "npu.conv2d": 3,
+        "npu.matmul": 1,
+        "npu.relu": 2,
+        "npu.reshape": 1,
+        "tensor.empty": 6,
+        "tensor.extract_slice": 6,
+        "tensor.insert_slice": 2
+      },
+      "ops_after_total": 39,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.avg_pool2d": 1,
+        "npu.batch_norm": 2,
+        "npu.constant": 13,
+        "npu.conv2d": 2,
+        "npu.matmul": 1,
+        "npu.relu": 2,
+        "npu.reshape": 1,
+        "tensor.empty": 3
+      },
+      "ops_before_total": 27,
+      "pass_name": "NPUTileToScratchpad",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 9,
+      "timing": {
+        "ci95_high_ms": 0.3399512,
+        "ci95_low_ms": 0.25551105,
+        "iqr_ms": 0.053010250000000037,
+        "median_ms": 0.2739375,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "builtin.module",
+      "name": "npu-lower-to-npuisa",
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 24,
+        "memref.reinterpret_cast": 4,
+        "memref.subview": 4,
+        "npuisa.add": 2,
+        "npuisa.const": 9,
+        "npuisa.conv2d": 3,
+        "npuisa.dma_load": 11,
+        "npuisa.dma_store": 3,
+        "npuisa.matmul": 1,
+        "npuisa.mul": 2,
+        "npuisa.pool_avg": 1,
+        "npuisa.relu": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_after_total": 70,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.avg_pool2d": 1,
+        "npu.batch_norm": 2,
+        "npu.constant": 13,
+        "npu.conv2d": 3,
+        "npu.matmul": 1,
+        "npu.relu": 2,
+        "npu.reshape": 1,
+        "tensor.empty": 6,
+        "tensor.extract_slice": 6,
+        "tensor.insert_slice": 2
+      },
+      "ops_before_total": 40,
+      "pass_name": "NPULowerToNPUISA",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 10,
+      "timing": {
+        "ci95_high_ms": 1.0960806,
+        "ci95_low_ms": 0.8296237750000001,
+        "iqr_ms": 0.03784149999999997,
+        "median_ms": 0.856347,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-double-buffer",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 24,
+        "memref.reinterpret_cast": 4,
+        "memref.subview": 4,
+        "npuisa.add": 2,
+        "npuisa.await": 5,
+        "npuisa.const": 9,
+        "npuisa.conv2d": 3,
+        "npuisa.dma_load": 6,
+        "npuisa.dma_load_async": 5,
+        "npuisa.dma_store": 3,
+        "npuisa.matmul": 1,
+        "npuisa.mul": 2,
+        "npuisa.pool_avg": 1,
+        "npuisa.relu": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_after_total": 74,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 24,
+        "memref.reinterpret_cast": 4,
+        "memref.subview": 4,
+        "npuisa.add": 2,
+        "npuisa.const": 9,
+        "npuisa.conv2d": 3,
+        "npuisa.dma_load": 11,
+        "npuisa.dma_store": 3,
+        "npuisa.matmul": 1,
+        "npuisa.mul": 2,
+        "npuisa.pool_avg": 1,
+        "npuisa.relu": 2,
+        "npuisa.reshape": 1
+      },
+      "ops_before_total": 69,
+      "pass_name": "NPUDoubleBuffer",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 11,
+      "timing": {
+        "ci95_high_ms": 1.1425629750000001,
+        "ci95_low_ms": 0.89329545,
+        "iqr_ms": 0.03301349999999992,
+        "median_ms": 0.9264435,
         "n_trials": 10
       }
     },
@@ -680,49 +855,55 @@
       "anchor_op": "func.func",
       "name": "npu-allocate-scratchpad",
       "ops_after": {
-        "arith.constant": 21,
+        "arith.constant": 23,
         "func.func": 1,
         "func.return": 1,
-        "memref.alloc": 1,
+        "memref.alloc": 2,
         "memref.reinterpret_cast": 4,
-        "memref.view": 21,
+        "memref.subview": 4,
+        "memref.view": 23,
         "npuisa.add": 2,
+        "npuisa.await": 5,
         "npuisa.const": 9,
-        "npuisa.conv2d": 2,
-        "npuisa.dma_load": 10,
-        "npuisa.dma_store": 1,
+        "npuisa.conv2d": 3,
+        "npuisa.dma_load": 6,
+        "npuisa.dma_load_async": 5,
+        "npuisa.dma_store": 3,
         "npuisa.matmul": 1,
         "npuisa.mul": 2,
         "npuisa.pool_avg": 1,
         "npuisa.relu": 2,
         "npuisa.reshape": 1
       },
-      "ops_after_total": 80,
+      "ops_after_total": 98,
       "ops_before": {
         "func.func": 1,
         "func.return": 1,
-        "memref.alloc": 21,
+        "memref.alloc": 24,
         "memref.reinterpret_cast": 4,
+        "memref.subview": 4,
         "npuisa.add": 2,
+        "npuisa.await": 5,
         "npuisa.const": 9,
-        "npuisa.conv2d": 2,
-        "npuisa.dma_load": 10,
-        "npuisa.dma_store": 1,
+        "npuisa.conv2d": 3,
+        "npuisa.dma_load": 6,
+        "npuisa.dma_load_async": 5,
+        "npuisa.dma_store": 3,
         "npuisa.matmul": 1,
         "npuisa.mul": 2,
         "npuisa.pool_avg": 1,
         "npuisa.relu": 2,
         "npuisa.reshape": 1
       },
-      "ops_before_total": 58,
+      "ops_before_total": 74,
       "pass_name": "NPUAllocateScratchpad",
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
-      "position": 9,
+      "position": 12,
       "timing": {
-        "ci95_high_ms": 0.382656875,
-        "ci95_low_ms": 0.30039395,
-        "iqr_ms": 0.007442749999999998,
-        "median_ms": 0.308004,
+        "ci95_high_ms": 0.583645075,
+        "ci95_low_ms": 0.43717145,
+        "iqr_ms": 0.030713250000000025,
+        "median_ms": 0.46890299999999996,
         "n_trials": 10
       }
     }
@@ -730,8 +911,8 @@
   "prediction_id": "p10-ablation-deltas",
   "prediction_sha": "f92de427d1f315d9d6621c44516e54f886f18a9c",
   "roofline": {
-    "operational_intensity": 34.57677902621723,
-    "roofline_bound_cycles": 577.0,
+    "operational_intensity": 20.09942638623327,
+    "roofline_bound_cycles": 657.0,
     "roofline_bound_cycles_per_layer": [
       {
         "bound_by": "compute",
@@ -747,24 +928,41 @@
         "name": "conv0",
         "op": "conv2d",
         "operational_intensity": 24.615384615384617,
-        "position": 3,
+        "position": 4,
         "verdict": "at_or_above_bound"
       },
       {
         "bound_by": "compute",
-        "bound_cycles": 400.0,
-        "charged_cycles": 404.0,
-        "compute_branch_cycles": 400.0,
-        "compute_cycles": 404.0,
-        "dma_cycles": 282.0,
-        "dram_bytes": 2336,
-        "effective_macs": 102400.0,
-        "macs": 36864,
-        "memory_branch_cycles": 146.0,
+        "bound_cycles": 240.0,
+        "charged_cycles": 414.0,
+        "compute_branch_cycles": 240.0,
+        "compute_cycles": 244.0,
+        "dma_cycles": 414.0,
+        "dram_bytes": 3360,
+        "effective_macs": 61440.0,
+        "macs": 18432,
+        "memory_branch_cycles": 210.0,
         "name": "conv1",
         "op": "conv2d",
-        "operational_intensity": 43.83561643835616,
+        "operational_intensity": 18.285714285714285,
         "position": 11,
+        "verdict": "at_or_above_bound"
+      },
+      {
+        "bound_by": "compute",
+        "bound_cycles": 240.0,
+        "charged_cycles": 244.0,
+        "compute_branch_cycles": 240.0,
+        "compute_cycles": 244.0,
+        "dma_cycles": 132.0,
+        "dram_bytes": 1024,
+        "effective_macs": 61440.0,
+        "macs": 18432,
+        "memory_branch_cycles": 64.0,
+        "name": "conv1",
+        "op": "conv2d",
+        "operational_intensity": 60.0,
+        "position": 13,
         "verdict": "at_or_above_bound"
       },
       {
@@ -781,7 +979,7 @@
         "name": "head",
         "op": "matmul",
         "operational_intensity": 30.22222222222222,
-        "position": 20,
+        "position": 24,
         "verdict": "at_or_above_bound"
       }
     ],
@@ -789,20 +987,20 @@
   },
   "schema_version": 2,
   "simulation": {
-    "delta": 0.7995323807756541,
-    "dram_bytes_read": 4256,
-    "dram_bytes_total": 4272,
-    "dram_bytes_written": 16,
-    "effective_macs": 147712.0,
+    "delta": 0.7026238634254963,
+    "dram_bytes_read": 6304,
+    "dram_bytes_total": 8368,
+    "dram_bytes_written": 2064,
+    "effective_macs": 168192.0,
     "fragmentation_ratio": 1.0,
     "int8_macs": 0,
     "macs": 50720,
-    "overlap_fraction": 0.5791642142436727,
+    "overlap_fraction": 0.5570433851098018,
     "quant_boundary_crossings": null,
     "quant_boundary_crossings_null_reason": "P14, with the quantization passes. Every cell here is fp32 and a count of crossings in a program with no quantization boundary would be a zero that means something different from the zero P14 will record.",
-    "scratchpad_elements_read": 7196,
-    "scratchpad_elements_written": 5180,
-    "simulated_cycles": 1372.5,
+    "scratchpad_elements_read": 8420,
+    "scratchpad_elements_written": 5692,
+    "simulated_cycles": 1888.5,
     "spill_count": 0,
     "tiling_choices": null,
     "tiling_choices_null_reason": "P13, with -npu-tile-to-scratchpad. No pass in any -O level tiles yet, so there are no choices to record rather than an empty list of them.",
@@ -810,17 +1008,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 52.43824399993855,
-      "ci95_low_ms": 45.194221950021074,
-      "iqr_ms": 3.840576249899641,
-      "median_ms": 47.97633450016292,
+      "ci95_high_ms": 61.60046025233896,
+      "ci95_low_ms": 48.84090297673538,
+      "iqr_ms": 8.081927750026807,
+      "median_ms": 55.0831360014854,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 3.1766604000000003,
-      "ci95_low_ms": 2.254664375,
-      "iqr_ms": 0.20734975000000055,
-      "median_ms": 2.406838,
+      "ci95_high_ms": 5.164161775000001,
+      "ci95_low_ms": 4.004591775,
+      "iqr_ms": 0.11927974999999957,
+      "median_ms": 4.1177265,
       "n_trials": 10
     }
   }

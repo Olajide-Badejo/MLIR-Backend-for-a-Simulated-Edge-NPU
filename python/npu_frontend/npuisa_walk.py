@@ -59,7 +59,17 @@ ELEMENT_BYTES: Final[int] = 4
 COMPUTE_OPS: Final[frozenset[str]] = frozenset({"conv2d", "matmul"})
 
 #: The operations that move bytes between DRAM and the scratchpad.
-TRANSFER_OPS: Final[frozenset[str]] = frozenset({"dma_load", "dma_store"})
+#:
+#: **The asynchronous forms are here and charge exactly as the synchronous
+#: ones**, because that is what the machine does: `InstructionEncoder` emits
+#: `DMA_LOAD` for both `npuisa.dma_load` and `npuisa.dma_load_async`, on the
+#: stated grounds that there is no asynchronous opcode and the wait is a
+#: property of the dialect level rather than of the hardware. A walk that
+#: charged them differently would be modelling a machine this project does not
+#: have. D-0058 is what leaving them out cost.
+TRANSFER_OPS: Final[frozenset[str]] = frozenset(
+    {"dma_load", "dma_store", "dma_load_async", "dma_store_async"}
+)
 
 #: The operations charged as elementwise, at the result's element count.
 ELEMENTWISE_OPS: Final[frozenset[str]] = frozenset(
@@ -70,12 +80,35 @@ ELEMENTWISE_OPS: Final[frozenset[str]] = frozenset(
 #: window, per `pool` in `lib/Simulator/Kernels.cpp`.
 POOL_OPS: Final[frozenset[str]] = frozenset({"pool_avg", "pool_max"})
 
-#: `npuisa.const` names a constant that lives in DRAM. It is not an executed
-#: instruction: the encoder puts it in the constant pool and the `dma_load` that
-#: reads it is the instruction that costs anything. Listed rather than ignored,
-#: so that the walk refuses a genuinely unknown operation instead of treating
-#: every unknown one as free.
-DECLARATION_OPS: Final[frozenset[str]] = frozenset({"const"})
+#: `npuisa.const` names a constant that lives in DRAM, and `npuisa.await` names
+#: a point in the program rather than work done at it. Neither is an executed
+#: instruction: the encoder puts the constant in the constant pool, the
+#: `dma_load` that reads it is the instruction that costs anything, and the
+#: encoder lists `npuisa.await` among the operations that carry no instruction
+#: at all. Listed rather than ignored, so that the walk refuses a genuinely
+#: unknown operation instead of treating every unknown one as free.
+#:
+#: **`npuisa.await` has to be skipped rather than charged zero**, because the
+#: walk's positions are compared against the machine's instruction indices and
+#: an operation charged zero still takes a place in that sequence. D-0058.
+DECLARATION_OPS: Final[frozenset[str]] = frozenset({"const", "await"})
+
+
+#: The transfers that bring bytes **into** the scratchpad, in both forms, and
+#: the ones that take them out, in both forms.
+#:
+#: **Four places asked which direction a transfer went by comparing against one
+#: name**, and every one of them put a prefetch on the wrong side of the answer
+#: until D-0058. A set per direction is one place to add a form to.
+LOAD_OPS: Final[frozenset[str]] = frozenset({"dma_load", "dma_load_async"})
+STORE_OPS: Final[frozenset[str]] = frozenset({"dma_store", "dma_store_async"})
+
+#: The `%name =` an operation with a result is written with.
+#:
+#: Only `npuisa.const` and the two asynchronous transfers have results in this
+#: dialect, and a transfer's result is a token rather than a buffer, so a walk
+#: reading operands out of the printed text has to take it off first. D-0058.
+_RESULT_ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"^%[A-Za-z0-9_]+\s*=\s*")
 
 
 class WalkError(Exception):
@@ -86,9 +119,17 @@ class WalkError(Exception):
 # The types.
 # ---------------------------------------------------------------------------
 
+#: **The offset is optional and leaving it out was D-0057.** A strided layout
+#: prints as `strided<[512, 64, 8, 1]>` when the view starts at its parent's
+#: first byte and as `strided<[512, 64, 8, 1], offset: 24>` when it does not,
+#: and a tiled program produces one of each per operation: the first tile starts
+#: at the base and every later tile does not. A pattern that accepted only the
+#: first form did not fail on the second, it **failed to match at all**, so
+#: `finditer` skipped that operand and every later operand moved down one place.
 _MEMREF = re.compile(
     r"memref<(?P<extents>[0-9x]*)(?P<element>[a-z0-9]+)"
-    r"(?:,\s*strided<\[(?P<strides>[^\]]*)\]>)?"
+    r"(?:,\s*strided<\[(?P<strides>[^\]]*)\]"
+    r"(?:,\s*offset:\s*(?P<offset>[-0-9?]+))?>)?"
     r"(?:,\s*#npu\.(?P<space>scratchpad|dram))?>"
 )
 
@@ -279,6 +320,30 @@ def _split_ins_outs(body: str) -> tuple[str, str]:
     return clauses["ins"], clauses["outs"]
 
 
+def _checkOperandCount(op: str, clause: str, parsed: list[MemRef], text: str) -> None:
+    """That the walker read one type per operand, and not one fewer.
+
+    **This is D-0057's guard and it matters more than the pattern it guards.**
+    A type this pattern cannot match is not a loud failure: `finditer` simply
+    does not yield it, so the operand list comes out one short and every later
+    operand shifts down a place. On a convolution that ends in an `IndexError`,
+    which is how the defect was found; on a matrix multiply it would have ended
+    in a **wrong reduction extent and a wrong charge**, with nothing to say so.
+
+    The count on the left of the colon is what the operand list has to match,
+    and an `ins` clause names its operands there before it types them.
+    """
+    names = clause.split(":", 1)[0]
+    expected = len([part for part in names.split(",") if part.strip()])
+    if expected != len(parsed):
+        raise WalkError(
+            f"npuisa.{op} names {expected} operands and this walker read "
+            f"{len(parsed)} types from them, so a type in this clause is one "
+            f"the memref pattern does not match and the operands after it have "
+            f"shifted. See D-0057. The operation is {text!r}"
+        )
+
+
 def _charge(
     op: str, operands: list[MemRef], result: MemRef, attributes: dict[str, Any]
 ) -> tuple[str, float, cost_model.ComputeCharge]:
@@ -422,6 +487,7 @@ def walk(npuisa_text: str) -> list[Operation]:
                     f"{text!r}"
                 )
             operands = _parse_memrefs(ins)
+            _checkOperandCount(op, ins, operands, text)
             results = _parse_memrefs(outs)
             if len(results) != 1:
                 raise WalkError(f"npuisa.{op} writes {len(results)} results: {text!r}")
@@ -434,9 +500,12 @@ def walk(npuisa_text: str) -> list[Operation]:
 
         read = 0
         written = 0
-        if op == "dma_load":
+        # **Both forms of each direction, and asking by one name was D-0058.**
+        # An asynchronous load moves the same bytes as a synchronous one: the
+        # token says when they have landed, not whether they were moved.
+        if op in LOAD_OPS:
             read = result.elements * ELEMENT_BYTES
-        elif op == "dma_store":
+        elif op in STORE_OPS:
             written = result.elements * ELEMENT_BYTES
 
         operations.append(
@@ -539,7 +608,15 @@ def attribute_transfers(
     for index, statement in enumerate(lines):
         op = operations[index].op
         if op in TRANSFER_OPS:
-            values = re.findall(r"%[A-Za-z0-9_]+", statement.split(" : ")[0])
+            # **An asynchronous transfer names a token result as well, and a
+            # result is not an operand.** `%0 = npuisa.dma_load_async %cst,
+            # %view` names three values and moves bytes between two of them. The
+            # result is removed by the assignment it is written with rather than
+            # by dropping the first value, so a transfer that genuinely gained
+            # an operand still reaches the count below and is refused there
+            # instead of being silently misread. D-0058.
+            head = _RESULT_ASSIGNMENT.sub("", statement.split(" : ")[0])
+            values = re.findall(r"%[A-Za-z0-9_]+", head)
             if len(values) != 2:
                 raise WalkError(
                     f"npuisa.{op} names {len(values)} values: {statement!r}"
@@ -547,7 +624,11 @@ def attribute_transfers(
             source, destination = resolve(values[0]), resolve(values[1])
             transfer_source[index] = source
             transfer_target[index] = destination
-            if op == "dma_load":
+            # An asynchronous load is a load. Asking which direction the bytes
+            # go by testing one name would put every prefetch on the store side
+            # of this graph, which is the same class of mistake as charging it
+            # differently.
+            if op in LOAD_OPS:
                 produced[destination] = index
             else:
                 consumed.setdefault(source, []).append(index)
@@ -562,7 +643,7 @@ def attribute_transfers(
     charged = [0.0] * len(operations)
     goes_to: list[int | None] = [None] * len(operations)
     for index, operation in enumerate(operations):
-        if operation.op == "dma_load":
+        if operation.op in LOAD_OPS:
             readers = [
                 reader
                 for reader in consumed.get(transfer_target[index], [])
@@ -572,7 +653,7 @@ def attribute_transfers(
             attributed[target] += operation.dram_bytes_read
             charged[target] += operation.cycles
             goes_to[index] = target
-        elif operation.op == "dma_store":
+        elif operation.op in STORE_OPS:
             writer = produced.get(transfer_source[index])
             target = (
                 writer

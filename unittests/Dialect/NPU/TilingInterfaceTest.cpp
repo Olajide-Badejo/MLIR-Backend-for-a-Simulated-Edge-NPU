@@ -34,7 +34,12 @@
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/Support/FormatVariadic.h"
+
 #include "gtest/gtest.h"
+
+#include <memory>
+#include <string>
 
 using namespace mlir;
 using namespace mlir::npu;
@@ -478,10 +483,22 @@ TEST_F(NPUTilingTest, ElementwiseTileGenerationProducesATileOfEveryOperand) {
   EXPECT_EQ(getConstantIntValue(resultSizes[1]), 1);
 }
 
-// The windowed operations decline tile generation, on purpose. The halo
-// arithmetic belongs with the pass that will exercise it, and returning a wrong
-// tile would be worse than returning none because a pass would consume it.
-TEST_F(NPUTilingTest, WindowedTileGenerationIsDeclinedRatherThanGuessed) {
+// **This test moved with the level at P13, and what it used to say is worth
+// keeping.** From P1 to P12 it was
+// `WindowedTileGenerationIsDeclinedRatherThanGuessed`, and it asserted that a
+// convolution declines tile generation outright, because the halo arithmetic
+// belonged with the pass that would exercise it and returning a wrong tile
+// would be worse than returning none. P13 is that phase, so the assertion is
+// replaced rather than deleted: the tiles it now returns are checked by
+// `NPUTiledImplementationTest` below, and what survives here is the one refusal
+// that is permanent.
+//
+// **Leaving the old test in place would have been the worse mistake.** It asked
+// for every size to be one, which tiles the reduction as well as the parallel
+// dimensions, so it would have gone on passing against the new model for a
+// reason it did not state. A test that keeps passing while the thing it names
+// stops being true is the shape of D-0047.
+TEST_F(NPUTilingTest, WindowedTileGenerationSplitsParallelDimensionsOnly) {
   auto conv = parseFirst<Conv2DOp>(R"mlir(
     func.func @f(%x: tensor<1x3x8x8xf32>, %w: tensor<8x3x3x3xf32>,
                  %d: tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32> {
@@ -499,12 +516,28 @@ TEST_F(NPUTilingTest, WindowedTileGenerationIsDeclinedRatherThanGuessed) {
   OpBuilder builder(&context);
   builder.setInsertionPoint(conv);
 
+  // Domain (N, G, Cout/G, Hout, Wout, Cin/G, KH, KW) = (1, 1, 8, 8, 8, 3, 3, 3).
+  // The old test's request: every extent one, which splits the reduction.
   SmallVector<OpFoldResult> offsets(8, builder.getIndexAttr(0));
-  SmallVector<OpFoldResult> sizes(8, builder.getIndexAttr(1));
+  SmallVector<OpFoldResult> everyExtentOne(8, builder.getIndexAttr(1));
+  EXPECT_TRUE(
+      failed(tiling.getTiledImplementation(builder, offsets, everyExtentOne)))
+      << "splitting the input channel or the kernel window re associates an "
+         "fp32 accumulation, which Section 13.2 permits only behind "
+         "allow-reduction-tiling with its own golden set";
 
-  EXPECT_TRUE(failed(tiling.getTiledImplementation(builder, offsets, sizes)))
-      << "the halo arithmetic a convolution tile needs is not implemented "
-         "here, and declining is the honest report";
+  // The same tile with the three reduction extents left whole is generated.
+  SmallVector<OpFoldResult> parallelOnly = {
+      builder.getIndexAttr(1), builder.getIndexAttr(1), builder.getIndexAttr(1),
+      builder.getIndexAttr(1), builder.getIndexAttr(1), builder.getIndexAttr(3),
+      builder.getIndexAttr(3), builder.getIndexAttr(3)};
+  FailureOr<TilingResult> tiled =
+      tiling.getTiledImplementation(builder, offsets, parallelOnly);
+  ASSERT_TRUE(succeeded(tiled))
+      << "the halo arithmetic P1 declined to write is what P13 owns";
+  ASSERT_EQ(tiled->tiledOps.size(), 1u);
+  EXPECT_EQ(cast<RankedTensorType>(tiled->tiledValues[0].getType()).getShape(),
+            ArrayRef<int64_t>({1, 1, 1, 1}));
 }
 
 //===----------------------------------------------------------------------===//
@@ -637,6 +670,453 @@ TEST_F(NPUTilingTest, InsAndOutsPartitionEveryComputeOperation) {
     expectInsOutsPartition(op);
   });
   EXPECT_EQ(seen, 12u) << "every compute operation in the module was visited";
+}
+
+//===----------------------------------------------------------------------===//
+// The tiled implementations, which arrive at P13.
+//
+// P1 implemented the introspection half of this interface and returned failure
+// from `getTiledImplementation` for the windowed operations, with a comment
+// saying that returning a wrong tile would be worse than returning none because
+// a pass would consume it and produce a program with a quietly wrong answer.
+// These are the tests that make the tile it now returns not wrong.
+//
+// **Two properties are asserted and the second is the one that matters.** The
+// first is that a tile has the shape it was asked for, which is what a pass
+// needs to stitch the tiles back together. The second is that a tile computes
+// the same arithmetic on the same inputs, which is what makes tiling exact and
+// is why the P13 gate can ask for goldens byte identical rather than inside a
+// tolerance. The second is checked by recomputing, for every output position of
+// every tile, which input positions its window touches, and comparing that
+// against the same computation on the untiled operation.
+//===----------------------------------------------------------------------===//
+
+/// Tiles `op` and returns the operation the model built, or null.
+///
+/// The builder writes into a throwaway block so the tiles never join the module
+/// being tested. What is under test is the operation the model produced, and
+/// inserting it into the original function would leave a second definition of
+/// every value beside the first.
+class NPUTiledImplementationTest : public NPUTilingTest {
+protected:
+  /// The tile, built into a detached block that this fixture owns.
+  Operation *tile(Operation *op, ArrayRef<int64_t> offsets,
+                  ArrayRef<int64_t> sizes) {
+    auto tiling = dyn_cast<TilingInterface>(op);
+    if (!tiling)
+      return nullptr;
+
+    OpBuilder builder(&context);
+    scratch = std::make_unique<Block>();
+    builder.setInsertionPointToStart(scratch.get());
+
+    SmallVector<OpFoldResult> offsetValues;
+    SmallVector<OpFoldResult> sizeValues;
+    for (int64_t offset : offsets)
+      offsetValues.push_back(builder.getIndexAttr(offset));
+    for (int64_t size : sizes)
+      sizeValues.push_back(builder.getIndexAttr(size));
+
+    FailureOr<TilingResult> result =
+        tiling.getTiledImplementation(builder, offsetValues, sizeValues);
+    if (failed(result) || result->tiledOps.empty())
+      return nullptr;
+    return result->tiledOps.front();
+  }
+
+  /// True when the model declined, which is a result rather than a failure.
+  bool declines(Operation *op, ArrayRef<int64_t> offsets,
+                ArrayRef<int64_t> sizes) {
+    return tile(op, offsets, sizes) == nullptr;
+  }
+
+  /// Parses the next case, dropping any tile built against the previous one
+  /// first.
+  ///
+  /// **A tile holds operands belonging to the module it was built against**, so
+  /// reparsing while one is alive destroys values that still have uses, and MLIR
+  /// asserts on exactly that. A test that parses one module needs none of this;
+  /// the sweep below parses five, and it took the assertion to notice.
+  template <typename OpTy>
+  OpTy parseCase(StringRef moduleText) {
+    scratch.reset();
+    return parseFirst<OpTy>(moduleText);
+  }
+
+  static SmallVector<int64_t> shapeOf(Value value) {
+    return llvm::to_vector(cast<RankedTensorType>(value.getType()).getShape());
+  }
+
+  std::unique_ptr<Block> scratch;
+};
+
+/// The input positions one output position's window touches, as a set of
+/// indices into the operation's own input, with a negative index standing for a
+/// position in the leading padding and an index at or above the extent standing
+/// for one in the trailing padding.
+///
+/// Written out here rather than shared with the implementation, deliberately: a
+/// test that called the same helper the code calls would agree with it whatever
+/// either of them said.
+SmallVector<int64_t> windowPositions(int64_t outputIndex, int64_t kernel,
+                                     int64_t stride, int64_t dilation,
+                                     int64_t padBegin) {
+  SmallVector<int64_t> positions;
+  for (int64_t tap = 0; tap < kernel; ++tap)
+    positions.push_back(outputIndex * stride - padBegin + tap * dilation);
+  return positions;
+}
+
+TEST_F(NPUTiledImplementationTest, Conv2DTilesTheOutputHeightWithItsHalo) {
+  auto conv = parseFirst<Conv2DOp>(R"mlir(
+    func.func @f(%x: tensor<2x4x8x8xf32>, %w: tensor<6x4x3x3xf32>,
+                 %b: tensor<6xf32>, %d: tensor<2x6x8x8xf32>)
+        -> tensor<2x6x8x8xf32> {
+      %0 = npu.conv2d ins(%x, %w, %b : tensor<2x4x8x8xf32>, tensor<6x4x3x3xf32>,
+                                       tensor<6xf32>)
+                      outs(%d : tensor<2x6x8x8xf32>)
+                      {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                       dilations = array<i64: 1, 1>, group = 1 : i64}
+           -> tensor<2x6x8x8xf32>
+      return %0 : tensor<2x6x8x8xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(conv);
+
+  // Domain (N, G, Cout/G, Hout, Wout, Cin/G, KH, KW) = (2, 1, 6, 8, 8, 4, 3, 3).
+  // A middle tile of four output rows, everything else whole.
+  Operation *tiled = tile(conv, {0, 0, 0, 2, 0, 0, 0, 0}, {2, 1, 6, 4, 8, 4, 3, 3});
+  ASSERT_TRUE(tiled);
+  auto tiledConv = cast<Conv2DOp>(tiled);
+
+  // The result is the tile that was asked for.
+  EXPECT_EQ(shapeOf(tiledConv.getResult()),
+            (SmallVector<int64_t>{2, 6, 4, 8}));
+
+  // The input carries the halo. Output rows 2 to 5 with a 3 tap kernel, unit
+  // stride and a pad of one read input rows 1 to 6, which is six rows, and the
+  // tile sits away from both edges so it carries no padding of its own on that
+  // axis. The width axis is untiled and keeps the original's pad on both sides.
+  EXPECT_EQ(shapeOf(tiledConv.getInput()), (SmallVector<int64_t>{2, 4, 6, 8}));
+  EXPECT_EQ(tiledConv.getPads(), (ArrayRef<int64_t>{0, 1, 0, 1}));
+
+  // The filter and the bias are whole, because only spatial axes were tiled.
+  EXPECT_EQ(shapeOf(tiledConv.getFilter()),
+            (SmallVector<int64_t>{6, 4, 3, 3}));
+  ASSERT_TRUE(tiledConv.getBias());
+  EXPECT_EQ(shapeOf(tiledConv.getBias()), (SmallVector<int64_t>{6}));
+  EXPECT_EQ(tiledConv.getGroup(), 1);
+
+  // And it is a legal operation, which is the check that would catch an extent
+  // the shared windowed arithmetic disagrees with.
+  EXPECT_TRUE(succeeded(tiledConv.verify()));
+}
+
+TEST_F(NPUTiledImplementationTest, Conv2DTheFirstAndLastTilesKeepTheEdgePads) {
+  auto conv = parseFirst<Conv2DOp>(R"mlir(
+    func.func @f(%x: tensor<1x2x8x8xf32>, %w: tensor<2x2x3x3xf32>,
+                 %d: tensor<1x2x8x8xf32>) -> tensor<1x2x8x8xf32> {
+      %0 = npu.conv2d ins(%x, %w : tensor<1x2x8x8xf32>, tensor<2x2x3x3xf32>)
+                      outs(%d : tensor<1x2x8x8xf32>)
+                      {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                       dilations = array<i64: 1, 1>, group = 1 : i64}
+           -> tensor<1x2x8x8xf32>
+      return %0 : tensor<1x2x8x8xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(conv);
+
+  // The first two output rows read input rows -1 to 2, so the tile keeps the
+  // leading pad and slices three real rows.
+  Operation *first = tile(conv, {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 2, 2, 8, 2, 3, 3});
+  ASSERT_TRUE(first);
+  auto firstConv = cast<Conv2DOp>(first);
+  EXPECT_EQ(shapeOf(firstConv.getInput()), (SmallVector<int64_t>{1, 2, 3, 8}));
+  EXPECT_EQ(firstConv.getPads(), (ArrayRef<int64_t>{1, 1, 0, 1}));
+  EXPECT_TRUE(succeeded(firstConv.verify()));
+
+  // And the last two read rows 5 to 8, so it keeps the trailing pad.
+  Operation *last = tile(conv, {0, 0, 0, 6, 0, 0, 0, 0}, {1, 1, 2, 2, 8, 2, 3, 3});
+  ASSERT_TRUE(last);
+  auto lastConv = cast<Conv2DOp>(last);
+  EXPECT_EQ(shapeOf(lastConv.getInput()), (SmallVector<int64_t>{1, 2, 3, 8}));
+  EXPECT_EQ(lastConv.getPads(), (ArrayRef<int64_t>{0, 1, 1, 1}));
+  EXPECT_TRUE(succeeded(lastConv.verify()));
+}
+
+TEST_F(NPUTiledImplementationTest, Conv2DEveryTileReadsTheSamePositionsAsTheWhole) {
+  // **This is the exactness property, and it is the reason the P13 gate asks
+  // for goldens byte identical rather than inside a tolerance.** For a sweep of
+  // tile sizes and a set of strides, dilations and pads, every output position
+  // of every tile is checked to read the same input positions it read untiled,
+  // including which of them lie in the padding. An average pool divides by the
+  // number of positions that actually contributed, so a tile that turned a real
+  // element into a padded one would move a divisor rather than only a sum.
+  struct Case {
+    int64_t kernel, stride, dilation, pad, inputExtent, outputExtent;
+  };
+  // Each output extent is the shared windowed arithmetic's answer, written out
+  // rather than computed, so that a change to that arithmetic fails here too.
+  const Case cases[] = {
+      {3, 1, 1, 1, 8, 8},  // same padding, the common case
+      {3, 1, 1, 0, 8, 6},  // valid padding
+      {2, 2, 1, 0, 8, 4},  // a strided pool shape
+      {3, 2, 1, 1, 8, 4},  // strided and padded at once
+      {3, 1, 2, 2, 12, 12}, // dilated, which is dilated_stack's shape
+  };
+
+  for (const Case &shape : cases) {
+    std::string text = llvm::formatv(
+        R"mlir(
+    func.func @f(%x: tensor<1x2x{0}x{0}xf32>, %w: tensor<2x2x{1}x{1}xf32>,
+                 %d: tensor<1x2x{2}x{2}xf32>) -> tensor<1x2x{2}x{2}xf32> {{
+      %0 = npu.conv2d ins(%x, %w : tensor<1x2x{0}x{0}xf32>, tensor<2x2x{1}x{1}xf32>)
+                      outs(%d : tensor<1x2x{2}x{2}xf32>)
+                      {{strides = array<i64: {3}, {3}>,
+                       pads = array<i64: {4}, {4}, {4}, {4}>,
+                       dilations = array<i64: {5}, {5}>, group = 1 : i64}
+           -> tensor<1x2x{2}x{2}xf32>
+      return %0 : tensor<1x2x{2}x{2}xf32>
+    })mlir",
+        shape.inputExtent, shape.kernel, shape.outputExtent, shape.stride,
+        shape.pad, shape.dilation);
+
+    auto conv = parseCase<Conv2DOp>(text);
+    ASSERT_TRUE(conv) << text;
+
+    for (int64_t tileSize = 1; tileSize <= shape.outputExtent; ++tileSize) {
+      if (shape.outputExtent % tileSize != 0)
+        continue;
+      for (int64_t offset = 0; offset < shape.outputExtent;
+           offset += tileSize) {
+        Operation *tiled =
+            tile(conv, {0, 0, 0, offset, 0, 0, 0, 0},
+                 {1, 1, 2, tileSize, shape.outputExtent, 2, shape.kernel,
+                  shape.kernel});
+        ASSERT_TRUE(tiled)
+            << "declined at extent " << shape.outputExtent << " tile "
+            << tileSize << " offset " << offset;
+        auto tiledConv = cast<Conv2DOp>(tiled);
+        ASSERT_TRUE(succeeded(tiledConv.verify()));
+
+        // The tile's own output extent is the one it was asked for. Without
+        // this the comparison below could pass over the wrong number of rows.
+        ASSERT_EQ(shapeOf(tiledConv.getResult())[2], tileSize);
+
+        const int64_t tilePadBegin = tiledConv.getPads()[0];
+        const int64_t tileInputExtent = shapeOf(tiledConv.getInput())[2];
+
+        // Where the tile's input slice actually starts, read off the slice the
+        // model built rather than derived from the pads it reported. Deriving
+        // it would make the comparison below check the pads against themselves;
+        // reading it makes the two halves of the model, the slice and the pads,
+        // have to agree with each other about the same positions.
+        auto slice =
+            tiledConv.getInput().getDefiningOp<tensor::ExtractSliceOp>();
+        ASSERT_TRUE(slice);
+        const int64_t sliceBegin = slice.getStaticOffsets()[2];
+
+        for (int64_t local = 0; local < tileSize; ++local) {
+          SmallVector<int64_t> whole = windowPositions(
+              offset + local, shape.kernel, shape.stride, shape.dilation,
+              shape.pad);
+          SmallVector<int64_t> inTile =
+              windowPositions(local, shape.kernel, shape.stride,
+                              shape.dilation, tilePadBegin);
+
+          ASSERT_EQ(whole.size(), inTile.size());
+          for (size_t tap = 0; tap < whole.size(); ++tap) {
+            const int64_t globalFromTile = inTile[tap] + sliceBegin;
+            // Same position, whichever way it is reached.
+            EXPECT_EQ(globalFromTile, whole[tap])
+                << "extent " << shape.outputExtent << " tile " << tileSize
+                << " offset " << offset << " local " << local << " tap " << tap;
+            // And a position that was padding in the whole is padding in the
+            // tile, and one that was real is real. This is the half an average
+            // pool's divisor depends on.
+            const bool paddingInWhole =
+                whole[tap] < 0 || whole[tap] >= shape.inputExtent;
+            const bool paddingInTile =
+                inTile[tap] < 0 || inTile[tap] >= tileInputExtent;
+            EXPECT_EQ(paddingInWhole, paddingInTile)
+                << "extent " << shape.outputExtent << " tile " << tileSize
+                << " offset " << offset << " local " << local << " tap " << tap;
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_F(NPUTiledImplementationTest, Conv2DTilesTheGroupOfADepthwiseLayer) {
+  // A depthwise convolution, which is the shape `depthwise_separable` carries
+  // and the one the group dimension exists to keep expressible. Tiling one
+  // group must slice that group's own input channel and its own filter row, and
+  // a model that had collapsed the two channel dimensions would slice the wrong
+  // channels while producing a tile of the right shape.
+  auto conv = parseFirst<Conv2DOp>(R"mlir(
+    func.func @f(%x: tensor<1x8x8x8xf32>, %w: tensor<8x1x3x3xf32>,
+                 %d: tensor<1x8x8x8xf32>) -> tensor<1x8x8x8xf32> {
+      %0 = npu.conv2d ins(%x, %w : tensor<1x8x8x8xf32>, tensor<8x1x3x3xf32>)
+                      outs(%d : tensor<1x8x8x8xf32>)
+                      {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                       dilations = array<i64: 1, 1>, group = 8 : i64}
+           -> tensor<1x8x8x8xf32>
+      return %0 : tensor<1x8x8x8xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(conv);
+
+  // Domain (N, G, Cout/G, Hout, Wout, Cin/G, KH, KW) = (1, 8, 1, 8, 8, 1, 3, 3).
+  // Two whole groups, starting at group 4.
+  Operation *tiled = tile(conv, {0, 4, 0, 0, 0, 0, 0, 0}, {1, 2, 1, 8, 8, 1, 3, 3});
+  ASSERT_TRUE(tiled);
+  auto tiledConv = cast<Conv2DOp>(tiled);
+
+  EXPECT_EQ(tiledConv.getGroup(), 2) << "two whole groups, so two groups";
+  EXPECT_EQ(shapeOf(tiledConv.getResult()), (SmallVector<int64_t>{1, 2, 8, 8}));
+  EXPECT_EQ(shapeOf(tiledConv.getInput()), (SmallVector<int64_t>{1, 2, 8, 8}))
+      << "one input channel per group, and two groups";
+  EXPECT_EQ(shapeOf(tiledConv.getFilter()), (SmallVector<int64_t>{2, 1, 3, 3}));
+  EXPECT_TRUE(succeeded(tiledConv.verify()));
+
+  // The slice has to start at input channel 4, which is where group 4 does.
+  auto slice = tiledConv.getInput().getDefiningOp<tensor::ExtractSliceOp>();
+  ASSERT_TRUE(slice);
+  ArrayRef<int64_t> offsets = slice.getStaticOffsets();
+  ASSERT_EQ(offsets.size(), 4u);
+  EXPECT_EQ(offsets[1], 4)
+      << "group 4's input channels start at 4, not at 0 and not at 4 times "
+         "anything else";
+}
+
+TEST_F(NPUTiledImplementationTest, Conv2DDeclinesTheThingsSectionThirteenTwoForbids) {
+  auto conv = parseFirst<Conv2DOp>(R"mlir(
+    func.func @f(%x: tensor<1x4x8x8xf32>, %w: tensor<6x4x3x3xf32>,
+                 %d: tensor<1x6x8x8xf32>) -> tensor<1x6x8x8xf32> {
+      %0 = npu.conv2d ins(%x, %w : tensor<1x4x8x8xf32>, tensor<6x4x3x3xf32>)
+                      outs(%d : tensor<1x6x8x8xf32>)
+                      {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                       dilations = array<i64: 1, 1>, group = 1 : i64}
+           -> tensor<1x6x8x8xf32>
+      return %0 : tensor<1x6x8x8xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(conv);
+
+  // The whole tile, which is the identity, is accepted. Without this the three
+  // refusals below would be indistinguishable from a model that refuses
+  // everything.
+  EXPECT_FALSE(declines(conv, {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 6, 8, 8, 4, 3, 3}));
+
+  // The input channel reduction, split in half. Under fp32 addition is not
+  // associative, so this moves every golden file and Section 13.2 permits it
+  // only behind `allow-reduction-tiling` with its own golden set.
+  EXPECT_TRUE(declines(conv, {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 6, 8, 8, 2, 3, 3}));
+  // The kernel window, on either axis, for the same reason.
+  EXPECT_TRUE(declines(conv, {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 6, 8, 8, 4, 1, 3}));
+  EXPECT_TRUE(declines(conv, {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 6, 8, 8, 4, 3, 1}));
+  // And a reduction offset with a whole extent, which is the same split written
+  // as an offset rather than as a size.
+  EXPECT_TRUE(declines(conv, {0, 0, 0, 0, 0, 2, 0, 0}, {1, 1, 6, 8, 8, 4, 3, 3}));
+}
+
+TEST_F(NPUTiledImplementationTest, PoolTilesItsOutputAndDeclinesItsWindow) {
+  auto pool = parseFirst<MaxPool2DOp>(R"mlir(
+    func.func @f(%x: tensor<2x8x8x8xf32>, %d: tensor<2x8x4x4xf32>)
+        -> tensor<2x8x4x4xf32> {
+      %0 = npu.max_pool2d ins(%x : tensor<2x8x8x8xf32>)
+                          outs(%d : tensor<2x8x4x4xf32>)
+                          {kernel = array<i64: 2, 2>, strides = array<i64: 2, 2>,
+                           pads = array<i64: 0, 0, 0, 0>,
+                           dilations = array<i64: 1, 1>, ceil_mode = 0 : i64}
+           -> tensor<2x8x4x4xf32>
+      return %0 : tensor<2x8x4x4xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(pool);
+
+  // Domain (N, C, Hout, Wout, KH, KW) = (2, 8, 4, 4, 2, 2). Two output rows of
+  // a stride two pool read four input rows and nothing overlaps.
+  Operation *tiled = tile(pool, {0, 0, 2, 0, 0, 0}, {2, 8, 2, 4, 2, 2});
+  ASSERT_TRUE(tiled);
+  auto tiledPool = cast<MaxPool2DOp>(tiled);
+  EXPECT_EQ(shapeOf(tiledPool.getResult()), (SmallVector<int64_t>{2, 8, 2, 4}));
+  EXPECT_EQ(shapeOf(tiledPool.getInput()), (SmallVector<int64_t>{2, 8, 4, 8}));
+  EXPECT_EQ(tiledPool.getPads(), (ArrayRef<int64_t>{0, 0, 0, 0}));
+  EXPECT_TRUE(succeeded(tiledPool.verify()));
+
+  // The channel axis is parallel here and is tileable, which is the difference
+  // between a pool's domain and a convolution's.
+  Operation *channels = tile(pool, {0, 4, 0, 0, 0, 0}, {2, 4, 4, 4, 2, 2});
+  ASSERT_TRUE(channels);
+  EXPECT_EQ(shapeOf(cast<MaxPool2DOp>(channels).getResult()),
+            (SmallVector<int64_t>{2, 4, 4, 4}));
+
+  // The window is the reduction and is declined.
+  EXPECT_TRUE(declines(pool, {0, 0, 0, 0, 0, 0}, {2, 8, 4, 4, 1, 2}));
+  EXPECT_TRUE(declines(pool, {0, 0, 0, 0, 0, 0}, {2, 8, 4, 4, 2, 1}));
+}
+
+TEST_F(NPUTiledImplementationTest, PoolDeclinesACeilMode) {
+  // `ceil_mode = 1` adds the rule that a window whose first element would start
+  // inside the right padded region is dropped, so the number of windows is no
+  // longer the floor formula and a tile's own extent is no longer the extent it
+  // was asked for. Declined rather than approximated.
+  auto pool = parseFirst<AvgPool2DOp>(R"mlir(
+    func.func @f(%x: tensor<1x2x7x7xf32>, %d: tensor<1x2x4x4xf32>)
+        -> tensor<1x2x4x4xf32> {
+      %0 = npu.avg_pool2d ins(%x : tensor<1x2x7x7xf32>)
+                          outs(%d : tensor<1x2x4x4xf32>)
+                          {kernel = array<i64: 2, 2>, strides = array<i64: 2, 2>,
+                           pads = array<i64: 0, 0, 0, 0>,
+                           dilations = array<i64: 1, 1>, ceil_mode = 1 : i64}
+           -> tensor<1x2x4x4xf32>
+      return %0 : tensor<1x2x4x4xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(pool);
+  EXPECT_TRUE(declines(pool, {0, 0, 0, 0, 0, 0}, {1, 2, 2, 4, 2, 2}));
+  // Including the whole tile, because the refusal is about the mode and not
+  // about which dimensions were split.
+  EXPECT_TRUE(declines(pool, {0, 0, 0, 0, 0, 0}, {1, 2, 4, 4, 2, 2}));
+}
+
+TEST_F(NPUTiledImplementationTest, MatMulTilesBothParallelAxesAndDeclinesTheInner) {
+  auto matmul = parseFirst<MatMulOp>(R"mlir(
+    func.func @f(%a: tensor<8x400xf32>, %b: tensor<400x120xf32>,
+                 %c: tensor<120xf32>, %d: tensor<8x120xf32>)
+        -> tensor<8x120xf32> {
+      %0 = npu.matmul ins(%a, %b, %c : tensor<8x400xf32>, tensor<400x120xf32>,
+                                       tensor<120xf32>)
+                      outs(%d : tensor<8x120xf32>) -> tensor<8x120xf32>
+      return %0 : tensor<8x120xf32>
+    }
+  )mlir");
+  ASSERT_TRUE(matmul);
+
+  // The shape of `lenet`'s largest weight matrix. Domain (M, N, K).
+  Operation *tiled = tile(matmul, {0, 40, 0}, {8, 40, 400});
+  ASSERT_TRUE(tiled);
+  auto tiledMatMul = cast<MatMulOp>(tiled);
+  EXPECT_EQ(shapeOf(tiledMatMul.getResult()), (SmallVector<int64_t>{8, 40}));
+  EXPECT_EQ(shapeOf(tiledMatMul.getLhs()), (SmallVector<int64_t>{8, 400}))
+      << "the left operand keeps every column, because K is not tiled";
+  EXPECT_EQ(shapeOf(tiledMatMul.getRhs()), (SmallVector<int64_t>{400, 40}));
+  ASSERT_TRUE(tiledMatMul.getBias());
+  EXPECT_EQ(shapeOf(tiledMatMul.getBias()), (SmallVector<int64_t>{40}))
+      << "the bias is length N and is sliced with the columns";
+  EXPECT_TRUE(succeeded(tiledMatMul.verify()));
+
+  // The rows too.
+  Operation *rows = tile(matmul, {4, 0, 0}, {4, 120, 400});
+  ASSERT_TRUE(rows);
+  EXPECT_EQ(shapeOf(cast<MatMulOp>(rows).getResult()),
+            (SmallVector<int64_t>{4, 120}));
+
+  // And the inner dimension is declined, for the convolution's reason.
+  EXPECT_TRUE(declines(matmul, {0, 0, 0}, {8, 120, 200}));
+  EXPECT_TRUE(declines(matmul, {0, 0, 200}, {8, 120, 400}));
 }
 
 } // namespace

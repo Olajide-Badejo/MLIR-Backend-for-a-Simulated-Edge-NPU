@@ -22,8 +22,15 @@
 // RUN: npu-opt %s --npu-constant-fold --canonicalize --npu-lower-to-npuisa --npu-allocate-scratchpad -o %t.o1e.mlir
 // RUN: diff %t.o1.mlir %t.o1e.mlir
 
+// **The `-O2` list carries an option and that is the point of writing it out.**
+// The pipeline hands `-npu-tile-to-scratchpad` the allocator's budget and tells
+// it whether `-npu-double-buffer` is in this pipeline, because Section 13.2
+// sizes the tiling search's working set for the prefetch. A flat list that
+// spelled the pass without `double-buffer=true` would be a different
+// compilation, so it is spelled with it, and the diff is then an assertion
+// about the coupling rather than one that steps around it.
 // RUN: npu-opt %s --npu-O2 -o %t.o2.mlir
-// RUN: npu-opt %s --npu-constant-fold --canonicalize --npu-fuse-bias --npu-fold-batchnorm --npu-fuse-ops --canonicalize --cse --sccp --symbol-dce --npu-lower-to-npuisa --npu-allocate-scratchpad -o %t.o2e.mlir
+// RUN: npu-opt %s --npu-constant-fold --canonicalize --npu-fuse-bias --npu-fold-batchnorm --npu-fuse-ops --canonicalize --cse --sccp --symbol-dce --npu-assign-layout --npu-tile-to-scratchpad=double-buffer=true --npu-lower-to-npuisa --npu-double-buffer --npu-allocate-scratchpad -o %t.o2e.mlir
 // RUN: diff %t.o2.mlir %t.o2e.mlir
 
 // The tensor level half of a level, which is what `npu-compile --emit npu`
@@ -163,5 +170,24 @@ func.func @small(%input: tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32> {
 // DESCRIBE:          "pass": "sccp",
 // DESCRIBE:          "eliminates_dead_code": true,
 // DESCRIBE:          "pass": "symbol-dce",
+// The three P13 rows, in Section 12's own order. Layout assignment and tiling
+// are at the tensor level and double buffering is not: it rewrites the
+// asynchronous transfer tokens, which exist only below the conversion, which is
+// why it sits after the lowering and before the allocator.
+// DESCRIBE:          "ablatable": true,
+// DESCRIBE:          "pass": "npu-assign-layout",
+// DESCRIBE-NEXT:     "stage": "npu"
+// DESCRIBE:          "ablatable": true,
+// DESCRIBE:          "pass": "npu-tile-to-scratchpad",
+// DESCRIBE-NEXT:     "stage": "npu"
+// DESCRIBE:          "ablatable": false,
+// DESCRIBE:          "pass": "npu-lower-to-npuisa",
+// DESCRIBE-NEXT:     "stage": "npuisa"
+// DESCRIBE:          "ablatable": true,
+// DESCRIBE:          "pass": "npu-double-buffer",
+// DESCRIBE-NEXT:     "stage": "npuisa"
+// DESCRIBE:          "ablatable": false,
+// DESCRIBE:          "pass": "npu-allocate-scratchpad",
+// DESCRIBE-NEXT:     "stage": "npuisa"
 
 // NOSUCH: Unknown command line argument '--npu-O3'

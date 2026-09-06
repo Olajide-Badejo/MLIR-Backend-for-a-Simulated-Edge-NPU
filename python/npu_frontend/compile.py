@@ -335,6 +335,8 @@ def compile_model(
     function_name: str = "main",
     verbose: bool = False,
     ablate: str | None = None,
+    spill_heuristic: str | None = None,
+    halo: str | None = None,
     pass_stats_json: str | os.PathLike[str] | None = None,
     mlir_timing: bool = False,
 ) -> CompileResult:
@@ -347,6 +349,13 @@ def compile_model(
     ablation. It is checked against the ablatable set the compiler reports at
     run time, because Section 16.2 forbids that set being written down twice and
     the refusal below is the one place a caller could have written it down again.
+
+    `spill_heuristic` and `halo` are the two level options Section 13.3's arms
+    are made of: which buffer the allocator spills, and whether the tiling search
+    may split the output spatial axes and pay for the halo. Both default to
+    `None`, which leaves the option off the command line and therefore leaves the
+    level at the pass's own default, so a caller that does not ask for an arm
+    gets the compiler that was there before they existed.
 
     `pass_stats_json` is where the Section 16.2 instrumentation writes its per
     pass operation counts and wall clock, and `mlir_timing` turns on MLIR's own
@@ -451,8 +460,23 @@ def compile_model(
     # the same `stage` argument for the same reason.
     started = time.perf_counter()
     npu_options = ["stop-after=npu"]
+    if budget is not None:
+        npu_options.append(f"budget={budget}")
     if ablate is not None:
         npu_options.append(f"ablate={ablate}")
+    # **The halo reaches this stage and the spill heuristic does not**, by the
+    # rule stated above the budget: an option belongs on a stage some pass of
+    # which can consume it. `-npu-tile-to-scratchpad` is a tensor level pass and
+    # is in this half; the allocator is not.
+    #
+    # **The budget reaches it by that same rule and did not until P13**, which
+    # is D-0059. The tiling pass is told the allocator's budget and is in this
+    # half, so a stage that dropped the option ran the tensor level passes
+    # against the default budget and printed a program in which nothing was ever
+    # over budget. Every stage is the same pipeline stopped at a different point
+    # and this is what makes that true of the budget as well.
+    if halo is not None:
+        npu_options.append(f"halo={halo}")
     command = [
         str(npu_opt),
         "-",
@@ -483,6 +507,10 @@ def compile_model(
         options.append(f"budget={budget}")
     if ablate is not None:
         options.append(f"ablate={ablate}")
+    if spill_heuristic is not None:
+        options.append(f"spill-heuristic={spill_heuristic}")
+    if halo is not None:
+        options.append(f"halo={halo}")
     if options:
         argument += "=" + " ".join(options)
     command = [str(npu_opt), "-", argument, "--mlir-print-debuginfo"]

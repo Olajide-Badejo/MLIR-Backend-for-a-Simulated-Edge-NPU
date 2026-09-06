@@ -61,7 +61,9 @@
 // is the whole net for the encoder's output being one badly placed directive
 // deep.
 // DUMP-NOT:  WARNING
-// DUMP:      ; .nbin version 1, host byte order
+// **Version 2 from P13.** The number is asserted rather than wildcarded, so
+// that a version bump is something a test has to be told about.
+// DUMP:      ; .nbin version 2, host byte order
 // DUMP-NEXT: ; scratchpad 1536 bytes, dram 1536 bytes
 // DUMP-NEXT: ; 1 inputs, 1 outputs, 1 constants, 0 spill slots, 6 instructions, 3 debug entries
 // DUMP-NEXT: ;   input 0: dram@0x0 1x8x4x4xf32 (512 bytes)

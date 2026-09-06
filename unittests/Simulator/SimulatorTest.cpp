@@ -175,6 +175,54 @@ TEST(Dma, SpillRoundTrip) {
   expectValues(harness.outputF32(0), data);
 }
 
+// **D-0050's reproduction, made into the test that keeps it fixed.**
+//
+// A tile written into a sub region of a larger buffer has to **scatter**, and
+// until version 2 the format could not say so: `Instruction` carried
+// `resultShape` and no `resultStrides`, the encoder computed the destination's
+// strides and dropped them, and a `DMA_STORE` into a sub region laid its bytes
+// down in a run. The measured cost was a tiled convolution writing 160 of the
+// 512 elements it should have, into channels 0 to 2 instead of 0 to 3, with the
+// validator unable to see it because an output region is written and never
+// read.
+//
+// The shape here is that failure in miniature and the arithmetic is written out
+// so a reader can check it rather than trust it. The scratchpad holds 1 through
+// 4. The store writes them into a 2 by 4 output through a 2 by 2 view with
+// strides [4, 1], which is the top left quarter of the output, so:
+//
+//     element (0, 0) -> offset 0 -> 1        (0, 1) -> offset 1 -> 2
+//     element (1, 0) -> offset 4 -> 3        (1, 1) -> offset 5 -> 4
+//
+// A contiguous store of the same four elements would put 1, 2, 3, 4 at offsets
+// 0 to 3 and leave offset 4 untouched, which is exactly the wrong answer the
+// defect produced. **The zeros in the expectation are load bearing**: they are
+// the positions the scatter must skip.
+TEST(Dma, StridedStoreScattersRatherThanRunning) {
+  Builder builder;
+  const std::vector<int64_t> view = {2, 2};
+  const std::vector<int64_t> full = {2, 4};
+  const int64_t source = builder.constant(view, {1, 2, 3, 4});
+  const int64_t buffer = builder.scratch(4);
+  const int64_t sink = builder.output(full);
+
+  builder.add(dmaLoad(buffer, view, at(MemSpace::Dram, source, view)));
+
+  // The store's destination is the sub region, so its result carries the
+  // parent's strides rather than the ones its own extents imply.
+  Instruction store = dmaStore(sink, view, at(MemSpace::Scratchpad, buffer, view));
+  store.resultStrides = {4, 1};
+  builder.add(store);
+  builder.add(halt());
+
+  // Scratchpad: one buffer of 4 f32 elements. 16 bytes.
+  Harness harness(builder.finish(16));
+  const SimResult result = harness.run();
+
+  ASSERT_TRUE(result.ok()) << result.error.value_or("");
+  expectValues(harness.outputF32(0), {1, 2, 0, 0, 3, 4, 0, 0});
+}
+
 TEST(Dma, StridedLoad) {
   // The non unit innermost stride of Section 5.5, which the cost model has a
   // term for and which no test would otherwise exercise.
@@ -849,6 +897,7 @@ TEST(Quantization, QuantRefusesByNameUntilPhaseP14) {
   quantize.resultElementType = ElemType::I8;
   quantize.resultAddress = result;
   quantize.resultShape = shape;
+  quantize.resultStrides = resultStridesFor(shape);
   quantize.operands.push_back(at(MemSpace::Scratchpad, buffer, shape));
   quantize.scale = 0.5f;
   quantize.zeroPoint = 3;
@@ -885,6 +934,7 @@ TEST(Quantization, DequantRefusesByNameUntilPhaseP14) {
   dequantize.resultElementType = ElemType::F32;
   dequantize.resultAddress = result;
   dequantize.resultShape = shape;
+  dequantize.resultStrides = resultStridesFor(shape);
   dequantize.operands.push_back(
       at(MemSpace::Scratchpad, buffer, shape, ElemType::I8));
   dequantize.scale = 0.25f;

@@ -73,47 +73,60 @@ std::string spaceAbbreviation(MemSpace space) {
   return space == MemSpace::Scratchpad ? "sp" : "dram";
 }
 
+/// Whether `strides` is the contiguous layout `shape` implies.
+///
+/// Shared by the operand and the result printers from version 2, when the
+/// result gained strides of its own. The rule it exists for is that strides are
+/// printed only when they are **not** the contiguous ones: a stride vector on
+/// every operand and every result would double the width of a listing to repeat
+/// what the shape already implies, and the cases that matter, the NHWC
+/// permutation, the stride 0 broadcast and now the tile of a larger buffer, are
+/// exactly the ones that differ.
+///
+/// **The running product is guarded the way the validator's is, and it has to
+/// be.** Everything else in this file runs after `validate()` has approved a
+/// program; this does not. `npu-objdump` decodes without validating so that a
+/// suspect file can be shown at all, so every extent here is whatever the file
+/// claimed, and `expected *= extent` on a claimed extent of nine quintillion is
+/// signed overflow rather than a large number. The coverage guided target found
+/// that one, which is D-0022.
+bool isContiguousLayout(const std::vector<int64_t> &shape,
+                        const std::vector<int64_t> &strides) {
+  if (shape.size() != strides.size())
+    return false;
+  int64_t expected = 1;
+  for (size_t index = shape.size(); index-- > 0;) {
+    if (strides[index] != expected)
+      return false;
+    int64_t extent = shape[index];
+    if (extent <= 0 || expected > Program::kShapeLimit / extent) {
+      // Not a shape this machine has an address for, so it is not the
+      // contiguous layout either, and the strides get printed.
+      return false;
+    }
+    expected *= extent;
+  }
+  return true;
+}
+
 std::string resultText(const Instruction &instruction) {
-  return spaceAbbreviation(instruction.resultSpace) + "@" +
-         hex(instruction.resultAddress) + " " +
-         shapeText(instruction.resultShape, instruction.resultElementType);
+  std::string out = spaceAbbreviation(instruction.resultSpace) + "@" +
+                    hex(instruction.resultAddress) + " " +
+                    shapeText(instruction.resultShape,
+                              instruction.resultElementType);
+  // An empty stride vector is what an opcode with no result carries, and it is
+  // not a layout to describe. Printing `s[]` on every `HALT` would be noise.
+  if (!instruction.resultStrides.empty() &&
+      !isContiguousLayout(instruction.resultShape, instruction.resultStrides))
+    out += " s" + vectorText(instruction.resultStrides);
+  return out;
 }
 
 std::string operandText(const Operand &operand) {
   std::string out = spaceAbbreviation(operand.space) + "@" +
                     hex(operand.address) + " " +
                     shapeText(operand.shape, operand.elementType);
-  // The strides are printed only when they are not the contiguous ones. A
-  // stride vector on every operand would triple the width of a listing to
-  // repeat what the shape already implies, and the cases that matter, the NHWC
-  // permutation and the stride 0 broadcast, are exactly the ones that differ.
-  //
-  // **The running product is guarded the way the validator's is, and it has to
-  // be.** Everything else in this file runs after `validate()` has approved a
-  // program; this function does not. `npu-objdump` decodes without validating
-  // so that a suspect file can be shown at all, so every extent here is
-  // whatever the file claimed, and `expected *= extent` on a claimed extent of
-  // nine quintillion is signed overflow rather than a large number. The
-  // coverage guided target found this one, which is D-0022.
-  bool contiguous = operand.shape.size() == operand.strides.size();
-  if (contiguous) {
-    int64_t expected = 1;
-    for (size_t index = operand.shape.size(); index-- > 0;) {
-      if (operand.strides[index] != expected) {
-        contiguous = false;
-        break;
-      }
-      int64_t extent = operand.shape[index];
-      if (extent <= 0 || expected > Program::kShapeLimit / extent) {
-        // Not a shape this machine has an address for, so it is not the
-        // contiguous layout either, and the strides get printed.
-        contiguous = false;
-        break;
-      }
-      expected *= extent;
-    }
-  }
-  if (!contiguous)
+  if (!isContiguousLayout(operand.shape, operand.strides))
     out += " s" + vectorText(operand.strides);
   return out;
 }
