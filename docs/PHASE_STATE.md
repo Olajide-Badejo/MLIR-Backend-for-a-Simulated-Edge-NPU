@@ -18,10 +18,13 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P13, tiling, double buffering and layout. Incomplete, and this handoff says so
-first.** Branch `phase/p13-tiling`, cut from `main` at `2f59429`, which is the
-P12 merge. **The gate is not met**, and what remains is Section 13.3's three
-arms and the ZigZag cross check.
+**P13, tiling, double buffering and layout.** Branch `phase/p13-tiling`, cut
+from `main` at `2f59429`, which is the P12 merge. **The gate is met on all seven
+clauses**, and the two that closed last are the ones this phase existed for:
+Section 13.3's three arms, run on all seven models, and the Section 16.5 ZigZag
+comparison under the mapping the pass chose. Both are recorded in
+`docs/NUMBERS.md` beside the predictions they answer, and both answer some of
+their own clauses in the negative.
 
 **All three passes are in `-O2`, and tiling reaches the suite.**
 `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` went in
@@ -167,7 +170,9 @@ already gives arm one.
 
 ## Gate status
 
-**Not met.** Clause by clause, with what stands and what has not started.
+**Met, on every clause.** Clause by clause, with the evidence for each. The
+tree level evidence is the verification table below, run at `101cb17` on a
+machine that was quiet for every measurement in it.
 
 | Clause | Status |
 |---|---|
@@ -889,7 +894,7 @@ both idle machine misses is written down in D-0049 and deliberately not acted on
 | the machine the measurements were taken on | **quiet for every one of them, and it stopped being quiet afterwards.** The 217 cell re-record, the baseline record and the four experiment scripts each ran with nothing else on the machine. A second project's solver sweep arrived at 03:00 and again at 03:13, and what is above it is the count based half of the verification, which a busy machine can slow and cannot change |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case insensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
-| `git diff main..HEAD` over `lib/Simulator`, `include/NPU/Simulator` and the Python mirror | **empty**, which is this branch's claim about the cost model rather than a statement about it |
+| `git diff main..HEAD` over `lib/Simulator`, `include/NPU/Simulator` and the Python mirror | **empty over two of the three, and the third is named rather than counted as empty.** `include/NPU/Simulator` and `python/npu_frontend/cost_model.py` are byte identical to `main` across the whole branch, which is the claim about the **constants**. `lib/Simulator` is not: `Kernels.cpp` gained the version 2 scatter path at `670dd0b` and `CostModel.cpp` lost 92 lines at `e8910f2` when it moved to its own library. **This row said empty at the A4 tip and that was wrong**, in the direction that makes a claim stronger than the measurement; `CHANGELOG.md` had the correct sentence beside it the whole time. Corrected at checkpoint B, which touched none of the three |
 
 **The CI shape has a fourth difference from P13 and the recipe above carries
 it.** `zigzag` is a third module the image does not have, so the shim's meta path
@@ -913,6 +918,46 @@ iteration domain in this dialect is static and the verifier's rule that a pad is
 smaller than its kernel makes the second impossible for a well formed operation.
 They are guards against a caller this dialect does not currently have, and the
 alternative to an uncovered guard there is an unguarded assumption.
+
+### Checkpoint B's own run, at `101cb17`
+
+*The suite row was predicted before any of it was started, in both shapes, and
+both were measured exactly. The machine was quiet for every measurement, and the
+one measurement it was not quiet for did not happen: see the baseline row.*
+
+| Command | Result |
+|---|---|
+| `ninja -C build -j6` | no work to do; checkpoint B changed no C++ |
+| `build/bin/NPUInterfaceTests` | 23 passed |
+| `build/bin/NPUTilingTests` | 20 passed |
+| `build/bin/NPUAllocatorTests` | 29 passed |
+| `build/bin/NPUEncodingTests` | 84 passed, 1 skipped |
+| `build/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
+| `ninja -C build check-npu` | **37 of 37**, unchanged: this checkpoint adds Python tests and no lit tests |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1131 passed, 18 skipped**, in 219.92s. **Predicted 1131 and 18 before the run**, which is the 1114 the baseline check measured at `019847e` plus the 17 cases of `test_zigzag_same_mapping.py` |
+| the whole suite in the CI shape | **1116 passed, 33 skipped**, in 174.14s, mypy clean under `--python-executable /usr/bin/python3`. **Predicted 1116 and 33 before the run.** The difference between the shapes moves from 13 to **15** for the first time since the shim was written, and the two extra are `test_the_workload_form_is_the_installed_parsers_own` and `test_zigzag_evaluates_the_ordering_it_is_handed`, which take `pytest.importorskip("zigzag")` and skip where the module is blocked |
+| the CI shape's external tools step | exits **0**, prints "confirmed absent", and the loop names all three of `scalesim`, `accelergy` and `zigzag`. `test_external_tools.py` is 10 passed under `NPU_EXTERNAL_TOOLS=1` in that shape, so the guards fail naming the variable rather than skipping |
+| `mypy` | no issues found in 26 source files. `experiments/` is outside its `files` list, which is why the new module cannot reach it |
+| `black --check .` | 72 files unchanged |
+| `ruff check .` | all checks passed |
+| `bash scripts/dash-lint.sh` | `dash-lint: clean` |
+| `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
+| `reuse lint` | compliant with version 3.3 |
+| `bash scripts/coverage.sh 85 93 16 58` | **C++ 86.0 PASS** against 85, decoder branch coverage 91.6 percent over 202 branches, every Python tree at or above its threshold, exit 0. **No threshold moved.** The margin is the same 1.0 point A4 left it at, which is what a checkpoint that adds tests and no C++ should do |
+| `python scripts/regression_baseline.py` | **recorded at `101cb17`, and then clean.** The first attempt **stopped rather than record**: the quiet gate waited 900 seconds and the machine never fell below the 0.30 one and five minute load averages A4 tightened it to. It ran 1080 seconds later at **0.04 and 0.28**. **21 golden tensors byte identical**, `git status` on `test/baseline/golden` empty, and the only movement in `baseline.json` is the pytest count and the 21 test names this checkpoint added. `--check` at the same tip on the same quiet machine: **no drift**, exit 0, 42 cells, largest movement against `-O0` **4.470e-08** |
+| `python scripts/check-reachability.py` | pass |
+| `bash scripts/check-isa-staleness.sh build` | up to date |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
+| `python scripts/patch-scalesim.py --check` | every edit in place |
+| `python scripts/build-model-ir.py` | 84 IR files written, working tree **clean** afterwards. This is the check that D-0059's fix moved nothing: `build-model-ir.py` passes no budget, so the stage it writes is the stage it always wrote |
+| `python experiments/zigzag_same_mapping.py --search` | 42 layers, 59.1 seconds, 747 MiB peak against an 8192 MiB ceiling, every layer's ordering verified against ZigZag's own evaluation |
+| `git status --short` | empty |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches**, case insensitive with word boundaries |
+| the same diff grepped for em and en dashes | **0 matches** |
+| the branch's commit messages and trailers | 0 matches for either, one author |
+| `git diff --shortstat main..HEAD` | 403 files, 95294 insertions, 14715 deletions |
+| the machine the measurements were taken on | **quiet for coverage, the two suite runs and the ZigZag comparison.** The baseline's first attempt is the exception and it is the row above: the gate refused a machine at 0.33 and stopped rather than record from it |
 
 ## What P12 measured, and still holds
 
@@ -1819,9 +1864,10 @@ write. **Only the owner may retire it.** Nothing on this branch went near it.
 
 ## Next phase
 
-**P13, continued. Not P14.** The gate is not met: five of its seven clauses are
-met and two, Section 13.3's three arms and the ZigZag cross check, have not
-started. What follows is the plan as it stands after D-0048 and the nine defects
+**P13, continued. Not P14.** The gate is met: all seven clauses are met, and
+the two that were open, Section 13.3's three arms and the ZigZag cross check,
+were run at checkpoint B and are recorded with their predictions adjudicated
+clause by clause. What follows is the plan as it stands after D-0048 and the nine defects
 the wiring and the work after it found, which is different from the plan P12
 handed over, and the differences are the point.
 
@@ -1890,24 +1936,25 @@ became.**
 
 ## Next command
 
-The branch is not ready to push: the gate is not met and the phase is
-incomplete. **Do not open a pull request for it yet.**
+**The gate is met and the push is not this session's to make.** Pushing this
+branch and opening a pull request for it are the owner's, and nothing in the
+gate being met changes that. **Do not open a pull request for it here.**
 
-The next command is the one that shows where the phase now stands, because
-tiling is inside the suite and the blocker the previous handoff pointed at is
-gone. Read the level's own statistics on the model that tiles:
+The next command is the one that shows what the phase's two experiments
+actually answered, because both of them contradict part of what was predicted
+and the tables are where that is legible:
 
 ```
-python scripts/build-model-ir.py
-build/bin/npu-opt experiments/models/resnet_block-O0.npu.mlir \
-  --pass-pipeline='builtin.module(npu-O2{budget=6464})' \
-  -mlir-pass-statistics -mlir-pass-statistics-display=list -o /dev/null
+python experiments/three_arms.py --models resnet_block inception_block
+python experiments/zigzag_same_mapping.py --models resnet_block --search
 ```
 
-`-npu-tile-to-scratchpad` reports `tiled-ops 1` and `tiles-emitted 2` rather than
-a decline, and the program that comes out lowers, encodes and runs. **The command
-that shows the shape it took**, so the next session starts from the artefact
-rather than from the prose:
+The first prints the six configurations per budget with the arm each belongs to,
+and the crossover per model underneath. The second prints one line per tiled
+layer with this project's cycles beside ZigZag's under the same mapping, and the
+array fill on each side, which is the term that decides which way a row goes.
+**The command that shows the mapping itself**, so the next session starts from
+the artefact rather than from the prose:
 
 ```
 ninja -C build check-npu    # test/Pipeline/p13-passes-at-o2.mlir
