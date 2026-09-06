@@ -42,7 +42,7 @@ the three resolves, `import_model` raises and names all three places it looked.
 
 ## Converters
 
-Sixteen, one per accepted ONNX operator. `op_mapping.py`'s module docstring
+Eighteen, one per accepted ONNX operator. `op_mapping.py`'s module docstring
 carries the same list and a test asserts the two agree in both directions.
 
 | ONNX operator | Becomes | Notes |
@@ -53,6 +53,7 @@ carries the same list and a test asserts the two agree in both directions.
 | `Clip` | `npu.relu` | only for the bounds that are a relu; see below |
 | `Concat` | `npu.concat` | a negative axis is normalised to non negative |
 | `Conv` | `npu.conv2d` | rank 4, grouped, optional bias operand |
+| `DequantizeLinear` | `npu.dequantize` | per tensor only; scale and zero point from initializers |
 | `Flatten` | `npu.reshape` | `axis = 1` only; see the batch rule below |
 | `Gemm` | `npu.matmul` | optional bias operand; `transB` folded into the constant |
 | `GlobalAveragePool` | `npu.avg_pool2d` | kernel equal to the input's spatial extent |
@@ -60,15 +61,40 @@ carries the same list and a test asserts the two agree in both directions.
 | `MatMul` | `npu.matmul` | rank 2 by rank 2 |
 | `MaxPool` | `npu.max_pool2d` | values only, never the `Indices` output |
 | `Mul` | `npu.mul` | through the broadcasting policy below |
+| `QuantizeLinear` | `npu.quantize` | per tensor only; scale and zero point from initializers |
 | `Relu` | `npu.relu` | |
 | `Reshape` | `npu.reshape` | `allowzero` handled; see the batch rule below |
 | `Transpose` | `npu.transpose` | `perm` must be a permutation of the input's axes |
 
-`QuantizeLinear`, `DequantizeLinear` and `Pad` are refused with a reason more
-specific than "unsupported": the first two arrive with their integer kernels and
-calibrated models at the quantization phase, and `Pad` is not in the operator set
-and is not planned. Every other operator is refused with a message naming the
-node and listing the supported set.
+`Pad` is refused with a reason more specific than "unsupported": it is not in
+the operator set and is not planned, because its opset 18 optional axes input
+changes the length of `pads` and its opset 19 wrap mode changes what padding
+means, so a converter that guessed would misread the padding rather than fail.
+Every other operator is refused with a message naming the node and listing the
+supported set.
+
+### The quantization pair
+
+**Per tensor only, and a per axis node is refused by name.** ONNX has carried
+per axis QDQ since opset 13 and a per axis node arrives here as a rank 1 scale.
+It is refused rather than collapsed to one of its values, because a silently
+averaged or truncated scale is a wrong number with no diagnostic. Per channel
+weight scales are not lost by that rule: they are quantized at compile time and
+reach the machine as the int32 bias and the requantization pair, which is where
+Section 14 puts them.
+
+**The scale and the zero point arrive as ONNX inputs and leave as `npu`
+attributes.** Both must be constant initializers. A scale computed at run time
+is a scale the verifier cannot check and the encoder cannot write into the
+binary, and Section 14 requires the requantization to live in the file rather
+than in an out of band calibration JSON. The zero point input is optional and
+defaults to zero, which is ONNX's own rule and is the symmetric case.
+
+**A graph input or output stays f32**, and quantization does not move that
+boundary. The QDQ form puts the `QuantizeLinear` after the input and the
+`DequantizeLinear` before the output, so the integer values are interior. An
+int8 graph output is refused, because it would be a function result this
+project's signatures cannot write down.
 
 ## The rules, in the order they bite
 

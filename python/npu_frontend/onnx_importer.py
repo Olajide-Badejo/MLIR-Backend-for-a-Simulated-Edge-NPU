@@ -109,43 +109,62 @@ def _check_opset(model: ModelProto) -> None:
         )
 
 
+#: The element types an intermediate value may carry.
+#:
+#: The two the `npu` dialect has, and nothing else. i8 joined the list with the
+#: quantization pair: the value between a `QuantizeLinear` and the
+#: `DequantizeLinear` that ends its region is int8 by construction, and an
+#: importer that dropped its shape would refuse every QDQ graph while reporting
+#: a missing shape rather than a missing element type.
+_INTERMEDIATE_ELEM_TYPES = (onnx.TensorProto.FLOAT, onnx.TensorProto.INT8)
+
+
 def _static_shape(
-    name: str, type_proto: onnx.TypeProto, role: str, *, require_float: bool
+    name: str, type_proto: onnx.TypeProto, role: str, *, boundary: bool
 ) -> tuple[int, ...] | None:
     """The static shape of one value info, or None when it is not one to keep.
 
-    `require_float` is True at the graph boundary and False for an intermediate,
-    and the asymmetry is deliberate. A graph input or output is a function
-    argument or result, so its element type is part of the signature this
-    project has to be able to write down. An intermediate of another element
-    type is not automatically a problem: the only one the supported operator set
-    can produce is `MaxPool`'s optional `Indices` output, and the right thing to
-    say about that is that this project does not produce indices, which is what
-    the `MaxPool` converter says. Refusing it here instead would answer a
-    question about pooling with a message about dtypes.
+    `boundary` is True for a graph input or output and False for an
+    intermediate, and the asymmetry is deliberate in two directions.
+
+    **A graph input or output is f32.** It is a function argument or result, so
+    its element type is part of the signature this project has to write down,
+    and this project's signatures are f32. A quantized program is not an
+    exception: the QDQ form puts the `QuantizeLinear` after the input and the
+    `DequantizeLinear` before the output, so the integer values are interior and
+    the boundary stays exactly where it was.
+
+    **An intermediate may be either of the dialect's two element types**, and
+    anything else is not automatically a problem. The only other one the
+    supported operator set can produce is `MaxPool`'s optional `Indices` output,
+    and the right thing to say about that is that this project does not produce
+    indices, which is what the `MaxPool` converter says. Refusing it here
+    instead would answer a question about pooling with a message about dtypes.
     """
     if not type_proto.HasField("tensor_type"):
-        if not require_float:
+        if not boundary:
             return None
         raise graph_error(
             f"the {role} {name!r} is not a tensor. This project compiles tensor "
             "graphs; sequences, maps and optionals have no representation here."
         )
     tensor_type = type_proto.tensor_type
-    if tensor_type.elem_type != onnx.TensorProto.FLOAT:
-        if not require_float:
-            return None
+    if boundary and tensor_type.elem_type != onnx.TensorProto.FLOAT:
         raise graph_error(
             f"the {role} {name!r} has element type "
-            f"{onnx.TensorProto.DataType.Name(tensor_type.elem_type)}, and this "
-            "project's tensors are f32. The integer types arrive with the "
-            "quantization phase."
+            f"{onnx.TensorProto.DataType.Name(tensor_type.elem_type)}, and a "
+            "graph input or output of this project is f32. A quantized graph "
+            "keeps its integer values interior, between a QuantizeLinear and "
+            "the DequantizeLinear that ends its region, so the boundary is the "
+            "one place quantization does not move."
         )
+    if not boundary and tensor_type.elem_type not in _INTERMEDIATE_ELEM_TYPES:
+        return None
 
     extents: list[int] = []
     for axis, dimension in enumerate(tensor_type.shape.dim):
         if dimension.HasField("dim_param") or not dimension.HasField("dim_value"):
-            if not require_float:
+            if not boundary:
                 return None
             raise graph_error(
                 f"the {role} {name!r} has a dynamic extent on axis {axis}. "
@@ -175,9 +194,7 @@ def _collect_shapes(graph: GraphProto) -> dict[str, tuple[int, ...]]:
     ):
         if value_info.name in shapes:
             continue
-        shape = _static_shape(
-            value_info.name, value_info.type, role, require_float=strict
-        )
+        shape = _static_shape(value_info.name, value_info.type, role, boundary=strict)
         if shape is not None:
             shapes[value_info.name] = shape
     return shapes

@@ -212,6 +212,9 @@ class ModuleBuilder:
         self._outer.enter_context(self.context)
         self._outer.enter_context(ir.Location.unknown(context=self.context))
         self.f32 = ir.F32Type.get()
+        #: The quantized element type. Signless, and read as two's complement
+        #: signed everywhere in this project, which `NPU_QuantTensor` states.
+        self.i8 = ir.IntegerType.get_signless(8, self.context)
         self.module = ir.Module.create()
         return self
 
@@ -241,6 +244,10 @@ class ModuleBuilder:
         thing in more characters and would make that later pass's diff noisier.
         """
         return ir.RankedTensorType.get(list(shape), self.f32)
+
+    def quant_tensor_type(self, shape: Sequence[int]) -> ir.Type:
+        """The i8 tensor type, which is what `npu.quantize` produces."""
+        return ir.RankedTensorType.get(list(shape), self.i8)
 
     def named_loc(self, name: str) -> ir.Location:
         """A `NameLoc` carrying an ONNX node name.
@@ -332,6 +339,55 @@ class ModuleBuilder:
         )
         return operation.result
 
+    def quantize(
+        self,
+        value: ir.Value,
+        *,
+        shape: Sequence[int],
+        scale: float,
+        zero_point: int,
+        name: str,
+    ) -> ir.Value:
+        """An `npu.quantize`, f32 in and i8 out.
+
+        It is built here rather than through `create` because `create` gives
+        every result the f32 tensor type, and the whole content of this
+        operation is that its result has the other one.
+        """
+        operation = ir.Operation.create(
+            "npu.quantize",
+            results=[self.quant_tensor_type(shape)],
+            operands=[value],
+            attributes={
+                "scale": self.f32_attr(scale),
+                "zero_point": self.i32(zero_point),
+            },
+            loc=self.named_loc(name),
+        )
+        return operation.result
+
+    def dequantize(
+        self,
+        value: ir.Value,
+        *,
+        shape: Sequence[int],
+        scale: float,
+        zero_point: int,
+        name: str,
+    ) -> ir.Value:
+        """An `npu.dequantize`, i8 in and f32 out."""
+        operation = ir.Operation.create(
+            "npu.dequantize",
+            results=[self.tensor_type(shape)],
+            operands=[value],
+            attributes={
+                "scale": self.f32_attr(scale),
+                "zero_point": self.i32(zero_point),
+            },
+            loc=self.named_loc(name),
+        )
+        return operation.result
+
     def compute(
         self,
         mnemonic: str,
@@ -369,6 +425,17 @@ class ModuleBuilder:
     def i64(self, value: int) -> ir.Attribute:
         return ir.IntegerAttr.get(
             ir.IntegerType.get_signless(64, self.context), int(value)
+        )
+
+    def i32(self, value: int) -> ir.Attribute:
+        """A signless i32 attribute, which is what a zero point is.
+
+        Signless and read as signed, matching `NPU_SignedI32Attr` on the dialect
+        side: the storage carries no signedness and the accessor sign extends,
+        which is the same choice the i8 tensor element type makes.
+        """
+        return ir.IntegerAttr.get(
+            ir.IntegerType.get_signless(32, self.context), int(value)
         )
 
     def f32_attr(self, value: float) -> ir.Attribute:

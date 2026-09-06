@@ -73,11 +73,34 @@ recording history. The history lives in git.
 
 ```
 # op                layer      date         phase   reason
+npu.quantize        model      2026-09-06   P14     no compilation emits one until -npu-calibrate lands later in this phase
+npu.dequantize      model      2026-09-06   P14     the other half of the same pair, with the same producer and the same closing commit
 ```
 
-None. Every operation of the `npu` dialect meets every layer of law 2 it is held
-to: the twelve **imported computation** operations meet all five, and the two
-**structural** ones meet the four that are not importability.
+**Two entries, on one layer each, and they are the P8 shape repeating.** The
+fourteen **imported computation** operations meet four of the five layers each
+and the two **structural** ones meet the four they are held to. What
+`npu.quantize` and `npu.dequantize` do not yet meet is the **model** layer, and
+the reason is a phase boundary rather than unfinished work, exactly as it was
+for `npu.fused_op` at P8.
+
+Nothing about either operation is missing. Both are importable, from
+`QuantizeLinear` and `DequantizeLinear`; both lower, to `npuisa.quant` and
+`npuisa.dequant`; both encode, to `QUANT` and `DEQUANT`, which name them as
+their sources in the ISA description; and both have integer kernels with hand
+computed semantics tests and a differential comparison against an independent
+numpy implementation that agrees with them exactly. **What is missing is a
+producer.** Section 17.5's step 3 asks that each operation appear in a generated
+benchmark model's IR, "including one quantized compilation for the quantization
+operations", and a quantized compilation is what `-npu-calibrate` makes. The
+model suite is fp32 by construction and no exported model in it has a QDQ node.
+
+So these entries can only be deleted by the commit that lands the calibration
+pass and sweeps a quantized compilation into `experiments/models/`, which is the
+same rule the P8 entries were closed under: deleting them a commit earlier would
+be recording a gap as closed while it was open, and the check would say so.
+**The P14 gate requires an empty block**, so a phase that ended with these here
+would not have met it.
 
 **What closed the last two, and why the timing was the whole of it.** The gap
 was a phase boundary rather than unfinished work, and that decided what closing

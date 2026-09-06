@@ -17,11 +17,17 @@ one thing both sides share, and it is deliberately small enough to read: it says
 what the case is *supposed* to be, and a manifest that said the wrong thing
 would make both sides wrong in the same way.
 
-**The tolerance is the honest one.** The two implementations sum their floating
-point terms in different orders, which is a property of their being independent
-rather than a defect, so they agree to a tolerance and not bitwise. Bitwise
-agreement is asserted where it is meaningful, which is between two runs of the
-same implementation at different thread counts, and that lives in
+**The tolerance is the honest one, and the integer cases have none.** The two
+implementations sum their floating point terms in different orders, which is a
+property of their being independent rather than a defect, so the f32 cases agree
+to a tolerance and not bitwise. The integer cases agree **exactly**, because
+integer addition is associative and neither side has a summation order the other
+can disagree with, so any difference at all is a defect rather than a rounding
+question. That is a stronger claim than any f32 case here can make and it is the
+reason Section 14 can say a tiled reduction is bit exact by construction.
+
+Bitwise agreement between two runs of the *same* implementation at different
+thread counts is a third claim again, and it lives in
 ``unittests/Simulator/DeterminismTest.cpp``.
 
 **Proving this test can fail** is part of the Phase P7 gate: a deliberately
@@ -104,13 +110,28 @@ def load_cases(directory: Path) -> list[dict]:
     return cases
 
 
-def read_f32(path: Path, shape: list[int]) -> np.ndarray:
-    values = np.fromfile(path, dtype=np.float32)
+#: The manifest's dtype names, which are numpy's own.
+DTYPES = {"float32": np.float32, "int8": np.int8, "int32": np.int32}
+
+
+def read_typed(path: Path, shape: list[int], dtype: str) -> np.ndarray:
+    values = np.fromfile(path, dtype=DTYPES[dtype])
     assert values.size == int(np.prod(shape)), (
-        f"{path.name} holds {values.size} floats and its shape {shape} needs "
-        f"{int(np.prod(shape))}"
+        f"{path.name} holds {values.size} {dtype} values and its shape {shape} "
+        f"needs {int(np.prod(shape))}"
     )
     return values.reshape(shape)
+
+
+def read_f32(path: Path, shape: list[int]) -> np.ndarray:
+    return read_typed(path, shape, "float32")
+
+
+def operands_of(directory: Path, case: dict) -> list[np.ndarray]:
+    return [
+        read_typed(directory / operand["file"], operand["shape"], operand["dtype"])
+        for operand in case["inputs"]
+    ]
 
 
 def run_simulator(directory: Path, case: dict) -> np.ndarray:
@@ -125,7 +146,7 @@ def run_simulator(directory: Path, case: dict) -> np.ndarray:
         f"{case['name']}: npu-sim exited {completed.returncode}\n"
         f"{completed.stdout}{completed.stderr}"
     )
-    return read_f32(output, case["result_shape"])
+    return read_typed(output, case["result_shape"], case["result_dtype"])
 
 
 def test_the_export_covers_every_operation_refexec_can_run(exported: Path) -> None:
@@ -152,8 +173,47 @@ def test_the_export_covers_every_operation_refexec_can_run(exported: Path) -> No
         "reshape",
         "transpose",
         "concat",
+        "quantize",
+        "dequantize",
     }
     assert expected <= covered, sorted(expected - covered)
+
+
+def test_the_integer_arithmetic_is_covered_in_both_of_its_forms(
+    exported: Path,
+) -> None:
+    """The integer half of the case set, asserted as a shape rather than a count.
+
+    A quantized convolution and a quantized matrix multiplication are different
+    claims: the convolution carries an input zero point because its padding
+    contributes one, and the matrix multiplication carries none because every
+    tap of it is in range. A case set that had lost one of the two would still
+    satisfy the coverage test above, which asks about operations rather than
+    about arithmetics.
+
+    The padded and unpadded convolutions are both required for the same reason
+    in the smaller: a padding rule that was wrong in both directions would agree
+    with itself on an unpadded case.
+    """
+    cases = load_cases(exported)
+    integer = [case for case in cases if case["result_dtype"] == "int8"]
+    assert integer, "the case set has no integer results at all"
+
+    convolutions = [case for case in integer if case["operation"] == "conv2d"]
+    assert convolutions, "no quantized convolution in the case set"
+    assert any(
+        any(pad != 0 for pad in case["attributes"]["pads"]) for case in convolutions
+    ), "every quantized convolution is unpadded, so the padding rule is untested"
+    assert any(
+        case["attributes"]["zero_point"] != 0 for case in convolutions
+    ), "every quantized convolution has a zero point of zero, so a kernel that "
+    "ignored the field would pass"
+
+    assert any(
+        case["operation"] == "matmul" for case in integer
+    ), "no quantized matrix multiplication in the case set"
+    assert any(case["operation"] == "quantize" for case in cases)
+    assert any(case["operation"] == "dequantize" for case in cases)
 
 
 def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
@@ -182,6 +242,7 @@ def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
             read_f32(exported / operand["file"], operand["shape"]).ravel()
             for case in cases
             for operand in case["inputs"]
+            if operand["dtype"] == "float32"
         ]
     )
     assert everything.min() < -0.9, everything.min()
@@ -195,6 +256,8 @@ def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
     # Sixteen elements puts the same coincidence at one in 32768.
     for case in cases:
         for operand in case["inputs"]:
+            if operand["dtype"] != "float32":
+                continue
             values = read_f32(exported / operand["file"], operand["shape"])
             if values.size < 16:
                 continue
@@ -206,11 +269,7 @@ def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
     # And the case that goes vacuous first, checked as an answer rather than as
     # an input: a relu over negative numbers only is a comparison of zeros.
     relu = next(case for case in cases if case["operation"] == "relu")
-    operands = [
-        read_f32(exported / operand["file"], operand["shape"])
-        for operand in relu["inputs"]
-    ]
-    reference = refexec.execute("relu", operands, {})
+    reference = refexec.execute("relu", operands_of(exported, relu), {})
     assert np.count_nonzero(reference) > 0, (
         "the relu case's reference output is entirely zero, so comparing it "
         "against the simulator asserts nothing"
@@ -218,15 +277,20 @@ def test_the_exported_inputs_straddle_zero(exported: Path) -> None:
 
 
 def test_every_case_agrees(exported: Path) -> None:
-    """The gate item: the two agree on every operation, on randomized inputs."""
+    """The gate item: the two agree on every operation, on randomized inputs.
+
+    An integer case is compared with ``assert_array_equal`` and an f32 one with
+    ``assert_allclose``, and the difference is not a convenience. Comparing an
+    integer result to a tolerance would let a kernel be one count out on every
+    element and still pass, which is the whole failure mode a quantized path has
+    and the one thing this comparison exists to catch.
+    """
     cases = load_cases(exported)
     disagreements: list[str] = []
+    exact = 0
 
     for case in cases:
-        operands = [
-            read_f32(exported / operand["file"], operand["shape"])
-            for operand in case["inputs"]
-        ]
+        operands = operands_of(exported, case)
         reference = refexec.execute(
             case["operation"], operands, dict(case["attributes"])
         )
@@ -237,13 +301,21 @@ def test_every_case_agrees(exported: Path) -> None:
 
         produced = run_simulator(exported, case)
         try:
-            np.testing.assert_allclose(
-                produced, reference, rtol=RTOL, atol=ATOL, err_msg=case["name"]
-            )
+            if case["result_dtype"] == "float32":
+                np.testing.assert_allclose(
+                    produced, reference, rtol=RTOL, atol=ATOL, err_msg=case["name"]
+                )
+            else:
+                np.testing.assert_array_equal(produced, reference, err_msg=case["name"])
+                exact += 1
         except AssertionError as failure:  # noqa: PERF203
             disagreements.append(f"{case['name']}: {failure}")
 
     assert not disagreements, "\n\n".join(disagreements)
+    assert exact >= 5, (
+        f"only {exact} cases were compared exactly, so the integer half of the "
+        f"case set has shrunk to something that proves less than it claims"
+    )
 
 
 def test_the_comparison_is_not_vacuous(exported: Path) -> None:
@@ -260,10 +332,13 @@ def test_the_comparison_is_not_vacuous(exported: Path) -> None:
     cases = load_cases(exported)
     checked = 0
     for case in cases:
-        operands = [
-            read_f32(exported / operand["file"], operand["shape"])
-            for operand in case["inputs"]
-        ]
+        if case["result_dtype"] != "float32":
+            # An integer case is compared exactly, so the relative perturbation
+            # below is the wrong instrument: the exact comparison's own
+            # vacuity guard is that it is exact, and one count of difference
+            # already fails it.
+            continue
+        operands = operands_of(exported, case)
         reference = refexec.execute(
             case["operation"], operands, dict(case["attributes"])
         )
@@ -277,7 +352,37 @@ def test_the_comparison_is_not_vacuous(exported: Path) -> None:
             np.testing.assert_allclose(perturbed, reference, rtol=RTOL, atol=ATOL)
         checked += 1
 
-    assert checked >= len(cases) // 2, (
-        f"only {checked} of {len(cases)} cases had outputs large enough to "
-        f"perturb, so this test checked less than it claims"
+    floats = [case for case in cases if case["result_dtype"] == "float32"]
+    assert checked >= len(floats) // 2, (
+        f"only {checked} of {len(floats)} f32 cases had outputs large enough "
+        f"to perturb, so this test checked less than it claims"
     )
+
+
+def test_an_integer_case_fails_on_one_count(exported: Path) -> None:
+    """The integer comparison's own vacuity guard.
+
+    The f32 comparison is proved capable of failing by perturbing the reference
+    by one part in a thousand. The integer one cannot be perturbed relatively,
+    so it is perturbed by the smallest thing an integer result can differ by,
+    which is one count of the output scale, and the comparison has to notice.
+
+    One count is not a small difference here. It is the whole resolution of an
+    8 bit output, and a kernel that was one count out on every element is a
+    kernel whose accuracy numbers are wrong in a way no tolerance based
+    comparison would report.
+    """
+    cases = [case for case in load_cases(exported) if case["result_dtype"] == "int8"]
+    assert cases, "no integer case to perturb"
+
+    for case in cases:
+        reference = refexec.execute(
+            case["operation"], operands_of(exported, case), dict(case["attributes"])
+        )
+        # Away from the rail the value sits on, so the perturbation is a real
+        # difference rather than a saturation that clips back.
+        perturbed = np.where(reference < 127, reference + 1, reference - 1).astype(
+            np.int8
+        )
+        with pytest.raises(AssertionError):
+            np.testing.assert_array_equal(perturbed, reference)

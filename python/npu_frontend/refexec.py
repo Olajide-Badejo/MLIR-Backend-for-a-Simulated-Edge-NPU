@@ -37,14 +37,20 @@ to add a module.
 The dialect's operator set is ``constant``, ``conv2d``, ``matmul``, ``add``,
 ``mul``, ``relu``, ``max_pool2d``, ``avg_pool2d``, ``reshape``, ``transpose``,
 ``concat``, ``batch_norm``, ``fused_op``, ``yield``, ``quantize`` and
-``dequantize``. Twelve of those compute something and have a function here.
+``dequantize``. Fourteen of those compute something and have a function here.
 ``fused_op`` and ``yield`` are structural: they describe how the graph is
 written rather than what the machine does, ``-npu-lower-to-npuisa`` flattens the
 region away before any instruction exists, and an executor for them would be an
-executor for a thing that never runs. ``quantize`` and ``dequantize`` are
-deferred to Phase P14 with the rest of the integer path and are absent here for
-the same reason the integer kernels are absent from the simulator: nothing has
-defined what they compute yet.
+executor for a thing that never runs.
+
+**The quantization pair arrived with the integer path** and is written from
+Section 14's pinned arithmetic rather than from the kernels, under the same
+independence rule as everything else here. The tie rule is the one place where
+the two implementations are allowed to be the same by construction rather than
+by agreement: ``numpy.rint`` rounds half to even, ONNX ``QuantizeLinear``
+specifies that rounding, and the C++ helper implements it explicitly for the
+reason Section 14 gives. Agreeing on a rule both were written against is what
+pinning a rule is for.
 """
 
 from __future__ import annotations
@@ -64,15 +70,26 @@ __all__ = [
     "concat",
     "constant",
     "conv2d",
+    "dequantize",
     "execute",
     "matmul",
     "max_pool2d",
     "mul",
+    "quantize",
+    "quantized_conv2d",
+    "quantized_matmul",
     "relu",
+    "requantize",
     "reshape",
     "transpose",
     "windowed_extent",
 ]
+
+QuantTensor = NDArray[np.int8]
+
+#: Either of the two, which is what the dispatcher below takes and returns
+#: now that one operation of the dialect produces the integer one.
+AnyTensor = NDArray[Any]
 
 
 # ---------------------------------------------------------------------------
@@ -484,11 +501,236 @@ def batch_norm(
 
 
 # ---------------------------------------------------------------------------
+# The quantization pair.
+# ---------------------------------------------------------------------------
+
+
+def quantize(x: Tensor, scale: float, zero_point: int) -> QuantTensor:
+    """``q = clamp(rint(x / scale) + zero_point, -128, 127)``.
+
+    Section 14 pins this rule once because the observer here and the kernel in
+    C++ both compute against it, and a disagreement between them would surface
+    as an accuracy bug nobody can localize.
+
+    ``numpy.rint`` is the tie rule the specification names by name: round half
+    to even, which is also what ONNX ``QuantizeLinear`` specifies. It is used
+    here rather than reimplemented because it *is* the reference; the C++ side
+    writes the rule out instead, for the reason Section 14 gives about the
+    dynamic floating point rounding mode, and the two agreeing on a pinned rule
+    is what pinning it was for.
+
+    The division is done in float64. Every f32 input and every zero point in
+    range is exact there, so the only rounding in the expression is the one the
+    rule names. A non finite value saturates rather than raising, and a NaN maps
+    to the zero point, which is the representation of real zero and the one
+    value that carries no claim about magnitude.
+    """
+    scaled = np.asarray(x, dtype=np.float64) / float(scale)
+    rounded = np.rint(np.nan_to_num(scaled, nan=0.0, posinf=1e30, neginf=-1e30))
+    shifted = rounded + float(zero_point)
+    return np.clip(shifted, -128.0, 127.0).astype(np.int8)
+
+
+def dequantize(q: QuantTensor, scale: float, zero_point: int) -> Tensor:
+    """``x = (q - zero_point) * scale``.
+
+    The subtraction happens in a width wider than i8 before the multiply, which
+    matters at the rails: ``-128 - (-3)`` is -125 and an i8 subtraction would
+    wrap. numpy promotes here rather than the code casting, and the promotion is
+    to int32 because that is what the machine's own accumulator is.
+    """
+    centred = np.asarray(q, dtype=np.int32) - np.int32(zero_point)
+    return (centred.astype(np.float64) * float(scale)).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# The integer compute path.
+# ---------------------------------------------------------------------------
+
+
+def saturating_rounding_doubling_high_mul(a: np.ndarray, multiplier: int) -> np.ndarray:
+    """``round(a * multiplier / 2^31)``, saturating on the one product that does
+    not fit.
+
+    The multiply half of Section 14's requantization, in the form every integer
+    inference stack implements: a nudge of half of ``2^31`` taking the sign of
+    the product, then a truncating division. The tie therefore goes **up**
+    rather than away from zero, which is a property of the nudge and is worth
+    naming because the divide below rounds the other way.
+    """
+    product = a.astype(np.int64) * np.int64(multiplier)
+    nudge = np.where(product >= 0, np.int64(1 << 30), np.int64(1 - (1 << 30)))
+    # numpy's integer division floors and C++ truncates toward zero, so the
+    # quotient is taken through an explicit truncation rather than through
+    # ``//``, which would answer differently on every negative product.
+    total = product + nudge
+    quotient = np.sign(total) * (np.abs(total) // np.int64(1 << 31))
+    saturates = (a.astype(np.int64) == -(1 << 31)) & (multiplier == -(1 << 31))
+    return np.where(saturates, np.int64((1 << 31) - 1), quotient).astype(np.int64)
+
+
+def rounding_divide_by_pot(value: np.ndarray, exponent: int) -> np.ndarray:
+    """Divides by ``2^exponent``, rounding a tie away from zero.
+
+    The other half of the requantization, and its tie rule is genuinely
+    different from the multiply's. Both are stated rather than reconciled: this
+    is the arithmetic the scheme's reference implementations perform, and a
+    reference interpreter that rounded more consistently than the machine would
+    be measuring its own opinion.
+    """
+    if exponent <= 0:
+        return value.astype(np.int64)
+    divisor = np.int64(1 << exponent)
+    mask = divisor - np.int64(1)
+    # An arithmetic shift, written as a floor division because numpy's ``//``
+    # floors, which is what a shift of a negative value does.
+    shifted = value.astype(np.int64) // divisor
+    remainder = value.astype(np.int64) - shifted * divisor
+    threshold = (mask >> np.int64(1)) + np.where(
+        value.astype(np.int64) < 0, np.int64(1), np.int64(0)
+    )
+    return shifted + (remainder > threshold).astype(np.int64)
+
+
+def requantize(accumulator: np.ndarray, multiplier: int, shift: int) -> np.ndarray:
+    """``round(accumulator * M)`` where ``M = M0 * 2^-(31 + shift)``."""
+    return rounding_divide_by_pot(
+        saturating_rounding_doubling_high_mul(accumulator, multiplier), shift
+    )
+
+
+def _check_int32_accumulator(accumulator: np.ndarray, name: str) -> None:
+    """Section 14's static guard, checked rather than assumed.
+
+    The machine traps when its int32 accumulator would overflow, so a reference
+    that quietly widened would disagree with it on exactly the programs the
+    guard exists to forbid, and would disagree by producing an answer where the
+    machine produced a diagnostic.
+    """
+    if accumulator.min() < -(2**31) or accumulator.max() > 2**31 - 1:
+        raise ValueError(
+            f"{name}: the int32 accumulator would overflow, reaching "
+            f"{accumulator.min()} to {accumulator.max()}. Section 14 proves "
+            "int32 accumulation statically with K * 128 * 127 < 2^31 and this "
+            "program is outside it."
+        )
+
+
+def quantized_conv2d(
+    x: QuantTensor,
+    weight: QuantTensor,
+    bias: NDArray[np.int32] | None = None,
+    *,
+    strides: tuple[int, int] | list[int] = (1, 1),
+    pads: tuple[int, int, int, int] | list[int] = (0, 0, 0, 0),
+    dilations: tuple[int, int] | list[int] = (1, 1),
+    group: int = 1,
+    zero_point: int = 0,
+    requant_multiplier: int,
+    requant_shift: int,
+    relu: bool = False,
+) -> QuantTensor:
+    """The int8 convolution: int32 accumulation, then requantization.
+
+    **Padding contributes the zero point**, which is Section 14's rule: the term
+    ``- zp_x * sum_k q_w[k]`` folded into the int32 bias is computed over the
+    whole window, so a tap outside the input has to contribute ``zp_x`` for the
+    two to cancel to the unfolded form at a padded output position. Here that is
+    one argument to ``np.pad``, where the f32 convolution above pads with zero.
+
+    The structure is the f32 convolution's, accumulating over kernel positions
+    with whole tensor slices, which is a different order from the simulator's
+    per output element walk. Integer addition is associative, so unlike the f32
+    pair these two agree **exactly** rather than to a tolerance, and that is
+    what makes the comparison worth something: any difference at all is a
+    defect.
+    """
+    batch, channels, height, width = x.shape
+    filters, channels_per_group, kernel_h, kernel_w = weight.shape
+    stride_h, stride_w = int(strides[0]), int(strides[1])
+    pad_top, pad_left, pad_bottom, pad_right = (int(value) for value in pads)
+    dilation_h, dilation_w = int(dilations[0]), int(dilations[1])
+
+    out_h = windowed_extent(height, kernel_h, stride_h, pad_top, pad_bottom, dilation_h)
+    out_w = windowed_extent(width, kernel_w, stride_w, pad_left, pad_right, dilation_w)
+
+    padded = np.pad(
+        x.astype(np.int64),
+        ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+        mode="constant",
+        constant_values=int(zero_point),
+    )
+
+    out = np.zeros((batch, filters, out_h, out_w), dtype=np.int64)
+    filters_per_group = filters // group
+    weights = weight.astype(np.int64)
+
+    for index in range(group):
+        channel_slice = slice(
+            index * channels_per_group, (index + 1) * channels_per_group
+        )
+        filter_slice = slice(index * filters_per_group, (index + 1) * filters_per_group)
+        for kh in range(kernel_h):
+            row_start = kh * dilation_h
+            rows = slice(row_start, row_start + (out_h - 1) * stride_h + 1, stride_h)
+            for kw in range(kernel_w):
+                column_start = kw * dilation_w
+                columns = slice(
+                    column_start,
+                    column_start + (out_w - 1) * stride_w + 1,
+                    stride_w,
+                )
+                window = padded[:, channel_slice, rows, columns]
+                taps = weights[filter_slice, :, kh, kw]
+                out[:, filter_slice] += np.einsum(
+                    "nchw,fc->nfhw", window, taps, optimize=False
+                )
+
+    if bias is not None:
+        out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1, 1, 1)
+    _check_int32_accumulator(out, "quantized_conv2d")
+
+    rescaled = requantize(out, requant_multiplier, requant_shift)
+    if relu:
+        rescaled = np.maximum(rescaled, np.int64(0))
+    return np.clip(rescaled, -128, 127).astype(np.int8)
+
+
+def quantized_matmul(
+    a: QuantTensor,
+    b: QuantTensor,
+    bias: NDArray[np.int32] | None = None,
+    *,
+    requant_multiplier: int,
+    requant_shift: int,
+    relu: bool = False,
+) -> QuantTensor:
+    """The int8 matrix multiplication: int32 accumulation, then requantization.
+
+    There is no zero point here and there is one on the convolution, and the
+    difference is padding: every tap of a matrix multiplication is in range, so
+    the input zero point's whole contribution is the compile time term already
+    folded into the int32 bias.
+    """
+    out = np.matmul(a.astype(np.int64), b.astype(np.int64))
+    if bias is not None:
+        out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1)
+    _check_int32_accumulator(out, "quantized_matmul")
+
+    rescaled = requantize(out, requant_multiplier, requant_shift)
+    if relu:
+        rescaled = np.maximum(rescaled, np.int64(0))
+    return np.clip(rescaled, -128, 127).astype(np.int8)
+
+
+# ---------------------------------------------------------------------------
 # The dispatcher the differential harness drives.
 # ---------------------------------------------------------------------------
 
 
-def execute(operation: str, inputs: list[Tensor], attributes: dict[str, Any]) -> Tensor:
+def execute(
+    operation: str, inputs: list[AnyTensor], attributes: dict[str, Any]
+) -> AnyTensor:
     """Runs one ``npu`` operation by mnemonic.
 
     The harness of ``test/Python/test_refexec_differential.py`` reads a manifest
@@ -497,8 +739,30 @@ def execute(operation: str, inputs: list[Tensor], attributes: dict[str, Any]) ->
     added to the dialect and not to this file raises by name rather than
     silently going unchecked, which is the same property the C++ dispatch gets
     from a switch with no ``default`` label.
+
+    **Which arithmetic a convolution or a matrix multiplication runs is decided
+    by the operand's element type**, not by a second mnemonic, because the
+    dialect has one ``npu.conv2d`` and the machine has one ``CONV2D``. The
+    manifest carries the dtype of every operand and the ISA carries the element
+    type in the instruction, so both sides read the same fact from their own
+    side of the boundary.
     """
+    quantized = bool(inputs) and inputs[0].dtype == np.int8
     if operation == "conv2d":
+        if quantized:
+            return quantized_conv2d(
+                inputs[0],
+                inputs[1],
+                inputs[2] if len(inputs) > 2 else None,
+                strides=attributes["strides"],
+                pads=attributes["pads"],
+                dilations=attributes["dilations"],
+                group=int(attributes["group"]),
+                zero_point=int(attributes.get("zero_point", 0)),
+                requant_multiplier=int(attributes["requant_multiplier"]),
+                requant_shift=int(attributes["requant_shift"]),
+                relu=bool(attributes.get("relu", False)),
+            )
         return conv2d(
             inputs[0],
             inputs[1],
@@ -509,6 +773,15 @@ def execute(operation: str, inputs: list[Tensor], attributes: dict[str, Any]) ->
             group=int(attributes["group"]),
         )
     if operation == "matmul":
+        if quantized:
+            return quantized_matmul(
+                inputs[0],
+                inputs[1],
+                inputs[2] if len(inputs) > 2 else None,
+                requant_multiplier=int(attributes["requant_multiplier"]),
+                requant_shift=int(attributes["requant_shift"]),
+                relu=bool(attributes.get("relu", False)),
+            )
         return matmul(inputs[0], inputs[1], inputs[2] if len(inputs) > 2 else None)
     if operation == "add":
         return add(inputs[0], inputs[1])
@@ -551,9 +824,21 @@ def execute(operation: str, inputs: list[Tensor], attributes: dict[str, Any]) ->
         )
     if operation == "constant":
         return constant(inputs[0])
+    if operation == "quantize":
+        return quantize(
+            inputs[0],
+            float(attributes["scale"]),
+            int(attributes["zero_point"]),
+        )
+    if operation == "dequantize":
+        return dequantize(
+            inputs[0],
+            float(attributes["scale"]),
+            int(attributes["zero_point"]),
+        )
     raise KeyError(
         f"refexec has no executor for npu.{operation}. The structural "
-        "operations npu.fused_op and npu.yield have none by design, and "
-        "npu.quantize and npu.dequantize arrive with the integer path at Phase "
-        "P14."
+        "operations npu.fused_op and npu.yield have none by design, and they "
+        "are the only two: every operation of the dialect that computes "
+        "something has a function in this module."
     )

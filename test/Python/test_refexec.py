@@ -266,7 +266,54 @@ def test_batch_norm_agrees_with_its_decomposition() -> None:
 
 
 def test_execute_refuses_an_operation_it_does_not_have() -> None:
-    with pytest.raises(KeyError, match="P14"):
-        refexec.execute("quantize", [f32([1.0])], {})
+    """The two structural operations, and a name the dialect does not have.
+
+    ``quantize`` used to be one of the refusals here and is now dispatched,
+    which is what the integer path landing means. The two that stay refused are
+    the two that are structural by design, and the third case is a name nothing
+    has ever had, so the refusal cannot become vacuous the day another operation
+    gains an executor.
+    """
     with pytest.raises(KeyError, match="fused_op"):
         refexec.execute("fused_op", [f32([1.0])], {})
+    with pytest.raises(KeyError, match="yield"):
+        refexec.execute("yield", [f32([1.0])], {})
+    with pytest.raises(KeyError, match="no_such_operation"):
+        refexec.execute("no_such_operation", [f32([1.0])], {})
+
+
+def test_the_quantization_pair_round_trips_through_its_own_rules() -> None:
+    """The pair is an inverse up to the rounding quantization performed.
+
+    The six inputs are the ones ``QuantRoundsHalfToEven`` uses in C++, at the
+    same scale and zero point, and the expected quantized values are the same
+    hand computed six: every input divides to an exact half, where round half to
+    even, round half away from zero and truncation give three different answers.
+
+    They are written out here rather than compared against the kernel, because
+    the two implementations agreeing is the differential test's claim and this
+    one is about whether either matches the rule.
+    """
+    x = f32([0.25, 0.75, 1.25, 1.75, -0.25, -0.75])
+    q = refexec.quantize(x, 0.5, 0)
+    assert q.dtype == np.int8
+    assert q.tolist() == [0, 2, 2, 4, 0, -2]
+
+    # Dequantizing returns the value the quantized grid actually represents,
+    # which is the rounded one rather than the input.
+    back = refexec.dequantize(q, 0.5, 0)
+    np.testing.assert_array_equal(back, f32([0.0, 1.0, 1.0, 2.0, 0.0, -1.0]))
+
+
+def test_quantize_saturates_and_places_real_zero_at_the_zero_point() -> None:
+    """The rails, and the property the padding rule depends on.
+
+    Section 14 requires real zero to be exactly representable so that zero
+    padding is exact, which is why the calibration range is extended to include
+    zero before a scale is computed. Here it shows up as the middle row: an
+    input of exactly zero quantizes to the zero point and to nothing else.
+    """
+    x = f32([40.0, -40.0, 0.0, 8.0, 32.5, -31.25])
+    q = refexec.quantize(x, 0.25, -3)
+    assert q.tolist() == [127, -128, -3, 29, 127, -128]
+    assert refexec.quantize(f32([0.0]), 0.25, -3).tolist() == [-3]

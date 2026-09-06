@@ -56,7 +56,74 @@ def test_the_module_docstring_lists_exactly_the_registered_converters() -> None:
     assert sorted(documented_converters()) == sorted(CONVERTERS)
 
 
-def test_the_quantization_pair_is_refused_by_name_rather_than_generically() -> None:
+def test_a_qdq_pair_imports_to_the_quantization_operations() -> None:
+    """The two converters the quantization phase added, on the shape a real
+    exported QDQ graph has: quantize, then the integer region, then dequantize.
+
+    The scale and the zero point arrive as ONNX *inputs* and leave as `npu`
+    *attributes*, and both are checked here rather than only that the operations
+    appeared: a converter that read the initializers in the wrong order would
+    still emit both operations.
+    """
+    model = make_model(
+        [
+            helper.make_node(
+                "QuantizeLinear", ["x", "scale", "zero"], ["q"], name="q0"
+            ),
+            helper.make_node(
+                "DequantizeLinear", ["q", "scale", "zero"], ["y"], name="dq0"
+            ),
+        ],
+        [value("x", (1, 4))],
+        [value("y", (1, 4))],
+        [
+            initializer("scale", np.array(0.05, dtype=np.float32)),
+            initializer("zero", np.array(-7, dtype=np.int8)),
+        ],
+    )
+    ir = import_model(model)
+    assert count(ir, "quantize") == 1
+    assert count(ir, "dequantize") == 1
+    assert "tensor<1x4xi8>" in ir
+    assert "scale = 5.000000e-02 : f32" in ir
+    assert "zero_point = -7 : i32" in ir
+
+
+def test_a_per_axis_quantize_is_refused_rather_than_collapsed() -> None:
+    """ONNX has carried per axis QDQ since opset 13 and this importer does not.
+
+    Refused by name rather than reduced to one of its scales: a silently
+    averaged or truncated scale is a wrong number with no diagnostic, and per
+    channel weight scales reach the machine through the calibration pass as an
+    int32 bias and a requantization pair rather than as a node here.
+    """
+    model = make_model(
+        [
+            helper.make_node(
+                "QuantizeLinear", ["x", "scale", "zero"], ["q"], name="q0", axis=1
+            ),
+            helper.make_node(
+                "DequantizeLinear", ["q", "scale", "zero"], ["y"], name="dq0", axis=1
+            ),
+        ],
+        [value("x", (1, 4))],
+        [value("y", (1, 4))],
+        [
+            initializer("scale", np.array([0.05, 0.1, 0.2, 0.4], dtype=np.float32)),
+            initializer("zero", np.array([0, 0, 0, 0], dtype=np.int8)),
+        ],
+    )
+    with pytest.raises(ONNXImportError, match="per tensor form only"):
+        import_model(model)
+
+
+def test_a_graph_boundary_stays_f32_even_in_a_quantized_graph() -> None:
+    """The one place quantization does not move.
+
+    A graph output of int8 would be a function result this project cannot write
+    down, and the QDQ form does not ask it to: the dequantize that ends an
+    integer region is what the graph returns.
+    """
     model = make_model(
         [helper.make_node("QuantizeLinear", ["x", "scale", "zero"], ["y"], name="q0")],
         [value("x", (1, 4))],
@@ -66,7 +133,7 @@ def test_the_quantization_pair_is_refused_by_name_rather_than_generically() -> N
             initializer("zero", np.array(0, dtype=np.int8)),
         ],
     )
-    with pytest.raises(ONNXImportError, match="quantization phase"):
+    with pytest.raises(ONNXImportError, match="graph input or output of this"):
         import_model(model)
 
 

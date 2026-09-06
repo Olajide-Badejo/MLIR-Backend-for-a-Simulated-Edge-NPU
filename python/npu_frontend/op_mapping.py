@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 """The converter registry: one ONNX operator to one `npu` operation.
 
-Sixteen converters, at the pinned opset 23. The list below is the contract, and
+Eighteen converters, at the pinned opset 23. The list below is the contract, and
 `test_onnx_importer.py` asserts it agrees with `CONVERTERS` exactly, in both
 directions, so a converter added without a line here fails a test rather than
 going undocumented, and a line here for a converter that does not exist fails
@@ -15,6 +15,7 @@ the same test.
 - ``Clip`` to ``npu.relu``, and only for the bounds that are a relu.
 - ``Concat`` to ``npu.concat``, with the axis normalised to non negative.
 - ``Conv`` to ``npu.conv2d``, rank 4, grouped, with an optional bias operand.
+- ``DequantizeLinear`` to ``npu.dequantize``, per tensor.
 - ``Flatten`` to ``npu.reshape``, batch preserving.
 - ``Gemm`` to ``npu.matmul``, with an optional bias operand.
 - ``GlobalAveragePool`` to ``npu.avg_pool2d`` with a full extent kernel.
@@ -22,6 +23,7 @@ the same test.
 - ``MatMul`` to ``npu.matmul``, rank 2 by rank 2.
 - ``MaxPool`` to ``npu.max_pool2d``.
 - ``Mul`` to ``npu.mul``, through the shared broadcasting policy.
+- ``QuantizeLinear`` to ``npu.quantize``, per tensor.
 - ``Relu`` to ``npu.relu``.
 - ``Reshape`` to ``npu.reshape``, batch preserving when it flattens.
 - ``Transpose`` to ``npu.transpose``.
@@ -65,18 +67,6 @@ Converter = Callable[[ConversionContext, NodeProto], None]
 # Operators this project will support and does not yet, refused with the phase
 # that brings them rather than with a generic message.
 DEFERRED: Final[dict[str, str]] = {
-    "QuantizeLinear": (
-        "the quantization pair arrives with its converters, its integer "
-        "kernels and its calibrated models together, at the quantization "
-        "phase. The npu dialect has no quantize operation to import it to, so "
-        "accepting it here would mean emitting something nothing can lower, "
-        "encode or simulate."
-    ),
-    "DequantizeLinear": (
-        "the quantization pair arrives with its converters, its integer "
-        "kernels and its calibrated models together, at the quantization "
-        "phase. The npu dialect has no dequantize operation to import it to."
-    ),
     "Pad": (
         "Pad is not in this project's operator set and is not planned. Its "
         "opset 18 optional axes input changes the length of pads from twice "
@@ -898,6 +888,108 @@ def convert_concat(ctx: ConversionContext, node: NodeProto) -> None:
     )
 
 
+# =============================================================================
+# The quantization pair.
+# =============================================================================
+
+
+def _quantization_parameters(
+    ctx: ConversionContext, node: NodeProto
+) -> tuple[float, int]:
+    """The scale and the zero point of a QDQ node, read from its initializers.
+
+    ONNX carries both as **inputs** rather than as attributes, and this project
+    carries them as attributes, so the conversion happens here. Both have to be
+    constant: a scale computed at run time is a scale the verifier cannot check
+    and the encoder cannot write into the binary, and Section 14 requires the
+    requantization to live in the file rather than in an out of band JSON.
+
+    **Per tensor only.** ONNX has carried per axis QDQ since opset 13, and a per
+    axis node arrives here as a rank 1 scale with an ``axis`` attribute. It is
+    refused by name rather than collapsed to its first element, because a
+    silently averaged or truncated scale is a wrong number with no diagnostic,
+    which is exactly what law 1 forbids. Per channel weights are quantized at
+    compile time by the calibration pass and reach the machine as the int32
+    bias and the requantization pair, not as a per axis node here.
+
+    The zero point input is optional and defaults to zero, which is ONNX's own
+    rule and is the symmetric case.
+    """
+    scale_array = ctx.initializer(node.input[1]) if len(node.input) > 1 else None
+    if scale_array is None:
+        raise node_error(
+            node,
+            "the scale must be a constant initializer. A scale computed at run "
+            "time cannot be checked by the verifier or written into the binary, "
+            "and Section 14 requires the requantization to live in the file "
+            "rather than in an out of band calibration JSON.",
+        )
+    if scale_array.size != 1:
+        raise node_error(
+            node,
+            f"the scale holds {scale_array.size} values, and this importer "
+            "implements the per tensor form only. A per axis node is refused "
+            "rather than collapsed to one of its values: per channel weight "
+            "scales reach the machine as the int32 bias and the requantization "
+            "pair that the calibration pass computes, not as a per axis node "
+            "here.",
+        )
+    scale = float(np.asarray(scale_array).reshape(-1)[0])
+
+    zero_point = 0
+    if len(node.input) > 2 and node.input[2]:
+        zero_array = ctx.initializer(node.input[2])
+        if zero_array is None:
+            raise node_error(
+                node,
+                "the zero point must be a constant initializer, for the same "
+                "reason the scale must be.",
+            )
+        if zero_array.size != 1:
+            raise node_error(
+                node,
+                f"the zero point holds {zero_array.size} values, and this "
+                "importer implements the per tensor form only.",
+            )
+        zero_point = int(np.asarray(zero_array).reshape(-1)[0])
+
+    # `axis` is not read, and that is ONNX's own rule rather than a shortcut:
+    # the attribute is used only for per axis and blocked quantization, and a
+    # scalar scale is neither. The per axis form is refused above, by the one
+    # check that can tell the two apart, which is the number of scales.
+    return scale, zero_point
+
+
+def convert_quantize_linear(ctx: ConversionContext, node: NodeProto) -> None:
+    scale, zero_point = _quantization_parameters(ctx, node)
+    result_shape = ctx.shape(node, node.output[0])
+    ctx.bind(
+        node.output[0],
+        ctx.builder.quantize(
+            ctx.value(node, node.input[0]),
+            shape=result_shape,
+            scale=scale,
+            zero_point=zero_point,
+            name=node.name,
+        ),
+    )
+
+
+def convert_dequantize_linear(ctx: ConversionContext, node: NodeProto) -> None:
+    scale, zero_point = _quantization_parameters(ctx, node)
+    result_shape = ctx.shape(node, node.output[0])
+    ctx.bind(
+        node.output[0],
+        ctx.builder.dequantize(
+            ctx.value(node, node.input[0]),
+            shape=result_shape,
+            scale=scale,
+            zero_point=zero_point,
+            name=node.name,
+        ),
+    )
+
+
 CONVERTERS: Final[dict[str, Converter]] = {
     "Add": convert_add,
     "AveragePool": convert_average_pool,
@@ -905,6 +997,7 @@ CONVERTERS: Final[dict[str, Converter]] = {
     "Clip": convert_clip,
     "Concat": convert_concat,
     "Conv": convert_conv,
+    "DequantizeLinear": convert_dequantize_linear,
     "Flatten": convert_flatten,
     "Gemm": convert_gemm,
     "GlobalAveragePool": convert_global_average_pool,
@@ -912,6 +1005,7 @@ CONVERTERS: Final[dict[str, Converter]] = {
     "MatMul": convert_matmul,
     "MaxPool": convert_max_pool,
     "Mul": convert_mul,
+    "QuantizeLinear": convert_quantize_linear,
     "Relu": convert_relu,
     "Reshape": convert_reshape,
     "Transpose": convert_transpose,
@@ -935,8 +1029,8 @@ def documented_converters() -> list[str]:
 # against the operations the importer actually creates by a pytest, so it cannot
 # drift into being a list that satisfies the reachability check and nothing
 # else: npu.constant, npu.conv2d, npu.matmul, npu.add, npu.mul, npu.relu,
-# npu.max_pool2d, npu.avg_pool2d, npu.reshape, npu.transpose, npu.concat and
-# npu.batch_norm.
+# npu.max_pool2d, npu.avg_pool2d, npu.reshape, npu.transpose, npu.concat,
+# npu.batch_norm, npu.quantize and npu.dequantize.
 EMITTED_OPERATIONS: Final[tuple[str, ...]] = (
     "constant",
     "conv2d",
@@ -950,4 +1044,6 @@ EMITTED_OPERATIONS: Final[tuple[str, ...]] = (
     "transpose",
     "concat",
     "batch_norm",
+    "quantize",
+    "dequantize",
 )

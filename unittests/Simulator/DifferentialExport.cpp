@@ -31,7 +31,11 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -70,11 +74,43 @@ public:
     return out;
   }
 
+  /// The same stream, mapped onto the whole i8 range.
+  ///
+  /// `next()` lands in [-1, 1), so this scales and floors onto [-128, 128) and
+  /// clamps the one value that lands on the top rail. Drawing i8 from the same
+  /// generator rather than a second one keeps `TheStreamSpansBothSigns` the
+  /// only place the generator's range is asserted.
+  std::vector<int8_t> int8Values(int64_t count) {
+    std::vector<int8_t> out(static_cast<size_t>(count));
+    for (int8_t &value : out) {
+      const float scaled = std::floor(next() * 128.0f);
+      value = static_cast<int8_t>(std::min(127.0f, std::max(-128.0f, scaled)));
+    }
+    return out;
+  }
+
+  /// An int32 bias, drawn small enough that it cannot itself overflow the
+  /// accumulator: the reductions in these cases are a few hundred taps of at
+  /// most 128 by 127, so a bias of a few thousand leaves the int32 guard with
+  /// three orders of magnitude in hand.
+  std::vector<int32_t> int32Values(int64_t count) {
+    std::vector<int32_t> out(static_cast<size_t>(count));
+    for (int32_t &value : out)
+      value = static_cast<int32_t>(std::floor(next() * 4096.0f));
+    return out;
+  }
+
 private:
   uint64_t state;
 };
 
 /// One operand of an exported case.
+///
+/// **The element type joined this at Phase P14** and `data` is the f32 payload
+/// only. An integer operand carries its bytes in `raw` instead, because an i8
+/// operand's values are not floats that happen to be small: they are the
+/// machine's own representation and rounding them through a float would be the
+/// one place this harness could quietly change the numbers it is comparing.
 struct Input {
   std::vector<int64_t> shape;
   std::vector<float> data;
@@ -82,7 +118,52 @@ struct Input {
   /// buffer itself. This is the channel broadcast of ADR 0005.
   std::vector<int64_t> viewShape;
   std::vector<int64_t> viewStrides;
+  ElemType type = ElemType::F32;
+  std::vector<uint8_t> raw;
 };
+
+/// The bytes an operand is written and loaded as, whichever type it is.
+llvm::ArrayRef<uint8_t> payload(const Input &operand) {
+  if (operand.type == ElemType::F32)
+    return llvm::ArrayRef<uint8_t>(
+        reinterpret_cast<const uint8_t *>(operand.data.data()),
+        operand.data.size() * sizeof(float));
+  return llvm::ArrayRef<uint8_t>(operand.raw);
+}
+
+/// An i8 operand, from a draw.
+Input i8Input(std::vector<int64_t> shape, const std::vector<int8_t> &values) {
+  Input operand;
+  operand.shape = std::move(shape);
+  operand.type = ElemType::I8;
+  operand.raw.assign(reinterpret_cast<const uint8_t *>(values.data()),
+                     reinterpret_cast<const uint8_t *>(values.data()) +
+                         values.size());
+  return operand;
+}
+
+/// An i32 operand, which is what a quantized bias is.
+Input i32Input(std::vector<int64_t> shape, const std::vector<int32_t> &values) {
+  Input operand;
+  operand.shape = std::move(shape);
+  operand.type = ElemType::I32;
+  const auto *bytes = reinterpret_cast<const uint8_t *>(values.data());
+  operand.raw.assign(bytes, bytes + values.size() * sizeof(int32_t));
+  return operand;
+}
+
+/// The name the manifest gives an element type, which is the name numpy knows.
+const char *dtypeName(ElemType type) {
+  switch (type) {
+  case ElemType::F32:
+    return "float32";
+  case ElemType::I8:
+    return "int8";
+  case ElemType::I32:
+    return "int32";
+  }
+  return "unknown";
+}
 
 /// One case: an `npu` level intention, and the machine level program that is
 /// supposed to carry it out.
@@ -101,6 +182,14 @@ struct Case {
   std::vector<int64_t> kernel;
   std::vector<int64_t> axes;
   int64_t group = 0;
+  /// The result's element type. An integer result is what selects the integer
+  /// arithmetic on both sides: the instruction carries it, and the manifest
+  /// carries the operand dtypes that `refexec` reads.
+  ElemType resultType = ElemType::F32;
+  float scale = 0.0f;
+  int32_t zeroPoint = 0;
+  int32_t requantMultiplier = 1;
+  int32_t requantShift = 0;
 };
 
 std::string shapeJson(llvm::ArrayRef<int64_t> shape) {
@@ -117,55 +206,89 @@ std::string shapeJson(llvm::ArrayRef<int64_t> shape) {
 /// the instruction, one store, and a HALT.
 Program buildProgram(const Case &entry, uint64_t &scratchpadBytes) {
   Builder builder;
-  std::vector<int64_t> regions;
-  std::vector<int64_t> buffers;
+  std::vector<int64_t> regions(entry.inputs.size(), 0);
+  std::vector<int64_t> buffers(entry.inputs.size(), 0);
   int64_t total = 0;
-  for (const Input &operand : entry.inputs) {
-    regions.push_back(builder.input(operand.shape));
-    buffers.push_back(builder.scratch(elements(operand.shape)));
-    total += elements(operand.shape);
+
+  // **The input regions are declared in operand order**, because the caller
+  // loads them by index: `loadInput(0, ...)` means the program's first declared
+  // input, and reordering the declarations would silently pair each operand
+  // with another operand's bytes.
+  for (size_t index = 0; index < entry.inputs.size(); ++index) {
+    const Input &operand = entry.inputs[index];
+    regions[index] = builder.input(operand.shape, operand.type);
   }
-  const int64_t resultBuffer = builder.scratch(elements(entry.resultShape));
-  total += elements(entry.resultShape);
-  const int64_t sink = builder.output(entry.resultShape);
+
+  // **The scratchpad buffers are allocated widest element first**, and that is
+  // the machine's own rule rather than tidiness: a four byte element is read
+  // through an accessor that requires a four byte aligned address, and an i32
+  // bias placed after a run of i8 buffers would land wherever their total left
+  // it. The real allocator aligns every offset to `kDefaultAlignment`, so a
+  // compiled program never has the problem; this harness allocates tightly and
+  // unaligned on purpose, so it orders the buffers instead. Unlike the regions
+  // above this order is not observable: a scratchpad address is an address.
+  std::vector<size_t> order(entry.inputs.size());
+  for (size_t index = 0; index < order.size(); ++index)
+    order[index] = index;
+  llvm::stable_sort(order, [&](size_t left, size_t right) {
+    return elementByteSize(entry.inputs[left].type) >
+           elementByteSize(entry.inputs[right].type);
+  });
+
+  for (size_t index : order) {
+    const Input &operand = entry.inputs[index];
+    buffers[index] = builder.scratch(elements(operand.shape), operand.type);
+    total += elements(operand.shape) * elementByteSize(operand.type);
+  }
+  const int64_t resultBuffer =
+      builder.scratch(elements(entry.resultShape), entry.resultType);
+  total += elements(entry.resultShape) * elementByteSize(entry.resultType);
+  const int64_t sink = builder.output(entry.resultShape, entry.resultType);
 
   for (size_t index = 0; index < entry.inputs.size(); ++index)
     builder.add(dmaLoad(buffers[index], entry.inputs[index].shape,
                         at(MemSpace::Dram, regions[index],
-                           entry.inputs[index].shape)));
+                           entry.inputs[index].shape,
+                           entry.inputs[index].type)));
 
   std::vector<Operand> operands;
   for (size_t index = 0; index < entry.inputs.size(); ++index) {
     const Input &operand = entry.inputs[index];
     if (operand.viewShape.empty())
-      operands.push_back(
-          at(MemSpace::Scratchpad, buffers[index], operand.shape));
+      operands.push_back(at(MemSpace::Scratchpad, buffers[index], operand.shape,
+                            operand.type));
     else
       operands.push_back(strided(MemSpace::Scratchpad, buffers[index],
-                                 operand.viewShape, operand.viewStrides));
+                                 operand.viewShape, operand.viewStrides,
+                                 operand.type));
   }
 
-  Instruction instruction = compute(entry.opcode, resultBuffer,
-                                    entry.resultShape, std::move(operands));
+  Instruction instruction =
+      compute(entry.opcode, resultBuffer, entry.resultShape,
+              std::move(operands), entry.resultType);
   instruction.pads = entry.pads;
   instruction.strides = entry.strides;
   instruction.dilations = entry.dilations;
   instruction.kernel = entry.kernel;
   instruction.axes = entry.axes;
   instruction.group = entry.group;
+  instruction.scale = entry.scale;
+  instruction.zeroPoint = entry.zeroPoint;
+  instruction.requantMultiplier = entry.requantMultiplier;
+  instruction.requantShift = entry.requantShift;
   builder.add(std::move(instruction));
 
   builder.add(dmaStore(sink, entry.resultShape,
-                       at(MemSpace::Scratchpad, resultBuffer,
-                          entry.resultShape)));
+                       at(MemSpace::Scratchpad, resultBuffer, entry.resultShape,
+                          entry.resultType)));
   builder.add(halt());
 
-  // The scratchpad is the sum of the operand buffers and the result buffer,
-  // four bytes an element, and nothing else. It is computed here rather than
-  // written out per case because there are twenty of them; `Builder::finish`
-  // still asserts that the number and the buffers agree, which is the property
-  // Section 9.3 is after.
-  scratchpadBytes = static_cast<uint64_t>(total * 4);
+  // The scratchpad is the sum of the operand buffers and the result buffer and
+  // nothing else, each at its own element size. It is computed here rather than
+  // written out per case because there are two dozen of them;
+  // `Builder::finish` still asserts that the number and the buffers agree,
+  // which is the property Section 9.3 is after.
+  scratchpadBytes = static_cast<uint64_t>(total);
   return builder.finish(scratchpadBytes);
 }
 
@@ -387,6 +510,121 @@ std::vector<Case> cases() {
     all.push_back(std::move(entry));
   }
 
+  // -------------------------------------------------------------------------
+  // The integer cases.
+  //
+  // These are the ones whose comparison is **exact** rather than to a
+  // tolerance. Integer addition is associative, so the reference's whole tensor
+  // slicing and the kernel's per element walk cannot disagree by a summation
+  // order, and any difference at all is a defect. That is a stronger claim than
+  // any f32 case in this file can make, and it is the whole reason Section 14
+  // can say a tiled reduction is bit exact by construction.
+  //
+  // The requantization pair is the identity for these accumulators: M0 at
+  // 2^31 - 1 with a shift of zero is M = 1 - 2^-31, and the multiply loses
+  // acc / 2^31 while the rounding puts it back. That keeps the arithmetic under
+  // comparison the convolution rather than the rescale, and the two cases that
+  // are about the rescale carry their own multiplier.
+  // -------------------------------------------------------------------------
+
+  constexpr int32_t kIdentity = 2147483647;
+  constexpr int32_t kHalf = 1073741824;
+
+  {
+    Case entry;
+    entry.name = "quantize_per_tensor";
+    entry.operation = "quantize";
+    entry.opcode = Opcode::QUANT;
+    entry.inputs.push_back({{2, 3, 4, 4}, stream.values(96), {}, {}});
+    entry.resultShape = {2, 3, 4, 4};
+    entry.resultType = ElemType::I8;
+    entry.scale = 0.0125f;
+    entry.zeroPoint = -7;
+    entry.attributes = "\"scale\": 0.0125, \"zero_point\": -7";
+    all.push_back(std::move(entry));
+  }
+
+  {
+    Case entry;
+    entry.name = "dequantize_per_tensor";
+    entry.operation = "dequantize";
+    entry.opcode = Opcode::DEQUANT;
+    entry.inputs.push_back(i8Input({2, 3, 4, 4}, stream.int8Values(96)));
+    entry.resultShape = {2, 3, 4, 4};
+    entry.resultType = ElemType::F32;
+    entry.scale = 0.0125f;
+    entry.zeroPoint = -7;
+    entry.attributes = "\"scale\": 0.0125, \"zero_point\": -7";
+    all.push_back(std::move(entry));
+  }
+
+  auto quantConv = [&](std::string name, std::vector<int64_t> inputShape,
+                       std::vector<int64_t> filterShape,
+                       std::vector<int64_t> resultShape,
+                       std::vector<int64_t> strides, std::vector<int64_t> pads,
+                       std::vector<int64_t> dilations, int64_t group,
+                       int32_t zeroPoint, int32_t multiplier) {
+    Case entry;
+    entry.name = std::move(name);
+    entry.operation = "conv2d";
+    entry.opcode = Opcode::CONV2D;
+    entry.resultType = ElemType::I8;
+    entry.inputs.push_back(
+        i8Input(inputShape, stream.int8Values(elements(inputShape))));
+    entry.inputs.push_back(
+        i8Input(filterShape, stream.int8Values(elements(filterShape))));
+    entry.inputs.push_back(
+        i32Input({resultShape[1]}, stream.int32Values(resultShape[1])));
+    entry.resultShape = resultShape;
+    entry.strides = std::move(strides);
+    entry.pads = std::move(pads);
+    entry.dilations = std::move(dilations);
+    entry.group = group;
+    entry.zeroPoint = zeroPoint;
+    entry.requantMultiplier = multiplier;
+    entry.requantShift = 0;
+    entry.attributes = convAttributes(entry) + ", \"zero_point\": " +
+                       std::to_string(entry.zeroPoint) +
+                       ", \"requant_multiplier\": " +
+                       std::to_string(entry.requantMultiplier) +
+                       ", \"requant_shift\": " +
+                       std::to_string(entry.requantShift);
+    all.push_back(std::move(entry));
+  };
+
+  // A padded convolution at a non zero input zero point, which is the case the
+  // whole folded bias argument rests on, and the same shape unpadded beside it
+  // so that a padding rule that was wrong in both directions cannot hide.
+  quantConv("conv2d_i8_padded", {1, 3, 5, 5}, {4, 3, 3, 3}, {1, 4, 5, 5},
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, -11, kHalf);
+  quantConv("conv2d_i8_unpadded", {1, 3, 5, 5}, {4, 3, 3, 3}, {1, 4, 3, 3},
+            {1, 1}, {0, 0, 0, 0}, {1, 1}, 1, -11, kIdentity);
+  quantConv("conv2d_i8_depthwise", {2, 6, 5, 5}, {6, 1, 3, 3}, {2, 6, 5, 5},
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 6, 23, kHalf);
+  // A zero point of zero, which is the symmetric case and the one where a
+  // kernel that ignored the field entirely would still pass.
+  quantConv("conv2d_i8_symmetric", {1, 2, 6, 6}, {3, 2, 3, 3}, {1, 3, 6, 6},
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, 0, kIdentity);
+
+  {
+    Case entry;
+    entry.name = "matmul_i8_bias";
+    entry.operation = "matmul";
+    entry.opcode = Opcode::MATMUL;
+    entry.resultType = ElemType::I8;
+    entry.inputs.push_back(i8Input({5, 19}, stream.int8Values(95)));
+    entry.inputs.push_back(i8Input({19, 3}, stream.int8Values(57)));
+    entry.inputs.push_back(i32Input({3}, stream.int32Values(3)));
+    entry.resultShape = {5, 3};
+    entry.requantMultiplier = kHalf;
+    entry.requantShift = 2;
+    entry.attributes = "\"requant_multiplier\": " +
+                       std::to_string(entry.requantMultiplier) +
+                       ", \"requant_shift\": " +
+                       std::to_string(entry.requantShift);
+    all.push_back(std::move(entry));
+  }
+
   return all;
 }
 
@@ -439,13 +677,17 @@ TEST(Differential, TheCasesCanBeWrittenOutForTheReferenceInterpreter) {
       const Input &input = entry.inputs[operand];
       const std::string name =
           entry.name + ".in" + std::to_string(operand) + ".bin";
-      writeFile(std::string(directory) + "/" + name, input.data.data(),
-                input.data.size() * sizeof(float));
+      const llvm::ArrayRef<uint8_t> bytes = payload(input);
+      writeFile(std::string(directory) + "/" + name, bytes.data(),
+                bytes.size());
       manifest += "        {\"file\": \"" + name + "\", \"shape\": " +
-                  shapeJson(input.shape) + "}";
+                  shapeJson(input.shape) + ", \"dtype\": \"" +
+                  dtypeName(input.type) + "\"}";
       manifest += operand + 1 < entry.inputs.size() ? ",\n" : "\n";
     }
     manifest += "      ],\n";
+    manifest += "      \"result_dtype\": \"" + std::string(dtypeName(entry.resultType)) +
+                "\",\n";
     manifest +=
         "      \"result_shape\": " + shapeJson(entry.resultShape) + "\n";
     manifest += index + 1 < all.size() ? "    },\n" : "    }\n";
@@ -456,6 +698,28 @@ TEST(Differential, TheCasesCanBeWrittenOutForTheReferenceInterpreter) {
             manifest.size());
   std::cout << "[          ] wrote " << all.size() << " differential cases to "
             << directory << "\n";
+}
+
+TEST(Differential, EveryIntegerCaseIsComparedExactly) {
+  // The claim the integer cases exist to make, asserted here as a property of
+  // the case set rather than left to the pytest that consumes it: every case
+  // whose result is an integer type is one whose two implementations must agree
+  // to the bit, because integer addition is associative and neither side has a
+  // summation order the other can disagree with.
+  //
+  // It also catches the case set going quietly f32 only. A file that lost its
+  // integer cases in an edit would still pass every other test here.
+  const std::vector<Case> all = cases();
+  int integerCases = 0;
+  for (const Case &entry : all) {
+    if (entry.resultType == ElemType::F32 &&
+        (entry.inputs.empty() || entry.inputs.front().type == ElemType::F32))
+      continue;
+    ++integerCases;
+    for (const Input &operand : entry.inputs)
+      EXPECT_NE(payload(operand).size(), 0u) << entry.name;
+  }
+  EXPECT_GE(integerCases, 7) << "the integer half of the case set has shrunk";
 }
 
 TEST(Differential, TheStreamSpansBothSigns) {
@@ -495,22 +759,18 @@ TEST(Differential, EveryExportedCaseRunsCleanly) {
     Harness harness(buildProgram(entry, scratchpadBytes));
 
     for (size_t operand = 0; operand < entry.inputs.size(); ++operand) {
-      const std::vector<float> &data = entry.inputs[operand].data;
       std::string failure;
-      ASSERT_TRUE(harness.sim().loadInput(
-          operand,
-          llvm::ArrayRef<uint8_t>(
-              reinterpret_cast<const uint8_t *>(data.data()),
-              data.size() * sizeof(float)),
-          failure))
+      ASSERT_TRUE(harness.sim().loadInput(operand, payload(entry.inputs[operand]),
+                                          failure))
           << failure;
     }
 
     const SimResult result = harness.run();
     ASSERT_TRUE(result.ok()) << result.error.value_or("");
     EXPECT_TRUE(result.reachedHalt);
-    EXPECT_EQ(harness.outputF32(0).size(),
-              static_cast<size_t>(elements(entry.resultShape)));
+    EXPECT_EQ(harness.sim().outputBytes(0).size(),
+              static_cast<size_t>(elements(entry.resultShape) *
+                                  elementByteSize(entry.resultType)));
   }
 }
 
