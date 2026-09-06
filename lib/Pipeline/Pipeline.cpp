@@ -353,9 +353,21 @@ void addPass(OpPassManager &pm, const PassEntry &entry,
   case PassKind::NPULowerToNPUISA:
     pm.addPass(npuisa::createNPULowerToNPUISA());
     return;
-  case PassKind::NPUDoubleBuffer:
-    pm.addNestedPass<func::FuncOp>(npuisa::createNPUDoubleBuffer());
+  case PassKind::NPUDoubleBuffer: {
+    // **And the prefetch is priced against that same budget.** A hoist doubles
+    // the prefetched operand's residency, and at the tight budgets of ADR 0008
+    // that doubling is what five of the seven models cannot place. The pass
+    // declines a hoist it cannot fit rather than the budgets moving, which is
+    // D-0054's resolution, and it can only do that if it is told the same
+    // number the allocator is told. Minus one means the allocator's own
+    // default, which is this pass's default too.
+    npuisa::NPUDoubleBufferOptions prefetch;
+    prefetch.budget = options.scratchpadBudget;
+    prefetch.strategy = options.allocationStrategy;
+    prefetch.alignment = options.allocationAlignment;
+    pm.addNestedPass<func::FuncOp>(npuisa::createNPUDoubleBuffer(prefetch));
     return;
+  }
   case PassKind::NPUAllocateScratchpad: {
     npuisa::NPUAllocateScratchpadOptions allocation;
     allocation.budget = options.scratchpadBudget;

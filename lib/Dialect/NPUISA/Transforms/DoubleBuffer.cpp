@@ -21,6 +21,36 @@
 // instructions, same arithmetic, one token added, and the transfer now runs
 // underneath the computation rather than after it.
 //
+// **What decides whether it is worth it is the budget**, and that is the reason
+// this file depends on the allocator's own liveness. Double buffering doubles
+// the prefetched operand's residency: the destination is live from the issue to
+// the await instead of from the load to its reader. On five of the seven models
+// of this suite that doubling puts the function's peak over its ADR 0008 tight
+// budget, `lenet` at 234880 bytes against 194624 and `resnet_block` at 8736
+// against 6464, and **a prefetch that cannot be placed is not a prefetch**.
+// Those budgets are frozen, so the pass asks what the doubling costs before it
+// commits to it and declines the hoist when the answer is over budget. D-0054
+// is the measurement that made this a decision rather than a set membership.
+//
+// **The estimate is the allocator's own offset assignment, and the sweep line
+// peak was tried first and is not enough.** Section 13.1 says the peak is a
+// lower bound on any placement and that the spill trigger is therefore "offset
+// assignment failed" and never "peak exceeded budget". A rule built on the peak
+// obeys the first half of that and ignores the second, and the measurement is
+// what settled it: on `dilated_stack` at its tight budget of 8064 the peak with
+// the prefetch is 8028, which fits, and the arena then needs 8084 and the
+// program does not compile. **56 bytes of alignment, and a cell that stops
+// existing.** So the question the pass asks is the question it means: run the
+// allocator's `assignOffsets` over the intervals the hoist would produce, and
+// decline when they do not place.
+//
+// That is deliberately stronger than the peak in a second way as well. A
+// program whose intervals do not place is one the allocator is about to spill,
+// and a spill is a `dma_store` and a `dma_load` on the **same port** the
+// prefetch exists to unload. A prefetch bought with two transfers on that port
+// is not a prefetch either, so declining there is the same sentence rather than
+// a second rule.
+//
 // **What makes it safe is not an identity check**, and that is the reason this
 // file depends on the overlap analysis rather than on comparing SSA values.
 // Section 8's rule 4 says no operation between the asynchronous operation and
@@ -39,13 +69,19 @@
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISAMemoryOverlap.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISAOps.h"
+#include "NPU/Dialect/NPUISA/Transforms/ScratchpadAllocation.h"
+#include "NPU/Dialect/NPUISA/Transforms/ScratchpadLiveness.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <algorithm>
 
 namespace mlir::npuisa {
 #define GEN_PASS_DEF_NPUDOUBLEBUFFER
@@ -89,6 +125,23 @@ bool mightTouch(Operation *op, Value buffer) {
   return false;
 }
 
+/// What this pass did with one transfer.
+///
+/// **Three answers rather than two, because a pass that answered no reads
+/// differently from one that never asked.** Section 19.0 asks for exactly that
+/// separation and D-0054 is why it is worth the enumeration here: for one
+/// commit the whole suite reported `not-hoisted` on every transfer, and the
+/// reason was neither of the two this pass can now tell apart.
+enum class Answer {
+  /// Hoisted above a computation and made asynchronous.
+  Prefetched,
+  /// Nothing safe to overlap it with, so it stays where it is.
+  NotHoisted,
+  /// There was something to hide it under, and the prefetched destination's
+  /// residency would put the function's peak over the budget.
+  WouldNotFit,
+};
+
 struct DoubleBufferPass
     : public npuisa::impl::NPUDoubleBufferBase<DoubleBufferPass> {
   using npuisa::impl::NPUDoubleBufferBase<
@@ -96,18 +149,78 @@ struct DoubleBufferPass
 
   void runOnOperation() override {
     func::FuncOp function = getOperation();
+    if (function.isExternal())
+      return;
+
+    // **One budget and one placement rule on this machine**, read the way the
+    // allocator reads them, so that what this pass prices a prefetch against is
+    // what the allocator will place it against.
+    if (failed(readPlacementOptions(function)))
+      return signalPassFailure();
+    FailureOr<int64_t> resolved =
+        npuisa::readScratchpadBudget(function, static_cast<int64_t>(budget));
+    if (failed(resolved))
+      return signalPassFailure();
+    resolvedBudget = *resolved;
 
     // The loads are collected before anything moves, because hoisting one
     // changes the order the walk would see.
     SmallVector<npuisa::DmaLoadOp> loads;
     function.walk([&](npuisa::DmaLoadOp load) { loads.push_back(load); });
 
-    for (npuisa::DmaLoadOp load : loads)
-      if (!hoist(load))
+    for (npuisa::DmaLoadOp load : loads) {
+      switch (hoist(load)) {
+      case Answer::Prefetched:
+        break;
+      case Answer::NotHoisted:
         ++notHoisted;
+        break;
+      case Answer::WouldNotFit:
+        ++wouldNotFit;
+        break;
+      }
+    }
   }
 
 private:
+  /// The budget every prefetch is priced against, filled by `runOnOperation`.
+  int64_t resolvedBudget = npuisa::kDefaultScratchpadBudget;
+  /// The allocator's placement rule, so that the estimate is its question.
+  npuisa::Strategy resolvedStrategy = npuisa::Strategy::Pack;
+  int64_t resolvedAlignment = npuisa::kDefaultAlignment;
+
+  /// Parses the two options that decide what "will fit" means.
+  ///
+  /// Both are taken as the allocator takes them and refused the way it refuses
+  /// them: a bad value is a diagnostic naming the string and listing what is
+  /// accepted, not a silent fallback to a default nobody asked for. The
+  /// `static_cast<int64_t>` on the alignment is load bearing rather than
+  /// defensive, and D-0017 is why: streaming an `llvm::cl::opt` into a
+  /// `Diagnostic` selects the `char` overload and prints an alignment of 48 as
+  /// the character '0'.
+  LogicalResult readPlacementOptions(func::FuncOp function) {
+    bool ok = true;
+    if (std::optional<npuisa::Strategy> parsed = npuisa::parseStrategy(strategy))
+      resolvedStrategy = *parsed;
+    else {
+      function.emitError() << "unknown strategy '" << strategy
+                           << "'. The accepted values are: "
+                           << npuisa::strategyOptions();
+      ok = false;
+    }
+
+    const int64_t requested = alignment;
+    if (requested > 0 && (requested & (requested - 1)) == 0)
+      resolvedAlignment = requested;
+    else {
+      function.emitError()
+          << "the alignment must be a positive power of two, but it is "
+          << requested;
+      ok = false;
+    }
+    return success(ok);
+  }
+
   /// The pure view and allocation operations a load's operands are built from.
   ///
   /// **A transfer cannot be hoisted without them and that is the whole reason
@@ -129,6 +242,17 @@ private:
   /// **earlier** cannot break a later use, because every use it had is still
   /// after it; what has to be checked is the other direction, that its own
   /// operands still reach it, and `hoistIsDominanceSafe` below is that check.
+  ///
+  /// **`npuisa.const` is admitted and that is D-0054's other half.** In the
+  /// programs this compiler emits every argument load sits in the entry block
+  /// beside the other argument loads, where the walk correctly stops at another
+  /// transfer, so the one transfer with a computation before it is the load of a
+  /// weight, whose source is an `npuisa.const`. With the constant left behind,
+  /// `hoistIsDominanceSafe` refused every one of them and the pass fired on
+  /// nothing at all. A constant is a pure definition whose position carries no
+  /// meaning beyond the live range it starts, exactly as an allocation's does,
+  /// and its result is a **DRAM** buffer, so moving it changes no scratchpad
+  /// pressure at all: the residency the estimate prices is the destination's.
   SmallVector<Operation *> prologueOf(npuisa::DmaLoadOp load) {
     SmallVector<Operation *> prologue;
     SmallVector<Value> worklist{load.getSource(), load.getDest()};
@@ -139,7 +263,7 @@ private:
       Operation *definition = value.getDefiningOp();
       if (!definition || definition->getBlock() != load->getBlock())
         continue;
-      if (!isa<memref::AllocOp, memref::SubViewOp>(definition))
+      if (!isa<memref::AllocOp, memref::SubViewOp, npuisa::ConstOp>(definition))
         continue;
       if (!seen.insert(definition).second)
         continue;
@@ -174,8 +298,66 @@ private:
     return true;
   }
 
+  /// Whether the function still places inside its budget with this prefetch.
+  ///
+  /// The allocator's own offset assignment over the intervals the allocator
+  /// itself collects, with every allocation that would move with the transfer
+  /// starting at the hoist's destination instead of where it is defined. That
+  /// extension **is** double buffering: the buffer belongs to the DMA engine
+  /// from the issue to the await, and the liveness this shares with the
+  /// allocator already ends an asynchronous range at the await rather than at
+  /// the issue.
+  ///
+  /// **The sweep line peak is not this question**, and the file comment carries
+  /// the 56 bytes that proved it. What this asks is what the allocator will
+  /// ask, with the same strategy, the same alignment and the same budget.
+  ///
+  /// A destination whose residency this cannot price is declined rather than
+  /// taken on trust. The alternative is committing to a cost nobody measured,
+  /// which is the thing this whole function exists to stop.
+  bool prefetchFits(Operation *earliest, ArrayRef<Operation *> prologue) {
+    func::FuncOp function = getOperation();
+    if (!function.getBody().hasOneBlock())
+      return false;
+    Block &block = function.getBody().front();
+    if (earliest->getBlock() != &block)
+      return false;
+
+    FailureOr<SmallVector<npuisa::ScratchpadBuffer>> buffers =
+        npuisa::collectScratchpadBuffers(function);
+    if (failed(buffers))
+      return false;
+
+    llvm::DenseMap<Operation *, int64_t> indices;
+    for (auto [index, op] : llvm::enumerate(block))
+      indices[&op] = static_cast<int64_t>(index);
+    const int64_t target = indices[earliest];
+
+    llvm::SmallPtrSet<Operation *, 8> moving(prologue.begin(), prologue.end());
+    bool priced = false;
+    SmallVector<npuisa::LiveInterval> intervals;
+    intervals.reserve(buffers->size());
+    for (const npuisa::ScratchpadBuffer &buffer : *buffers) {
+      // The handle is copied out rather than the struct being taken by value:
+      // an operation handle is a value type and its accessors are not const.
+      // That is the MLIR idiom and it costs a pointer copy.
+      memref::AllocOp alloc = buffer.alloc;
+      npuisa::LiveInterval interval = buffer.interval;
+      if (moving.contains(alloc.getOperation())) {
+        interval.definition = std::min(interval.definition, target);
+        priced = true;
+      }
+      intervals.push_back(interval);
+    }
+    if (!priced)
+      return false;
+
+    return npuisa::placesWithin(intervals, resolvedStrategy, resolvedAlignment,
+                                resolvedBudget);
+  }
+
   /// Moves one load above the computation before it, or leaves it alone.
-  bool hoist(npuisa::DmaLoadOp load) {
+  Answer hoist(npuisa::DmaLoadOp load) {
     Value source = load.getSource();
     Value destination = load.getDest();
 
@@ -230,9 +412,16 @@ private:
     // `await` is the next operation, which canonicalizes straight back to the
     // synchronous form. Declining is the same answer without the residue.
     if (!passedComputation || earliest == load)
-      return false;
+      return Answer::NotHoisted;
     if (!hoistIsDominanceSafe(prologue, earliest, movable))
-      return false;
+      return Answer::NotHoisted;
+
+    // **The last question is what it costs**, and it is asked last because it
+    // is the only one that needs a walk of the whole function. Everything above
+    // decides whether the rewrite is legal; this decides whether the program
+    // that comes out can be placed.
+    if (!prefetchFits(earliest, prologue))
+      return Answer::WouldNotFit;
 
     // The prologue moves first and in its own order, so that a view still comes
     // after the allocation it views.
@@ -251,7 +440,7 @@ private:
     npuisa::AwaitOp::create(builder, load.getLoc(), async.getToken());
     load.erase();
     ++prefetched;
-    return true;
+    return Answer::Prefetched;
   }
 };
 

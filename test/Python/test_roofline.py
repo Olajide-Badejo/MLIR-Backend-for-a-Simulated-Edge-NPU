@@ -179,6 +179,35 @@ def test_the_walker_refuses_an_operation_it_does_not_know() -> None:
         npuisa_walk.walk(text)
 
 
+def test_the_walker_reads_the_asynchronous_transfer_forms() -> None:
+    """D-0058, and the reason it is a test rather than a line in a set.
+
+    `-npu-double-buffer` emits `npuisa.dma_load_async` with an `npuisa.await`
+    where the load was, and until the pass started firing no compiled program
+    contained either. The walk refused the first one it saw. The charge is the
+    synchronous charge, because the encoder emits `DMA_LOAD` for both forms, and
+    the await is skipped rather than charged zero, because the walk's positions
+    are the machine's instruction indices and an operation charged zero still
+    occupies one.
+    """
+    text = (
+        "module {\n"
+        "  func.func @main() {\n"
+        "    %0 = npuisa.dma_load_async %cst, %view : "
+        "memref<4xf32, #npu.dram> to memref<4xf32, #npu.scratchpad> loc(#loc)\n"
+        "    npuisa.relu ins(%a : memref<4xf32, #npu.scratchpad>) "
+        "outs(%b : memref<4xf32, #npu.scratchpad>) loc(#loc)\n"
+        "    npuisa.await %0 loc(#loc)\n"
+        "  }\n"
+        "}\n"
+    )
+    operations = npuisa_walk.walk(text)
+
+    assert [operation.op for operation in operations] == ["dma_load_async", "relu"]
+    assert "await" in npuisa_walk.DECLARATION_OPS
+    assert "dma_load_async" in npuisa_walk.TRANSFER_OPS
+
+
 def test_an_empty_walk_is_refused() -> None:
     """An empty table passing every assertion is how a check stops checking."""
     with pytest.raises(npuisa_walk.WalkError, match="no npuisa operations"):

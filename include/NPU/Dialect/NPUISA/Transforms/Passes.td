@@ -207,11 +207,36 @@ def NPUDoubleBuffer : Pass<"npu-double-buffer", "::mlir::func::FuncOp"> {
     and in the cycle total, never in an output tensor.
   }];
 
+  let options = [
+    Option<"budget", "budget", "int64_t", /*default=*/"-1",
+           "The scratchpad budget in bytes, against which a prefetch's doubled "
+           "residency is priced. Minus one means the function's own "
+           "npuisa.scratchpad_budget attribute, or the allocator's default. It "
+           "is the allocator's budget because there is one budget on this "
+           "machine.">,
+    Option<"strategy", "strategy", "std::string", /*default=*/"\"pack\"",
+           "The offset assignment strategy the prefetch is priced under. It is "
+           "the allocator's, for the same reason the budget is: the question "
+           "this pass asks is whether the allocator will be able to place the "
+           "program it is about to produce.">,
+    Option<"alignment", "alignment", "int64_t", /*default=*/"64",
+           "The byte alignment of every assigned offset, as the allocator uses "
+           "it. Alignment is not a detail here: it is what separates the sweep "
+           "line peak from a placement, and D-0054 measured a program that "
+           "fits the peak and does not fit the arena.">,
+  ];
+
   let statistics = [
     Statistic<"prefetched", "prefetched",
               "Transfers made asynchronous and hoisted above a computation">,
     Statistic<"notHoisted", "not-hoisted",
               "Transfers with nothing safe to overlap, left synchronous">,
+    Statistic<"wouldNotFit", "would-not-fit",
+              "Transfers with something to hide under whose prefetched "
+              "destination would put the function's peak over the budget. It "
+              "is not called declined, because -npu-tile-to-scratchpad already "
+              "has a statistic of that name and a reader of one log should not "
+              "have to work out which pass a count belongs to">,
   ];
 
   let dependentDialects = [

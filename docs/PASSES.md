@@ -878,19 +878,39 @@ runs underneath that computation. Implemented in
 allocation** per Section 5.1, since the doubled working set has to be visible to
 the allocator.
 
-**Ablatable: yes.** **Delta over the 217 cell suite: the same numbers as
-`-npu-tile-to-scratchpad`'s row, and not one of them is the overlap.** The
-pipeline tells the tiling search whether this pass is in the pipeline, so
-ablating it also relaxes that search and produces the untiled program; the row is
-therefore a measurement of the pair, which is the coupling stated at the top of
-this file. **What this pass contributes to it is zero**, because on the suite it
-fires on **nothing at all**: `prefetched` is 0 and `not-hoisted` is every
-transfer, on all seven models at both budgets. Every argument load sits in the
-entry block beside the other argument loads, where the walk correctly stops at
-another transfer, and a constant's load is the one transfer with a computation
-before it and the one whose `npuisa.const` cannot move with it. **D-0054 carries
-that with the mechanism, and `test/Pipeline/p13-passes-at-o2.mlir` pins it as a
-measured negative** so the day it changes a test says so.
+**Ablatable: yes.** **The pass fires, on one to four transfers per model, and
+its own contribution to the cycle count is zero.** Those are two measurements
+rather than one sentence, and keeping them apart is the point of this entry: for
+two commits the row was zero because the pass fired on nothing, which is a
+different statement and is D-0054.
+
+**What it fires on.** `prefetched` runs from 1 to 4 per model at the default
+budget and from 0 to 3 at the tight ones, and the transfer it moves is always the
+same kind: the load of a convolution's weight, which is the one transfer in these
+programs that has a computation before it rather than another transfer. Every
+argument load sits in the entry block beside the other argument loads, where the
+walk correctly stops at another transfer, because both are charged to the same
+DMA port and lifting a load above a load moves work along a saturated timeline.
+
+**What it declines, and that half is what makes the first half safe.** A hoist
+doubles the prefetched operand's residency, and at the ADR 0008 tight budgets
+that doubling is what five of the seven models could not place. **A prefetch that
+cannot be placed is not a prefetch**, and those budgets are frozen, so the pass
+asks before it commits: it takes the live intervals the allocator collects, moves
+the definitions that would travel with the transfer to where it is going, and
+runs the allocator's own `assignOffsets` over them at the same budget, the same
+strategy and the same alignment. A set that does not place is counted as
+`would-not-fit`, which reads differently from `not-hoisted` and differently again
+from a pass that never ran.
+
+**The sweep line peak is not that question and the difference is 56 bytes.**
+Section 13.1 makes the peak a lower bound on any placement and makes the spill
+trigger "offset assignment failed" rather than "peak exceeded budget". Under a
+peak rule `dilated_stack` accepted a prefetch whose peak of 8028 fitted its 8064
+byte budget, and the arena then needed 8084 and the cell did not compile.
+`test/Pipeline/p13-passes-at-o2.mlir` carries both answers at one budget: a weight
+load that runs under a relu, and a weight load over a pooling whose 5440 byte
+arena has no room for 1080 more.
 
 **Delta, measured on the tiled convolution above, which is where the pass does
 fire: zero cycles, and the encoded instruction stream genuinely changes.** One `DMA_LOAD` moves from position 23 to position 11, three transfers
@@ -899,16 +919,24 @@ compute, overlap fraction 0.0067, before and after, with the output byte
 identical either way. The scratchpad peak does not move either, 1744 bytes with
 and without.
 
-**That zero is a measurement and it has a structural reason.** Section 5.5's
-model starts an instruction at the later of its port becoming free and its last
-operand becoming ready, which is a dataflow schedule and not a program order
-one, so reordering independent instructions cannot change it. What double
-buffering hides is a **transfer** underneath a **computation**, and on a tiled
-program the DMA timeline is the longer of the two, 1524 against 596, because
-tiling multiplies transfers while leaving the MAC count alone. There is nothing
-to hide it under. Double buffering pays when compute is the long timeline, and
-tiling is precisely the transform that makes it not be. That is an input to
-Section 13.3 rather than an obstacle to it.
+**That zero is a measurement and it has a structural reason, and the reason is
+about this machine rather than about these programs.** Section 5.5's model starts
+an instruction at the later of its port becoming free and its last operand
+becoming ready, which is a dataflow schedule and not a program order one, so
+reordering two instructions charged to different ports changes no start time.
+**A transfer hidden under a computation saves cycles only where hiding it
+shortens the longer of the two timelines**, and a hoist shortens neither: the
+same transfers are issued in the same order on the same port, and the same
+computations on theirs. On a tiled program the DMA timeline is the longer of the
+two, 1524 against 596, because tiling multiplies transfers while leaving the MAC
+count alone, so there is nothing to hide under there either.
+
+**What the rewrite buys on this machine is therefore the live range, and a live
+range is a cost.** That is why the pass has a decline rule at all and why the
+ablation row's instruction and cycle columns are the tiling coupling rather than
+the overlap. It is an input to Section 13.3, which asks what the overlap is
+worth, and the answer this cost model gives is zero cycles for a longer
+residency.
 
 ### Before and after
 
@@ -941,8 +969,14 @@ this pass before the allocator rather than after it.
 
 ### Where it does not fire
 
-Section 12's negative test rule, in `test/Transforms/double-buffer.mlir`.
+Section 12's negative test rule, in `test/Transforms/double-buffer.mlir`, and
+at the level in `test/Pipeline/p13-passes-at-o2.mlir`.
 
+- **The prefetched destination would not place**, counted as `would-not-fit`
+  rather than as `not-hoisted`, because a transfer the pass looked at and priced
+  is not the same answer as one it had nothing to overlap with. The test is the
+  allocator's own offset assignment at the allocator's own budget, strategy and
+  alignment.
 - **There is nothing to hide the transfer under.** A load with no computation
   before it in its block stays where it is.
 - **The computation before it touches the buffer the transfer fills**, which is

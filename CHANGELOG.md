@@ -60,6 +60,22 @@ branch the constants and their headers are untouched; what did change under
   Making it fire is held for a reason that is a measurement rather than a red: a
   prefetched weight stays resident across the computation it hides under, and
   **five of the seven models stop placing at their frozen tight budgets**.
+- **`-npu-double-buffer` fires, and declines the prefetches that would not
+  place.** It had been in `-O2` since the wiring commit without moving a single
+  transfer, because the one transfer with a computation before it is a weight
+  load whose `npuisa.const` the prologue would not carry. The constant is
+  admitted now, and the pass hoists one to four transfers per model. It also
+  asks what the doubled residency costs before it commits: the live intervals
+  the allocator collects, with the moving definitions moved, through the
+  allocator's own `assignOffsets` at the same budget, strategy and alignment. A
+  set that does not place is declined and counted as `would-not-fit`. **ADR
+  0008's tight budgets do not move**, which is the whole reason the rule exists:
+  five of the seven models stop placing at them with the prefetches taken
+  unconditionally. The sweep line peak was tried as the rule first and is a
+  lower bound rather than an answer, by 56 bytes on `dilated_stack`, which is a
+  cell that stops compiling. The liveness walk moved into
+  `ScratchpadLiveness.h` so that the pass asks the allocator's question rather
+  than a second copy of it.
 - **Checks 8 and 9 gain region scoped coverage on the DRAM side**, which is the
   owner's answer to D-0052 and the other half of the version 2 declaration.
   Inside a declared spill slot the validator tracks exact byte coverage, strided

@@ -3392,6 +3392,74 @@ anybody went looking.
   refuse, feeding an index. It is D-0032's shape, a value arriving through a
   channel that loses information, and this project's most repeated one.
 
+### D-0058 the walk does not know the asynchronous transfer forms, and asks which direction a transfer goes by comparing against one name
+
+- **Found:** 2026-09-06, phase P13, by the first compiled program that contains
+  an `npuisa.dma_load_async`, which is the first one `-npu-double-buffer` fired
+  on. It arrived in four stages and the last one is the interesting one.
+- **Status:** **fixed**, in the commit that makes the pass fire.
+
+- **Reproduce.** Any model at `-O2` once the pass hoists a transfer:
+
+  ```
+  python experiments/run_benchmarks.py --models lenet --force
+  ```
+
+- **The four stages, because each one hid the next.**
+
+  1. `TRANSFER_OPS` held `dma_load` and `dma_store` only, so the walk took the
+     asynchronous form down the compute branch and refused it for having no
+     `ins`/`outs` clause. That is the right shape of failure and it is where the
+     entry would have ended if the walk had stopped there.
+  2. `npuisa.await` is not an executed instruction, and the encoder says so by
+     listing it among the operations that carry none. The walk had no such list
+     entry for it, so it was refused as unknown. It is skipped now rather than
+     charged zero, because **the walk's positions are the machine's instruction
+     indices** and an operation charged zero still occupies one.
+  3. The dataflow half reads a transfer's two values out of the printed text,
+     and an asynchronous transfer prints a token result as well, so it counted
+     three values where a transfer has two. The result is stripped by the
+     assignment it is written with rather than by dropping the first value, so a
+     transfer that genuinely gained an operand still reaches the count and is
+     refused there.
+  4. **And then the walk ran, agreed with nothing, and said so.** Four places
+     asked which direction a transfer goes by comparing the mnemonic against the
+     string `dma_load`, so every prefetch was counted as a store: its bytes
+     landed in `dram_bytes_written` instead of `dram_bytes_read`, and its buffer
+     went into the consumed side of the layer graph instead of the produced
+     side.
+
+- **The number, and the check that caught it.** `check_against_result` compares
+  the walk's totals against the simulator's for the same cell and refuses a
+  disagreement rather than reporting a per layer table derived from one:
+
+  ```
+  the walk of lenet-O2-default-n1-fp32-normal disagrees with the numbers the
+  simulator recorded for the same cell:
+    dram_bytes_read: the walk says 249040, the cell says 249960
+  ```
+
+  920 bytes, which is the four transfers `-npu-double-buffer` prefetches on that
+  cell. **The simulator's figure did not move**, which is what the declaration in
+  `docs/BREAKING_CHANGES.md` predicted; what moved was the walk's ability to
+  read the program.
+
+- **The shape, and it is a different one from D-0057's.** D-0057 was a parser
+  that returned less rather than refusing. Stages 1 to 3 here are that shape
+  again and each one refused loudly, which is the parser doing its job. **Stage 4
+  is the one worth the entry**: nothing was missing, nothing was malformed, and
+  four independent comparisons against a string literal agreed with each other
+  and with nothing else. A set per direction is one place to add a form to, and
+  `test_the_walker_reads_the_asynchronous_transfer_forms` is what makes the next
+  form a red rather than a wrong number.
+
+- **What it says about the totals check.** The comparison against the
+  simulator's own figures is the only reason stage 4 was found at all: every
+  stage before it was a refusal, and stage 4 was a plausible number. Section
+  16.4's rule that an absent number must not look like a zero has a sibling here,
+  which is that a derived number must be checked against the thing it is derived
+  from.
+
 ### D-0050 the binary format cannot express a buffer written in pieces, so a tiled program cannot be encoded
 
 - **Found:** 2026-09-05, phase P13, by trying to encode a tiled program rather
@@ -3724,10 +3792,12 @@ anybody went looking.
 - **Found:** 2026-09-05, phase P13, by reading the pass statistics of the wired
   level rather than by a failure. `prefetched` is 0 and `not-hoisted` is every
   transfer, on all seven models at both budgets.
-- **Status:** **half fixed and half still open.** The allocator half, which is
-  what actually produced the refused programs, is fixed and tested here and
-  moves nothing, because the pass fires on nothing at this tip. The pass half is
-  open with a measured reason rather than a guessed one.
+- **Status:** **fixed, in two commits and on both halves.** The allocator half,
+  which is what actually produced the refused programs, went in first and moved
+  nothing, because the pass fired on nothing at that tip. The pass half is the
+  budget aware hoist below: `npuisa::ConstOp` joins the prologue and the pass
+  declines a prefetch whose destination would not place, so the pass fires and
+  the frozen tight budgets do not move.
 
 - **The two reasons, and neither of them is the overlap being worthless.**
 
@@ -3839,15 +3909,64 @@ anybody went looking.
   | `inception_block` | 6144 | places |
 
   **A prefetch that cannot be placed is not a prefetch**, and ADR 0008's budgets
-  are frozen rather than available to move. What the change needs is a decision
-  the pass cannot make where it stands: whether an overlap is affordable is a
-  question about the whole program's peak, and Section 5.1 puts this pass
-  **before** allocation on purpose, so that the allocator sees the doubled set.
-  That order is right and is not what is missing. What is missing is a way for
+  are frozen rather than available to move. What the change needed was a way for
   the pass to ask what the doubling costs before it commits to it, which is a
-  design question with a measurement behind it now rather than a line in a set.
-  `test/Pipeline/p13-passes-at-o2.mlir` carries the current behaviour as a
-  measured negative, so the day it changes a test says so.
+  design question with a measurement behind it rather than a line in a set.
+
+- **The answer, and it is the allocator's own question asked earlier.** Before
+  committing a hoist the pass takes the live intervals `collectScratchpadBuffers`
+  produces, moves the definition of every allocation that would travel with the
+  transfer to the point the transfer is going to, and runs
+  `npuisa::assignOffsets` over the result at the same budget, the same strategy
+  and the same alignment the allocator will use. A set that does not place is a
+  decline, counted as `would-not-fit` beside `not-hoisted`, so a pass that
+  answered no reads differently from one that never asked. Section 5.1's order is
+  unchanged and was never what was missing: the pass still runs before
+  allocation, and what it gained is the ability to ask the allocator's question
+  from there.
+
+- **The sweep line peak was tried as that rule first and it is not enough.**
+  Section 13.1 says the peak is a lower bound on any placement and that the spill
+  trigger is therefore "offset assignment failed" and never "peak exceeded
+  budget". A rule built on the peak takes the first half of that and ignores the
+  second, and the measurement is what settled it:
+
+  ```
+  the scratchpad budget of 8064 bytes is too small: this buffer of 20 bytes
+  could not be placed below offset 8064 in @main ... The sweep line peak is 8028
+  bytes, which is a lower bound on any placement; the requirement is therefore at
+  least 8084 bytes against a budget of 8064
+  ```
+
+  That is `dilated_stack` at its tight budget, with a prefetch the peak rule
+  accepted, and it is **a cell that stops compiling**. 56 bytes of alignment is
+  the difference between a lower bound and an answer. Running the placement
+  itself costs one call and gets the question right.
+
+- **The liveness walk moved rather than being copied.** The pass needs the same
+  live ranges the allocator computes, and a second walk beside the first would be
+  two definitions of what a live range is, which is this entry's own shape one
+  level up: the allocator believed an asynchronous transfer finishes at its issue
+  and the pass that emits them believed otherwise, and the two agreed until they
+  did not. `include/NPU/Dialect/NPUISA/Transforms/ScratchpadLiveness.h` is the
+  one walk, and the allocator's 29 unit tests are what say the move changed
+  nothing.
+
+- **What it moves, declared before the commit.** `docs/BREAKING_CHANGES.md`
+  carries the entry: `npuisa_op_counts` wherever a transfer is prefetched, the
+  fragmentation ratio on six of the seven default budget baselines and on no
+  tight budget one, and instructions, cycles, traffic, spills and every golden
+  byte nowhere. **The tight budget prediction is the sharp one**: a tight budget
+  is the smallest at which the program places, so a hoist that raises the peak
+  does not place there and is declined, and only a hoist that costs nothing
+  survives.
+
+- **The shape, and it is worth naming because it is not this project's usual
+  one.** The other entries of this phase are values arriving through channels
+  that lose information. This one is a pass being asked to decide something with
+  a quantity it could see, when the quantity that decides is one another pass
+  owns. The fix is not more information inside the pass: it is calling the pass
+  that owns the question.
 
 ### D-0055 the handoff quotes a `--mlir-timing` bound that is not in the code, and reads the wrong one of two bounds
 

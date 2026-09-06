@@ -119,13 +119,15 @@ costs, so performing a transpose always beats moving the same data strided. Both
 are measured, both are asserted by a test, and both are inputs to Section 13.3
 rather than obstacles to it.
 
-**Putting them in a level added a third negative to the first of those and it is
-a different one.** On the suite `-npu-double-buffer` does not fire **at all**:
-`prefetched` is 0 and `not-hoisted` is every transfer, on all seven models at
-both budgets, because every argument load is in the entry block beside the other
-argument loads and a constant's load cannot take its `npuisa.const` with it.
-D-0054 carries it. So the pass has two zeros for two reasons, and only the first
-is the one the previous paragraph gives.
+**Putting them in a level added a third negative to the first of those, and it
+has since been fixed.** On the suite `-npu-double-buffer` did not fire **at
+all**: `prefetched` was 0 and `not-hoisted` was every transfer, on all seven
+models at both budgets, because every argument load is in the entry block beside
+the other argument loads and a constant's load could not take its `npuisa.const`
+with it. D-0054 carries it. **The constant joins the prologue now and the pass
+fires on one to four transfers per model**, declining the hoists whose doubled
+residency would not place, so the pass has one zero rather than two: the cycles
+still do not move, for the two port reason above, and that is the only zero left.
 
 **D-0054's own diagnosis was wrong and the measurement says where the fault
 was.** The entry blamed the pass's hoist walk for the programs its probe
@@ -137,16 +139,18 @@ there, and a reload was placed at an in flight destination's offset. Both are
 fixed in `023edcd` with a pair of programs that reproduce them, and **neither
 moves a number**, because the pass fires on nothing at this tip.
 
-**Making it fire is held, and the reason is now a measurement rather than a
-red.** With the allocator correct, admitting `npuisa::ConstOp` to the prologue
-produces programs the verifier accepts and the pass fires on one to four
-transfers per model. It also stops **five of the seven models placing at their
+**Making it fire was held for one checkpoint and is done, and the budgets did
+not move.** With the allocator correct, admitting `npuisa::ConstOp` to the
+prologue produces programs the verifier accepts and the pass fires on one to four
+transfers per model. It also stopped **five of the seven models placing at their
 ADR 0008 tight budgets**, because a prefetched weight is resident across the
-computation it hides under: `lenet` wants 234880 against 194624 and
-`resnet_block` wants 8736 against 6464. A prefetch that cannot be placed is not
-a prefetch, and those budgets are frozen. What the change needs is a way for the
-pass to ask what the doubling costs before it commits, which is a design
-question rather than a line in a set, and D-0054 has the table.
+computation it hides under: `lenet` wanted 234880 against 194624 and
+`resnet_block` 8736 against 6464. A prefetch that cannot be placed is not a
+prefetch and those budgets are frozen, so **the pass asks before it commits**: it
+runs the allocator's own `assignOffsets` over the intervals the hoist would
+produce, at the same budget, strategy and alignment, and declines what does not
+place. The sweep line peak was tried as that question first and is 56 bytes short
+of it on `dilated_stack`, which is in D-0054 with the diagnostic.
 
 **The third finding is about the compiler.** At `-O2`, fusion hides 30 of the 44
 convolutions and matrix multiplications in the suite inside `npu.fused_op`

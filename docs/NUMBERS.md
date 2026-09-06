@@ -365,17 +365,17 @@ and that is not what any of these rows says.
   the tight budgets the pass fires on two models and the table above is what it
   did.
 - **`-npu-double-buffer`'s row is not its own**, which is the coupling above,
-  and what remains of it after the coupling is removed is zero for the reason
-  D-0054 gives. `docs/PASSES.md` records a measured reason for a zero from this
-  pass: on a hand written tiled convolution it fires, the instruction stream
-  genuinely changes, and no cycle moves, because tiling makes a program DMA
-  bound, 1524 against 596, and there is nothing to hide a transfer under. **That
-  reason is true and is not this row's reason.** On the suite the pass fires on
-  nothing at all: every argument load sits in the entry block beside the other
-  argument loads, where the hoist correctly stops at another transfer, and a
-  constant's load is the one transfer with a computation before it and is the
-  one whose prologue cannot move with it. `prefetched` is 0 and `not-hoisted` is
-  every transfer, on all seven models at both budgets.
+  and what remains of it after the coupling is removed is zero **with the pass
+  firing**, which is a different zero from the one this bullet used to carry.
+  The pass hoists one to four transfers per model now and declines the ones
+  whose doubled residency would not place; D-0054 has the table and
+  `docs/BREAKING_CHANGES.md` has the declaration. **The cycles still do not
+  move**, for the reason `docs/PASSES.md` gives beside the pass: Section 5.5
+  starts an instruction at the later of its port becoming free and its last
+  operand becoming ready, so reordering two instructions charged to different
+  ports changes no start time, and a hoist shortens neither timeline. What the
+  rewrite buys on this machine is a longer live range, which is a cost, and that
+  is the input Section 13.3 gets from this pass rather than an obstacle to it.
 - **The tiling and double buffering rows are coupled and the row is honest about
   it.** The pipeline tells the tiling search whether double buffering is in the
   pipeline, because Section 13.2 sizes the working set for the prefetch, so

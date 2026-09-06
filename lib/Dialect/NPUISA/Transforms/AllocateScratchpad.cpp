@@ -31,11 +31,14 @@
 //      `test/Dialect/NPUISA/scratchpad-alloc.mlir` carries the fragmentation
 //      case that tells the two questions apart.
 //
-// **The arithmetic lives in ScratchpadAllocation.cpp and has no IR in it.**
-// This file is the half that reads and writes MLIR: it finds the buffers,
-// computes their live ranges, materialises the views, rewrites the spills, and
-// turns a failure into a diagnostic with numbers in it. The property test of
-// Section 17.2 tests the other half directly.
+// **The arithmetic lives in ScratchpadAllocation.cpp and has no IR in it**,
+// and **the liveness walk lives in ScratchpadLiveness.cpp**, because
+// `-npu-double-buffer` has to ask the same question about live ranges before it
+// commits to a hoist and two walks would be two definitions of one thing. What
+// is left here is the half that rewrites MLIR: it materialises the views,
+// decides and performs the spills, and turns a failure into a diagnostic with
+// numbers in it. The property test of Section 17.2 tests the arithmetic
+// directly.
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,6 +50,7 @@
 #include "NPU/Dialect/NPUISA/IR/NPUISAMemoryOverlap.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISAOps.h"
 #include "NPU/Dialect/NPUISA/Transforms/ScratchpadAllocation.h"
+#include "NPU/Dialect/NPUISA/Transforms/ScratchpadLiveness.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -75,10 +79,6 @@ namespace {
 // The attribute names this pass writes and reads.
 //===----------------------------------------------------------------------===//
 
-/// The budget the allocator was given, in bytes. Read from the function when it
-/// carries one, written back so that the encoder and the simulator read the
-/// number the allocation was actually made against.
-constexpr llvm::StringLiteral kBudgetAttr = "npuisa.scratchpad_budget";
 /// The arena that was actually used, in bytes: the assigned high water mark.
 constexpr llvm::StringLiteral kBytesAttr = "npuisa.scratchpad_bytes";
 /// The sweep line peak, in bytes. The lower bound the high water mark is
@@ -95,125 +95,23 @@ constexpr llvm::StringLiteral kSpillCountAttr = "npuisa.spill_count";
 /// three permitted producers is checkable rather than asserted.
 constexpr llvm::StringLiteral kSpillDmaAttr = "npuisa.spill_dma_count";
 
-/// Marks the one flat arena allocation.
-constexpr llvm::StringLiteral kArenaMark = "npuisa.scratchpad_arena";
 /// Marks a DRAM buffer that exists only to hold a spilled value.
+///
+/// The other four marks this pass reads and writes are in
+/// `ScratchpadLiveness.h`, because the liveness walk reads them too. This one
+/// stays here: it is on the DRAM side and nothing but spilling produces it.
 constexpr llvm::StringLiteral kSpillSlotMark = "npuisa.spill_slot";
-/// Marks a scratchpad buffer that exists only to hold a reloaded value.
-constexpr llvm::StringLiteral kSpillReloadMark = "npuisa.spill_reload";
-/// Marks a buffer that has already been spilled, so that the spill loop cannot
-/// choose it a second time and spill its own `dma_store`.
-constexpr llvm::StringLiteral kSpilledMark = "npuisa.spilled";
 
 //===----------------------------------------------------------------------===//
 // Buffers.
 //===----------------------------------------------------------------------===//
 
-/// One scratchpad allocation, with everything the allocator needs to know about
-/// it.
-struct Buffer {
-  memref::AllocOp alloc;
-  /// The live interval, in operation indices within the entry block.
-  npuisa::LiveInterval interval;
-  /// The single operation that writes it, or null when there is not exactly
-  /// one. Zero writers means an uninitialised buffer and more than one means a
-  /// value this pass cannot name a definition point for; both make it
-  /// unspillable rather than making them an error, because both are legal IR.
-  Operation *writer = nullptr;
-  /// The operations that read it, in index order, deduplicated: an operation
-  /// that reads the same buffer through two operands is one reader, and gets
-  /// one reload.
-  llvm::SmallVector<Operation *> readers;
-  /// Whether anything took a view of it. A buffer with a view has more than one
-  /// SSA name for the same bytes, and a spill that rewrote only the direct uses
-  /// would leave the view reading a buffer whose contents had moved.
-  /// Whether any view of this buffer is **written through**.
-  ///
-  /// **Not whether a view is taken, which is what this used to be, and the
-  /// difference is D-0056.** A view that is only read through can be re-based
-  /// onto the reload the spill inserts, because the reload holds the same
-  /// bytes at that point and `replaceUsesOfWith` rewrites the view's source
-  /// exactly as it rewrites a reader's operand. A view that is **written**
-  /// through cannot: the write would land in the reload and be lost, and the
-  /// buffer the store put in DRAM would never see it.
-  bool viewWrittenThrough = false;
-  /// Whether it is a reload buffer, a spill slot's landing site, or a buffer
-  /// that has already been spilled. Each of these is excluded from the
-  /// candidate set for a different reason and all three are recorded in the IR
-  /// rather than in a side table, so a reader of the module can see them.
-  bool isReload = false;
-  bool alreadySpilled = false;
-};
-
-/// Whether an operation is one of the view forms this project produces.
+/// What this pass calls one scratchpad allocation.
 ///
-/// `memref.reinterpret_cast` is here because the lowering emits one for the
-/// rank 1 channel broadcast of ADR 0005, and this pass's views end up
-/// underneath those casts. `memref.view` and `memref.subview` are here because
-/// this pass and any later tiling pass produce them.
-bool isViewLike(Operation *op) {
-  return isa<memref::ViewOp, memref::SubViewOp, memref::ReinterpretCastOp,
-             memref::CastOp>(op);
-}
-
-/// Whether a memref lives in the scratchpad.
-bool isScratchpad(Type type) {
-  auto memref = dyn_cast<MemRefType>(type);
-  return memref && isa_and_present<npu::ScratchpadAttr>(memref.getMemorySpace());
-}
-
-/// The effects an operation declares on one specific value.
-///
-/// An operation that does not implement `MemoryEffectOpInterface` at all has
-/// not said it touches nothing, so it is reported as both a read and a write.
-/// That is the same conservatism the overlap rule of Section 8 uses, applied
-/// here: an unknown operation makes a buffer unspillable rather than making the
-/// spill wrong.
-void effectsOnValue(Operation *op, Value value, bool &reads, bool &writes) {
-  auto interface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!interface) {
-    reads = true;
-    writes = true;
-    return;
-  }
-
-  llvm::SmallVector<MemoryEffects::EffectInstance> effects;
-  interface.getEffectsOnValue(value, effects);
-  reads = false;
-  writes = false;
-  for (const MemoryEffects::EffectInstance &effect : effects) {
-    if (isa<MemoryEffects::Read>(effect.getEffect()))
-      reads = true;
-    if (isa<MemoryEffects::Write>(effect.getEffect()))
-      writes = true;
-  }
-}
-
-/// The `npuisa.await` that finishes an asynchronous transfer, or null.
-///
-/// **An asynchronous transfer is not done at its issue**, and everything in
-/// this file that asks when a buffer stops being written has to ask this
-/// rather than look at the operation that names the buffer. Section 8 gives
-/// the two halves one meaning between them: the destination belongs to the DMA
-/// engine from the issue until the await, and rule 4 is the verifier saying so
-/// from the other side, that no operation in that window may touch the
-/// destination.
-///
-/// A token with anything other than one `npuisa.await` use is a program the
-/// verifier has already refused, so returning null there is not a policy: it is
-/// the answer for IR that cannot reach this pass.
-Operation *completionOf(Operation *op) {
-  Value token;
-  if (auto load = dyn_cast<npuisa::DmaLoadAsyncOp>(op))
-    token = load.getToken();
-  else if (auto store = dyn_cast<npuisa::DmaStoreAsyncOp>(op))
-    token = store.getToken();
-  else
-    return nullptr;
-  if (!token || !token.hasOneUse())
-    return nullptr;
-  return dyn_cast<npuisa::AwaitOp>(*token.user_begin());
-}
+/// The struct and the walk that fills it are in `ScratchpadLiveness.h`, shared
+/// with `-npu-double-buffer`. The alias is kept so that the spill rules below
+/// read the way they always did.
+using Buffer = npuisa::ScratchpadBuffer;
 
 //===----------------------------------------------------------------------===//
 // The pass.
@@ -234,8 +132,6 @@ private:
   int64_t resolvedAlignment = npuisa::kDefaultAlignment;
 
   LogicalResult readOptions(func::FuncOp function);
-  FailureOr<int64_t> readBudget(func::FuncOp function);
-  FailureOr<llvm::SmallVector<Buffer>> collect(func::FuncOp function);
   void spill(Buffer &buffer, int64_t &spilledBuffers, int64_t &insertedDma);
   void materialise(func::FuncOp function, llvm::ArrayRef<Buffer> buffers,
                    const npuisa::Placement &placement);
@@ -297,166 +193,10 @@ LogicalResult AllocateScratchpadPass::readOptions(func::FuncOp function) {
   return success(ok);
 }
 
-/// The budget, in bytes, from the pass option, the function attribute, or the
-/// default, in that order of precedence.
-///
-/// The option wins over the attribute because the option is a command line
-/// override and the attribute is data the driver wrote: an experiment sweeping
-/// budgets sets the option, and a module that already carries a budget from an
-/// earlier run must not silently ignore it. The attribute is written back
-/// either way, so after this pass the function always says which budget it was
-/// allocated against.
-FailureOr<int64_t> AllocateScratchpadPass::readBudget(func::FuncOp function) {
-  // The same `static_cast` as the alignment check above, for the same reason:
-  // D-0017 is about how a pass option prints, not about one option.
-  const int64_t requested = budget;
-  if (requested > 0)
-    return requested;
-  if (requested != -1)
-    return function.emitError()
-           << "the budget option must be positive, but it is " << requested;
-
-  Attribute existing = function->getAttr(kBudgetAttr);
-  if (!existing)
-    return npuisa::kDefaultScratchpadBudget;
-
-  auto integer = dyn_cast<IntegerAttr>(existing);
-  if (!integer || integer.getInt() <= 0)
-    return function.emitError()
-           << "the " << kBudgetAttr << " attribute of @" << function.getName()
-           << " must be a positive integer, but it is " << existing;
-  return integer.getInt();
-}
-
 //===----------------------------------------------------------------------===//
 // Liveness.
 //===----------------------------------------------------------------------===//
 
-/// Finds every scratchpad allocation and computes its live range.
-///
-/// Section 13.1: each range runs from the allocation to the last operation that
-/// reads or writes that memref, and sizes come from the memref type and element
-/// type, never from a hardcoded factor of four. The size comes from
-/// `computeBufferRange`, which is the same function the overlap rule of
-/// Section 8 measures byte ranges with, so the allocator and the aliasing
-/// analysis can never disagree about how large a buffer is.
-///
-/// A use *through a view* is a use of the underlying buffer. That matters from
-/// the day the lowering started emitting the rank 1 broadcast of ADR 0005: the
-/// `memref.reinterpret_cast` is what the instruction names as an operand, and a
-/// liveness that only looked at the allocation's direct users would compute a
-/// last use before the reads it is actually alive for.
-FailureOr<llvm::SmallVector<Buffer>>
-AllocateScratchpadPass::collect(func::FuncOp function) {
-  Block &block = function.getBody().front();
-
-  llvm::DenseMap<Operation *, int64_t> indices;
-  for (auto [index, op] : llvm::enumerate(block))
-    indices[&op] = static_cast<int64_t>(index);
-
-  llvm::SmallVector<Buffer> buffers;
-  for (Operation &op : block) {
-    auto alloc = dyn_cast<memref::AllocOp>(op);
-    if (!alloc || !isScratchpad(alloc.getType()))
-      continue;
-    if (alloc->hasAttr(kArenaMark))
-      continue;
-
-    std::optional<npuisa::BufferRange> range =
-        npuisa::computeBufferRange(alloc.getResult());
-    if (!range)
-      return alloc.emitError()
-             << "this scratchpad allocation has no byte size the allocator can "
-                "compute, because "
-             << npuisa::describeWhyNotAnalysable(alloc.getResult())
-             << ". Section 13.1 takes sizes from the memref type and its "
-                "element type, so a buffer it cannot measure is refused rather "
-                "than guessed at";
-
-    Buffer buffer;
-    buffer.alloc = alloc;
-    buffer.interval.definition = indices[&op];
-    buffer.interval.lastUse = buffer.interval.definition;
-    buffer.interval.bytes = range->size;
-    buffer.isReload = alloc->hasAttr(kSpillReloadMark);
-    buffer.alreadySpilled = alloc->hasAttr(kSpilledMark);
-
-    // The worklist walks views as well as direct users, so a buffer read only
-    // through a broadcast cast is still live at that read.
-    int64_t writers = 0;
-    llvm::SmallVector<Value> worklist{alloc.getResult()};
-    while (!worklist.empty()) {
-      Value value = worklist.pop_back_val();
-      const bool isTheAllocation = value == alloc.getResult();
-      for (Operation *user : value.getUsers()) {
-        Operation *ancestor = block.findAncestorOpInBlock(*user);
-        if (!ancestor)
-          continue;
-        buffer.interval.lastUse =
-            std::max(buffer.interval.lastUse, indices[ancestor]);
-
-        // **An asynchronous transfer holds this buffer until its await**, so
-        // the interval reaches the await rather than the issue. Without this
-        // the sweep line ends the range at the issue and hands the same bytes
-        // to a buffer defined inside the window, which is the race Section 8's
-        // rule 4 exists to prevent and which the verifier catches only where
-        // the two happen to be compared. D-0054 is the measurement: a
-        // prefetched weight was placed at offset 0 and the reload of a
-        // different buffer was placed at offset 0 inside its window.
-        if (Operation *finish = completionOf(ancestor))
-          buffer.interval.lastUse =
-              std::max(buffer.interval.lastUse, indices[finish]);
-
-        if (isViewLike(user)) {
-          for (Value result : user->getResults())
-            worklist.push_back(result);
-          // **A view taken directly of the allocation is a reader**, and that
-          // is what lets the spill rewrite re-base it. `spill` replaces uses of
-          // the allocation in every reader after the write, and a view's use of
-          // the allocation is its source operand, so the same call moves the
-          // view onto the reload without knowing it is a view. A view of a view
-          // is not listed, because it names the inner view's result and follows
-          // it for free. D-0056 is why this is here.
-          if (isTheAllocation && !llvm::is_contained(buffer.readers, user))
-            buffer.readers.push_back(user);
-          continue;
-        }
-
-        // A use reached **through** a view still decides one thing: whether the
-        // view is written through. That is the case a reload cannot serve, and
-        // it is the only case the view rule now refuses.
-        if (!isTheAllocation) {
-          bool viewReads = false;
-          bool viewWrites = false;
-          effectsOnValue(user, value, viewReads, viewWrites);
-          if (viewWrites)
-            buffer.viewWrittenThrough = true;
-          continue;
-        }
-
-        bool reads = false;
-        bool writes = false;
-        effectsOnValue(user, value, reads, writes);
-        if (writes) {
-          ++writers;
-          buffer.writer = user;
-        }
-        if (reads && !llvm::is_contained(buffer.readers, user))
-          buffer.readers.push_back(user);
-      }
-    }
-
-    if (writers != 1)
-      buffer.writer = nullptr;
-    llvm::sort(buffer.readers, [&](Operation *left, Operation *right) {
-      return indices[block.findAncestorOpInBlock(*left)] <
-             indices[block.findAncestorOpInBlock(*right)];
-    });
-    buffers.push_back(std::move(buffer));
-  }
-
-  return buffers;
-}
 
 /// Whether a buffer can be spilled, and why not when it cannot.
 ///
@@ -568,7 +308,7 @@ void AllocateScratchpadPass::spill(Buffer &buffer, int64_t &spilledBuffers,
   // whatever part of the transfer had landed. The verifier refuses such a
   // program, which is how D-0054 was found, but the reason to place it
   // correctly is the hardware rather than the check.
-  if (Operation *finish = completionOf(writer))
+  if (Operation *finish = npuisa::asynchronousCompletionOf(writer))
     writer = block->findAncestorOpInBlock(*finish);
 
   builder.setInsertionPointAfter(writer);
@@ -598,14 +338,14 @@ void AllocateScratchpadPass::spill(Buffer &buffer, int64_t &spilledBuffers,
     builder.setInsertionPoint(ancestor);
     Location reloadLoc = ancestor->getLoc();
     auto reload = memref::AllocOp::create(builder, reloadLoc, scratchType);
-    reload->setAttr(kSpillReloadMark, builder.getUnitAttr());
+    reload->setAttr(npuisa::kSpillReloadMark, builder.getUnitAttr());
     npuisa::DmaLoadOp::create(builder, reloadLoc, slot.getResult(),
                               reload.getResult());
     ++insertedDma;
     reader->replaceUsesOfWith(buffer.alloc.getResult(), reload.getResult());
   }
 
-  buffer.alloc->setAttr(kSpilledMark, builder.getUnitAttr());
+  buffer.alloc->setAttr(npuisa::kSpilledMark, builder.getUnitAttr());
   ++spilledBuffers;
 }
 
@@ -639,7 +379,7 @@ void AllocateScratchpadPass::materialise(func::FuncOp function,
                       npu::ScratchpadAttr::get(&getContext()));
   auto arena = memref::AllocOp::create(builder, loc, arenaType);
   arena.setAlignment(resolvedAlignment);
-  arena->setAttr(kArenaMark, builder.getUnitAttr());
+  arena->setAttr(npuisa::kScratchpadArenaMark, builder.getUnitAttr());
 
   for (auto [index, buffer] : llvm::enumerate(buffers)) {
     const int64_t offset = placement.offsets[index];
@@ -713,7 +453,13 @@ void AllocateScratchpadPass::runOnOperation() {
   if (function->hasAttr(kBytesAttr))
     return;
 
-  FailureOr<int64_t> resolvedBudget = readBudget(function);
+  // **One budget on this machine**, read by the one function that says what
+  // it is. `-npu-tile-to-scratchpad` sizes against it and
+  // `-npu-double-buffer` declines a prefetch that would not fit under it,
+  // and three passes with three ideas of how much scratchpad there is would
+  // tile against one number and spill against another.
+  FailureOr<int64_t> resolvedBudget =
+      npuisa::readScratchpadBudget(function, static_cast<int64_t>(budget));
   if (failed(resolvedBudget))
     return signalPassFailure();
 
@@ -729,7 +475,8 @@ void AllocateScratchpadPass::runOnOperation() {
   npuisa::Placement placement;
   npuisa::PeakPressure peak;
   while (true) {
-    FailureOr<llvm::SmallVector<Buffer>> collected = collect(function);
+    FailureOr<llvm::SmallVector<Buffer>> collected =
+        npuisa::collectScratchpadBuffers(function);
     if (failed(collected))
       return signalPassFailure();
     buffers = std::move(*collected);
@@ -829,7 +576,8 @@ void AllocateScratchpadPass::runOnOperation() {
   // well as its two operands so that a consumer reads one field, and the two
   // operands are written as well as the ratio so that a reader can check it.
   OpBuilder builder(function);
-  function->setAttr(kBudgetAttr, builder.getI64IntegerAttr(*resolvedBudget));
+  function->setAttr(npuisa::kScratchpadBudgetAttr,
+                    builder.getI64IntegerAttr(*resolvedBudget));
   function->setAttr(kBytesAttr,
                     builder.getI64IntegerAttr(placement.highWaterMark));
   function->setAttr(kPeakAttr, builder.getI64IntegerAttr(peak.bytes));

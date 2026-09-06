@@ -247,49 +247,51 @@ func.func @layout_leaves_a_lone_transpose_alone(%x: tensor<1x3x8x8xf32>)
 }
 
 // -----------------------------------------------------------------------------
-// Double buffering at the level, and this case is a **measured negative**.
+// Double buffering at the level, positive: the weight load runs under the relu.
 //
-// `test/Transforms/double-buffer.mlir` shows the rewrite firing on hand written
-// `npuisa`, so the pass works. What this case records is that **no transfer the
-// lowering emits at `-O2` is one it can move**, which is a fact about the two
-// together rather than about either alone, and it is D-0054.
+// **This case was a measured negative for two commits and is a positive now**,
+// which is the whole of D-0054's second half. An argument's load sits in the
+// entry block with the other argument loads, and the walk stops at another
+// transfer, correctly: both are charged to the same DMA port, so lifting a load
+// above a load moves work along a saturated timeline and hides nothing. **A
+// constant's load is the one transfer with a computation before it**, and it
+// was declined because `npuisa.const` was not in the set of operations the
+// transfer may take with it, so hoisting the load alone would have left its own
+// source defined after it. The constant is in that set now: it is a pure
+// definition whose result lives in DRAM, so moving it changes no scratchpad
+// pressure at all.
 //
-// Two reasons and neither is the overlap being worthless. An argument's load
-// sits in the entry block with the other argument loads, and the walk stops at
-// another transfer, correctly: both are charged to the same DMA port, so
-// lifting a load above a load moves work along a saturated timeline. A
-// constant's load does have a computation before it, and it is declined because
-// `npuisa.const` is not in the set of operations the transfer may take with it,
-// which is `memref.alloc` and `memref.subview`, so hoisting the load alone
-// would leave its own source defined after it.
-//
-// **The statistic is what keeps this from being silent.** The pass runs, counts
-// every transfer it looked at, and answers `not-hoisted`, which reads
-// differently from a pass that was never in the pipeline. Section 19.0's rule
-// is that silence and success must not look alike, and a zero `prefetched`
-// beside a nonzero `not-hoisted` is the pass saying which of the two this is.
+// The relu is what the transfer runs under, and the `await` is left where the
+// load was.
 // -----------------------------------------------------------------------------
 
 // RUN: npu-opt %s '--npu-O2=budget=6464' -o /dev/null \
 // RUN:   -mlir-pass-statistics -mlir-pass-statistics-display=list 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=STATS
 
+// **All three counts, and the three of them are three different answers.**
+// `prefetched` is the rewrite firing, `not-hoisted` is a transfer with nothing
+// safe to overlap, and `would-not-fit` is a transfer that had something to hide
+// under and whose prefetched destination would not place. Section 19.0's rule
+// is that silence and success must not look alike, and a pass that answered no
+// has to read differently from one that was never in the pipeline.
 // STATS: NPUDoubleBuffer
-// STATS-NEXT: {{[1-9][0-9]*}} not-hoisted
-// STATS-NEXT: 0 prefetched
+// STATS-NEXT: {{[0-9]+}} not-hoisted
+// STATS-NEXT: {{[1-9][0-9]*}} prefetched
+// STATS-NEXT: {{[1-9][0-9]*}} would-not-fit
 
-// LOWERED-LABEL: func.func @double_buffer_declines_every_transfer_here
-// LOWERED-NOT:     npuisa.dma_load_async
+// LOWERED-LABEL: func.func @double_buffer_prefetches_the_weight_load
+// LOWERED:         npuisa.dma_load_async
+// LOWERED:         npuisa.relu
+// LOWERED:         npuisa.await
 // LOWERED:         npuisa.conv2d
 
-// With the pass ablated the output is the same, which is the honest shape of
-// this ablation row: it is zero because the pass fires on nothing, and the
-// coupling it has with the tiling search is the part of the row that is not
-// about this pass at all.
-// NODB-LABEL: func.func @double_buffer_declines_every_transfer_here
+// With the pass ablated the transfer stays synchronous, which is the negative
+// half of the same case and is what the ablation row measures.
+// NODB-LABEL: func.func @double_buffer_prefetches_the_weight_load
 // NODB-NOT:     npuisa.dma_load_async
 
-func.func @double_buffer_declines_every_transfer_here(%x: tensor<1x2x4x4xf32>)
+func.func @double_buffer_prefetches_the_weight_load(%x: tensor<1x2x4x4xf32>)
     -> tensor<1x2x4x4xf32> {
   %d0 = tensor.empty() : tensor<1x2x4x4xf32>
   %a = npu.relu ins(%x : tensor<1x2x4x4xf32>)
@@ -302,4 +304,50 @@ func.func @double_buffer_declines_every_transfer_here(%x: tensor<1x2x4x4xf32>)
                    dilations = array<i64: 1, 1>, group = 1 : i64}
        -> tensor<1x2x4x4xf32>
   return %c : tensor<1x2x4x4xf32>
+}
+
+// -----------------------------------------------------------------------------
+// Double buffering at the level, negative: the prefetch would not place.
+//
+// **The decline rule, as a program.** The pooling holds a 5120 byte argument
+// and a 320 byte result at once, which is 5440 bytes and fits the 6464 byte
+// budget. Hoisting the 1080 byte weight load above the pooling makes the
+// weight resident across it too, which is 6520, and the arena does not place.
+// The pass runs the allocator's own offset assignment over the intervals the
+// hoist would produce, gets no placement back, and declines.
+//
+// **The peak would have said yes and that is why the rule is not the peak.**
+// Section 13.1 makes the sweep line peak a lower bound on any placement and
+// makes the spill trigger "offset assignment failed", and D-0054 has the
+// measurement that separates the two: `dilated_stack` accepted a prefetch whose
+// peak fit its budget by 36 bytes and then needed 20 more than the arena had.
+// -----------------------------------------------------------------------------
+
+// LOWERED-LABEL: func.func @double_buffer_declines_a_prefetch_that_would_not_place
+// LOWERED-NOT:     npuisa.dma_load_async
+// LOWERED:         npuisa.conv2d
+
+// At the default budget there is room for the doubled residency, so the same
+// program prefetches. **The decline is about the budget and not about the
+// shape**, and asserting it at both budgets is what says so.
+// WIDE-LABEL: func.func @double_buffer_declines_a_prefetch_that_would_not_place
+// WIDE:         npuisa.dma_load_async
+
+func.func @double_buffer_declines_a_prefetch_that_would_not_place(
+    %x: tensor<1x5x16x16xf32>) -> tensor<1x6x4x4xf32> {
+  %d0 = tensor.empty() : tensor<1x5x4x4xf32>
+  %a = npu.max_pool2d ins(%x : tensor<1x5x16x16xf32>)
+                      outs(%d0 : tensor<1x5x4x4xf32>)
+                      {kernel = array<i64: 4, 4>, strides = array<i64: 4, 4>,
+                       pads = array<i64: 0, 0, 0, 0>,
+                       dilations = array<i64: 1, 1>, ceil_mode = 0 : i64}
+       -> tensor<1x5x4x4xf32>
+  %w = npu.constant dense<2.500000e-01> : tensor<6x5x3x3xf32>
+  %d1 = tensor.empty() : tensor<1x6x4x4xf32>
+  %c = npu.conv2d ins(%a, %w : tensor<1x5x4x4xf32>, tensor<6x5x3x3xf32>)
+                  outs(%d1 : tensor<1x6x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64}
+       -> tensor<1x6x4x4xf32>
+  return %c : tensor<1x6x4x4xf32>
 }

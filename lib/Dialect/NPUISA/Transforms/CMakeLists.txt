@@ -15,6 +15,7 @@ add_mlir_dialect_library(MLIRNPUISATransforms
         DoubleBuffer.cpp
         LowerNPUToNPUISA.cpp
         ScratchpadAllocation.cpp
+        ScratchpadLiveness.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include/NPU/Dialect/NPUISA/Transforms
