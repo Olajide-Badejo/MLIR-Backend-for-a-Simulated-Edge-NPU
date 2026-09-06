@@ -3186,6 +3186,35 @@ observation above records and whose message was lost the first time it went red.
 That is the field doing the one job it was added for, on its first run, before
 anybody went looking.
 
+**Four more inside the same checkpoint's verification, all of them inside full
+suite runs on a machine still draining from the run before it, and none of them
+reproducible alone.** Two were
+`test_a_rerun_reproduces_the_external_fields_too` and two were
+`test_the_run_fails_when_it_exceeds_its_budget`, which are the two tests this
+entry already names. The first was run alone twice over, three times each, and
+was green all six times at 47 seconds a run.
+
+**The fourth is worth its own paragraph because of where it landed.** It went
+red inside `bash scripts/regression-baseline.sh`, the **record** rather than the
+check, and the script refused to call that baseline good:
+
+```
+regression-baseline: WARNING, the baseline was recorded with failing suites:
+{'pytest': ['test.Python.test_benchmarks::test_the_run_fails_when_it_exceeds_its_budget']}
+```
+
+**That is the field this entry's tooling half added, printing a name in the one
+place where not having it would have been worst.** A baseline recorded from a
+red tree records what is broken as if it were correct, and before the change
+that warning read `{'pytest': 1}`. The baseline was recorded again after waiting
+for the one **and** five minute load averages to fall, and the second record is
+the committed one.
+
+**So the practice gets one more line, and it is about which average to read.**
+The one minute figure fell below 0.3 within a minute of the suite finishing and
+the machine was not idle: the five minute average was still above 2. Waiting on
+the one minute number alone is what three of these four reds have in common.
+
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by

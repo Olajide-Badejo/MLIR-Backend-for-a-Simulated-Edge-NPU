@@ -27,12 +27,16 @@ arms and the ZigZag cross check.
 `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` went in
 together at `8f79972`, in Section 12's own positions, with the ablatable set
 from 8 to 11 and the suite from 175 cells to 217. **The suite has been
-re-recorded twice on this branch, serially, on a quiet machine, and each
+re-recorded three times on this branch, serially, on a quiet machine, and each
 re-record is a commit of its own.** At the wiring commit not one counted field
 of the 175 pre-existing cells moved, so there was nothing to declare for it. At
 `80ac24d`, the tree where the compiler half of D-0052 lands, **31 cells moved
-and every one of them is a tight budget cell**, declared in
-`docs/BREAKING_CHANGES.md` before the commit that caused them.
+and every one of them is a tight budget cell**. At the tree where
+`-npu-double-buffer` starts firing, **138 cells moved `npuisa_op_counts` and 57
+moved the fragmentation ratio, and not one moved an instruction count, a cycle
+or a golden byte**. The second and third were declared in
+`docs/BREAKING_CHANGES.md` before the commits that caused them, and the first is
+the other way an entry is satisfied: measured to be zero.
 
 **The wiring and what followed it found seven defects, and two of them changed
 the phase.** D-0051 to D-0057 are in `docs/DEFECT_LOG.md` with their
@@ -800,17 +804,18 @@ their recorded tight budget at all.
 > at `-O2` and batch 1, equals **154**. Total **217 cells**. Each cell costs one
 > instrumented compile, one encode, one simulation, one onnxruntime reference
 > run, plus the `n_trials = 10` whole pipeline repetitions Section 16.1 requires
-> for the timing object. **The measured cost is 1.14 seconds per cell**, 217
-> cells in 4.11 minutes serially on the reference machine, so **the 90 minute
+> for the timing object. **The measured cost is 1.16 seconds per cell**, 217
+> cells in 4.19 minutes serially on the reference machine, so **the 90 minute
 > budget stands with a factor of twenty one in hand** and the 15 second per cell
 > planning figure is replaced by the measurement, per the rule at the end of this
 > section.
 
 **Why the number is worth applying now rather than at the end of the phase.**
 The 217 is not going to move again inside P13: `-npu-calibrate` is P14's and is
-never in a default `-O` level, and the model suite is fixed. The 1.14 seconds
+never in a default `-O` level, and the model suite is fixed. The 1.16 seconds
 will move with the host and is a wall clock, which is why the paragraph gives it
-as a measurement on a named machine rather than as a property.
+as a measurement on a named machine rather than as a property, and it has read
+1.14, 1.17 and 1.16 across three re-records of the same 217 cells.
 
 ## Verification output
 
@@ -819,13 +824,15 @@ Every command run at the tip of this branch, from `/home/elijah/npu-mlir-v2`, in
 
 **Everything was run, and the quiet machine was spent here.** The suite is 217
 cells rather than 175, so every measurement over it is a measurement of a
-different population, and the whole set has been re-run **twice**, serially, with
-nothing else on the machine: once at the wiring commit, where nothing moved, and
-once at the tree where the compiler half of D-0052 lands, where 31 tight budget
-cells moved.
+different population, and the whole set has been re-run **three times**,
+serially, with nothing else on the machine: at the wiring commit, where nothing
+moved; at the tree where the compiler half of D-0052 lands, where 31 tight
+budget cells moved; and at the tree where `-npu-double-buffer` starts firing,
+where 138 cells renamed a transfer and 57 repacked an arena and nothing counted
+moved at all.
 
-**Twice is the right number and here is why.** Each re-record is the one run of
-the tree whose numbers it records, and nothing after either of them moved a
+**Three is the right number and here is why.** Each re-record is the one run of
+the tree whose numbers it records, and nothing after any of them moved a
 measured quantity: the code was final before each run, and what followed was
 documentation, the baseline record and the CI evaluation.
 `regression-baseline --check` at the tip reports no drift, which is the gate that

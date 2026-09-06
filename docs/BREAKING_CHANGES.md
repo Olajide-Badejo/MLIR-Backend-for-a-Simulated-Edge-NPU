@@ -132,6 +132,35 @@ the search firing where it had nothing to do. Here the default budget is where
 the pass has the most room, and a default budget cell that moves is the pass
 working.
 
+**Outcome, written after the re-record and kept apart from the predictions
+above, which are not edited.** The causing commit is `4e9816d` and the record is
+the commit after it. All 217 cells were re-run once, serially, on a quiet
+machine, and every field of every cell was diffed against the recorded one.
+
+| Prediction | Verdict |
+|---|---|
+| `npuisa_op_counts` moves wherever a transfer is prefetched | **met**, on **138** cells. `lenet-O2-default-n1-fp32-normal` reads `npuisa.dma_load` 11 to 7 with `npuisa.dma_load_async` 4 and `npuisa.await` 4 beside it, which is the same eleven transfers named differently |
+| the fragmentation ratio moves on six of the seven default budget baselines | **met**, and **56** default budget cells move it once each baseline's eleven ablation rows are counted with it |
+| it does not move on any tight budget cell | **wrong, on one cell of the 217.** `conv_bn_relu_stack-O2-tight-n1-fp32-normal-ablate-npu-fold-batchnorm` goes from 1.1834 to **1.0**, which is the arena becoming exactly the peak rather than a cost. The reasoning behind the clause was about the seven **baselines**: a tight budget is the smallest at which **that** program places, so a hoist that raises its peak cannot place and is declined. An ablation row is a different program run at the baseline's budget, so it has slack there, and this one had enough room for a prefetch that happens to pack better than the program without it |
+| `instruction_count` moves nowhere | **met**, on all 217 |
+| `simulated_cycles`, `compute_cycles`, `dma_cycles` and `overlap_fraction` move nowhere | **met**, on all 217 |
+| traffic in both directions, MACs, scratchpad elements and spill counts move nowhere | **met**, on all 217 |
+| the 21 golden tensors are byte identical | **met.** `git status` on `test/baseline/golden` is empty at the re-recorded tree |
+| `max_abs_error_vs_onnxruntime` does not move | **met**, on all 217 |
+| the 14 `-ablate-npu-double-buffer` cells do not move | **met.** Not one of them moved a counted field; each moved `content_hash` alone, which every cell did |
+| `content_hash` moves on all 217 | **met** |
+
+**Nothing outside the predicted set moved**, which is the clause this entry
+exists to make checkable. Over instructions, cycles, compute and DMA cycles,
+traffic in both directions, MACs, scratchpad elements read and written, spill
+count, spill DMA count, the fragmentation ratio outside those 57 cells and the
+oracle distance, the diff over all 217 cells is empty.
+
+**The one wrong clause is worth more than the ten right ones**, and it is the
+reason a prediction is written per field rather than per pass: the mechanism
+behind it was sound and its scope was not, and only running it over the ablation
+rows could have said so.
+
 ### 2026-09-01, Interphase P9b: `dilated_stack` gains the separate bias add, and every one of its cells moves
 
 **Written before the commit that causes it.** The commit that changes the model

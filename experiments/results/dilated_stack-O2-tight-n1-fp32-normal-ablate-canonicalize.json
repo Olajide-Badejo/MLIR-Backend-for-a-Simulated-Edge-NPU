@@ -26,7 +26,7 @@
     "scratchpad_budget": "tight",
     "scratchpad_budget_bytes": 8064
   },
-  "content_hash": "b6da41e023a4bbec80273c9de611371e79ed0d12470e15cdcffe969435325e54",
+  "content_hash": "5393d0951f88744cb474bc1bbdb5d7cda4ab3f54ccd90c0c4d600b98e73aeef3",
   "deltas": {
     "dram_bytes_total": 0,
     "instruction_count": 0,
@@ -210,7 +210,7 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "818475cb3b32a68554ebe405517dc730389e0a9f",
+    "git_sha": "4e9816d7c93375d51c5aba236a98bef5501eb5b2",
     "llvm_tag": "LLVM version 22.1.8",
     "registered_estimators": [
       "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
@@ -224,7 +224,7 @@
     "run_order_position": 168,
     "run_order_seed": 20260901,
     "technology_node": "45nm",
-    "timestamp": "2026-09-05T13:42:57.579691+00:00",
+    "timestamp": "2026-09-06T00:17:13.800076+00:00",
     "tool_shas": {
       "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
       "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
@@ -289,10 +289,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.0770444,
-        "ci95_low_ms": 0.075217775,
-        "iqr_ms": 0.0006084999999999979,
-        "median_ms": 0.07605400000000001,
+        "ci95_high_ms": 0.11355125,
+        "ci95_low_ms": 0.07581539999999999,
+        "iqr_ms": 0.003527749999999996,
+        "median_ms": 0.0788935,
         "n_trials": 10
       }
     },
@@ -324,10 +324,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.05829175,
-        "ci95_low_ms": 0.05562665,
-        "iqr_ms": 0.0008844999999999964,
-        "median_ms": 0.056382,
+        "ci95_high_ms": 0.058244475,
+        "ci95_low_ms": 0.055781625,
+        "iqr_ms": 0.00115175,
+        "median_ms": 0.056895,
         "n_trials": 10
       }
     },
@@ -358,10 +358,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 2,
       "timing": {
-        "ci95_high_ms": 0.06799325,
-        "ci95_low_ms": 0.0515018,
-        "iqr_ms": 0.0005814999999999987,
-        "median_ms": 0.052322,
+        "ci95_high_ms": 0.062372000000000004,
+        "ci95_low_ms": 0.051898175,
+        "iqr_ms": 0.00044149999999999745,
+        "median_ms": 0.0524835,
         "n_trials": 10
       }
     },
@@ -394,10 +394,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 3,
       "timing": {
-        "ci95_high_ms": 0.31971465,
-        "ci95_low_ms": 0.21811375,
-        "iqr_ms": 0.036466,
-        "median_ms": 0.24668700000000002,
+        "ci95_high_ms": 0.5742599250000001,
+        "ci95_low_ms": 0.2171067,
+        "iqr_ms": 0.04457349999999999,
+        "median_ms": 0.2477055,
         "n_trials": 10
       }
     },
@@ -432,10 +432,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 4,
       "timing": {
-        "ci95_high_ms": 0.2055112,
-        "ci95_low_ms": 0.14622545,
-        "iqr_ms": 0.012253750000000008,
-        "median_ms": 0.16478500000000001,
+        "ci95_high_ms": 0.1769093,
+        "ci95_low_ms": 0.15383695,
+        "iqr_ms": 0.006259249999999994,
+        "median_ms": 0.1649015,
         "n_trials": 10
       }
     },
@@ -472,10 +472,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 5,
       "timing": {
-        "ci95_high_ms": 0.26591515,
-        "ci95_low_ms": 0.201031575,
-        "iqr_ms": 0.026201000000000002,
-        "median_ms": 0.211306,
+        "ci95_high_ms": 0.38190745000000004,
+        "ci95_low_ms": 0.198268475,
+        "iqr_ms": 0.03462375000000001,
+        "median_ms": 0.217917,
         "n_trials": 10
       }
     },
@@ -512,10 +512,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 6,
       "timing": {
-        "ci95_high_ms": 0.15285925,
-        "ci95_low_ms": 0.10895345000000001,
-        "iqr_ms": 0.024191500000000005,
-        "median_ms": 0.1149725,
+        "ci95_high_ms": 0.139613425,
+        "ci95_low_ms": 0.1098003,
+        "iqr_ms": 0.015509999999999996,
+        "median_ms": 0.117291,
         "n_trials": 10
       }
     },
@@ -550,10 +550,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 7,
       "timing": {
-        "ci95_high_ms": 0.141496975,
-        "ci95_low_ms": 0.094823225,
-        "iqr_ms": 0.026342749999999984,
-        "median_ms": 0.109568,
+        "ci95_high_ms": 0.12845002500000002,
+        "ci95_low_ms": 0.096156325,
+        "iqr_ms": 0.0189825,
+        "median_ms": 0.1113145,
         "n_trials": 10
       }
     },
@@ -588,10 +588,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 8,
       "timing": {
-        "ci95_high_ms": 0.305292875,
-        "ci95_low_ms": 0.24907664999999998,
-        "iqr_ms": 0.011847250000000031,
-        "median_ms": 0.254905,
+        "ci95_high_ms": 0.267657475,
+        "ci95_low_ms": 0.245475375,
+        "iqr_ms": 0.007826,
+        "median_ms": 0.257137,
         "n_trials": 10
       }
     },
@@ -628,10 +628,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 9,
       "timing": {
-        "ci95_high_ms": 0.43042467500000003,
-        "ci95_low_ms": 0.36617947500000003,
-        "iqr_ms": 0.00907150000000001,
-        "median_ms": 0.37726400000000004,
+        "ci95_high_ms": 0.680524675,
+        "ci95_low_ms": 0.373952775,
+        "iqr_ms": 0.009984750000000042,
+        "median_ms": 0.38664699999999996,
         "n_trials": 10
       }
     },
@@ -666,10 +666,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 10,
       "timing": {
-        "ci95_high_ms": 0.066358525,
-        "ci95_low_ms": 0.062638925,
-        "iqr_ms": 0.0014295000000000002,
-        "median_ms": 0.0635975,
+        "ci95_high_ms": 0.1594632,
+        "ci95_low_ms": 0.13382715,
+        "iqr_ms": 0.013217749999999973,
+        "median_ms": 0.1376,
         "n_trials": 10
       }
     },
@@ -706,10 +706,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 11,
       "timing": {
-        "ci95_high_ms": 0.21524867500000003,
-        "ci95_low_ms": 0.161042475,
-        "iqr_ms": 0.009336750000000005,
-        "median_ms": 0.166499,
+        "ci95_high_ms": 0.23102972500000002,
+        "ci95_low_ms": 0.149445175,
+        "iqr_ms": 0.005336499999999994,
+        "median_ms": 0.15406399999999998,
         "n_trials": 10
       }
     }
@@ -780,17 +780,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 41.5033960501205,
-      "ci95_low_ms": 39.08331157526845,
-      "iqr_ms": 0.8865410009093466,
-      "median_ms": 40.05045749909186,
+      "ci95_high_ms": 43.647873321060615,
+      "ci95_low_ms": 40.95003225374967,
+      "iqr_ms": 1.0655829955794616,
+      "median_ms": 42.20055949917878,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 2.254359575,
-      "ci95_low_ms": 1.84824825,
-      "iqr_ms": 0.10944850000000006,
-      "median_ms": 1.925307,
+      "ci95_high_ms": 2.5571980500000002,
+      "ci95_low_ms": 1.931119325,
+      "iqr_ms": 0.20253425000000003,
+      "median_ms": 2.0348995,
       "n_trials": 10
     }
   }

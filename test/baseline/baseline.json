@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "023edcd8aa56cbb7a5f6600d2ef40cd266258067",
+  "git_sha": "4e9816d7c93375d51c5aba236a98bef5501eb5b2",
   "levels": [
     0,
     1,
@@ -917,6 +917,7 @@
   "suites": {
     "NPUAllocatorTests": {
       "failed": 0,
+      "failures": [],
       "passed": 29,
       "skipped": 0,
       "tests": [
@@ -953,6 +954,7 @@
     },
     "NPUEncodingTests": {
       "failed": 0,
+      "failures": [],
       "passed": 84,
       "skipped": 1,
       "tests": [
@@ -1045,6 +1047,7 @@
     },
     "NPUInterfaceTests": {
       "failed": 0,
+      "failures": [],
       "passed": 23,
       "skipped": 0,
       "tests": [
@@ -1075,6 +1078,7 @@
     },
     "NPUSimulatorTests": {
       "failed": 0,
+      "failures": [],
       "passed": 58,
       "skipped": 1,
       "tests": [
@@ -1141,6 +1145,7 @@
     },
     "NPUTilingTests": {
       "failed": 0,
+      "failures": [],
       "passed": 20,
       "skipped": 0,
       "tests": [
@@ -1168,6 +1173,7 @@
     },
     "check-npu": {
       "failed": 0,
+      "failures": [],
       "passed": 36,
       "skipped": 0,
       "tests": [
@@ -1211,6 +1217,7 @@
     },
     "dash-lint": {
       "failed": 0,
+      "failures": [],
       "passed": 2,
       "skipped": 0,
       "tests": [
@@ -1220,7 +1227,8 @@
     },
     "pytest": {
       "failed": 0,
-      "passed": 1085,
+      "failures": [],
+      "passed": 1093,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -2188,7 +2196,9 @@
         "test.Python.test_refgraph::test_the_attributes_are_read_and_not_defaulted",
         "test.Python.test_refgraph::test_the_walker_reproduces_a_hand_written_reference",
         "test.Python.test_refgraph::test_the_wrong_number_of_inputs_is_refused",
+        "test.Python.test_regression_baseline::test_a_baseline_older_than_the_failures_field_is_not_a_regression",
         "test.Python.test_regression_baseline::test_a_baseline_without_an_environment_reads_as_the_developer_machine",
+        "test.Python.test_regression_baseline::test_a_category_the_table_has_no_name_for_is_counted_rather_than_dropped",
         "test.Python.test_regression_baseline::test_a_cell_that_stopped_being_produced_is_drift",
         "test.Python.test_regression_baseline::test_a_deleted_test_is_drift",
         "test.Python.test_regression_baseline::test_a_failure_is_drift_in_any_environment",
@@ -2199,12 +2209,15 @@
         "test.Python.test_regression_baseline::test_a_moved_metric_is_reported_with_both_values",
         "test.Python.test_regression_baseline::test_a_moved_oracle_distance_inside_the_band_is_not_drift",
         "test.Python.test_regression_baseline::test_a_moved_oracle_distance_is_reported_even_though_it_is_not_drift",
+        "test.Python.test_regression_baseline::test_a_moved_suite_count_names_the_tests_that_failed",
         "test.Python.test_regression_baseline::test_a_suite_count_that_differs_because_the_environment_does_is_not_drift",
+        "test.Python.test_regression_baseline::test_a_suite_that_counts_a_failure_without_naming_it_says_so",
         "test.Python.test_regression_baseline::test_a_suite_that_stopped_running_is_drift",
         "test.Python.test_regression_baseline::test_an_oracle_distance_outside_the_band_is_drift",
         "test.Python.test_regression_baseline::test_an_unchanged_baseline_reports_no_drift",
         "test.Python.test_regression_baseline::test_an_unknown_schema_version_is_refused_rather_than_guessed",
         "test.Python.test_regression_baseline::test_every_committed_golden_has_a_cell",
+        "test.Python.test_regression_baseline::test_every_drift_line_starts_with_a_category_the_summary_knows",
         "test.Python.test_regression_baseline::test_only_the_fields_present_in_both_are_compared",
         "test.Python.test_regression_baseline::test_the_committed_baseline_covers_every_model_at_every_level_and_budget",
         "test.Python.test_regression_baseline::test_the_committed_baseline_is_at_this_schema_version",
@@ -2213,6 +2226,8 @@
         "test.Python.test_regression_baseline::test_the_committed_baseline_records_this_phases_numerics_movement",
         "test.Python.test_regression_baseline::test_the_oracle_band_is_the_matrix_band_and_not_a_second_copy",
         "test.Python.test_regression_baseline::test_the_same_environment_still_compares_its_counts_exactly",
+        "test.Python.test_regression_baseline::test_the_summary_counts_subjects_and_not_lines",
+        "test.Python.test_regression_baseline::test_the_summary_names_the_suite_rather_than_a_cycle_count",
         "test.Python.test_result_schema::test_a_cell_that_ablates_nothing_carries_no_deltas",
         "test.Python.test_result_schema::test_a_missing_key_is_refused",
         "test.Python.test_result_schema::test_a_null_never_aggregates_as_a_zero",
@@ -2253,6 +2268,7 @@
         "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[dilated_stack-O2-default-n1-fp32-normal]",
         "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[inception_block-O2-default-n1-fp32-normal]",
         "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[lenet-O2-default-n1-fp32-normal]",
+        "test.Python.test_roofline::test_the_walker_reads_the_asynchronous_transfer_forms",
         "test.Python.test_roofline::test_the_walker_refuses_an_operation_it_does_not_know",
         "test.Python.test_scalesim_export::test_a_grouped_convolution_becomes_one_row_per_group",
         "test.Python.test_scalesim_export::test_a_matmul_maps_to_one_gemm_shaped_row",
