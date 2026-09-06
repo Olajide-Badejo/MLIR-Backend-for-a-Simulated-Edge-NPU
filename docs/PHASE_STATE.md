@@ -172,7 +172,7 @@ already gives arm one.
 | Clause | Status |
 |---|---|
 | Goldens byte identical for the tiling work, exactly | **met, and it is evidence now.** All 21 golden tensors are byte identical and `git status` on `test/baseline/golden` is empty at the tree that has all three passes in `-O2`. It became evidence at the wiring commit, which is what the previous handoff said would make it one |
-| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **met, and it has been answered twice.** At the wiring commit **not one counted field of the 175 pre-existing cells moved**, over instructions, cycles, compute and DMA cycles, scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle distance, the overlap fraction and the fragmentation ratio; the 42 cells that run added are the three new ablation rows and had no counterpart to move, and an entry declaring a movement measured to be zero would be a false declaration. The 31 cells that have moved since are **tiling's**, declared before the commit that caused them. `-npu-assign-layout` moves nothing of its own and `-npu-double-buffer`'s row is the tiling row, through the coupling Section 13.2 asks for |
+| Any movement from layout or double buffering inside 1e-6, declared in `docs/BREAKING_CHANGES.md` before the causing commit | **met, and it has been answered three times.** At the wiring commit **not one counted field of the 175 pre-existing cells moved**, over instructions, cycles, compute and DMA cycles, scratchpad peak and bytes, spill count, spill DMA count, DRAM bytes, the oracle distance, the overlap fraction and the fragmentation ratio; an entry declaring a movement measured to be zero would be a false declaration. The 31 cells that moved next are **tiling's**. The 138 that moved after that are **double buffering's**, and the clause is met in its strongest form there: the movement is **exactly zero** on every numeric field, and what moved is the name a transfer is written under and the packing of an arena. Both were declared before the commits that caused them, and the second declaration is adjudicated clause by clause with one of its eleven wrong. `-npu-assign-layout` still moves nothing of its own, in all four counted columns, over all 14 pairs |
 | No `scf` operation reaches the lowering, asserted by a lit test | **met, as a statement about the lowering.** `test/Pipeline/p13-passes-at-o2.mlir` runs `-O2` at a budget where tiling fires and asserts no `scf` operation anywhere in the level's output, and the `NOSCF` prefix in `test/Transforms/tile-to-scratchpad.mlir` is kept beside it |
 | A tiling disabled ablation row reproduces the previous spilling numbers to the cycle | **met, to the cycle, and it is a measurement now rather than an identity.** With `-npu-tile-to-scratchpad` ablated, `resnet_block` at its tight budget reads 17 instructions, 2018.0 cycles and 1 spill and `inception_block` reads 22, 3799.0 and 3, which are the figures ADR 0008's budgets were measured against. Their **baselines** moved, because the pass fires: `resnet_block` to 21 and 2660.0 and `inception_block` to 3395.0 with no spills. `test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle` pins the ablated cells exactly and asserts the baselines differ, because a row where the two agreed would be measuring nothing |
 | The tight budget question answered per model with all three arms of Section 13.3 | **not started, and it has a subject now.** The fused region question was settled in advance and stands. D-0052 is fixed on both halves, so the format no longer refuses a tiled program, and D-0056 was fixed in the allocator, so the one cell that would not place does. The tiling arm's population is the 31 cells that moved: `resnet_block` and `inception_block` at their tight budgets, and the tight budget rows of five more models wherever `-npu-fuse-ops` is ablated and stops hiding their convolutions. **Tiling helps one model and costs another**, and the arm has to report both directions rather than only the wins |
@@ -859,13 +859,13 @@ both idle machine misses is written down in D-0049 and deliberately not acted on
 | `build/bin/NPUSimulatorTests` | **58 passed**, 1 skipped. 55 at P12, plus the per fold assertion, the version 2 strided transfer and the layout crossover |
 | `build-ndebug/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
 | `build-ndebug/bin/NPUEncodingTests` | 84 passed, 1 skipped |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | **1085 passed, 18 skipped** on an idle machine. One run at this tip reported 1084 passed and 1 failed on a machine that was still draining, and that is D-0049 rather than a regression: the test reproduces green three times out of three idle and red one time in four under load, with the message quoted in the entry |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1093 passed, 18 skipped**. 1085 before this checkpoint, plus the seven cases that pin the baseline's failing test names and the one that pins the walk's reading of an asynchronous transfer. Four runs of the suite during this checkpoint reported 1092 and one failure instead, and every one of them is D-0049 on a machine still draining: the two tests involved are green in isolation, six times out of six between them |
 | `mypy` | no issues found in 26 source files |
 | `black --check .` | 66 files unchanged |
 | `ruff check .` | all checks passed |
 | `bash scripts/dash-lint.sh` | `dash-lint: clean` |
 | `bash scripts/dash-lint.sh --self-test` | 8 of 8 expectations met |
-| `reuse lint` | compliant, **536 of 536** files. 489 at the P12 handoff, plus the 42 new result cells, the four new lit tests and `unittests/Encoding/SpillSlotCoverageTest.cpp` |
+| `reuse lint` | compliant, **538 of 538** files. 489 at the P12 handoff, plus the 42 new result cells, the four new lit tests, `unittests/Encoding/SpillSlotCoverageTest.cpp` and the two halves of `ScratchpadLiveness` |
 | `pre-commit run` | all twelve hooks passed, on every commit of this branch |
 | `python scripts/build-model-ir.py` | 84 IR files written |
 | `python scripts/check-reachability.py` | pass, all five layers, no exemptions in force |
@@ -873,19 +873,20 @@ both idle machine misses is written down in D-0049 and deliberately not acted on
 | `python scripts/gen-design-decisions.py --check` | index up to date |
 | `python experiments/results_to_tex.py --check` | `macros.tex` is up to date, regenerated over the 217 cells |
 | `python scripts/patch-scalesim.py --check` | every edit in place, exit 0 |
-| `bash scripts/regression-baseline.sh --check` | **no drift**, 21 golden tensors byte identical, exit 0, after the record at this tree |
+| `bash scripts/regression-baseline.sh --check` | **no drift on any cell or golden**, 21 golden tensors byte identical, after the record at this tree. The dev shape run went red on **one** difference and it was not a cell: the pytest suite reported 1092 against 1093 with `test_a_rerun_reproduces_the_external_fields_too` named beside it, which is D-0049 on a machine another workload had arrived on. **The name is there because this checkpoint put it there**, and the CI shape run of the same command on the same tree is green, exit 0 |
 | `bash scripts/coverage.sh 85 93 16 58` | C++ **86.0** PASS against 85, 5866 lines of 6824, branch 75.2; per tree **93.4052 / 16.1191 / 74.5156** PASS, exit 0. **The margin is 1.0 point.** It was 0.4 two commits earlier and went red at 84.9 while this checkpoint was working, and what closed it was not a threshold. The two named tiling baselines, `fixed` and `largest-fit`, were reachable only through a pass option no test set: about eighty five lines of search that ran on nobody's machine. Running all three strategies over the same IR asserts the regret the log had claimed and covers them at the same time. The validator's two caps have a unit test; its saturation branch still has none, because reaching it needs a file with more than sixty five thousand discontiguous runs in one access. **The threshold does not move: it is a gate.** `build-coverage/` has to be cleared before a run, because it holds gcov data for `lib/Simulator/CostModel.cpp`, which moved to its own library earlier in this phase, and gcovr errors on a source it cannot find rather than skipping it |
-| the whole suite in the CI shape, four differences | **1071 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`, at the tree that recorded the suite. **Predicted before each of the two runs and measured exactly both times**: 1069 at the wiring commit, because it adds two lit tests and no pytest case, and 1071 after the two ablation row tests, because neither needs an external tool and both run in either shape |
-| `regression-baseline --check` in the CI shape | **no drift**, exit 0, with both environments named, the count difference printed and not compared, and three oracle distances reported as inside D-0039's band rather than as silence |
+| the whole suite in the CI shape, four differences | **1080 passed, 31 skipped, 0 failed**, mypy clean under `--python-executable /usr/bin/python3`. **Predicted before each of the three runs and measured exactly all three times**: 1069 at the wiring commit, 1071 after the two ablation row tests, and 1080 here, which is the dev shape's 1093 less the same 13 the image has always skipped. The eight cases this checkpoint adds are environment independent, which is why the difference between the shapes is unchanged |
+| `regression-baseline --check` in the CI shape | **no drift**, exit 0, with both environments named, the count difference printed as 1093 against 1080 and not compared, and three notes reported rather than swallowed |
 | the same environment with `NPU_EXTERNAL_TOOLS=1` | `missing_tools` reports **all three**, `scalesim`, `accelergy` and `zigzag`, and `tools_reachable` is false, so the guards fail naming the variable rather than skipping. `test_external_tools.py` is 10 passed in that shape |
-| `python experiments/roofline.py` | 217 cells, **728 layers, 220 memory bound, 508 compute bound**, every cell at or above its bound, tightest layer `node_conv2d` at 0.0006 headroom. It was 682 layers at the wiring commit, and the 46 extra are the tiles |
+| `python experiments/roofline.py` | 217 cells, **728 layers, 220 memory bound, 508 compute bound**, every cell at or above its bound, tightest layer `node_conv2d` at 0.0006 headroom. It was 682 layers at the wiring commit and the 46 extra are the tiles; the prefetch adds none, because an asynchronous transfer is the same transfer |
 | `python experiments/scalesim_export.py` | 217 cells, worst whole model divergence -87.14% on `dilated_stack-O0-tight` at coverage 0.711, tau b **0.6143** over cells and **0.7242** over layers |
 | `python experiments/accelergy_energy.py` | 217 cells at 45nm, 49.2860 pJ per MAC against a published 4.60, a factor of 10.71, unchanged |
-| `python experiments/kernel_threads.py` | **0.84 to 3.68 times** at 28 threads, **output bytes equal on every model at every thread count**. The spread against the previous run's 0.96 to 4.00 is the host: the instructions the kernel is handed are identical, because this script measures each model at its default configuration and nothing tiles there |
-| `python experiments/compile_time_benchmark.py --check` | fitted exponent **1.0982** against a ceiling of 1.5683, exit 0 |
+| `python experiments/kernel_threads.py` | **0.84 to 3.68 times** at 28 threads, **output bytes equal on every model at every thread count**, measured on a quiet machine at `364d803`. It is not re-run at this tip and the reason is a measurement rather than an omission: `instruction_count` moved on **none** of the 217 cells, so the instruction stream this script hands the kernel is the same stream with one transfer earlier in it, and the kernel's loop nest and team cap are untouched. The spread against the previous run's 0.96 to 4.00 is the host |
+| `python experiments/compile_time_benchmark.py --check` | fitted exponent **1.1136** against a ceiling of 1.5683, exit 0. It has read 1.1081, 1.1072, 1.0982 and 1.1136 at four trees of this branch, which is the spread of a slope fitted inside one process rather than a trend |
 | `python experiments/compile_time_benchmark.py --check --sizes 500` | **red**, "No fit: a growth exponent needs at least two sizes", exit 1, which is the rehearsal P12's recipe asked for |
 | `python experiments/run_benchmarks.py --force` | **217 cells, 4.11 minutes, 1.14 s per cell**, inside the 90 minute budget, worst upper `--mlir-timing` gap 0.1041 ms and no red at either bound. Three attempts, and the two that failed are D-0049 |
 | `git status --short` | empty |
+| the machine the measurements were taken on | **quiet for every one of them, and it stopped being quiet afterwards.** The 217 cell re-record, the baseline record and the four experiment scripts each ran with nothing else on the machine. A second project's solver sweep arrived at 03:00 and again at 03:13, and what is above it is the count based half of the verification, which a busy machine can slow and cannot change |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | 0 matches, case insensitive with word boundaries |
 | the same diff grepped for em and en dashes | 0 matches |
 | `git diff main..HEAD` over `lib/Simulator`, `include/NPU/Simulator` and the Python mirror | **empty**, which is this branch's claim about the cost model rather than a statement about it |
@@ -1633,7 +1634,8 @@ measured row, the two CI triggers re-evaluated, and the quiet serialized
 re-record of all 217 cells. What follows is what remains, and the first entry is
 new.
 
-1. **D-0052 and D-0056 are both closed and tiling is in the suite.** The
+1. **D-0052, D-0054 and D-0056 are closed, and both P13 passes that can fire
+   do.** The
    validator accepts a tiled assembly read back inside a declared spill slot and
    the allocator no longer refuses a legal spill, so all 217 cells compile and
    thirty one of them moved, all at the tight budgets. **Section 13.3's tiling
@@ -1654,15 +1656,15 @@ new.
    models, and whatever the swept budget range brings in.
 4. **The predictions for both, committed before either experiment runs**, in the
    repository's prediction schema, which has a validator.
-5. **D-0054's remaining half, which is a design question and not a line in a
-   set.** The allocator half is fixed and moves nothing. Making
-   `-npu-double-buffer` fire needs the pass to know what the prefetch's doubled
-   residency costs before it commits, because at the frozen tight budgets five
-   of the seven models stop placing. The pass runs before the allocator on
-   purpose and cannot read a peak from there, so the options are a pressure
-   estimate inside the pass, a second decision after allocation, or leaving the
-   row at zero with the reason stated. **The measurement is in the entry** and
-   the choice is an owner's rather than an implementer's.
+5. **D-0054 is closed on both halves and the pass fires.** The allocator half
+   went in first and moved nothing. The pass half is the budget aware hoist:
+   `npuisa.const` joins the prologue, and before committing a hoist the pass
+   runs the allocator's own `assignOffsets` over the intervals the hoist would
+   produce, at the same budget, strategy and alignment, and declines what will
+   not place. **The frozen tight budgets did not move**, which is what the rule
+   exists for, and the sweep line peak was tried as that rule first and is 56
+   bytes short of it on `dilated_stack`. Declared before the commit and
+   adjudicated clause by clause afterwards, with one of eleven clauses wrong.
 
 **The one thing the wiring commit deliberately did not do** is move the suite's
 recorded tight budgets. The tiling disabled row was only checkable at the

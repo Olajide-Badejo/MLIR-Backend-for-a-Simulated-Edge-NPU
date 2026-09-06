@@ -213,15 +213,6 @@ bool npuisa::placesWithin(llvm::ArrayRef<npuisa::LiveInterval> intervals,
       .has_value();
 }
 
-npuisa::PeakPressure
-npuisa::peakOf(llvm::ArrayRef<npuisa::ScratchpadBuffer> buffers) {
-  llvm::SmallVector<npuisa::LiveInterval> intervals;
-  intervals.reserve(buffers.size());
-  for (const npuisa::ScratchpadBuffer &buffer : buffers)
-    intervals.push_back(buffer.interval);
-  return npuisa::sweepLinePeak(intervals);
-}
-
 FailureOr<int64_t> npuisa::readScratchpadBudget(func::FuncOp function,
                                                 int64_t option) {
   if (option > 0)

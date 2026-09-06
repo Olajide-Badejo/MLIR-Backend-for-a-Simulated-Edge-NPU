@@ -162,13 +162,6 @@ Operation *asynchronousCompletionOf(Operation *op);
 bool placesWithin(llvm::ArrayRef<LiveInterval> intervals, Strategy strategy,
                   int64_t alignment, int64_t budget);
 
-/// The peak simultaneous live bytes of a collected set, by the sweep line.
-///
-/// A convenience over `sweepLinePeak` so that a caller holding buffers does not
-/// have to copy the intervals out by hand, and so that both callers do it the
-/// same way.
-PeakPressure peakOf(llvm::ArrayRef<ScratchpadBuffer> buffers);
-
 /// The budget, in bytes, from the pass option, the function attribute, or the
 /// default, in that order of precedence.
 ///
