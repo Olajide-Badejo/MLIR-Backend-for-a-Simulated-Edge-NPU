@@ -42,12 +42,12 @@
 //   NOP and HALT                            ControlOpcodes
 //   the all padding average window          AllPaddingWindow
 //
-// **No integer case appears here**, and that is the gate's wording rather than
-// an omission. The integer kernels are Section 14's and land at Phase P14;
-// QUANT and DEQUANT are covered here only by the refusal they give, which is
-// asserted so that "no kernel yet" is a tested behaviour rather than a surprise.
-// Both of them, not one: Section 10.1's first sentence asks for a test per
-// opcode, and an untested opcode is untested whatever the reason.
+// **The Phase P14 list is at the bottom of this file**, in its own section with
+// its own index, because the integer kernels are a different arithmetic rather
+// than more cases of the same one: they accumulate in int32, they saturate, and
+// their rounding rules are pinned by Section 14 rather than by IEEE 754. Until
+// this phase the two quantization opcodes were covered here by the refusal they
+// gave, and that refusal is gone because the kernels arrived.
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,8 +57,12 @@
 
 #include "gtest/gtest.h"
 
+#include <cfenv>
 #include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
+#include <vector>
 
 using namespace nbin;
 using namespace npusim;
@@ -875,82 +879,504 @@ TEST(Shape, ConcatBatchFour) {
 }
 
 //===----------------------------------------------------------------------===//
-// The quantization opcodes, which have no kernel at this phase.
+// The integer kernels of Section 14, which is Section 10.1's Phase P14 list.
+//
+// Every expected value here is hand computed from the rules Section 14 pins,
+// and each rule's arithmetic is written out above the case that asserts it. The
+// list, and where each case is:
+//
+//   QUANT semantics                       QuantRoundsHalfToEven
+//   both saturation rails                 QuantSaturatesAtBothRails,
+//                                         ConvolutionSaturatesAtBothRails
+//   DEQUANT semantics                     DequantIsTheInverseOfQuantize
+//   the tie rule under a changed mode     TheTieRuleSurvivesAChangedRoundingMode
+//   padding contributes the zero point    ConvolutionPaddingContributesTheZeroPoint
+//   folded against unfolded zero point    TheFoldedAndUnfoldedFormsAgreeBitForBit
+//   the accumulator extremes              TheAccumulatorHoldsItsExtreme,
+//                                         TheAccumulatorRefusesRatherThanWrapping,
+//                                         TheReductionRefusesWhenItOverflows
+//
 //===----------------------------------------------------------------------===//
 
-TEST(Quantization, QuantRefusesByNameUntilPhaseP14) {
-  // Section 10.1: at Phase P6 the quantization opcodes carry structural
-  // coverage only, and P7's gate asks for the f32 list. So the machine refuses,
-  // and the refusal names the phase. Asserting it is what makes "no kernel yet"
-  // a tested behaviour rather than something a reader discovers.
+/// Builds a one instruction integer program and returns its i8 output.
+///
+/// The scaffolding differs from `computeOnce` in exactly two ways and both are
+/// the point of this section: the operands and the result are i8 rather than
+/// f32, and the bias, when there is one, is i32. Everything else, the DMA in,
+/// the compute, the DMA out, is the same three step shape.
+struct IntegerOutcome {
+  SimResult result;
+  std::vector<int32_t> values;
+};
+
+/// One i8 operand of an integer semantics test.
+struct IntegerOperandSpec {
+  std::vector<int64_t> shape;
+  std::vector<int8_t> data;
+};
+
+IntegerOutcome computeInteger(llvm::ArrayRef<IntegerOperandSpec> inputs,
+                              llvm::ArrayRef<int32_t> bias,
+                              llvm::ArrayRef<int64_t> biasShape,
+                              llvm::ArrayRef<int64_t> resultShape,
+                              Opcode opcode,
+                              const std::function<void(Instruction &)> &configure) {
   Builder builder;
-  const std::vector<int64_t> shape = {4};
-  const int64_t source = builder.constant(shape, {1, 2, 3, 4});
-  const int64_t buffer = builder.scratch(4);
-  const int64_t result = builder.scratch(4, ElemType::I8);
+  std::vector<int64_t> sources;
+  std::vector<int64_t> buffers;
+  int64_t scratchBytes = 0;
 
-  builder.add(dmaLoad(buffer, shape, at(MemSpace::Dram, source, shape)));
+  // **The i32 bias is allocated first, and the reason is the machine's own
+  // rule.** A four byte element is read through an accessor that requires a
+  // four byte aligned address, and the i8 buffers below have byte sized
+  // extents, so a bias placed after them would land wherever their total
+  // happened to leave it. The real allocator aligns every offset to
+  // `kDefaultAlignment`, which is 64, so this never arises in a compiled
+  // program; this scaffolding allocates tightly and unaligned on purpose, so
+  // it puts the one operand that has an alignment rule at offset zero.
+  int64_t biasSource = 0;
+  int64_t biasBuffer = 0;
+  if (!bias.empty()) {
+    biasSource = builder.constantI32(biasShape, bias);
+    biasBuffer =
+        builder.scratch(static_cast<int64_t>(bias.size()), ElemType::I32);
+    scratchBytes += static_cast<int64_t>(bias.size()) * 4;
+  }
 
-  Instruction quantize;
-  quantize.opcode = Opcode::QUANT;
-  quantize.resultSpace = MemSpace::Scratchpad;
-  quantize.resultElementType = ElemType::I8;
-  quantize.resultAddress = result;
-  quantize.resultShape = shape;
-  quantize.resultStrides = resultStridesFor(shape);
-  quantize.operands.push_back(at(MemSpace::Scratchpad, buffer, shape));
-  quantize.scale = 0.5f;
-  quantize.zeroPoint = 3;
-  builder.add(std::move(quantize));
+  for (const IntegerOperandSpec &spec : inputs) {
+    sources.push_back(builder.constantI8(spec.shape, spec.data));
+    buffers.push_back(
+        builder.scratch(static_cast<int64_t>(spec.data.size()), ElemType::I8));
+    scratchBytes += static_cast<int64_t>(spec.data.size());
+  }
+
+  int64_t resultElements = 1;
+  for (int64_t extent : resultShape)
+    resultElements *= extent;
+  const int64_t result = builder.scratch(resultElements, ElemType::I8);
+  scratchBytes += resultElements;
+  const int64_t sink = builder.output(resultShape, ElemType::I8);
+
+  for (auto [index, spec] : llvm::enumerate(inputs))
+    builder.add(dmaLoad(buffers[index], spec.shape,
+                        at(MemSpace::Dram, sources[index], spec.shape,
+                           ElemType::I8)));
+  if (!bias.empty())
+    builder.add(dmaLoad(
+        biasBuffer, biasShape,
+        at(MemSpace::Dram, biasSource, biasShape, ElemType::I32)));
+
+  std::vector<Operand> operands;
+  for (auto [index, spec] : llvm::enumerate(inputs))
+    operands.push_back(
+        at(MemSpace::Scratchpad, buffers[index], spec.shape, ElemType::I8));
+  if (!bias.empty())
+    operands.push_back(
+        at(MemSpace::Scratchpad, biasBuffer, biasShape, ElemType::I32));
+
+  Instruction instruction =
+      compute(opcode, result, resultShape, std::move(operands), ElemType::I8);
+  instruction.requantMultiplier = kIdentityMultiplier;
+  instruction.requantShift = 0;
+  configure(instruction);
+  builder.add(std::move(instruction));
+
+  builder.add(dmaStore(sink, resultShape,
+                       at(MemSpace::Scratchpad, result, resultShape,
+                          ElemType::I8)));
   builder.add(halt());
 
-  // Scratchpad: one f32 buffer of 4 elements is 16 bytes, one i8 buffer of 4
-  // elements is 4 bytes. 16 + 4 = 20 bytes.
-  Harness harness(builder.finish(20));
-  const SimResult outcome = harness.run();
-
-  ASSERT_FALSE(outcome.ok());
-  EXPECT_NE(outcome.error->find("QUANT"), std::string::npos) << *outcome.error;
-  EXPECT_NE(outcome.error->find("P14"), std::string::npos) << *outcome.error;
+  IntegerOutcome outcome;
+  Harness harness(builder.finish(static_cast<uint64_t>(scratchBytes)));
+  outcome.result = harness.run();
+  outcome.values = harness.outputI8(0);
+  return outcome;
 }
 
-TEST(Quantization, DequantRefusesByNameUntilPhaseP14) {
-  // The mirror of the case above, and it is here because Section 10.1's first
-  // sentence asks for a test per opcode rather than per interesting opcode.
-  // DEQUANT reads i8 and writes f32, which is the reverse of QUANT, so a
-  // refusal that named the wrong one would be invisible without this.
+/// The one instruction QUANT program: f32 in, i8 out.
+IntegerOutcome quantizeOnce(llvm::ArrayRef<int64_t> shape,
+                            llvm::ArrayRef<float> data, float scale,
+                            int32_t zeroPoint) {
+  Builder builder;
+  const int64_t source = builder.constant(shape, data);
+  const int64_t buffer = builder.scratch(static_cast<int64_t>(data.size()));
+  const int64_t result =
+      builder.scratch(static_cast<int64_t>(data.size()), ElemType::I8);
+  const int64_t sink = builder.output(shape, ElemType::I8);
+
+  builder.add(dmaLoad(buffer, shape, at(MemSpace::Dram, source, shape)));
+  Instruction quantize = compute(Opcode::QUANT, result, shape,
+                                 {at(MemSpace::Scratchpad, buffer, shape)},
+                                 ElemType::I8);
+  quantize.scale = scale;
+  quantize.zeroPoint = zeroPoint;
+  builder.add(std::move(quantize));
+  builder.add(dmaStore(sink, shape,
+                       at(MemSpace::Scratchpad, result, shape, ElemType::I8)));
+  builder.add(halt());
+
+  IntegerOutcome outcome;
+  Harness harness(builder.finish(
+      static_cast<uint64_t>(data.size()) * 4 + data.size()));
+  outcome.result = harness.run();
+  outcome.values = harness.outputI8(0);
+  return outcome;
+}
+
+TEST(Quantization, QuantRoundsHalfToEven) {
+  // `q = clamp(rint(x / scale) + zero_point, -128, 127)` with `rint` rounding
+  // half to even, at scale 0.5 and zero point 0. Every input below divides to
+  // an exact half, which is the only place three plausible rules differ:
+  //
+  //   x      x/scale   half to even   half away from zero   truncate
+  //    0.25      0.5              0                     1          0
+  //    0.75      1.5              2                     2          1
+  //    1.25      2.5              2                     3          2
+  //    1.75      3.5              4                     4          3
+  //   -0.25     -0.5              0                    -1          0
+  //   -0.75     -1.5             -2                    -2         -1
+  //
+  // So a kernel implementing either of the other two fails on the first row.
+  const IntegerOutcome outcome =
+      quantizeOnce({6}, {0.25f, 0.75f, 1.25f, 1.75f, -0.25f, -0.75f}, 0.5f, 0);
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{0, 2, 2, 4, 0, -2}));
+}
+
+TEST(Quantization, QuantSaturatesAtBothRails) {
+  // Scale 0.25, zero point -3. The scale is a power of two so every division
+  // below is exact and the rounding rule is not what is under test here.
+  //
+  //   x        x/scale   + zp     clamped   why
+  //    40.0        160     157        127   above the top rail
+  //   -40.0       -160    -163       -128   below the bottom rail
+  //     0.0          0      -3         -3   real zero maps to the zero point
+  //     8.0         32      29         29   inside
+  //    32.5        130     127        127   exactly the top rail
+  //   -31.25      -125    -128       -128   exactly the bottom rail
+  //
+  // The last two are why this is not only a clamp test: a rail reached exactly
+  // must not be clamped to one short of itself.
+  const IntegerOutcome outcome =
+      quantizeOnce({6}, {40.0f, -40.0f, 0.0f, 8.0f, 32.5f, -31.25f}, 0.25f, -3);
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values,
+            (std::vector<int32_t>{127, -128, -3, 29, 127, -128}));
+}
+
+TEST(Quantization, TheTieRuleSurvivesAChangedRoundingMode) {
+  // Section 14 names this trap by name: `std::nearbyint` and `std::rint` honour
+  // the dynamic floating point rounding mode, so a quantizer written in terms
+  // of either produces different numbers once anything in the process calls
+  // `fesetround`. The kernel uses neither, and this is the assertion that says
+  // so rather than the comment.
+  //
+  // Under `FE_TOWARDZERO` a `rint` based kernel would answer 0, 1, 2, 3, 0, -1
+  // on these six inputs, which is the truncation column of the table above.
+  const int previous = std::fegetround();
+  ASSERT_EQ(std::fesetround(FE_TOWARDZERO), 0)
+      << "this host does not support setting the rounding mode, so the test "
+         "cannot say anything";
+
+  const IntegerOutcome outcome =
+      quantizeOnce({6}, {0.25f, 0.75f, 1.25f, 1.75f, -0.25f, -0.75f}, 0.5f, 0);
+  std::fesetround(previous);
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{0, 2, 2, 4, 0, -2}));
+}
+
+TEST(Quantization, DequantIsTheInverseOfQuantize) {
+  // `x = (q - zero_point) * scale`, at scale 0.25 and zero point -3:
+  //
+  //   q      q - zp   times scale
+  //   -128     -125        -31.25
+  //     -3        0          0.00
+  //      0        3          0.75
+  //    127      130         32.50
+  //
+  // The subtraction is done in int32 before the multiply, and the first row is
+  // why: `-128 - (-3)` is -125, which an i8 subtraction would have wrapped.
+  // Those four f32 values are exactly the six of `QuantSaturatesAtBothRails`
+  // that were not clamped, which makes this the round trip as well as the rule.
   Builder builder;
   const std::vector<int64_t> shape = {4};
-  const int64_t source = builder.input(shape, ElemType::I8);
+  const int64_t source = builder.constantI8(shape, {-128, -3, 0, 127});
   const int64_t buffer = builder.scratch(4, ElemType::I8);
   const int64_t result = builder.scratch(4);
+  const int64_t sink = builder.output(shape);
 
   builder.add(dmaLoad(buffer, shape,
                       at(MemSpace::Dram, source, shape, ElemType::I8)));
-
-  Instruction dequantize;
-  dequantize.opcode = Opcode::DEQUANT;
-  dequantize.resultSpace = MemSpace::Scratchpad;
-  dequantize.resultElementType = ElemType::F32;
-  dequantize.resultAddress = result;
-  dequantize.resultShape = shape;
-  dequantize.resultStrides = resultStridesFor(shape);
-  dequantize.operands.push_back(
-      at(MemSpace::Scratchpad, buffer, shape, ElemType::I8));
+  Instruction dequantize =
+      compute(Opcode::DEQUANT, result, shape,
+              {at(MemSpace::Scratchpad, buffer, shape, ElemType::I8)});
   dequantize.scale = 0.25f;
-  dequantize.zeroPoint = -7;
+  dequantize.zeroPoint = -3;
   builder.add(std::move(dequantize));
+  builder.add(dmaStore(sink, shape, at(MemSpace::Scratchpad, result, shape)));
   builder.add(halt());
 
-  // Scratchpad: one i8 buffer of 4 elements is 4 bytes, one f32 buffer of 4
-  // elements is 16 bytes. 4 + 16 = 20 bytes.
+  // Scratchpad: four i8 elements is 4 bytes, four f32 elements is 16. 20 bytes.
   Harness harness(builder.finish(20));
   const SimResult outcome = harness.run();
 
-  ASSERT_FALSE(outcome.ok());
-  EXPECT_NE(outcome.error->find("DEQUANT"), std::string::npos)
-      << *outcome.error;
-  EXPECT_NE(outcome.error->find("P14"), std::string::npos) << *outcome.error;
+  ASSERT_TRUE(outcome.ok()) << outcome.error.value_or("");
+  expectValues(harness.outputF32(0), {-31.25f, 0.0f, 0.75f, 32.5f});
+}
+
+TEST(Quantization, ConvolutionPaddingContributesTheZeroPoint) {
+  // A 3 by 3 input, a 3 by 3 filter of ones, one pad on every side, stride 1,
+  // and an input zero point of -2. The int32 bias carries the folded term
+  // `b_q - zp_x * sum_k q_w[k]` over the **whole** window, which with `b_q = 0`
+  // and nine unit weights is `0 - (-2) * 9 = 18`.
+  //
+  // At each output position the machine sums nine taps, a tap outside the input
+  // contributing `zp_x` rather than zero, and adds the bias. The two together
+  // are `sum over the in bounds taps of (q_x - zp_x) * q_w`, which is the
+  // unfolded form, and the table below gives both sides:
+  //
+  //   out   in bounds inputs        sum   padded   acc = sum + pad*(-2)   +18
+  //   0,0   1 2 4 5                  12        5                      2    20
+  //   0,1   1 2 3 4 5 6              21        3                     15    33
+  //   0,2   2 3 5 6                  16        5                      6    24
+  //   1,0   1 2 4 5 7 8              27        3                     21    39
+  //   1,1   1 2 3 4 5 6 7 8 9        45        0                     45    63
+  //   1,2   2 3 5 6 8 9              33        3                     27    45
+  //   2,0   4 5 7 8                  24        5                     14    32
+  //   2,1   4 5 6 7 8 9              39        3                     33    51
+  //   2,2   5 6 8 9                  28        5                     18    36
+  //
+  // Each `+18` column entry equals `sum + 2 * (count of in bounds taps)`, which
+  // is the unfolded form computed the other way, and the two agree on all nine.
+  //
+  // **A kernel that skipped padded taps would answer the `sum + 18` column**,
+  // which is 30, 39, 34, 45, 63, 51, 42, 57 and 46: right on the interior
+  // position and wrong on the other eight.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 3, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9}},
+       {{1, 1, 3, 3}, {1, 1, 1, 1, 1, 1, 1, 1, 1}}},
+      {18}, {1}, {1, 1, 3, 3}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {1, 1, 1, 1};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+        instruction.zeroPoint = -2;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values,
+            (std::vector<int32_t>{20, 33, 24, 39, 63, 45, 32, 51, 36}));
+}
+
+TEST(Quantization, TheFoldedAndUnfoldedFormsAgreeBitForBit) {
+  // Section 14's hoisting claim, asserted rather than argued: the machine
+  // computes `sum_k q_x[k] * q_w[k]` with the `- zp_x * sum_k q_w[k]` term
+  // folded into the int32 bias at compile time, and that is exactly equal over
+  // the integers to the unfolded `sum_k (q_x[k] - zp_x) * q_w[k]`.
+  //
+  // The two forms are compared over pseudo random int8 tensors at four zero
+  // points, on a padded convolution so that the padding rule is inside the
+  // claim rather than beside it. **The unfolded reference skips padded taps**,
+  // because a padded tap contributes `zp_x` and `zp_x - zp_x` is zero, and that
+  // is the whole reason the folded term has to be computed over the whole
+  // window.
+  //
+  // The generator is a seeded linear congruential sequence written out here
+  // rather than a library one, so a failure reproduces on any host.
+  uint32_t seed = 0x5eed1234u;
+  const auto nextI8 = [&seed]() {
+    seed = seed * 1664525u + 1013904223u;
+    return static_cast<int8_t>(static_cast<int32_t>((seed >> 16) & 0xffu) - 128);
+  };
+
+  constexpr int64_t kChannels = 2;
+  constexpr int64_t kExtent = 4;
+  constexpr int64_t kKernel = 3;
+
+  for (int32_t zeroPoint : {-128, -37, 0, 96}) {
+    std::vector<int8_t> input(kChannels * kExtent * kExtent);
+    for (int8_t &value : input)
+      value = nextI8();
+    std::vector<int8_t> filter(kChannels * kKernel * kKernel);
+    for (int8_t &value : filter)
+      value = nextI8();
+
+    // The folded bias, per output channel. There is one output channel here and
+    // `b_q` is zero, so it is the whole of the folded term.
+    int32_t weightSum = 0;
+    for (int8_t weight : filter)
+      weightSum += weight;
+    const int32_t foldedBias = -zeroPoint * weightSum;
+
+    const IntegerOutcome outcome = computeInteger(
+        {{{1, kChannels, kExtent, kExtent}, input},
+         {{1, kChannels, kKernel, kKernel}, filter}},
+        {foldedBias}, {1}, {1, 1, kExtent, kExtent}, Opcode::CONV2D,
+        [zeroPoint](Instruction &instruction) {
+          instruction.strides = {1, 1};
+          instruction.pads = {1, 1, 1, 1};
+          instruction.dilations = {1, 1};
+          instruction.group = 1;
+          instruction.zeroPoint = zeroPoint;
+        });
+    ASSERT_TRUE(outcome.result.ok())
+        << "zero point " << zeroPoint << ": "
+        << outcome.result.error.value_or("");
+
+    // The unfolded form, computed here, with the padded taps left out.
+    std::vector<int32_t> expected;
+    for (int64_t oh = 0; oh < kExtent; ++oh) {
+      for (int64_t ow = 0; ow < kExtent; ++ow) {
+        int64_t accumulator = 0;
+        for (int64_t c = 0; c < kChannels; ++c) {
+          for (int64_t kh = 0; kh < kKernel; ++kh) {
+            const int64_t ih = oh - 1 + kh;
+            if (ih < 0 || ih >= kExtent)
+              continue;
+            for (int64_t kw = 0; kw < kKernel; ++kw) {
+              const int64_t iw = ow - 1 + kw;
+              if (iw < 0 || iw >= kExtent)
+                continue;
+              const int64_t at = (c * kExtent + ih) * kExtent + iw;
+              const int64_t weightAt = (c * kKernel + kh) * kKernel + kw;
+              accumulator += (static_cast<int64_t>(input[at]) - zeroPoint) *
+                             static_cast<int64_t>(filter[weightAt]);
+            }
+          }
+        }
+        // The identity multiplier leaves the accumulator alone, and the rails
+        // are the machine's last step.
+        const int64_t clamped =
+            accumulator < -128 ? -128 : (accumulator > 127 ? 127 : accumulator);
+        expected.push_back(static_cast<int32_t>(clamped));
+      }
+    }
+
+    EXPECT_EQ(outcome.values, expected) << "zero point " << zeroPoint;
+  }
+}
+
+TEST(Quantization, ConvolutionSaturatesAtBothRails) {
+  // A one by one convolution over a single element, with two output channels
+  // whose biases push the accumulator past each rail. Input 1, both weights 1,
+  // so the accumulators are 1 + 1000 and 1 - 1000, which saturate to 127 and
+  // -128 rather than wrapping to -23 and 25.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{2, 1, 1, 1}, {1, 1}}}, {1000, -1000}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{127, -128}));
+}
+
+TEST(Quantization, MatMulRequantizesAndHasNoZeroPoint) {
+  // `(2, 3)` by `(3, 2)` with an int32 bias of length 2, requantized at
+  // `M = 0.5`, which is `M0 = 2^30` with a shift of zero.
+  //
+  //   lhs = [[1 2 3]      rhs = [[1 0]      bias = [10, -10]
+  //          [4 5 6]]            [0 1]
+  //                              [1 1]]
+  //
+  //   raw accumulators   plus bias   times 0.5, rounding
+  //     4   5              14  -5      7  -2
+  //    10  11              20   1     10   1
+  //
+  // The `-5` row is the one worth reading: the multiply half of the
+  // requantization rounds a tie **up** rather than away from zero, which is
+  // what gemmlowp's nudge does and what every integer inference stack that
+  // implements this scheme therefore does, so `-2.5` answers -2 and not -3.
+  //
+  // There is no zero point on this instruction and there is one on CONV2D. A
+  // matrix multiplication has no padding, so every tap is in range and the
+  // input zero point's whole contribution is the compile time term already in
+  // the bias.
+  const IntegerOutcome outcome = computeInteger(
+      {{{2, 3}, {1, 2, 3, 4, 5, 6}}, {{3, 2}, {1, 0, 0, 1, 1, 1}}}, {10, -10},
+      {2}, {2, 2}, Opcode::MATMUL, [](Instruction &instruction) {
+        instruction.requantMultiplier = kHalfMultiplier;
+        instruction.requantShift = 0;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{7, -2, 10, 1}));
+}
+
+TEST(Quantization, TheAccumulatorHoldsItsExtreme) {
+  // The largest value an int32 accumulator can hold, reached and not exceeded.
+  // One tap of `1 * 1` and a bias of `2^31 - 2`, which is 2147483646, sums to
+  // exactly 2147483647. The machine does not trap, and the rails then take the
+  // result to 127.
+  //
+  // It is driven through the bias rather than through the reduction because the
+  // reduction cannot reach the bound without 133145 taps: the static guard is
+  // `K * 128 * 127 < 2^31`, so an int8 by int8 reduction stays inside int32
+  // until K passes 133137, and the case that does drive it that way is the
+  // third of these three.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{1, 1, 1, 1}, {1}}}, {2147483646}, {1},
+      {1, 1, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{127}));
+}
+
+TEST(Quantization, TheAccumulatorRefusesRatherThanWrapping) {
+  // One past the extreme. A tap of `1 * 1` and a bias of `2^31 - 1` sums to
+  // 2147483648, which int32 cannot hold, and the machine traps naming the
+  // static guard rather than answering the wrapped -2147483648.
+  //
+  // A wrapped answer here would be the worst class of bug this project can
+  // have: an i8 output of 0 where the program's own arithmetic said 127, with
+  // nothing anywhere saying so.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{1, 1, 1, 1}, {1}}}, {2147483647}, {1},
+      {1, 1, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      });
+
+  ASSERT_FALSE(outcome.result.ok());
+  EXPECT_NE(outcome.result.error->find("int32 accumulator"), std::string::npos)
+      << *outcome.result.error;
+  EXPECT_NE(outcome.result.error->find("K * 128 * 127"), std::string::npos)
+      << *outcome.result.error;
+}
+
+TEST(Quantization, TheReductionRefusesWhenItOverflows) {
+  // The case the static guard is literally about, driven through the reduction
+  // rather than through the bias. `K * 128 * 127 < 2^31` fails first at
+  // K = 133138; at 127 by 127 per tap the sum itself passes 2^31 - 1 at
+  // K = 133145, which is 133145 * 16129 = 2147495705.
+  //
+  // The kernel checks its running accumulator after every product rather than
+  // once at the end, because the bound holds for every partial sum as well as
+  // for the total: a partial sum is bounded by the sum of the magnitudes of the
+  // products taken so far. So an excursion that came back inside range would
+  // still be a guard that was violated, and it is caught where it happens.
+  constexpr int64_t kReduction = 133145;
+  std::vector<int8_t> lhs(kReduction, 127);
+  std::vector<int8_t> rhs(kReduction, 127);
+
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, kReduction}, lhs}, {{kReduction, 1}, rhs}}, {}, {}, {1, 1},
+      Opcode::MATMUL, [](Instruction &) {});
+
+  ASSERT_FALSE(outcome.result.ok());
+  EXPECT_NE(outcome.result.error->find("int32 accumulator"), std::string::npos)
+      << *outcome.result.error;
 }
 
 } // namespace

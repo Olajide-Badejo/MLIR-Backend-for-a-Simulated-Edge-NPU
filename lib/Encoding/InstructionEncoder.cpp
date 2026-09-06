@@ -720,6 +720,24 @@ LogicalResult FunctionEncoder::encodeBody() {
       if (failed(setResult(instruction, concat.getDestination(), &op)))
         return failure();
       instruction.axes.push_back(concat.getAxis());
+    } else if (auto quant = dyn_cast<npuisa::QuantOp>(&op)) {
+      instruction.opcode = Opcode::QUANT;
+      FailureOr<Operand> operand = makeOperand(quant.getInput(), &op);
+      if (failed(operand) ||
+          failed(setResult(instruction, quant.getDestination(), &op)))
+        return failure();
+      instruction.operands.push_back(*operand);
+      instruction.scale = quant.getScale().convertToFloat();
+      instruction.zeroPoint = quant.getZeroPoint();
+    } else if (auto dequant = dyn_cast<npuisa::DequantOp>(&op)) {
+      instruction.opcode = Opcode::DEQUANT;
+      FailureOr<Operand> operand = makeOperand(dequant.getInput(), &op);
+      if (failed(operand) ||
+          failed(setResult(instruction, dequant.getDestination(), &op)))
+        return failure();
+      instruction.operands.push_back(*operand);
+      instruction.scale = dequant.getScale().convertToFloat();
+      instruction.zeroPoint = dequant.getZeroPoint();
     } else {
       op.emitError() << "cannot encode this operation. The encoder knows the "
                         "npuisa instructions, the memref view operations the "

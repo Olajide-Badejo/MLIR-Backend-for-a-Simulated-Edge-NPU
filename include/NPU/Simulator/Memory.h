@@ -116,7 +116,7 @@ public:
   const float *readF32(MemSpace space, int64_t byteAddress,
                        int64_t elementOffset, const char *what) {
     int64_t address = 0;
-    if (!elementAddress(byteAddress, elementOffset, address))
+    if (!elementAddress(byteAddress, elementOffset, 4, address))
       return reinterpret_cast<const float *>(
           badElement(space, byteAddress, elementOffset, what));
     return reinterpret_cast<const float *>(readBytes(space, address, 4, what));
@@ -126,10 +126,51 @@ public:
   float *writeF32(MemSpace space, int64_t byteAddress, int64_t elementOffset,
                   const char *what) {
     int64_t address = 0;
-    if (!elementAddress(byteAddress, elementOffset, address))
+    if (!elementAddress(byteAddress, elementOffset, 4, address))
       return reinterpret_cast<float *>(
           badElement(space, byteAddress, elementOffset, what));
     return reinterpret_cast<float *>(writeBytes(space, address, 4, what));
+  }
+
+  /// A checked i8 element, under exactly the contract `readF32` states.
+  ///
+  /// Every byte address is one byte aligned, so the alignment half of that
+  /// contract can never fail here; it is still asked, through the same helper,
+  /// because two accessors that computed an address two ways would be two
+  /// places for the overflow rule to be got wrong. The pointer is `int8_t`
+  /// rather than `uint8_t`: this machine's i8 is two's complement signed, as
+  /// `NPU_QuantTensor` states, and returning the unsigned spelling would make
+  /// every caller cast and one of them eventually forget.
+  const int8_t *readI8(MemSpace space, int64_t byteAddress,
+                       int64_t elementOffset, const char *what) {
+    int64_t address = 0;
+    if (!elementAddress(byteAddress, elementOffset, 1, address))
+      return reinterpret_cast<const int8_t *>(
+          badElement(space, byteAddress, elementOffset, what));
+    return reinterpret_cast<const int8_t *>(readBytes(space, address, 1, what));
+  }
+
+  /// The mirror of `readI8`, for a write.
+  int8_t *writeI8(MemSpace space, int64_t byteAddress, int64_t elementOffset,
+                  const char *what) {
+    int64_t address = 0;
+    if (!elementAddress(byteAddress, elementOffset, 1, address))
+      return reinterpret_cast<int8_t *>(
+          badElement(space, byteAddress, elementOffset, what));
+    return reinterpret_cast<int8_t *>(writeBytes(space, address, 1, what));
+  }
+
+  /// A checked i32 element. The bias of a quantized compute instruction is the
+  /// only operand this machine reads in this type, and it is read here rather
+  /// than through `readBytes` and a memcpy so that the alignment rule the f32
+  /// accessor states holds for it too.
+  const int32_t *readI32(MemSpace space, int64_t byteAddress,
+                         int64_t elementOffset, const char *what) {
+    int64_t address = 0;
+    if (!elementAddress(byteAddress, elementOffset, 4, address))
+      return reinterpret_cast<const int32_t *>(
+          badElement(space, byteAddress, elementOffset, what));
+    return reinterpret_cast<const int32_t *>(readBytes(space, address, 4, what));
   }
 
   /// Copies `bytes` bytes between two spaces, checking both ends.
@@ -172,22 +213,27 @@ private:
            static_cast<uint64_t>(size) - static_cast<uint64_t>(address);
   }
 
-  /// Scales an element offset by the f32 element size and adds it to a byte
-  /// address, refusing rather than overflowing, and refusing a result that is
-  /// not four byte aligned.
+  /// Scales an element offset by an element size and adds it to a byte address,
+  /// refusing rather than overflowing, and refusing a result that is not
+  /// aligned to that size.
+  ///
+  /// The size is a parameter from Phase P14, where the integer kernels arrived
+  /// and a one byte and a four byte element had to be addressed by the same
+  /// arithmetic. `elementSize` is a power of two at every call site, which is
+  /// what makes the alignment test a mask; an element size that was not would
+  /// need a division and this machine has no such type.
   static bool elementAddress(int64_t byteAddress, int64_t elementOffset,
-                             int64_t &address) {
-    constexpr int64_t kElementSize = 4;
-    constexpr int64_t kLimit = INT64_MAX / kElementSize;
-    if (elementOffset > kLimit || elementOffset < -kLimit)
+                             int64_t elementSize, int64_t &address) {
+    const int64_t limit = INT64_MAX / elementSize;
+    if (elementOffset > limit || elementOffset < -limit)
       return false;
-    const int64_t scaled = elementOffset * kElementSize;
+    const int64_t scaled = elementOffset * elementSize;
     if (scaled > 0 && byteAddress > INT64_MAX - scaled)
       return false;
     if (scaled < 0 && byteAddress < INT64_MIN - scaled)
       return false;
     address = byteAddress + scaled;
-    return (address & (kElementSize - 1)) == 0;
+    return (address & (elementSize - 1)) == 0;
   }
 
   /// Records the trap and returns null. Out of line because it is cold.

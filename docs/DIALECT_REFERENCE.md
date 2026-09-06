@@ -416,6 +416,57 @@ Effects: `MemoryEffects::Effect{}`
 
 
 
+### `npu.dequantize` (npu::DequantizeOp)
+
+_Dequantizes an i8 tensor to f32 with a scale and a zero point._
+
+Syntax:
+
+```
+operation ::= `npu.dequantize` $input attr-dict `:` type($input) `to` type($result)
+```
+
+Reachability: imported computation.
+
+```mlir
+%x = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+   : tensor<1x8x4x4xi8> to tensor<1x8x4x4xf32>
+```
+
+`x = (q - zero_point) * scale`, which is the exact inverse of the mapping
+`npu.quantize` applies up to the rounding that quantization performed. The
+same shape, layout, scale and zero point rules hold, and they are checked by
+the same helper, because a pair whose two halves disagreed about what a zero
+point may be would be a pair that cannot round trip.
+
+Traits: `AlwaysSpeculatableImplTrait`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>scale</code></td><td>::mlir::FloatAttr</td><td>32-bit float attribute</td></tr>
+<tr><td><code>zero_point</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute, read as two's complement signed</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `input` | statically shaped tensor of 8-bit signless integer values |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | statically shaped tensor of 32-bit float values |
+
+
+
 ### `npu.fused_op` (npu::FusedOp)
 
 _A region holding a fused chain of npu operations._
@@ -639,6 +690,68 @@ Effects: `MemoryEffects::Effect{}`
 | Result | Description |
 | :----: | ----------- |
 | `result` | statically shaped tensor of 32-bit float values |
+
+
+
+### `npu.quantize` (npu::QuantizeOp)
+
+_Quantizes an f32 tensor to i8 with a scale and a zero point._
+
+Syntax:
+
+```
+operation ::= `npu.quantize` $input attr-dict `:` type($input) `to` type($result)
+```
+
+Reachability: imported computation.
+
+```mlir
+%q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+   : tensor<1x8x4x4xf32> to tensor<1x8x4x4xi8>
+```
+
+`q = clamp(rint(x / scale) + zero_point, -128, 127)`, where `rint` rounds
+half to even. That is ONNX `QuantizeLinear`'s rule and `numpy.rint`'s, and
+the kernel implements the tie explicitly rather than through
+`std::nearbyint`, which honours whatever the dynamic floating point rounding
+mode happens to be.
+
+The shapes match exactly and the layout encoding does too: quantization is
+elementwise, so it moves no data and preserves whatever layout its input
+carried.
+
+The scale is finite and strictly positive and the zero point is within the
+range of the signless `i8` this dialect reads as two's complement signed. A
+zero or negative scale is refused here rather than at the encoder, because
+the earliest layer that can name a problem is the one that should, and
+because the calibrator's degenerate range rule exists precisely so that a
+zero scale never escapes it.
+
+Traits: `AlwaysSpeculatableImplTrait`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>scale</code></td><td>::mlir::FloatAttr</td><td>32-bit float attribute</td></tr>
+<tr><td><code>zero_point</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute, read as two's complement signed</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `input` | statically shaped tensor of 32-bit float values |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | statically shaped tensor of 8-bit signless integer values |
 
 
 

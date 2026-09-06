@@ -89,6 +89,10 @@ struct ElemTypeDesc {
   StringRef record;
   StringRef name;
   int64_t value = 0;
+  /// Only meaningful for the element types. The memory spaces and the
+  /// activations share this struct because all three are `{ int; string; }`
+  /// records, and neither of those two declares the bit.
+  bool isInteger = false;
 };
 
 struct OpcodeDesc {
@@ -104,6 +108,11 @@ struct OpcodeDesc {
   uint32_t fieldMask = 0;
   uint32_t resultTypeMask = 0;
   uint32_t operandTypeMask = 0;
+  /// One ElemType value per operand slot, applied when the result element type
+  /// is an integer one. Empty means every operand takes the result's type.
+  std::vector<int64_t> integerOperandTypes;
+  std::vector<StringRef> integerFields;
+  uint32_t integerFieldMask = 0;
   StringRef shapeRule;
   StringRef format;
   std::vector<StringRef> sources;
@@ -133,6 +142,9 @@ struct Description {
   std::vector<EliminatedDesc> eliminated;
   std::map<StringRef, uint32_t> fieldBits;
   std::map<StringRef, int64_t> elemTypeValues;
+  /// A bit per ElemType value whose arithmetic is integer. An opcode's integer
+  /// profile applies exactly when its result element type is one of these.
+  uint32_t integerTypeMask = 0;
 };
 
 /// The C++ enumerator spelling of a check, which is its record name with the
@@ -180,8 +192,18 @@ Description readDescription(const RecordKeeper &records) {
   desc.elemTypes = readValueNamePairs(records, "ISAElemType");
   desc.memSpaces = readValueNamePairs(records, "ISAMemSpace");
   desc.activations = readValueNamePairs(records, "ISAActivation");
-  for (const ElemTypeDesc &type : desc.elemTypes)
+  {
+    std::map<StringRef, bool> integral;
+    for (const Record *rec : records.getAllDerivedDefinitions("ISAElemType"))
+      integral[rec->getName()] = rec->getValueAsBit("isInteger");
+    for (ElemTypeDesc &type : desc.elemTypes)
+      type.isInteger = integral[type.record];
+  }
+  for (const ElemTypeDesc &type : desc.elemTypes) {
     desc.elemTypeValues[type.record] = type.value;
+    if (type.isInteger)
+      desc.integerTypeMask |= 1u << type.value;
+  }
 
   if (desc.elemTypes.size() > 32)
     PrintFatalError("more than 32 ISAElemType records: the element type mask "
@@ -212,6 +234,12 @@ Description readDescription(const RecordKeeper &records) {
       op.resultTypeMask |= 1u << desc.elemTypeValues[type->getName()];
     for (const Record *type : rec->getValueAsListOfDefs("operandTypes"))
       op.operandTypeMask |= 1u << desc.elemTypeValues[type->getName()];
+    for (const Record *type : rec->getValueAsListOfDefs("integerOperandTypes"))
+      op.integerOperandTypes.push_back(desc.elemTypeValues[type->getName()]);
+    for (const Record *field : rec->getValueAsListOfDefs("integerFields")) {
+      op.integerFields.push_back(field->getValueAsString("name"));
+      op.integerFieldMask |= desc.fieldBits[field->getName()];
+    }
     for (StringRef source : rec->getValueAsListOfStrings("sources"))
       op.sources.push_back(source);
     llvm::sort(op.sources);
@@ -251,6 +279,28 @@ Description readDescription(const RecordKeeper &records) {
                         std::to_string(needed) +
                         " operands, so an operand would have no declared "
                         "memory space");
+      if (!op.integerOperandTypes.empty() &&
+          op.integerOperandTypes.size() < needed)
+        PrintFatalError("opcode " + op.record.str() + " declares " +
+                        std::to_string(op.integerOperandTypes.size()) +
+                        " integer operand types but takes up to " +
+                        std::to_string(needed) +
+                        " operands, so an operand would have no declared type "
+                        "at an integer result");
+    }
+    // An integer profile on an opcode that cannot produce an integer result is
+    // a rule nothing could ever reach, and an opcode that produces one without
+    // saying what its operands are then falls back to the f32 rule that every
+    // operand takes the result's type. Both are worth refusing at generation
+    // rather than discovering as a validator that accepts the wrong file.
+    {
+      uint32_t integerResults = op.resultTypeMask & desc.integerTypeMask;
+      bool hasProfile =
+          !op.integerOperandTypes.empty() || op.integerFieldMask != 0;
+      if (hasProfile && integerResults == 0)
+        PrintFatalError("opcode " + op.record.str() + " declares an integer "
+                        "profile and accepts no integer result type, so "
+                        "nothing could ever reach it");
     }
     desc.opcodes.push_back(op);
   }
@@ -415,6 +465,18 @@ void emitOpcodeInfo(raw_ostream &os, const Description &desc) {
   os << "  /// A bit per ElemType value the operands may take, or 0 when the\n";
   os << "  /// operands take the result's type.\n";
   os << "  uint32_t operandTypeMask;\n";
+  os << "  /// One ElemType value per operand slot, applied when the result\n";
+  os << "  /// element type is an integer one. The last entry repeats for "
+        "every\n";
+  os << "  /// operand a variadic opcode has beyond the ones listed. Null when\n";
+  os << "  /// the opcode has no integer profile, in which case every operand\n";
+  os << "  /// takes the result's type at every element type.\n";
+  os << "  const uint32_t *integerOperandTypes;\n";
+  os << "  uint32_t numIntegerOperandTypes;\n";
+  os << "  /// The fields this opcode gives meaning to only at an integer\n";
+  os << "  /// result, as a mask of kField*. At an f32 result they hold their\n";
+  os << "  /// neutral values like any field the opcode does not name.\n";
+  os << "  uint32_t integerFieldMask;\n";
   os << "  const char *format;\n";
   os << "  const char *semantics;\n";
   os << "  const char *shapeRule;\n";
@@ -430,7 +492,23 @@ void emitOpcodeInfo(raw_ostream &os, const Description &desc) {
       os << (index ? ", " : "") << space << "u";
     os << "};\n";
   }
+  for (const OpcodeDesc &op : desc.opcodes) {
+    if (op.integerOperandTypes.empty())
+      continue;
+    os << "inline constexpr uint32_t kIntegerOperandTypes" << op.record
+       << "[] = {";
+    for (auto [index, type] : llvm::enumerate(op.integerOperandTypes))
+      os << (index ? ", " : "") << type << "u";
+    os << "};\n";
+  }
   os << "\n";
+  os << "/// A bit per ElemType value whose arithmetic is integer. An opcode's\n";
+  os << "/// integer profile applies exactly when its result element type is "
+        "one\n";
+  os << "/// of these, and the bit is declared in the description rather than\n";
+  os << "/// inferred from a spelling.\n";
+  os << "inline constexpr uint32_t kIntegerTypeMask = 0x"
+     << utohexstr(desc.integerTypeMask) << "u;\n\n";
 
   os << "inline constexpr OpcodeInfo kOpcodeTable[] = {\n";
   for (const OpcodeDesc &op : desc.opcodes) {
@@ -446,7 +524,13 @@ void emitOpcodeInfo(raw_ostream &os, const Description &desc) {
          << "u, ";
     os << "0x" << utohexstr(op.fieldMask) << "u, 0x"
        << utohexstr(op.resultTypeMask) << "u, 0x"
-       << utohexstr(op.operandTypeMask) << "u,\n     ";
+       << utohexstr(op.operandTypeMask) << "u, ";
+    if (op.integerOperandTypes.empty())
+      os << "nullptr, 0u, ";
+    else
+      os << "kIntegerOperandTypes" << op.record << ", "
+         << op.integerOperandTypes.size() << "u, ";
+    os << "0x" << utohexstr(op.integerFieldMask) << "u,\n     ";
     emitStringLiteral(os, op.format);
     os << ",\n     ";
     emitStringLiteral(os, op.semantics);
@@ -565,6 +649,13 @@ std::string spaceName(const Description &desc, int64_t value) {
   return "?";
 }
 
+std::string typeName(const Description &desc, int64_t value) {
+  for (const ElemTypeDesc &type : desc.elemTypes)
+    if (type.value == value)
+      return type.name.str();
+  return "?";
+}
+
 std::string typeMaskNames(const Description &desc, uint32_t mask) {
   std::string out;
   for (const ElemTypeDesc &type : desc.elemTypes)
@@ -617,13 +708,22 @@ void emitManual(raw_ostream &os, const Description &desc) {
       os << typeMaskNames(desc, op.resultTypeMask);
       if (op.operandTypeMask)
         os << " (operands " << typeMaskNames(desc, op.operandTypeMask) << ")";
+      if (!op.integerOperandTypes.empty()) {
+        os << " (operand slots at an integer result: ";
+        for (auto [index, type] : llvm::enumerate(op.integerOperandTypes))
+          os << (index ? ", " : "") << typeName(desc, type);
+        os << ")";
+      }
     }
     os << " | ";
-    if (op.fields.empty()) {
+    if (op.fields.empty() && op.integerFields.empty()) {
       os << "none";
     } else {
       for (auto [index, field] : llvm::enumerate(op.fields))
         os << (index ? ", " : "") << "`" << field << "`";
+      for (auto [index, field] : llvm::enumerate(op.integerFields))
+        os << (index || !op.fields.empty() ? ", " : "") << "`" << field
+           << "` (integer result only)";
     }
     os << " | " << op.semantics << " |\n";
   }

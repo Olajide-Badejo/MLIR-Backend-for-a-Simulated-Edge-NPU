@@ -638,4 +638,65 @@ def NPUISA_ConcatOp : NPUISA_ComputeOp<"concat"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// The quantization instructions.
+//
+// The two instructions that cross between the arithmetics, and the only two in
+// this dialect whose operand element type differs from their destination's. The
+// types are pinned in the operation definitions rather than checked in the
+// verifier, in the direction each instruction goes, so a `QUANT` written the
+// wrong way round does not parse; the `quant-types` check in the binary is the
+// same rule stated again for a file nobody compiled.
+//===----------------------------------------------------------------------===//
+
+class NPUISA_QuantizationOp<string mnemonic, Type operandType, Type destType>
+    : NPUISA_ComputeOp<mnemonic> {
+  let arguments = (ins
+      Arg<operandType, "", [MemRead<DefaultResource>]>:$input,
+      F32Attr:$scale,
+      NPU_SignedI32Attr:$zero_point,
+      Arg<destType, "", [MemWrite<DefaultResource>]>:$destination
+  );
+
+  let assemblyFormat = [{
+      `ins` `(` $input `:` type($input) `)`
+      `outs` `(` $destination `:` type($destination) `)` attr-dict
+  }];
+}
+
+def NPUISA_QuantOp : NPUISA_QuantizationOp<"quant", NPUISA_ScratchpadF32,
+                                            NPUISA_ScratchpadI8> {
+  let summary = "Quantizes an f32 buffer to i8 with a scale and a zero point.";
+  let description = [{
+    ```mlir
+    npuisa.quant ins(%x : memref<1x8x4x4xf32, #npu.scratchpad>)
+                 outs(%d : memref<1x8x4x4xi8, #npu.scratchpad>)
+                 {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+    ```
+
+    `q = clamp(rint(x / scale) + zero_point, -128, 127)`, elementwise, with the
+    tie going to even. The operand and the destination have the same shape.
+
+    The opcode is `QUANT` and the mnemonic is `quant` where the tensor level
+    calls the same operation `quantize`, which is the same naming rule the two
+    pools follow: the tensor level takes its name from ONNX and the instruction
+    level from the instruction set of Section 5.4.
+  }];
+}
+
+def NPUISA_DequantOp : NPUISA_QuantizationOp<"dequant", NPUISA_ScratchpadI8,
+                                              NPUISA_ScratchpadF32> {
+  let summary = "Dequantizes an i8 buffer to f32 with a scale and a zero point.";
+  let description = [{
+    ```mlir
+    npuisa.dequant ins(%q : memref<1x8x4x4xi8, #npu.scratchpad>)
+                   outs(%d : memref<1x8x4x4xf32, #npu.scratchpad>)
+                   {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+    ```
+
+    `x = (q - zero_point) * scale`, elementwise, into a destination of the
+    operand's shape.
+  }];
+}
+
 #endif // NPUISA_OPS

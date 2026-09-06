@@ -835,3 +835,51 @@ LogicalResult ConcatOp::verify() {
                          << axisSum;
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// The quantization instructions.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// The shared body of the two quantization verifiers.
+///
+/// The element types are not checked here and that is deliberate: the operation
+/// definitions pin f32 on one side and i8 on the other, in the direction each
+/// instruction goes, so an instruction written the wrong way round does not
+/// parse. What is left is the shape relation and the two numeric bounds, and
+/// they are the same on both because the two are inverses.
+LogicalResult verifyQuantization(Operation *op, MemRefType input,
+                                 MemRefType dest, llvm::APFloat scale,
+                                 int64_t zeroPoint) {
+  if (failed(verifyDpsPartition(op)))
+    return failure();
+  if (failed(verifySameShape(op, "the input", input, "the destination", dest)))
+    return failure();
+
+  if (!scale.isFinite() || scale.isNegative() || scale.isZero())
+    return op->emitOpError()
+           << "the scale must be finite and strictly positive, but got "
+           << scale.convertToFloat();
+
+  if (zeroPoint < -128 || zeroPoint > 127)
+    return op->emitOpError()
+           << "the zero point must be within the i8 range -128 to 127, but got "
+           << zeroPoint;
+
+  return success();
+}
+
+} // namespace
+
+LogicalResult QuantOp::verify() {
+  return verifyQuantization(*this, memRefOf(getInput()),
+                            memRefOf(getDestination()), getScale(),
+                            getZeroPoint());
+}
+
+LogicalResult DequantOp::verify() {
+  return verifyQuantization(*this, memRefOf(getInput()),
+                            memRefOf(getDestination()), getScale(),
+                            getZeroPoint());
+}

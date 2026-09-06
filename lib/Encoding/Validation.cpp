@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 
 using namespace nbin;
@@ -416,6 +417,45 @@ bool checkRegions(Validator &validator, WrittenSpans &defined) {
 // One instruction.
 //===----------------------------------------------------------------------===//
 
+/// Whether an element type's arithmetic is integer.
+///
+/// The mask is generated from the ISA description's own `isInteger` bit, so
+/// this asks the description rather than testing a name or a numeric value.
+bool isIntegerElemType(ElemType type) {
+  uint32_t raw = static_cast<uint32_t>(type);
+  return raw < 32 && (kIntegerTypeMask & (1u << raw)) != 0;
+}
+
+/// The fields this instruction's opcode gives meaning to, at this instruction's
+/// result element type.
+///
+/// An opcode's integer profile applies exactly when the result element type is
+/// an integer one. At f32 the mask is the one the opcode has always had, which
+/// is what makes every rule below exactly as strong on the f32 path as it was
+/// before an integer path existed.
+uint32_t effectiveFieldMask(const OpcodeInfo &info,
+                            const Instruction &instruction) {
+  if (!info.hasResult || !isIntegerElemType(instruction.resultElementType))
+    return info.fieldMask;
+  return info.fieldMask | info.integerFieldMask;
+}
+
+/// The element type operand slot `index` takes, at this instruction's result
+/// element type, or nothing when the opcode declares no integer profile and the
+/// operands therefore take the result's own type.
+///
+/// The last declared entry repeats, exactly as `operandSpaces` does, so a
+/// variadic opcode's operands past the ones listed take the last slot's type.
+std::optional<ElemType> integerOperandTypeAt(const OpcodeInfo &info,
+                                             const Instruction &instruction,
+                                             size_t index) {
+  if (info.numIntegerOperandTypes == 0 ||
+      !isIntegerElemType(instruction.resultElementType))
+    return std::nullopt;
+  size_t slot = std::min<size_t>(index, info.numIntegerOperandTypes - 1);
+  return static_cast<ElemType>(info.integerOperandTypes[slot]);
+}
+
 /// The vector field rules that are generated: which fields an opcode gives
 /// meaning to, and how long each of them is when it does.
 struct VectorField {
@@ -438,8 +478,9 @@ bool checkAttributeSizes(Validator &validator, const Instruction &instruction,
       {"axes", kFieldAxes, &instruction.axes, 0},
   };
 
+  const uint32_t fieldMask = effectiveFieldMask(info, instruction);
   for (const VectorField &field : fields) {
-    bool declared = (info.fieldMask & field.bit) != 0;
+    bool declared = (fieldMask & field.bit) != 0;
     if (!declared) {
       if (!field.values->empty())
         return validator.fail(
@@ -502,33 +543,45 @@ bool checkAttributeValues(Validator &validator, const Instruction &instruction,
 
 bool checkQuantization(Validator &validator, const Instruction &instruction,
                        const OpcodeInfo &info, int64_t at) {
-  bool quantizes = (info.fieldMask & kFieldScale) != 0;
+  // The two fields are asked about separately, each on its own bit, rather
+  // than both on `scale`'s. Every opcode that carried one before Phase P14
+  // carried both, so the two readings agreed and the shorter one was written;
+  // they come apart at the integer profile, where a quantized convolution
+  // carries the zero point of its input and no scale at all, because the
+  // fixed point pair is what rescales its accumulator.
+  const uint32_t fieldMask = effectiveFieldMask(info, instruction);
+  const bool carriesScale = (fieldMask & kFieldScale) != 0;
+  const bool carriesZeroPoint = (fieldMask & kFieldZeroPoint) != 0;
 
-  if (quantizes) {
+  if (carriesScale) {
     if (!std::isfinite(instruction.scale) || instruction.scale <= 0.0f)
       return validator.fail(Check::QuantScale,
                             "the quantization scale is not a finite positive "
                             "number",
                             at);
-    // The integer side of both quantization opcodes is i8, so the zero point
-    // is an i8 value whichever direction the instruction goes.
+  } else if (instruction.scale != 0.0f) {
+    return validator.fail(Check::QuantScale,
+                          std::string(info.name) +
+                              " does not quantize, so its scale is zero",
+                          at);
+  }
+
+  if (carriesZeroPoint) {
+    // The integer side of every opcode that carries one is i8, so the zero
+    // point is an i8 value whichever direction the instruction goes and
+    // whichever field gave it meaning.
     if (instruction.zeroPoint < -128 || instruction.zeroPoint > 127)
       return validator.fail(Check::QuantZeroPoint,
                             "the zero point is " +
                                 std::to_string(instruction.zeroPoint) +
                                 " and an i8 zero point is within [-128, 127]",
                             at);
-  } else {
-    if (instruction.scale != 0.0f)
-      return validator.fail(Check::QuantScale,
-                            std::string(info.name) +
-                                " does not quantize, so its scale is zero",
-                            at);
-    if (instruction.zeroPoint != 0)
-      return validator.fail(Check::QuantZeroPoint,
-                            std::string(info.name) +
-                                " does not quantize, so its zero point is zero",
-                            at);
+  } else if (instruction.zeroPoint != 0) {
+    return validator.fail(
+        Check::QuantZeroPoint,
+        std::string(info.name) + " gives the zero point no meaning at " +
+            elemTypeName(instruction.resultElementType) + ", so it holds zero",
+        at);
   }
 
   // The requantization pair is bounded on every instruction, not only on the
@@ -840,6 +893,23 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                                   elemTypeName(operand.elementType) +
                                   " and it reads the other type",
                               at);
+      continue;
+    }
+    // An opcode with an integer profile declares a type per operand slot, and
+    // at an integer result that declaration is the rule rather than the
+    // result's own type: a quantized convolution reads i8 data and adds an
+    // int32 bias to an int32 accumulator, so the bias operand is the one
+    // operand whose type is deliberately not the result's.
+    if (std::optional<ElemType> slotType =
+            integerOperandTypeAt(info, instruction, index)) {
+      if (operand.elementType != *slotType)
+        return validator.fail(
+            Check::ElementTypeSupported,
+            "operand " + std::to_string(index) + " is " +
+                elemTypeName(operand.elementType) + " and " + info.name +
+                " takes " + elemTypeName(*slotType) + " there at a " +
+                elemTypeName(instruction.resultElementType) + " result",
+            at);
       continue;
     }
     if (info.hasResult && operand.elementType != instruction.resultElementType)

@@ -832,3 +832,121 @@ func.func @reshape_to_a_dynamic_extent(%x: tensor<4x4xf32>)
   %0 = npu.reshape %x : tensor<4x4xf32> to tensor<?x4xf32>
   return %0 : tensor<?x4xf32>
 }
+
+// =============================================================================
+// The quantization pair.
+//
+// One case per rule Section 7.2 states for them, on both operations where the
+// rule is shared, because the two are inverses and a helper that had drifted on
+// one side would let a program through in one direction only.
+// =============================================================================
+
+// -----
+
+func.func @quantize_changes_the_shape(%x: tensor<1x8x4x4xf32>)
+    -> tensor<1x8x4x5xi8> {
+  // expected-error @+1 {{is elementwise, so the operand and the result have the same shape, but the operand is 'tensor<1x8x4x4xf32>' and the result is 'tensor<1x8x4x5xi8>'}}
+  %0 = npu.quantize %x {scale = 1.000000e-01 : f32, zero_point = 0 : i32}
+     : tensor<1x8x4x4xf32> to tensor<1x8x4x5xi8>
+  return %0 : tensor<1x8x4x5xi8>
+}
+
+// -----
+
+func.func @dequantize_changes_the_shape(%q: tensor<1x8x4x4xi8>)
+    -> tensor<1x8x4x5xf32> {
+  // expected-error @+1 {{is elementwise, so the operand and the result have the same shape}}
+  %0 = npu.dequantize %q {scale = 1.000000e-01 : f32, zero_point = 0 : i32}
+     : tensor<1x8x4x4xi8> to tensor<1x8x4x5xf32>
+  return %0 : tensor<1x8x4x5xf32>
+}
+
+// -----
+
+// A zero scale is what a degenerate calibration range would produce if the
+// calibrator's own rule did not catch it first, and the verifier refusing it is
+// why that rule exists rather than being a nicety.
+func.func @quantize_with_a_zero_scale(%x: tensor<4xf32>) -> tensor<4xi8> {
+  // expected-error @+1 {{the scale must be finite and strictly positive, but got 0}}
+  %0 = npu.quantize %x {scale = 0.000000e+00 : f32, zero_point = 0 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// -----
+
+func.func @quantize_with_a_negative_scale(%x: tensor<4xf32>) -> tensor<4xi8> {
+  // expected-error @+1 {{the scale must be finite and strictly positive, but got -5.000000e-01}}
+  %0 = npu.quantize %x {scale = -5.000000e-01 : f32, zero_point = 0 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// -----
+
+func.func @dequantize_with_a_zero_scale(%q: tensor<4xi8>) -> tensor<4xf32> {
+  // expected-error @+1 {{the scale must be finite and strictly positive}}
+  %0 = npu.dequantize %q {scale = 0.000000e+00 : f32, zero_point = 0 : i32}
+     : tensor<4xi8> to tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// -----
+
+// One past each end of the i8 range. Both are here because a bound written with
+// the wrong comparison fails on one side and passes on the other, and a test
+// that only ever pushed on one side would not say which.
+func.func @quantize_zero_point_above_the_range(%x: tensor<4xf32>)
+    -> tensor<4xi8> {
+  // expected-error @+1 {{the zero point must be within the i8 range -128 to 127, but got 128}}
+  %0 = npu.quantize %x {scale = 1.000000e+00 : f32, zero_point = 128 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// -----
+
+func.func @quantize_zero_point_below_the_range(%x: tensor<4xf32>)
+    -> tensor<4xi8> {
+  // expected-error @+1 {{the zero point must be within the i8 range -128 to 127, but got -129}}
+  %0 = npu.quantize %x {scale = 1.000000e+00 : f32, zero_point = -129 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// -----
+
+func.func @dequantize_zero_point_above_the_range(%q: tensor<4xi8>)
+    -> tensor<4xf32> {
+  // expected-error @+1 {{the zero point must be within the i8 range -128 to 127, but got 200}}
+  %0 = npu.dequantize %q {scale = 1.000000e+00 : f32, zero_point = 200 : i32}
+     : tensor<4xi8> to tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// -----
+
+// The layout has to agree across the operation, for the reason every other
+// elementwise operation in this dialect gives: quantization moves no data, so a
+// result claiming a different layout from its operand would be claiming a
+// rearrangement that did not happen.
+func.func @quantize_mixes_layouts(%x: tensor<1x8x4x4xf32, #npu.layout<nhwc>>)
+    -> tensor<1x8x4x4xi8> {
+  // expected-error @+1 {{operands must not mix layouts, but input is nhwc and result is nchw (absent encoding)}}
+  %0 = npu.quantize %x {scale = 1.000000e-01 : f32, zero_point = 0 : i32}
+     : tensor<1x8x4x4xf32, #npu.layout<nhwc>> to tensor<1x8x4x4xi8>
+  return %0 : tensor<1x8x4x4xi8>
+}
+
+// -----
+
+// The direction is a type constraint rather than a verifier rule, so writing
+// the pair the wrong way round does not parse at all. Asserting that keeps the
+// direction a property of the operation definitions rather than of a check
+// somebody could weaken.
+func.func @quantize_the_wrong_way_round(%q: tensor<4xi8>) -> tensor<4xf32> {
+  // expected-error @+1 {{operand #0 must be statically shaped tensor of 32-bit float values}}
+  %0 = npu.quantize %q {scale = 1.000000e+00 : f32, zero_point = 0 : i32}
+     : tensor<4xi8> to tensor<4xf32>
+  return %0 : tensor<4xf32>
+}

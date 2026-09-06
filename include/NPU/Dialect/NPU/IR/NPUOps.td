@@ -6,12 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The operator set of the `npu` dialect. Two operations named in the design,
-// `quantize` and `dequantize`, are deliberately absent: they arrive with their
-// converters, their integer kernels, and their models together in the
-// quantization phase, and adding them here would be adding an operator that
-// nothing can lower, encode, simulate, or import, which is exactly what law 2
-// of this project forbids.
+// The operator set of the `npu` dialect, complete since the quantization phase.
+// `quantize` and `dequantize` were held back until this phase deliberately,
+// because law 2 forbids an operator nothing can lower, encode, simulate or
+// import, and they arrive here in the commit that gives them all four.
 //
 // Every operation below carries a classification line in its description,
 // reading either
@@ -538,6 +536,92 @@ def NPU_BatchNormOp : NPU_ComputeOp<"batch_norm"> {
       attr-dict `->` type($result)
   }];
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// npu.quantize and npu.dequantize
+//
+// The two operations that cross between the two arithmetics, and the only place
+// in this dialect where an operand's element type differs from its result's.
+//
+// **Neither takes a destination operand**, and that follows the rule Section
+// 7.2 states rather than an omission: the destination passing set is the nine
+// compute operations that also implement `TilingInterface`, because a
+// destination is what a tiled loop threads its partial result through, and
+// Section 13.2 tiles convolutions and matrix multiplications. `npu.reshape` is
+// the existing operation on the same side of that line and for the same reason,
+// and the lowering does here what it does there: it allocates the buffer at the
+// first level that has anywhere to put one.
+//
+// **The scale and the zero point are attributes rather than operands**, where
+// ONNX carries them as inputs. The importer reads them out of the initializer
+// list, which is where an exported QDQ graph puts them, and a value that is
+// constant for the life of the program belongs in the operation rather than in
+// a tensor the allocator would have to find room for. It is also what lets the
+// verifier state Section 7.2's rules about them at all: a scale that arrived as
+// an operand could only be checked when it happened to be foldable.
+//===----------------------------------------------------------------------===//
+
+class NPU_QuantizationOp<string mnemonic, Type operandType, Type resultType>
+    : NPU_Op<mnemonic, [Pure]> {
+  let arguments = (ins
+      operandType:$input,
+      F32Attr:$scale,
+      NPU_SignedI32Attr:$zero_point
+  );
+  let results = (outs resultType:$result);
+
+  let assemblyFormat = "$input attr-dict `:` type($input) `to` type($result)";
+  let hasVerifier = 1;
+}
+
+def NPU_QuantizeOp : NPU_QuantizationOp<"quantize", NPU_FloatTensor,
+                                        NPU_QuantTensor> {
+  let summary = "Quantizes an f32 tensor to i8 with a scale and a zero point.";
+  let description = [{
+    Reachability: imported computation.
+
+    ```mlir
+    %q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+       : tensor<1x8x4x4xf32> to tensor<1x8x4x4xi8>
+    ```
+
+    `q = clamp(rint(x / scale) + zero_point, -128, 127)`, where `rint` rounds
+    half to even. That is ONNX `QuantizeLinear`'s rule and `numpy.rint`'s, and
+    the kernel implements the tie explicitly rather than through
+    `std::nearbyint`, which honours whatever the dynamic floating point rounding
+    mode happens to be.
+
+    The shapes match exactly and the layout encoding does too: quantization is
+    elementwise, so it moves no data and preserves whatever layout its input
+    carried.
+
+    The scale is finite and strictly positive and the zero point is within the
+    range of the signless `i8` this dialect reads as two's complement signed. A
+    zero or negative scale is refused here rather than at the encoder, because
+    the earliest layer that can name a problem is the one that should, and
+    because the calibrator's degenerate range rule exists precisely so that a
+    zero scale never escapes it.
+  }];
+}
+
+def NPU_DequantizeOp : NPU_QuantizationOp<"dequantize", NPU_QuantTensor,
+                                           NPU_FloatTensor> {
+  let summary = "Dequantizes an i8 tensor to f32 with a scale and a zero point.";
+  let description = [{
+    Reachability: imported computation.
+
+    ```mlir
+    %x = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+       : tensor<1x8x4x4xi8> to tensor<1x8x4x4xf32>
+    ```
+
+    `x = (q - zero_point) * scale`, which is the exact inverse of the mapping
+    `npu.quantize` applies up to the rounding that quantization performed. The
+    same shape, layout, scale and zero point rules hold, and they are checked by
+    the same helper, because a pair whose two halves disagreed about what a zero
+    point may be would be a pair that cannot round trip.
+  }];
 }
 
 //===----------------------------------------------------------------------===//

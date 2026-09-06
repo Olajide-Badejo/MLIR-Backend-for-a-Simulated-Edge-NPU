@@ -17,8 +17,8 @@
     {"name": "RESHAPE", "value": 11, "sources": ["reshape"], "needs_kernel": true, "semantic_phase": "P7"},
     {"name": "TRANSPOSE", "value": 12, "sources": ["transpose"], "needs_kernel": true, "semantic_phase": "P7"},
     {"name": "CONCAT", "value": 13, "sources": ["concat"], "needs_kernel": true, "semantic_phase": "P7"},
-    {"name": "QUANT", "value": 14, "sources": [], "needs_kernel": true, "semantic_phase": "P14"},
-    {"name": "DEQUANT", "value": 15, "sources": [], "needs_kernel": true, "semantic_phase": "P14"}
+    {"name": "QUANT", "value": 14, "sources": ["quantize"], "needs_kernel": true, "semantic_phase": "P14"},
+    {"name": "DEQUANT", "value": 15, "sources": ["dequantize"], "needs_kernel": true, "semantic_phase": "P14"}
   ],
   "eliminated_sources": [
     {"source": "constant", "explanation": "encoded as a constant region in the DRAM map with its data, not as an instruction; the load that brings it on chip is a DMA_LOAD"},

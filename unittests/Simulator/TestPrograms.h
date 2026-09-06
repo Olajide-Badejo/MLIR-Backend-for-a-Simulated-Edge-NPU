@@ -109,6 +109,28 @@ public:
     return offset;
   }
 
+  /// A constant region of i8 values, returned as its DRAM offset.
+  ///
+  /// The values are `int8_t` rather than `uint8_t` because this machine's i8 is
+  /// two's complement signed, which `NPU_QuantTensor` states and every
+  /// quantization test depends on: a helper taking the unsigned spelling would
+  /// make each of them write `static_cast<uint8_t>(-128)` and one of them would
+  /// eventually write 128 instead.
+  int64_t constantI8(llvm::ArrayRef<int64_t> shape,
+                     llvm::ArrayRef<int8_t> data) {
+    return constantBytes(shape, ElemType::I8, data.data(),
+                         data.size() * sizeof(int8_t),
+                         static_cast<int64_t>(data.size()));
+  }
+
+  /// A constant region of i32 values, which is what a quantized bias is.
+  int64_t constantI32(llvm::ArrayRef<int64_t> shape,
+                      llvm::ArrayRef<int32_t> data) {
+    return constantBytes(shape, ElemType::I32, data.data(),
+                         data.size() * sizeof(int32_t),
+                         static_cast<int64_t>(data.size()));
+  }
+
   /// A declared input region, returned as its DRAM offset.
   int64_t input(llvm::ArrayRef<int64_t> shape,
                 ElemType type = ElemType::F32) {
@@ -176,6 +198,25 @@ public:
   }
 
 private:
+  /// The shared body of the typed constant helpers. It exists so the three of
+  /// them cannot drift on the one thing that is easy to get wrong, which is
+  /// advancing the DRAM cursor by the byte size rather than by the count.
+  int64_t constantBytes(llvm::ArrayRef<int64_t> shape, ElemType type,
+                        const void *data, size_t bytes, int64_t count) {
+    EXPECT_EQ(elements(shape), count);
+    Constant entry;
+    entry.region.offset = static_cast<uint64_t>(dramCursor);
+    entry.region.elementType = type;
+    entry.region.shape.assign(shape.begin(), shape.end());
+    entry.data.resize(bytes);
+    if (bytes != 0)
+      std::memcpy(entry.data.data(), data, bytes);
+    const int64_t offset = dramCursor;
+    advanceDram(static_cast<int64_t>(bytes));
+    program.constants.push_back(std::move(entry));
+    return offset;
+  }
+
   void advanceDram(int64_t bytes) {
     // Sixty four byte alignment, which is what the encoder's DRAM map uses. It
     // is deliberately not applied to the scratchpad: the scratchpad total is
@@ -237,17 +278,38 @@ inline Instruction dmaStore(int64_t dramAddress, llvm::ArrayRef<int64_t> shape,
 
 inline Instruction compute(Opcode opcode, int64_t resultAddress,
                            llvm::ArrayRef<int64_t> resultShape,
-                           std::vector<Operand> operands) {
+                           std::vector<Operand> operands,
+                           ElemType resultType = ElemType::F32) {
   Instruction instruction;
   instruction.opcode = opcode;
   instruction.resultSpace = MemSpace::Scratchpad;
-  instruction.resultElementType = ElemType::F32;
+  instruction.resultElementType = resultType;
   instruction.resultAddress = resultAddress;
   instruction.resultShape.assign(resultShape.begin(), resultShape.end());
   instruction.resultStrides = resultStridesFor(resultShape);
   instruction.operands = std::move(operands);
   return instruction;
 }
+
+/// The requantization pair that leaves an accumulator alone.
+///
+/// Section 14 decomposes `M` as `M0 * 2^-n` with `M0` in `[2^30, 2^31)`, and
+/// the machine applies it as a saturating doubling high multiply by `M0`,
+/// which is a division by `2^31`, followed by a rounding divide by
+/// `2^requantShift`. So the exponent the binary carries is `n - 31`, which is
+/// what keeps it inside the `[0, 31]` the `quant-requantize` check bounds it
+/// to, and `M` is `M0 * 2^-(31 + requantShift)`.
+///
+/// The largest `M0` with a shift of zero is therefore `1 - 2^-31`, and that is
+/// the closest this scheme comes to an identity. It **is** an identity for any
+/// accumulator whose magnitude is below `2^30`: the multiply loses `acc / 2^31`
+/// and the rounding puts it back. Every hand computed integer case below uses
+/// it so that the arithmetic under test is the convolution rather than the
+/// rescale, and the two cases that are about the rescale say so.
+inline constexpr int32_t kIdentityMultiplier = 2147483647;
+
+/// `M = 0.5`: `M0 = 2^30` with a shift of zero.
+inline constexpr int32_t kHalfMultiplier = 1073741824;
 
 inline Instruction halt() {
   Instruction instruction;
@@ -288,6 +350,21 @@ public:
     std::vector<float> values(bytes.size() / sizeof(float));
     if (!values.empty())
       std::memcpy(values.data(), bytes.data(), bytes.size());
+    return values;
+  }
+
+  /// The i8 contents of a declared output region.
+  ///
+  /// Returned as `int32_t` rather than `int8_t` so that a failing
+  /// `EXPECT_EQ` prints a number instead of a character, which is the whole
+  /// difference between a readable failure and a reader wondering what a
+  /// backspace is doing in the expected value.
+  std::vector<int32_t> outputI8(size_t index) {
+    llvm::ArrayRef<uint8_t> bytes = simulator.outputBytes(index);
+    std::vector<int32_t> values;
+    values.reserve(bytes.size());
+    for (uint8_t byte : bytes)
+      values.push_back(static_cast<int8_t>(byte));
     return values;
   }
 

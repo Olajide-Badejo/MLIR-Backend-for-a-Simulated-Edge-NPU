@@ -1379,6 +1379,34 @@ public:
   }
 };
 
+/// `npu.quantize` and `npu.dequantize`, which take no destination and whose
+/// instruction level forms need one.
+///
+/// The same shape as `ReshapeOpLowering` and for the same reason: at the tensor
+/// level these are values, and at the instruction level a buffer has an address,
+/// so the allocation appears at the first level with anywhere to put it. The
+/// destination's element type is the **result's**, which is the whole content of
+/// these two operations: this is the one pattern in this file where the buffer
+/// it allocates is not the element type of the operand it read.
+template <typename SourceOp, typename TargetOp>
+class QuantizationLowering : public NPULowering<SourceOp> {
+public:
+  using NPULowering<SourceOp>::NPULowering;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value destination =
+        memref::AllocOp::create(rewriter, loc, scratchpadTypeOf(op.getType()));
+    TargetOp::create(rewriter, loc,
+                     this->resident(adaptor.getInput(), loc, rewriter),
+                     op.getScaleAttr(), op.getZeroPointAttr(), destination);
+    rewriter.replaceOp(op, destination);
+    return success();
+  }
+};
+
 class TransposeOpLowering : public NPULowering<npu::TransposeOp> {
 public:
   using NPULowering<npu::TransposeOp>::NPULowering;
@@ -1475,6 +1503,9 @@ struct NPULowerToNPUISAPass
         converter, context, state);
     patterns.add<PoolLowering<npu::MaxPool2DOp, npuisa::PoolMaxOp>,
                  PoolLowering<npu::AvgPool2DOp, npuisa::PoolAvgOp>>(
+        converter, context, state);
+    patterns.add<QuantizationLowering<npu::QuantizeOp, npuisa::QuantOp>,
+                 QuantizationLowering<npu::DequantizeOp, npuisa::DequantOp>>(
         converter, context, state);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))

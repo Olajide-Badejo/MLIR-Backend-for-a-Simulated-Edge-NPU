@@ -54,4 +54,24 @@ def NPU_QuantTensor : StaticShapeTensorOf<[I8]>;
 // without arithmetic and so do not care which of the two they are moving.
 def NPU_AnyTensor : StaticShapeTensorOf<[F32, I8]>;
 
+// A signless `i32` attribute read as two's complement signed.
+//
+// It exists because the zero point is genuinely negative on most tensors this
+// project quantizes, and neither builtin spelling is right. `I32Attr` prints
+// the value the dialect wants, `-3 : i32`, and hands C++ a `uint32_t` through
+// `getZExtValue`, so a negative zero point arrives as 4294967293 and every
+// bound check on it passes for the wrong reason. `SI32Attr` reads the sign
+// correctly and prints `-3 : si32`, which is a signedness this dialect does not
+// otherwise use: its i8 tensors are signless and read as signed by convention,
+// stated in `NPU_QuantTensor` above, and an attribute that announced its
+// signedness beside them would be two conventions in one operation.
+//
+// So the storage is the signless one and the accessor is the signed one, which
+// is the same choice the tensor type makes, made at the attribute.
+def NPU_SignedI32Attr : SignlessIntegerAttrBase<
+    I32, "32-bit signless integer attribute, read as two's complement signed"> {
+  let returnType = "int32_t";
+  let convertFromStorage = "$_self.getValue().getSExtValue()";
+}
+
 #endif // NPU_TYPES

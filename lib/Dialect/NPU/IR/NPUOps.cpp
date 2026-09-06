@@ -888,6 +888,65 @@ LogicalResult BatchNormOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// npu.quantize and npu.dequantize
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Section 7.2's rules for the quantization pair, in one helper, because the
+/// two operations are inverses and a pair whose halves disagreed about what a
+/// zero point may be would be a pair that cannot round trip.
+///
+/// The element types are not checked here: the ODS operand and result
+/// constraints already pin f32 on one side and i8 on the other, in the
+/// direction each operation goes, and a second check would be a second place
+/// for the direction to be written down.
+LogicalResult verifyQuantizationOp(Operation *op, Value input, Value result,
+                                   llvm::APFloat scale, int64_t zeroPoint) {
+  if (failed(verifyLayoutConsistency(op, {"input", "result"}, {input, result})))
+    return failure();
+
+  auto inputType = cast<RankedTensorType>(input.getType());
+  auto resultType = cast<RankedTensorType>(result.getType());
+
+  if (inputType.getShape() != resultType.getShape())
+    return op->emitOpError()
+           << "is elementwise, so the operand and the result have the same "
+              "shape, but the operand is "
+           << inputType << " and the result is " << resultType;
+
+  if (!scale.isFinite() || scale.isNegative() || scale.isZero())
+    return op->emitOpError()
+           << "the scale must be finite and strictly positive, but got "
+           << scale.convertToFloat()
+           << ". A degenerate range yields a scale of 1.0 and a warning naming "
+              "the tensor, and a zero scale must never leave the calibrator";
+
+  // The signless i8 of a quantized tensor is two's complement signed, so the
+  // zero point is bounded by that range and not by an unsigned one. Getting
+  // this bound wrong is how a post relu tensor's zero point ends up clamped
+  // and every padded convolution silently biased.
+  if (zeroPoint < -128 || zeroPoint > 127)
+    return op->emitOpError()
+           << "the zero point must be within the i8 range -128 to 127, but got "
+           << zeroPoint;
+
+  return success();
+}
+
+} // namespace
+
+LogicalResult QuantizeOp::verify() {
+  return verifyQuantizationOp(getOperation(), getInput(), getResult(),
+                              getScale(), getZeroPoint());
+}
+
+LogicalResult DequantizeOp::verify() {
+  return verifyQuantizationOp(getOperation(), getInput(), getResult(),
+                              getScale(), getZeroPoint());
+}
+
+//===----------------------------------------------------------------------===//
 // npu.fused_op
 //===----------------------------------------------------------------------===//
 

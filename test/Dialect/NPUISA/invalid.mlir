@@ -665,3 +665,65 @@ func.func @concat_with_no_inputs(%d: memref<1x10x8x8xf32, #npu.scratchpad>) {
       : (memref<1x10x8x8xf32, #npu.scratchpad>) -> ()
   return
 }
+
+// =============================================================================
+// The quantization instructions.
+// =============================================================================
+
+// -----
+
+func.func @quant_changes_the_shape(%x: memref<1x8x4x4xf32, #npu.scratchpad>,
+                                   %d: memref<1x8x4x5xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{shapes must agree, but the input is 'memref<1x8x4x4xf32, #npu.scratchpad>' and the destination is 'memref<1x8x4x5xi8, #npu.scratchpad>'}}
+  npuisa.quant ins(%x : memref<1x8x4x4xf32, #npu.scratchpad>)
+               outs(%d : memref<1x8x4x5xi8, #npu.scratchpad>)
+               {scale = 1.000000e-01 : f32, zero_point = 0 : i32}
+  return
+}
+
+// -----
+
+func.func @quant_with_a_zero_scale(%x: memref<4xf32, #npu.scratchpad>,
+                                   %d: memref<4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{the scale must be finite and strictly positive, but got 0}}
+  npuisa.quant ins(%x : memref<4xf32, #npu.scratchpad>)
+               outs(%d : memref<4xi8, #npu.scratchpad>)
+               {scale = 0.000000e+00 : f32, zero_point = 0 : i32}
+  return
+}
+
+// -----
+
+func.func @dequant_zero_point_out_of_range(%q: memref<4xi8, #npu.scratchpad>,
+                                           %d: memref<4xf32, #npu.scratchpad>) {
+  // expected-error @+1 {{the zero point must be within the i8 range -128 to 127, but got 128}}
+  npuisa.dequant ins(%q : memref<4xi8, #npu.scratchpad>)
+                 outs(%d : memref<4xf32, #npu.scratchpad>)
+                 {scale = 1.000000e+00 : f32, zero_point = 128 : i32}
+  return
+}
+
+// -----
+
+// The direction, refused by the operand constraint rather than by a rule.
+func.func @quant_the_wrong_way_round(%q: memref<4xi8, #npu.scratchpad>,
+                                     %d: memref<4xf32, #npu.scratchpad>) {
+  // expected-error @+1 {{operand #0 must be a statically shaped memref in the Scratchpad memory space}}
+  npuisa.quant ins(%q : memref<4xi8, #npu.scratchpad>)
+               outs(%d : memref<4xf32, #npu.scratchpad>)
+               {scale = 1.000000e+00 : f32, zero_point = 0 : i32}
+  return
+}
+
+// -----
+
+// A DRAM operand. The compute units of this machine address the scratchpad and
+// nothing else, and the quantization instructions are compute.
+func.func @quant_from_dram(%x: memref<4xf32, #npu.dram>,
+                           %d: memref<4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{operand #0 must be a statically shaped memref in the Scratchpad memory space}}
+  npuisa.quant ins(%x : memref<4xf32, #npu.dram>)
+               outs(%d : memref<4xi8, #npu.scratchpad>)
+               {scale = 1.000000e+00 : f32, zero_point = 0 : i32}
+  return
+}

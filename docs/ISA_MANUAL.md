@@ -59,8 +59,8 @@ is reverted by the next build and reported as staleness by the next run.
 | `HALT` | 1 | none | none | n/a | none | Stops the machine. The encoder emits one as the last instruction of every program. |
 | `DMA_LOAD` | 2 | 1 in dram | scratchpad | f32, i8, i32 | none | Copies a buffer from DRAM into the scratchpad. |
 | `DMA_STORE` | 3 | 1 in scratchpad | dram | f32, i8, i32 | none | Copies a buffer from the scratchpad back to DRAM. |
-| `MATMUL` | 4 | 2 or 3 in scratchpad | scratchpad | f32 | `requantize`, `activation` | A rank 2 by rank 2 matrix multiplication with an optional bias. |
-| `CONV2D` | 5 | 2 or 3 in scratchpad | scratchpad | f32 | `strides`, `pads`, `dilations`, `group`, `requantize`, `activation` | A two dimensional grouped convolution with an optional bias. |
+| `MATMUL` | 4 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `requantize`, `activation` | A rank 2 by rank 2 matrix multiplication with an optional bias. |
+| `CONV2D` | 5 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `strides`, `pads`, `dilations`, `group`, `requantize`, `activation`, `zeroPoint` (integer result only) | A two dimensional grouped convolution with an optional bias. |
 | `ADD` | 6 | 2 in scratchpad | scratchpad | f32 | `requantize`, `activation` | Elementwise addition. |
 | `MUL` | 7 | 2 in scratchpad | scratchpad | f32 | `requantize`, `activation` | Elementwise multiplication. |
 | `RELU` | 8 | 1 in scratchpad | scratchpad | f32 | none | The rectified linear unit, elementwise. |
@@ -80,8 +80,8 @@ is reverted by the next build and reported as staleness by the next run.
 | `HALT` | No operands and no result. | `HALT` | P6 |
 | `DMA_LOAD` | The operand and the result have the same shape and the same element type. The DMA moves bytes and does not change a layout on the way. | `DMA_LOAD %r <- %0` | P7 |
 | `DMA_STORE` | The mirror of DMA_LOAD: same shape, same element type. | `DMA_STORE %r <- %0` | P7 |
-| `MATMUL` | Operand 0 is (M, K), operand 1 is (K, N), the result is (M, N). The optional operand 2 is the bias and has length N. | `MATMUL %r <- %0, %1 {bias %2} {activation}` | P7 |
-| `CONV2D` | Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), the result is (N, F, OH, OW). The optional operand 2 is the bias and has length F. | `CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}` | P7 |
+| `MATMUL` | Operand 0 is (M, K), operand 1 is (K, N), the result is (M, N). The optional operand 2 is the bias and has length N. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the requantization pair rescales the accumulator. There is no zero point field here and there is one on CONV2D, because a matrix multiplication has no padding: every tap is in range, so the input zero point's whole contribution is the compile time term folded into the bias. | `MATMUL %r <- %0, %1 {bias %2} {activation}` | P7 |
+| `CONV2D` | Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), the result is (N, F, OH, OW). The optional operand 2 is the bias and has length F. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the zero point field carries the zero point of the input: a tap that falls outside the input contributes it rather than zero, which is what makes the term folded into the bias over the whole window correct at a padded output position. | `CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}` | P7 |
 | `ADD` | Both operands have the result's shape. No broadcasting: the frontend materialises every broadcast it accepts, and a rank 1 channel operand arrives as a stride 0 operand rather than as a shape. | `ADD %r <- %0, %1 {activation}` | P7 |
 | `MUL` | The same rule as ADD. | `MUL %r <- %0, %1 {activation}` | P7 |
 | `RELU` | The operand has the result's shape. The operand and the result may be the same buffer: an in place relu is what the allocator produces when it reuses a dead interval. | `RELU %r <- %0` | P7 |
@@ -102,9 +102,11 @@ is reverted by the next build and reported as staleness by the next run.
 | `npu.batch_norm` | `ADD`, `MUL` |
 | `npu.concat` | `CONCAT` |
 | `npu.conv2d` | `CONV2D` |
+| `npu.dequantize` | `DEQUANT` |
 | `npu.matmul` | `MATMUL` |
 | `npu.max_pool2d` | `POOL_MAX` |
 | `npu.mul` | `MUL` |
+| `npu.quantize` | `QUANT` |
 | `npu.relu` | `RELU` |
 | `npu.reshape` | `RESHAPE` |
 | `npu.transpose` | `TRANSPOSE` |
@@ -506,7 +508,7 @@ that: the C++ enum and this table come out of the same records.
 | `attribute-value` | Strides and dilations are positive, pads are non negative, and the group count is positive. |
 | `activation` | The activation field holds a defined value, and holds `none` on an opcode that fuses no activation. |
 | `element-type` | Every element type byte is one of the defined values. |
-| `element-type-supported` | The opcode accepts the element type it was given. |
+| `element-type-supported` | The opcode accepts the element type it was given. At an f32 result every operand takes the result's type; at an integer result an opcode with an integer profile takes the type its own operand slot declares, which is how a quantized convolution reads i8 data and an int32 bias. |
 | `quant-scale` | The quantization scale is finite and strictly positive, and is zero on an opcode that does not quantize. |
 | `quant-zero-point` | The zero point lies inside the range of the integer type it belongs to. |
 | `quant-types` | QUANT reads f32 and writes i8; DEQUANT reads i8 and writes f32. |

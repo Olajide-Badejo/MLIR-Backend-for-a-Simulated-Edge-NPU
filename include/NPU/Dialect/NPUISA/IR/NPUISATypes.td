@@ -17,6 +17,16 @@
 include "NPU/Dialect/NPUISA/IR/NPUISADialect.td"
 include "mlir/IR/BuiltinTypes.td"
 
+// For `NPU_SignedI32Attr`, which the two quantization instructions carry their
+// zero point in. It is the `npu` dialect's constraint file rather than a second
+// copy here for the same reason the memory spaces are: there is one machine, so
+// there is one spelling of what a zero point is, and a dialect boundary is not
+// a reason to give a convention a second definition. Only the constraint file
+// is included, never `NPUOps.td`, because `-gen-op-defs` takes no dialect
+// filter and would emit the `npu` operations into this dialect's own generated
+// source.
+include "NPU/Dialect/NPU/IR/NPUTypes.td"
+
 //===----------------------------------------------------------------------===//
 // !npuisa.token
 //===----------------------------------------------------------------------===//
@@ -88,6 +98,7 @@ class NPUISA_MemRefInSpace<string space, list<Type> allowedTypes>
       "a statically shaped memref in the " # space # " memory space">;
 
 def NPUISA_ScratchpadF32 : NPUISA_MemRefInSpace<"Scratchpad", [F32]>;
+def NPUISA_ScratchpadI8 : NPUISA_MemRefInSpace<"Scratchpad", [I8]>;
 def NPUISA_ScratchpadAny : NPUISA_MemRefInSpace<"Scratchpad", [F32, I8]>;
 def NPUISA_DramF32 : NPUISA_MemRefInSpace<"Dram", [F32]>;
 def NPUISA_DramAny : NPUISA_MemRefInSpace<"Dram", [F32, I8]>;

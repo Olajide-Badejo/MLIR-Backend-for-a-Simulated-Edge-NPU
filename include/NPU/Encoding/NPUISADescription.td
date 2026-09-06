@@ -50,12 +50,17 @@
 // Section 9.1 fixes from the first version of the format, and they are here
 // rather than only in C++ so that the manual and the validator read them from
 // the same place.
+// `isInteger` says which arithmetic a type belongs to. It is declared rather
+// than inferred from the spelling because the integer profile of an opcode is
+// selected on it, and a rule that keyed on a name beginning with the letter i
+// would be a rule that a later type name could quietly change.
 class ISAElemType<int val, string spelling> {
   int value = val;
   string name = spelling;
+  bit isInteger = 1;
 }
 
-def F32 : ISAElemType<0, "f32">;
+def F32 : ISAElemType<0, "f32"> { let isInteger = 0; }
 def I8  : ISAElemType<1, "i8">;
 def I32 : ISAElemType<2, "i32">;
 
@@ -149,6 +154,31 @@ class ISAOpcode<int val, string sem> {
   list<ISAElemType> elementTypes = [F32];
   list<ISAElemType> operandTypes = [];
 
+  // The integer profile, which is the two ways a compute opcode differs when
+  // its result element type is an integer one rather than f32.
+  //
+  // **`integerOperandTypes` is one element type per operand slot**, read the
+  // same way `operandSpaces` is, with the last entry repeating for every
+  // operand a variadic opcode has beyond the ones listed. It exists because a
+  // quantized convolution's operands do not all share the result's type:
+  // Section 14 accumulates in int32 and adds the bias to the accumulator rather
+  // than to the result, so the data operands are i8 and the bias is i32 while
+  // the result is i8. An empty list means every operand takes the result's
+  // type, which is the f32 rule and was the only rule before Phase P14.
+  //
+  // **`integerFields` names the fields the opcode gives meaning to only at an
+  // integer result.** A quantized convolution carries the zero point of its
+  // input, because Section 14's rule is that padding contributes the zero point
+  // rather than zero, and because the `- zp_x * sum_k q_w[k]` term folded into
+  // its int32 bias was computed over the whole window and is only correct if
+  // the padded taps contribute `zp_x` too. The same convolution at f32 gives
+  // that field no meaning and is required to carry the neutral value, so the
+  // check is exactly as strong on the f32 path as it was before the integer one
+  // existed. That is the whole reason this is a second list rather than an
+  // entry in `fields`.
+  list<ISAElemType> integerOperandTypes = [];
+  list<ISAField> integerFields = [];
+
   // The shape relation, for the manual. Prose, because the mechanical half is
   // generated and the rest is genuinely semantic.
   string shapeRule = "";
@@ -222,9 +252,18 @@ def MATMUL : ISAOpcode<4, "A rank 2 by rank 2 matrix multiplication with an opti
   let maxOperands = 3;
   let operandSpaces = [Scratchpad, Scratchpad, Scratchpad];
   let fields = [FieldRequantize, FieldActivation];
+  let elementTypes = [F32, I8];
+  let integerOperandTypes = [I8, I8, I32];
   let format = "MATMUL %r <- %0, %1 {bias %2} {activation}";
   let shapeRule = "Operand 0 is (M, K), operand 1 is (K, N), the result is "
-                  "(M, N). The optional operand 2 is the bias and has length N.";
+                  "(M, N). The optional operand 2 is the bias and has length N. "
+                  "At an i8 result the two data operands are i8, the bias is "
+                  "the int32 accumulator's own type, and the requantization "
+                  "pair rescales the accumulator. There is no zero point field "
+                  "here and there is one on CONV2D, because a matrix "
+                  "multiplication has no padding: every tap is in range, so the "
+                  "input zero point's whole contribution is the compile time "
+                  "term folded into the bias.";
   let sources = ["matmul"];
 }
 
@@ -234,10 +273,18 @@ def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optiona
   let operandSpaces = [Scratchpad, Scratchpad, Scratchpad];
   let fields = [FieldStrides, FieldPads, FieldDilations, FieldGroup,
                 FieldRequantize, FieldActivation];
+  let elementTypes = [F32, I8];
+  let integerOperandTypes = [I8, I8, I32];
+  let integerFields = [FieldZeroPoint];
   let format = "CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}";
   let shapeRule = "Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), "
                   "the result is (N, F, OH, OW). The optional operand 2 is the "
-                  "bias and has length F.";
+                  "bias and has length F. At an i8 result the two data operands "
+                  "are i8, the bias is the int32 accumulator's own type, and "
+                  "the zero point field carries the zero point of the input: a "
+                  "tap that falls outside the input contributes it rather than "
+                  "zero, which is what makes the term folded into the bias over "
+                  "the whole window correct at a padded output position.";
   let sources = ["conv2d"];
 }
 
@@ -347,7 +394,7 @@ def QUANT : ISAOpcode<14, "Quantizes f32 to i8 with a scale and a zero point."> 
   let format = "QUANT %r <- %0 {scale} {zeroPoint}";
   let shapeRule = "The operand and the result have the same shape. The operand "
                   "is f32 and the result is i8.";
-  let sources = [];
+  let sources = ["quantize"];
   let semanticPhase = "P14";
 }
 
@@ -360,7 +407,7 @@ def DEQUANT : ISAOpcode<15, "Dequantizes i8 to f32 with a scale and a zero point
   let operandTypes = [I8];
   let format = "DEQUANT %r <- %0 {scale} {zeroPoint}";
   let shapeRule = "The mirror of QUANT: same shape, i8 operand, f32 result.";
-  let sources = [];
+  let sources = ["dequantize"];
   let semanticPhase = "P14";
 }
 
@@ -478,7 +525,10 @@ def CheckActivation : ISACheck<18, "activation",
 def CheckElementType : ISACheck<19, "element-type",
     "Every element type byte is one of the defined values.">;
 def CheckElementTypeSupported : ISACheck<20, "element-type-supported",
-    "The opcode accepts the element type it was given.">;
+    "The opcode accepts the element type it was given. At an f32 result every "
+    "operand takes the result's type; at an integer result an opcode with an "
+    "integer profile takes the type its own operand slot declares, which is how "
+    "a quantized convolution reads i8 data and an int32 bias.">;
 def CheckQuantScale : ISACheck<21, "quant-scale",
     "The quantization scale is finite and strictly positive, and is zero on an "
     "opcode that does not quantize.">;

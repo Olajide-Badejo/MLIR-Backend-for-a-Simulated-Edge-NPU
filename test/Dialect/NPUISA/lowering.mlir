@@ -595,3 +595,49 @@ func.func @a_hoisted_constant_sinks_to_its_reader(%x: tensor<1x2x4x4xf32>)
        -> tensor<1x2x4x4xf32>
   return %c1 : tensor<1x2x4x4xf32>
 }
+
+// =============================================================================
+// The quantization pair.
+// =============================================================================
+
+// `npu.quantize` takes no destination and `npuisa.quant` needs one, so the
+// allocation appears here, at the first level with anywhere to put it. That is
+// the same shape `npu.reshape` has and for the same reason.
+//
+// **The allocation carries the result's element type, not the operand's**,
+// which is the whole content of these two operations and the one thing a copy
+// of the reshape pattern would have got wrong. The CHECK-NOT is what says so: a
+// pattern that allocated an f32 buffer would still produce an `npuisa.quant`
+// and would still satisfy every positive check above it.
+// CHECK-LABEL: func.func @quantize_allocates_an_i8_destination(
+// CHECK:         %[[BUF:.*]] = memref.alloc() : memref<1x2x4x4xf32, #npu.scratchpad>
+// CHECK:         npuisa.dma_load
+// CHECK:         %[[DST:.*]] = memref.alloc() : memref<1x2x4x4xi8, #npu.scratchpad>
+// CHECK:         npuisa.quant ins(%{{.*}} : memref<1x2x4x4xf32, #npu.scratchpad>)
+// CHECK-SAME:      outs(%[[DST]] : memref<1x2x4x4xi8, #npu.scratchpad>)
+// CHECK-SAME:      scale = 2.500000e-02 : f32, zero_point = -3 : i32
+// CHECK-NOT:     npu.quantize
+func.func @quantize_allocates_an_i8_destination(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xi8> {
+  %0 = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
+  return %0 : tensor<1x2x4x4xi8>
+}
+
+// The mirror, and the pair round trips through the lowering as a pair: the
+// quantize's i8 buffer is what the dequantize reads, with no transfer between
+// them, because both are already on chip.
+// CHECK-LABEL: func.func @a_quantize_dequantize_pair_lowers(
+// CHECK:         npuisa.quant
+// CHECK:         %[[BACK:.*]] = memref.alloc() : memref<1x2x4x4xf32, #npu.scratchpad>
+// CHECK:         npuisa.dequant ins(%{{.*}} : memref<1x2x4x4xi8, #npu.scratchpad>)
+// CHECK-SAME:      outs(%[[BACK]] : memref<1x2x4x4xf32, #npu.scratchpad>)
+// CHECK-NOT:     npu.dequantize
+func.func @a_quantize_dequantize_pair_lowers(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
+  %r = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
+  return %r : tensor<1x2x4x4xf32>
+}

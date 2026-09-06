@@ -60,6 +60,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
+#include <string>
 
 using namespace nbin;
 using namespace nbin::detail;
@@ -196,6 +198,128 @@ bool copyElement(Machine &machine, MemSpace toSpace, int64_t toBase,
 float activate(const Instruction &instruction, float value) {
   return instruction.activation == Activation::Relu ? std::max(value, 0.0f)
                                                     : value;
+}
+
+//===----------------------------------------------------------------------===//
+// The integer arithmetic of Section 14.
+//
+// Every rule below is pinned by the specification and implemented here rather
+// than delegated, because the Python observer computes against the same rules
+// and a disagreement between the two would surface as an accuracy bug nobody
+// can localize. Where a library function would have done the job, the reason it
+// is not used is stated.
+//===----------------------------------------------------------------------===//
+
+/// Rounds to the nearest integer with a tie going to the even neighbour.
+///
+/// **Written out rather than delegated, and Section 14 names the trap.**
+/// `std::nearbyint` and `std::rint` honour the *dynamic* floating point
+/// rounding mode, so a guarantee written in terms of them survives exactly
+/// until something in the process calls `fesetround`. A quantizer whose tie
+/// rule depends on a mode another library set is a quantizer whose golden files
+/// depend on link order. This is the rule ONNX `QuantizeLinear` and
+/// `numpy.rint` both state, and `Kernels.TheTieRuleSurvivesAChangedRoundingMode`
+/// asserts it under `FE_TOWARDZERO`.
+///
+/// The caller has already refused a value that is not finite, because
+/// `std::floor` of an infinity gives an infinity and the fraction below is then
+/// a NaN rather than a half.
+double roundHalfToEven(double value) {
+  const double floorValue = std::floor(value);
+  const double fraction = value - floorValue;
+  if (fraction > 0.5)
+    return floorValue + 1.0;
+  if (fraction < 0.5)
+    return floorValue;
+  // Exactly halfway. `fmod` decides which neighbour is even without a cast to
+  // an integer type that a large magnitude would overflow.
+  return std::fmod(floorValue, 2.0) == 0.0 ? floorValue : floorValue + 1.0;
+}
+
+/// `q = clamp(rint(x / scale) + zeroPoint, -128, 127)`, the pinned rule.
+///
+/// The arithmetic is done in `double` rather than `float`. The division and the
+/// addition of the zero point are both exact there for every f32 input and
+/// every zero point in range, so the only rounding in the whole expression is
+/// the one the rule names, which is what makes the tie rule observable at all.
+///
+/// A non finite input saturates rather than trapping: an infinity is on one
+/// side or the other of the representable range and the rails are where it
+/// belongs, and a NaN maps to the zero point, which is the representation of
+/// real zero and the one value that carries no claim about magnitude. Both are
+/// stated because a kernel that silently produced something else here would be
+/// the kind of quiet wrong answer law 1 forbids.
+int32_t quantizeOne(float value, float scale, int32_t zeroPoint) {
+  const double scaled = static_cast<double>(value) / static_cast<double>(scale);
+  if (std::isnan(scaled))
+    return zeroPoint;
+  if (!std::isfinite(scaled))
+    return scaled > 0.0 ? 127 : -128;
+  const double shifted = roundHalfToEven(scaled) + static_cast<double>(zeroPoint);
+  if (shifted <= -128.0)
+    return -128;
+  if (shifted >= 127.0)
+    return 127;
+  return static_cast<int32_t>(shifted);
+}
+
+/// gemmlowp's saturating rounding doubling high multiply, which is the multiply
+/// half of Section 14's requantization.
+///
+/// It computes `round(a * b / 2^31)` with a saturating single exception. The
+/// nudge is the half that makes the truncating division round to nearest, and
+/// it takes the sign of the product so that the rounding is away from zero on
+/// both sides rather than toward negative infinity on one of them.
+int32_t saturatingRoundingDoublingHighMul(int32_t a, int32_t b) {
+  // The one product that does not fit: `-2^31 * -2^31 / 2^31` is `2^31`, which
+  // is one past the largest int32. Every other pair fits by construction.
+  const bool saturates = a == std::numeric_limits<int32_t>::min() &&
+                         b == std::numeric_limits<int32_t>::min();
+  const int64_t product = static_cast<int64_t>(a) * static_cast<int64_t>(b);
+  const int64_t nudge = product >= 0 ? (int64_t{1} << 30) : (1 - (int64_t{1} << 30));
+  const int64_t result = (product + nudge) / (int64_t{1} << 31);
+  return saturates ? std::numeric_limits<int32_t>::max()
+                   : static_cast<int32_t>(result);
+}
+
+/// Divides by `2^exponent`, rounding a tie away from zero.
+///
+/// The right shift of a negative value is an arithmetic shift, which C++20
+/// guarantees and earlier standards left implementation defined. This project
+/// compiles at C++20 and the guarantee is why the expression is written as a
+/// shift rather than as a division: a division would round toward zero and the
+/// correction term below is written for a shift that rounds toward negative
+/// infinity.
+int32_t roundingDivideByPOT(int32_t value, int32_t exponent) {
+  if (exponent <= 0)
+    return value;
+  const int32_t mask = (int32_t{1} << exponent) - 1;
+  const int32_t remainder = value & mask;
+  const int32_t threshold = (mask >> 1) + (value < 0 ? 1 : 0);
+  return (value >> exponent) + (remainder > threshold ? 1 : 0);
+}
+
+/// Section 14's requantization: `round(accumulator * M)` where `M = M0 * 2^-n`.
+int32_t requantize(int32_t accumulator, int32_t multiplier, int32_t shift) {
+  return roundingDivideByPOT(
+      saturatingRoundingDoublingHighMul(accumulator, multiplier), shift);
+}
+
+/// The i8 saturation rails, applied once at the end of every integer kernel.
+int32_t saturateToI8(int32_t value) {
+  return value < -128 ? -128 : (value > 127 ? 127 : value);
+}
+
+/// The fused activation, in the integer domain.
+///
+/// A relu on a quantized value is a clamp at the value that represents real
+/// zero, which after requantization and before the output rails is zero itself,
+/// because a quantized compute instruction's result is symmetric. Writing it as
+/// `max(value, 0)` rather than `max(value, zeroPoint)` is therefore not a
+/// simplification: the two agree here and the second would be claiming an
+/// output zero point this instruction does not carry.
+int32_t activateInteger(const Instruction &instruction, int32_t value) {
+  return instruction.activation == Activation::Relu ? std::max(value, 0) : value;
 }
 
 //===----------------------------------------------------------------------===//
@@ -691,6 +815,174 @@ const float *biasAt(Machine &machine, const Operand &bias, int64_t n,
                          name);
 }
 
+/// The geometry of a convolution, resolved once by `kernelCONV2D` and handed to
+/// the integer body.
+///
+/// It exists so that the integer path can be a function of its own without
+/// re-deriving and re-checking what the f32 path has already established, and
+/// so that the f32 loop below stays exactly the loop whose last bits every
+/// golden file in this project depends on.
+struct Conv2DShape {
+  int64_t batch = 0;
+  int64_t outputChannels = 0;
+  int64_t outputH = 0;
+  int64_t outputW = 0;
+  int64_t inputH = 0;
+  int64_t inputW = 0;
+  int64_t kernelH = 0;
+  int64_t kernelW = 0;
+  int64_t channelsPerGroup = 0;
+  int64_t filtersPerGroup = 0;
+  int64_t strideH = 0;
+  int64_t strideW = 0;
+  int64_t dilationH = 0;
+  int64_t dilationW = 0;
+  int64_t padTop = 0;
+  int64_t padLeft = 0;
+  bool hasBias = false;
+};
+
+/// The int32 accumulator's own bound, checked rather than wrapped.
+///
+/// Section 14 requires accumulation in int32 and proves it statically:
+/// `-npu-calibrate` refuses a quantized convolution or matrix multiplication
+/// whose `K * 128 * 127` reaches `2^31`. The bound holds for every partial sum
+/// as well as for the total, because a partial sum is bounded by the sum of the
+/// magnitudes of the products it has taken so far. So a run time excursion here
+/// means that static guard was violated or bypassed, and the honest answer is a
+/// trap naming it rather than a wrapped value: signed overflow is undefined
+/// behaviour on the host, and a machine that wrapped would be giving a silently
+/// wrong answer, which is what law 1 forbids.
+bool accumulatesInI32(Machine &machine, int64_t accumulator, const char *name) {
+  if (accumulator >= std::numeric_limits<int32_t>::min() &&
+      accumulator <= std::numeric_limits<int32_t>::max())
+    return true;
+  machine.recordTrap(
+      std::string(name) +
+      " overflowed its int32 accumulator, which reached " +
+      std::to_string(accumulator) +
+      ". Section 14 accumulates in int32 and proves it statically: "
+      "-npu-calibrate refuses a quantized operation whose K * 128 * 127 "
+      "reaches 2^31, and this program reached the bound anyway");
+  return false;
+}
+
+/// One output position of a quantized convolution, or nothing when the int32
+/// accumulator would have overflowed.
+///
+/// **Padding contributes the zero point rather than zero**, which is Section
+/// 14's rule and is not a refinement. The compile time term folded into the
+/// int32 bias is `- zp_x * sum_k q_w[k]` over the **whole** window, so a padded
+/// tap has to contribute `zp_x * q_w[k]` here for the two to cancel to
+/// `sum_k (q_x[k] - zp_x) * q_w[k]` at every output position. A kernel that
+/// skipped padded taps would need a per position bias, which is not a thing
+/// this format or any integer inference stack has.
+std::optional<int32_t> conv2dIntegerReduction(Machine &machine,
+                                              const Instruction &instruction,
+                                              const Conv2DShape &shape,
+                                              int64_t n, int64_t f, int64_t oh,
+                                              int64_t ow) {
+  const Operand &input = instruction.operands[0];
+  const Operand &filter = instruction.operands[1];
+  const int64_t groupOf = f / shape.filtersPerGroup;
+  const int32_t inputZeroPoint = instruction.zeroPoint;
+
+  int64_t accumulator = 0;
+  for (int64_t c = 0; c < shape.channelsPerGroup; ++c) {
+    const int64_t inputChannel = groupOf * shape.channelsPerGroup + c;
+    for (int64_t kh = 0; kh < shape.kernelH; ++kh) {
+      const int64_t ih = oh * shape.strideH - shape.padTop + kh * shape.dilationH;
+      for (int64_t kw = 0; kw < shape.kernelW; ++kw) {
+        const int64_t iw =
+            ow * shape.strideW - shape.padLeft + kw * shape.dilationW;
+        const int64_t weightAt[4] = {f, c, kh, kw};
+        const int8_t *weight =
+            machine.readI8(filter.space, filter.address,
+                           offsetOf(weightAt, filter.strides), "CONV2D");
+        if (!weight)
+          return std::nullopt;
+
+        int32_t activation = inputZeroPoint;
+        if (ih >= 0 && ih < shape.inputH && iw >= 0 && iw < shape.inputW) {
+          const int64_t at[4] = {n, inputChannel, ih, iw};
+          const int8_t *value =
+              machine.readI8(input.space, input.address,
+                             offsetOf(at, input.strides), "CONV2D");
+          if (!value)
+            return std::nullopt;
+          activation = *value;
+        }
+
+        accumulator += static_cast<int64_t>(activation) *
+                       static_cast<int64_t>(*weight);
+        if (!accumulatesInI32(machine, accumulator, "CONV2D"))
+          return std::nullopt;
+      }
+    }
+  }
+
+  if (shape.hasBias) {
+    const Operand &bias = instruction.operands[2];
+    const int64_t biasAt[4] = {n, f, oh, ow};
+    const int32_t *value =
+        bias.strides.size() == 1
+            ? machine.readI32(bias.space, bias.address, f * bias.strides[0],
+                              "CONV2D")
+            : machine.readI32(bias.space, bias.address,
+                              offsetOf(biasAt, bias.strides), "CONV2D");
+    if (!value)
+      return std::nullopt;
+    accumulator += static_cast<int64_t>(*value);
+    if (!accumulatesInI32(machine, accumulator, "CONV2D"))
+      return std::nullopt;
+  }
+
+  return static_cast<int32_t>(accumulator);
+}
+
+/// The quantized convolution's loop nest.
+///
+/// Parallelised exactly as the f32 one is, over batch and output channel with
+/// the team capped at the number of output tiles, and for the same reasons:
+/// each thread writes a disjoint output region, no clause changes which
+/// iterations exist or what one computes, and integer addition is associative
+/// besides, so the order inside the reduction cannot move a bit either way.
+void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
+                       const Conv2DShape &shape) {
+#ifdef _OPENMP
+  const int64_t outputTiles = shape.batch * shape.outputChannels;
+  const int teamSize = static_cast<int>(std::max<int64_t>(
+      1, std::min<int64_t>(outputTiles, omp_get_max_threads())));
+#pragma omp parallel for collapse(2) num_threads(teamSize) if (teamSize > 1)
+#endif
+  for (int64_t n = 0; n < shape.batch; ++n) {
+    for (int64_t f = 0; f < shape.outputChannels; ++f) {
+      for (int64_t oh = 0; oh < shape.outputH; ++oh) {
+        for (int64_t ow = 0; ow < shape.outputW; ++ow) {
+          std::optional<int32_t> accumulator =
+              conv2dIntegerReduction(machine, instruction, shape, n, f, oh, ow);
+          if (!accumulator)
+            continue;
+
+          const int32_t rescaled =
+              requantize(*accumulator, instruction.requantMultiplier,
+                         instruction.requantShift);
+          const int64_t destination =
+              ((n * shape.outputChannels + f) * shape.outputH + oh) *
+                  shape.outputW +
+              ow;
+          int8_t *out =
+              machine.writeI8(instruction.resultSpace, instruction.resultAddress,
+                              destination, "CONV2D");
+          if (out)
+            *out = static_cast<int8_t>(
+                saturateToI8(activateInteger(instruction, rescaled)));
+        }
+      }
+    }
+  }
+}
+
 /// `CONV2D`: a two dimensional grouped, dilated, asymmetrically padded
 /// convolution.
 ///
@@ -751,17 +1043,21 @@ KernelCost kernelCONV2D(Machine &machine, const Instruction &instruction) {
     return cost;
   }
 
-  const ComputeCharge charge =
-      conv2dCharge(batch, outputChannels, inputChannels, outputH, outputW,
-                   kernelH, kernelW, group, kPeakMacsPerCycleF32);
+  // **The peak is the one the result's arithmetic runs on**, which is the whole
+  // of what `kPeakMacsPerCycleI8` was reserved for at P7 and left uncharged
+  // against until this phase. No f32 charge moves: an f32 result takes the same
+  // constant it always took, and the two are separate assumptions rather than
+  // one written as a multiple of the other, which is why the header states both.
+  const bool integer = instruction.resultElementType == ElemType::I8;
+  const ComputeCharge charge = conv2dCharge(
+      batch, outputChannels, inputChannels, outputH, outputW, kernelH, kernelW,
+      group, integer ? kPeakMacsPerCycleI8 : kPeakMacsPerCycleF32);
   cost.cycles = charge.cycles;
   cost.macs = charge.macs;
+  cost.int8Macs = integer ? charge.macs : 0;
   cost.effectiveMacs = charge.effectiveMacs;
   cost.utilization = charge.utilization;
   cost.delta = charge.delta;
-
-  if (!requireF32(machine, instruction, "CONV2D"))
-    return cost;
 
   const int64_t channelsPerGroup = inputChannels / group;
   const int64_t filtersPerGroup = outputChannels / group;
@@ -772,6 +1068,32 @@ KernelCost kernelCONV2D(Machine &machine, const Instruction &instruction) {
   const int64_t padTop = instruction.pads[0];
   const int64_t padLeft = instruction.pads[1];
   const bool hasBias = instruction.operands.size() > 2;
+
+  if (integer) {
+    Conv2DShape shape;
+    shape.batch = batch;
+    shape.outputChannels = outputChannels;
+    shape.outputH = outputH;
+    shape.outputW = outputW;
+    shape.inputH = inputH;
+    shape.inputW = inputW;
+    shape.kernelH = kernelH;
+    shape.kernelW = kernelW;
+    shape.channelsPerGroup = channelsPerGroup;
+    shape.filtersPerGroup = filtersPerGroup;
+    shape.strideH = strideH;
+    shape.strideW = strideW;
+    shape.dilationH = dilationH;
+    shape.dilationW = dilationW;
+    shape.padTop = padTop;
+    shape.padLeft = padLeft;
+    shape.hasBias = hasBias;
+    conv2dIntegerBody(machine, instruction, shape);
+    return cost;
+  }
+
+  if (!requireF32(machine, instruction, "CONV2D"))
+    return cost;
 
   // Section 10.3: parallel over the batch and output channel dimensions only.
   // Each thread writes a disjoint output region, so there is no reduction race
@@ -888,18 +1210,76 @@ KernelCost kernelMATMUL(Machine &machine, const Instruction &instruction) {
     return cost;
   }
 
-  const ComputeCharge charge =
-      gemmCharge(rows, reduction, columns, kPeakMacsPerCycleF32);
+  const bool integer = instruction.resultElementType == ElemType::I8;
+  const ComputeCharge charge = gemmCharge(
+      rows, reduction, columns,
+      integer ? kPeakMacsPerCycleI8 : kPeakMacsPerCycleF32);
   cost.cycles = charge.cycles;
   cost.macs = charge.macs;
+  cost.int8Macs = integer ? charge.macs : 0;
   cost.effectiveMacs = charge.effectiveMacs;
   cost.utilization = charge.utilization;
   cost.delta = charge.delta;
 
+  const bool hasBias = instruction.operands.size() > 2;
+
+  // The quantized form. There is no zero point here and there is one on
+  // CONV2D, and the difference is padding: every tap of a matrix
+  // multiplication is in range, so the input zero point's whole contribution
+  // is the `- zp_x * sum_k q_w[k]` term the calibrator folded into the int32
+  // bias, and the machine never needs the zero point itself.
+  if (integer) {
+    for (int64_t m = 0; m < rows; ++m) {
+      for (int64_t n = 0; n < columns; ++n) {
+        int64_t accumulator = 0;
+        bool ok = true;
+        for (int64_t k = 0; k < reduction && ok; ++k) {
+          const int64_t left[2] = {m, k};
+          const int64_t right[2] = {k, n};
+          const int8_t *a = machine.readI8(
+              lhs.space, lhs.address, offsetOf(left, lhs.strides), "MATMUL");
+          const int8_t *b = machine.readI8(
+              rhs.space, rhs.address, offsetOf(right, rhs.strides), "MATMUL");
+          if (!a || !b)
+            return cost;
+          accumulator += static_cast<int64_t>(*a) * static_cast<int64_t>(*b);
+          ok = accumulatesInI32(machine, accumulator, "MATMUL");
+        }
+        if (!ok)
+          return cost;
+        if (hasBias) {
+          const Operand &bias = instruction.operands[2];
+          const int64_t biasAt2[2] = {m, n};
+          const int32_t *value =
+              bias.strides.size() == 1
+                  ? machine.readI32(bias.space, bias.address,
+                                    n * bias.strides[0], "MATMUL")
+                  : machine.readI32(bias.space, bias.address,
+                                    offsetOf(biasAt2, bias.strides), "MATMUL");
+          if (!value)
+            return cost;
+          accumulator += static_cast<int64_t>(*value);
+          if (!accumulatesInI32(machine, accumulator, "MATMUL"))
+            return cost;
+        }
+        const int32_t rescaled =
+            requantize(static_cast<int32_t>(accumulator),
+                       instruction.requantMultiplier, instruction.requantShift);
+        int8_t *out =
+            machine.writeI8(instruction.resultSpace, instruction.resultAddress,
+                            m * columns + n, "MATMUL");
+        if (!out)
+          return cost;
+        *out = static_cast<int8_t>(
+            saturateToI8(activateInteger(instruction, rescaled)));
+      }
+    }
+    return cost;
+  }
+
   if (!requireF32(machine, instruction, "MATMUL"))
     return cost;
 
-  const bool hasBias = instruction.operands.size() > 2;
   for (int64_t m = 0; m < rows; ++m) {
     for (int64_t n = 0; n < columns; ++n) {
       float accumulator = 0.0f;
@@ -942,33 +1322,80 @@ KernelCost kernelMATMUL(Machine &machine, const Instruction &instruction) {
 //===----------------------------------------------------------------------===//
 // The quantization opcodes.
 //
-// They have kernels here because the ISA description marks them as computation
-// and the dispatch table below requires one for every opcode that is. What the
-// kernels do is refuse by name, because Section 10.1 is explicit that the
-// integer semantics are Phase P14's and that P7's gate asks for the f32 list
-// only. A refusal that names the phase is not a runtime surprise: it is the
-// same answer the manual gives, given by the machine.
+// The two instructions that cross between the arithmetics. They are the only
+// kernels in this file whose operand element type differs from their result's,
+// and the pair is written together because they are inverses and a pair whose
+// halves disagreed about the zero point would not round trip.
+//
+// Both walk the result's index space through an odometer and address the
+// operand through its strides, like every other kernel here. Neither has a
+// layout specific variant and neither needs one.
 //===----------------------------------------------------------------------===//
 
-KernelCost unimplementedInteger(Machine &machine, const Instruction &instruction,
-                                const char *name) {
+/// `QUANT`: f32 into i8, with a scale and a zero point.
+KernelCost kernelQUANT(Machine &machine, const Instruction &instruction) {
   KernelCost cost;
-  cost.cycles = elementwiseCycles(elementsIn(instruction.resultShape));
-  machine.recordTrap(
-      std::string(name) +
-      " has no kernel in this build. Section 10.1 puts the integer semantics at "
-      "Phase P14, with the rest of Section 14's quantization path; at Phase P7 "
-      "this opcode has structural coverage only and encodes, decodes, "
-      "validates and round trips without computing anything");
+  const int64_t elements = elementsIn(instruction.resultShape);
+  cost.cycles = elementwiseCycles(elements);
+  if (elements <= 0)
+    return cost;
+
+  const Operand &source = instruction.operands[0];
+  if (!requireRank(machine, source, instruction.resultShape.size(), "QUANT", 0))
+    return cost;
+
+  Odometer walk(instruction.resultShape);
+  int64_t position = 0;
+  do {
+    const float *in = machine.readF32(source.space, source.address,
+                                      offsetOf(walk.current(), source.strides),
+                                      "QUANT");
+    int8_t *out = machine.writeI8(instruction.resultSpace,
+                                  instruction.resultAddress, position, "QUANT");
+    if (!in || !out)
+      return cost;
+    *out = static_cast<int8_t>(
+        quantizeOne(*in, instruction.scale, instruction.zeroPoint));
+    ++position;
+  } while (walk.next());
   return cost;
 }
 
-KernelCost kernelQUANT(Machine &machine, const Instruction &instruction) {
-  return unimplementedInteger(machine, instruction, "QUANT");
-}
-
+/// `DEQUANT`: i8 into f32, `x = (q - zeroPoint) * scale`.
+///
+/// The subtraction happens in `int32_t` before the multiply, which matters at
+/// the rails: `q - zeroPoint` reaches 255 in magnitude and an i8 subtraction
+/// would wrap.
 KernelCost kernelDEQUANT(Machine &machine, const Instruction &instruction) {
-  return unimplementedInteger(machine, instruction, "DEQUANT");
+  KernelCost cost;
+  const int64_t elements = elementsIn(instruction.resultShape);
+  cost.cycles = elementwiseCycles(elements);
+  if (elements <= 0)
+    return cost;
+
+  const Operand &source = instruction.operands[0];
+  if (!requireRank(machine, source, instruction.resultShape.size(), "DEQUANT",
+                   0))
+    return cost;
+
+  Odometer walk(instruction.resultShape);
+  int64_t position = 0;
+  do {
+    const int8_t *in = machine.readI8(source.space, source.address,
+                                      offsetOf(walk.current(), source.strides),
+                                      "DEQUANT");
+    float *out = machine.writeF32(instruction.resultSpace,
+                                  instruction.resultAddress, position,
+                                  "DEQUANT");
+    if (!in || !out)
+      return cost;
+    const int32_t centred =
+        static_cast<int32_t>(*in) - instruction.zeroPoint;
+    *out = static_cast<float>(static_cast<double>(centred) *
+                              static_cast<double>(instruction.scale));
+    ++position;
+  } while (walk.next());
+  return cost;
 }
 
 KernelCost kernelDMA_LOAD(Machine &machine, const Instruction &instruction) {

@@ -454,6 +454,57 @@ func.func @fused_op(%x: tensor<2x3x8x8xf32>, %w: tensor<8x3x3x3xf32>,
 }
 
 // -----------------------------------------------------------------------------
+// npu.quantize and npu.dequantize
+// -----------------------------------------------------------------------------
+
+// The zero point is stored signless and read as two's complement signed, which
+// is the same convention the i8 tensor element type carries. So it prints as
+// `i32` and it prints negative, and a spelling that had lost the sign would
+// print 4294967293 here.
+// CHECK-LABEL: func.func @quantize
+func.func @quantize(%x: tensor<1x8x4x4xf32>) -> tensor<1x8x4x4xi8> {
+  // CHECK: npu.quantize %{{.*}} {scale = 2.500000e-02 : f32, zero_point = -3 : i32} : tensor<1x8x4x4xf32> to tensor<1x8x4x4xi8>
+  %0 = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x8x4x4xf32> to tensor<1x8x4x4xi8>
+  return %0 : tensor<1x8x4x4xi8>
+}
+
+// CHECK-LABEL: func.func @dequantize
+func.func @dequantize(%q: tensor<1x8x4x4xi8>) -> tensor<1x8x4x4xf32> {
+  // CHECK: npu.dequantize %{{.*}} {scale = 2.500000e-02 : f32, zero_point = -3 : i32} : tensor<1x8x4x4xi8> to tensor<1x8x4x4xf32>
+  %0 = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x8x4x4xi8> to tensor<1x8x4x4xf32>
+  return %0 : tensor<1x8x4x4xf32>
+}
+
+// A layout encoding survives both directions, because quantization is
+// elementwise and moves no data, so it preserves whatever layout it was handed.
+// CHECK-LABEL: func.func @quantize_keeps_a_layout
+func.func @quantize_keeps_a_layout(%x: tensor<1x8x4x4xf32, #npu.layout<nhwc>>)
+    -> tensor<1x8x4x4xi8, #npu.layout<nhwc>> {
+  // CHECK: npu.quantize
+  // CHECK-SAME: tensor<1x8x4x4xf32, #npu.layout<nhwc>> to tensor<1x8x4x4xi8, #npu.layout<nhwc>>
+  %0 = npu.quantize %x {scale = 1.000000e-01 : f32, zero_point = 0 : i32}
+     : tensor<1x8x4x4xf32, #npu.layout<nhwc>>
+    to tensor<1x8x4x4xi8, #npu.layout<nhwc>>
+  return %0 : tensor<1x8x4x4xi8, #npu.layout<nhwc>>
+}
+
+// The two ends of the zero point range, which is where a sign error becomes a
+// verifier failure rather than a wrong number.
+// CHECK-LABEL: func.func @quantize_at_both_ends_of_the_zero_point_range
+func.func @quantize_at_both_ends_of_the_zero_point_range(
+    %x: tensor<4xf32>) -> tensor<4xi8> {
+  // CHECK: zero_point = -128 : i32
+  %0 = npu.quantize %x {scale = 1.000000e+00 : f32, zero_point = -128 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  // CHECK: zero_point = 127 : i32
+  %1 = npu.quantize %x {scale = 1.000000e+00 : f32, zero_point = 127 : i32}
+     : tensor<4xf32> to tensor<4xi8>
+  return %1 : tensor<4xi8>
+}
+
+// -----------------------------------------------------------------------------
 // The memory space attributes.
 // -----------------------------------------------------------------------------
 

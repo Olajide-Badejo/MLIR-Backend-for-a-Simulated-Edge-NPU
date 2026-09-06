@@ -358,6 +358,38 @@ func.func @concat_i8(%a: memref<2x4xi8, #npu.scratchpad>,
 }
 
 // -----------------------------------------------------------------------------
+// The quantization instructions.
+// -----------------------------------------------------------------------------
+
+// The two instructions whose operand element type differs from their
+// destination's, which is the whole content of them. The direction is pinned by
+// the operation definitions, so a QUANT written the other way round does not
+// parse and needs no verifier rule to refuse it.
+// CHECK-LABEL: func.func @quant
+func.func @quant(%x: memref<1x8x4x4xf32, #npu.scratchpad>,
+                 %d: memref<1x8x4x4xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.quant ins(%{{.*}} : memref<1x8x4x4xf32, #npu.scratchpad>)
+  // CHECK-SAME: outs(%{{.*}} : memref<1x8x4x4xi8, #npu.scratchpad>)
+  // CHECK-SAME: scale = 2.500000e-02 : f32, zero_point = -3 : i32
+  npuisa.quant ins(%x : memref<1x8x4x4xf32, #npu.scratchpad>)
+               outs(%d : memref<1x8x4x4xi8, #npu.scratchpad>)
+               {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+  return
+}
+
+// CHECK-LABEL: func.func @dequant
+func.func @dequant(%q: memref<1x8x4x4xi8, #npu.scratchpad>,
+                   %d: memref<1x8x4x4xf32, #npu.scratchpad>) {
+  // CHECK: npuisa.dequant ins(%{{.*}} : memref<1x8x4x4xi8, #npu.scratchpad>)
+  // CHECK-SAME: outs(%{{.*}} : memref<1x8x4x4xf32, #npu.scratchpad>)
+  // CHECK-SAME: scale = 2.500000e-02 : f32, zero_point = -3 : i32
+  npuisa.dequant ins(%q : memref<1x8x4x4xi8, #npu.scratchpad>)
+                 outs(%d : memref<1x8x4x4xf32, #npu.scratchpad>)
+                 {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+  return
+}
+
+// -----------------------------------------------------------------------------
 // The function level attributes.
 // -----------------------------------------------------------------------------
 
