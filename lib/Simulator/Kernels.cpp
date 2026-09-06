@@ -267,9 +267,20 @@ int32_t quantizeOne(float value, float scale, int32_t zeroPoint) {
 /// half of Section 14's requantization.
 ///
 /// It computes `round(a * b / 2^31)` with a saturating single exception. The
-/// nudge is the half that makes the truncating division round to nearest, and
-/// it takes the sign of the product so that the rounding is away from zero on
-/// both sides rather than toward negative infinity on one of them.
+/// nudge is the half that makes the truncating division round to nearest, and it
+/// takes the sign of the product because the division truncates toward zero on
+/// both sides rather than flooring.
+///
+/// **Its tie goes up rather than away from zero**, and that is worth naming
+/// because `roundingDivideByPOT` below rounds the other way. Working it out on
+/// a product of exactly minus two and a half: the nudge takes it to minus three
+/// plus a part in `2^31`, which truncates toward zero to minus two. So the two
+/// halves of one requantization round ties differently. Neither is a choice made
+/// here: this is the arithmetic gemmlowp performs and therefore the arithmetic
+/// every stack implementing Section 14's scheme performs, and a machine that
+/// rounded more consistently than they do would disagree with all of them on the
+/// values where it matters. `Quantization.MatMulRequantizesAndHasNoZeroPoint`
+/// carries the minus two and a half case with its arithmetic written out.
 int32_t saturatingRoundingDoublingHighMul(int32_t a, int32_t b) {
   // The one product that does not fit: `-2^31 * -2^31 / 2^31` is `2^31`, which
   // is one past the largest int32. Every other pair fits by construction.

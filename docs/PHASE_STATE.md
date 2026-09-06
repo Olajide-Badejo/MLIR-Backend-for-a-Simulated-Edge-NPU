@@ -20,7 +20,7 @@ costs more than writing these lines did.
 
 **P14, INT8 quantization. Checkpoint A is complete: the integer path exists and
 is exact.** Branch `phase/p14-int8`, cut from `main` at `e72f610`, which is the
-P13 merge. Three commits, every one of them passing all twelve pre-commit hooks.
+P13 merge. Five commits, every one of them passing all twelve pre-commit hooks.
 The gate has seven clauses and none of them is closed yet, because six of the
 seven are about measurements that Checkpoints B and C make; what this checkpoint
 establishes is the arithmetic those measurements will be taken over, and the one
@@ -113,6 +113,8 @@ same field on the same opcode at f32, where it is refused.
 | `f09beac` | the two dialect operations, the two instructions, the lowering, the encoder cases, the ISA integer profile, the integer kernels and eleven hand computed semantics tests |
 | `43d9303` | the two ONNX converters, the reference interpreter's integer executors, the integer half of the differential comparison, and the two dated exemptions |
 | `c9cd6f2` | the format's integer profile driven case by case, the end to end encoding lit test, and the two integer determinism assertions |
+| `4c23bb2` | the manual's integer profile, D-0063, the changelog, this file and the engineering log |
+| the re-record | the baseline, whose only movement is the test counts and the names this checkpoint added |
 
 ### The two exemptions, and the commit that deletes them
 
@@ -151,21 +153,46 @@ validated and disassembled, and both are done.
 **Nothing about calibration exists.** No `-npu-calibrate`, no profiles, no
 `calib-method`, no `requant-mode`, no observer. All of it is Checkpoint B.
 
-### Verification at `c9cd6f2`
+### Verification at the checkpoint A tip
+
+**Both shapes were predicted before either was run and both were measured
+exactly.** The predictions are in the checkpoint's own report and the arithmetic
+behind them is the six test counts this checkpoint moves, none of which is
+environment dependent.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6` | clean, no warnings |
+| `ninja -C build-ndebug -j6` | clean, no warnings |
 | `ninja -C build check-npu` | **38 of 38**. 37 at the P13 merge, plus `test/Encoding/quantized.mlir` |
 | `build/bin/NPUInterfaceTests` | 23 passed |
 | `build/bin/NPUTilingTests` | 20 passed |
 | `build/bin/NPUAllocatorTests` | 29 passed |
 | `build/bin/NPUEncodingTests` | **89 passed**, 1 skipped. 84 before, plus the five that drive the integer profile and the format version |
-| `build/bin/NPUSimulatorTests` | **70 passed**, 1 skipped. 56 before, minus the two P7 refusals the kernels replaced, plus eleven semantics cases, two integer determinism cases and the integer coverage guard |
+| `build/bin/NPUSimulatorTests` | **70 passed**, 1 skipped. 58 before, less the two P7 refusals the kernels replaced, plus eleven semantics cases, two integer determinism cases and the integer coverage guard |
+| `build-ndebug/bin/NPUSimulatorTests` | 70 passed, 1 skipped |
+| `build-ndebug/bin/NPUEncodingTests` | 89 passed, 1 skipped |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1137 passed, 18 skipped**, 218.23s. **Predicted 1137 and 18** |
+| the whole suite in the CI shape | **1122 passed, 33 skipped**, 163.39s. **Predicted 1122 and 33.** The difference between the shapes stays at 15, which is what it should be: none of the six new cases needs an external tool |
+| the CI shape's external tools step | `test_external_tools.py` 10 passed under `NPU_EXTERNAL_TOOLS=1`, with all three roots blocked and `accelergy` off `PATH` |
+| `mypy` and `mypy --python-executable /usr/bin/python3` | no issues found in 26 source files, in both shapes |
+| `black --check .` | 72 files unchanged |
+| `ruff check .` | all checks passed |
+| `bash scripts/dash-lint.sh` and `--self-test` | clean, 8 of 8 expectations met |
+| `reuse lint` | compliant, **637 of 637** files. 539 at the P13 handoff |
 | `python scripts/check-reachability.py` | pass, all five layers, **2 exemptions in force**, both on the model layer |
-| `python -m pytest test/Python -q -m 'slow or not slow'` | see the report; the differential suite gains one case and the importer three |
-| `mypy`, `ruff`, `black --check`, `dash-lint`, `reuse lint` | clean |
 | `bash scripts/check-isa-staleness.sh build` | up to date |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
+| `python scripts/patch-scalesim.py --check` | every edit in place |
+| `bash scripts/coverage.sh 85 93 16 58` | **C++ 86.1 PASS** against 85, 6230 lines of 7235, branch 75.2 over 4050; per tree **93.3824 / 19.3928 / 71.5114** PASS against 93 / 16 / 58, exit 0. **No threshold moved.** It read 85.9 over 6891 lines at P13's close, so the denominator grew by 344 lines and the percentage went up: the integer path arrived with the tests that exercise it |
+| `bash scripts/regression-baseline.sh --check`, first run | **red, and every one of the 34 differences is a test count or a test name.** Not one cell line and not one golden line: the 42 cells and the 21 golden tensors reproduced exactly. That is the same red P13 hit when it added an option test, and it is answered by recording the baseline again rather than by an entry, because a test that did not exist cannot have regressed |
+| the re-record, and `--check` after it | on a quiet machine, with the cells unchanged and only the suite counts and the twenty one names this checkpoint added moving |
+| `git status --short test/baseline/golden` | empty. **21 golden tensors byte identical** |
+| `git diff main..HEAD` over `python/npu_frontend/cost_model.py`, `include/NPU/Simulator/CostModel.h` and `lib/CostModel/` | **empty over all three**, which is the claim about the constants. What did change under `lib/Simulator/` is `Kernels.cpp`, which gained the integer kernels, and `include/NPU/Simulator/Memory.h`, which gained the i8 and i32 accessors; both are named rather than counted as empty |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches**, case insensitive with word boundaries, over the diff and over the commit messages and trailers alike. One author |
+| the same diff grepped for em and en dashes | **0 matches** |
+| `git diff --shortstat main..HEAD` | 42 files, 4264 insertions, 311 deletions before the re-record |
 
 ## P13, merged at `e72f610`
 
