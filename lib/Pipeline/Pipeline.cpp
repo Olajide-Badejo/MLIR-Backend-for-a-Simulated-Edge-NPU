@@ -252,6 +252,14 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       *this, "spill-heuristic",
       llvm::cl::desc("Which buffer the allocator spills."),
       llvm::cl::init("longest-range")};
+  Option<std::string> halo{
+      *this, "halo",
+      llvm::cl::desc("Which halo answer the tiling search may take: "
+                     "'recompute' lets it split the output spatial axes and pay "
+                     "for the overlapping rows per tile, 'cache' refuses to "
+                     "split them so that no halo is created. Section 13.3's "
+                     "third arm."),
+      llvm::cl::init("recompute")};
   Option<int64_t> alignment{
       *this, "alignment",
       llvm::cl::desc("The byte alignment of every assigned offset."),
@@ -276,6 +284,7 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
   PipelineOptions toPipelineOptions() const {
     PipelineOptions options;
     options.scratchpadBudget = budget;
+    options.tilingHalo = halo;
     options.allocationStrategy = strategy;
     options.spillHeuristic = spillHeuristic;
     options.allocationAlignment = alignment;
@@ -347,6 +356,10 @@ void addPass(OpPassManager &pm, const PassEntry &entry,
     // coupling is real rather than an artifact of this wiring, it is what
     // Section 13.2 asks for, and `docs/PASSES.md` says so beside the row.
     tiling.doubleBuffer = doubleBufferInPipeline;
+    // **And which halo answer it may take**, which is Section 13.3's third arm.
+    // The default is the pass's own, so a level nobody asked about is the level
+    // that was there before this option existed.
+    tiling.halo = options.tilingHalo;
     pm.addNestedPass<func::FuncOp>(npu::createNPUTileToScratchpad(tiling));
     return;
   }

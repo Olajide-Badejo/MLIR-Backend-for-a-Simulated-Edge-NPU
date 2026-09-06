@@ -159,6 +159,19 @@ struct PipelineOptions {
   std::string allocationStrategy = "pack";
   std::string spillHeuristic = "longest-range";
   int64_t allocationAlignment = 64;
+  /// Which of Section 13.3's two halo answers the tiling search may take.
+  ///
+  /// **This is here so that the third arm is an arm.** Section 13.3 compares
+  /// spilling against tiling against recompute, and the third is the halo
+  /// boolean: `recompute` lets the search split the output spatial axes and pay
+  /// for the overlapping input rows per tile, `cache` refuses to split them so
+  /// that no halo is created. The experiment runs all three arms at `-O2`, and
+  /// an option only reachable by driving the pass alone would make the third
+  /// arm a measurement of a different pipeline from the other two.
+  ///
+  /// The default is the pass's own default, so a level built without asking is
+  /// the level that was there before this field existed.
+  std::string tilingHalo = "recompute";
   /// Where to stop. `NpuIsa` is the whole level; `Npu` is the tensor level
   /// half, which is what `npu-compile --emit npu` runs.
   PipelineStage stopAfter = PipelineStage::NpuIsa;
