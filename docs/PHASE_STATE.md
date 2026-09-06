@@ -1039,6 +1039,44 @@ one measurement it was not quiet for did not happen: see the baseline row.*
 | `git diff --shortstat main..HEAD` | 403 files, 95294 insertions, 14715 deletions |
 | the machine the measurements were taken on | **quiet for coverage, the two suite runs and the ZigZag comparison.** The baseline's first attempt is the exception and it is the row above: the gate refused a machine at 0.33 and stopped rather than record from it |
 
+### The closing battery, at `706739c`, in both shapes
+
+*The row counts were predicted before the run and every one of them was measured
+exactly. Checkpoint C changed documents only, so the prediction was that nothing
+moves, and the one thing that did is in the coverage row and is named there.*
+
+| Command | Result |
+|---|---|
+| `ninja -C build -j6` | no work to do |
+| `build/bin/NPUInterfaceTests` | 23 passed |
+| `build/bin/NPUTilingTests` | 20 passed |
+| `build/bin/NPUAllocatorTests` | 29 passed |
+| `build/bin/NPUEncodingTests` | 84 passed, 1 skipped |
+| `build/bin/NPUSimulatorTests` | 58 passed, 1 skipped |
+| `ninja -C build check-npu` | **37 of 37** |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | **1131 passed, 18 skipped**, 216.92s. Predicted 1131 and 18 |
+| the whole suite in the CI shape | **1116 passed, 33 skipped**, 159.14s, mypy clean under `--python-executable /usr/bin/python3`. Predicted 1116 and 33 |
+| the CI shape's external tools step | exit **0**, "confirmed absent", all three named. `test_external_tools.py` 10 passed under `NPU_EXTERNAL_TOOLS=1` in that shape |
+| `mypy` | no issues found in 26 source files |
+| `black --check .` | 72 files unchanged |
+| `ruff check .` | all checks passed |
+| `bash scripts/dash-lint.sh` and `--self-test` | clean, 8 of 8 expectations met |
+| `reuse lint` | compliant with version 3.3 |
+| `python scripts/check-reachability.py` | pass |
+| `bash scripts/check-isa-staleness.sh build` | up to date |
+| `python scripts/gen-design-decisions.py --check` | index up to date |
+| `python experiments/results_to_tex.py --check` | `macros.tex` is up to date |
+| `python scripts/patch-scalesim.py --check` | every edit in place |
+| `bash scripts/coverage.sh 85 93 16 58` | **C++ 85.9 PASS** against 85, 5922 lines of 6891, branch 75.1; per tree **93.3105 / 19.3928 / 71.5114** PASS against 93 / 16 / 58, exit 0. **It read 86.0 at `101cb17` and 85.9 here, and no C++ file moved between them**: the denominator is 6891 in both and four lines and one branch differ, so the movement is in the measurement rather than in the code. Both are above the threshold and **no threshold moved**. The likely cause is a path whose execution depends on the machine: the first run was on an idle machine and this one followed the CI shape suite immediately. It is D-0049's shape in a third place and is recorded rather than chased |
+| `python scripts/regression_baseline.py --check` | **no drift**, exit 0, recorded at `101cb17` and checked at `706739c`, 42 cells, 21 golden tensors byte identical, largest movement against `-O0` **4.470e-08**, pytest 1131 passed and 18 skipped. Run on a machine that was **quiet**: the gate waited 1140 seconds for a one and five minute load average of 0.02 and 0.25 |
+| `git status --short` | empty |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | **0** |
+| the same diff grepped for em and en dashes | **0** |
+| the branch's commit messages and trailers | **0** and **0**, one author |
+| `git diff main..HEAD` over `python/npu_frontend/cost_model.py` and `include/NPU/Simulator/CostModel.h` | **empty**, which is the claim about the constants |
+| the rehearsal branch's commit on this branch | **0 matches** in `git log --oneline main..HEAD`, which is the check that it stayed where it was put |
+| the machine the measurements were taken on | quiet for the baseline, which is the one measurement a busy machine can change, and named as not quiet for coverage, which is the one that moved |
+
 ## What P12 measured, and still holds
 
 `docs/NUMBERS.md` is the ledger. **Every figure below was P12's, over the 175
@@ -1276,9 +1314,15 @@ them was importable would be wrong in the direction that matters.
 
 | Proof | Where |
 |---|---|
-| **green in CI**, on the real image and the real runner | runs **33994477434** and **34023218917**, both on the `push` trigger to `phase/p13-tiling`, both with this step passing |
+| **green in CI**, on the real image and the real runner | four runs, all on the `push` trigger to `phase/p13-tiling`, all with this step passing: **33994477434**, **34023218917**, **34030451953** and **34037620630**, the last of them at the closing tip |
 | **red locally**, the rehearsal that says the guard can fail at all | `python experiments/compile_time_benchmark.py --check --sizes 500` prints "No fit: a growth exponent needs at least two sizes and a nonzero pass time at every one of them" and exits 1. `--check` at the four real sizes exits 0 at a fitted exponent that has read **1.1072, 1.1093 and 1.1131** at three trees of this branch, against a ceiling of 1.5683 |
-| **red in CI on the `pull_request` trigger**, which is the half a local rehearsal cannot reach | prepared and **not pushed**: branch `phase/p13-rehearsal-growth-curve`, one commit `8156253`, cut from `49bf65b`, editing **only that step's arguments** to `--check --sizes 500`. The prediction is in the commit message, written before any run existed. `PROOF OF FAILURE PR: <url to be recorded when the run exists>` and `RUN: <id>` |
+| **red in CI on the `pull_request` trigger**, which is the half a local rehearsal cannot reach | run **34037636675**, <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/34037636675>. `build-and-test` **failed at this step** in 9m50s; `lint`, `ndebug`, `sanitizers` and `coverage` all green; every step before the growth curve passed and the steps after it did not run. Draft pull request **21**, never merged, <https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/pull/21>, head `phase/p13-rehearsal-growth-curve` at `8156253`, base `main`, closed unmerged and the branch deleted |
+| the second sample, which is not the proof | run **34037402488**, the `push` trigger on the same branch, which fires first because CI also runs on `push` to `phase/**`. Same red, same step, same message. Recorded because it happened, and Section 19.1 asks for the `pull_request` trigger, so the run above is the proof |
+
+**So the step's activation is proven both ways**: green on 33994477434,
+34023218917, 34030451953 and 34037620630, red on 34037636675. **A gate nobody has
+seen fail is a gate nobody knows works**, and this one has now been seen both
+ways on the runner it will actually guard.
 
 **Why the third proof is a branch rather than a commit on this one.** Section
 19.1 asks for the failure on the trigger the step will actually guard, and this

@@ -6579,3 +6579,65 @@ naming another. D-0059 is a driver that states a rule two lines above the code
 that breaks it. D-0061 is an attribute that names half a loop nest. Each was
 found by reading the artefact against itself, and each cost a test that should
 always have existed.
+
+## 2026-09-06 Phase P13: the growth curve step proved red on the trigger it guards
+
+**Section 19.1 asks for a step to be shown failing on the trigger it will
+actually run under, and the local rehearsal cannot reach that.** P12's recipe
+proves the guard can fail; it does not prove that CI reports the failure, that
+the job stops, or that the other four jobs are unaffected. Those are properties
+of the workflow rather than of the script, and the only way to measure them is to
+open a pull request and read what comes back.
+
+**The prediction was written into the commit that causes the failure, before any
+run existed.** Branch `phase/p13-rehearsal-growth-curve`, one commit `8156253`,
+cut from the closing tip `49bf65b`, editing **only the arguments of the step
+named "allocator growth curve (activation table: P13, on)"** to
+`--check --sizes 500`. It predicted: `build-and-test` fails at that step; the log
+ends with the no fit message after a table carrying exactly one row, size 500,
+1002 operations, 500 buffers, with the step and residual columns empty because
+neither is defined on a single point; `lint`, `sanitizers`, `ndebug` and
+`coverage` stay green; and the steps after the growth curve do not run at all,
+which is the external cross validation assertion and `regression-baseline
+--check`.
+
+**The allocator was not touched and that is the part worth repeating.** P12
+recorded that making the offset assignment scan quadratic to drive this step red
+would be measuring a different program rather than proving this one's guard
+works. **The rehearsal drives the guard, not the thing it guards**, which is why
+the fault is one flag in a workflow file and not a line of C++.
+
+| Gate | Fault | Red | Restored |
+|---|---|---|---|
+| `allocator growth curve`, `pull_request` | `--sizes 500` on the step's own command | `build-and-test` failed at that step in 9m50s, exit 1, four other jobs green | the branch is deleted and `phase/p13-tiling` never carried the flag |
+
+**Measured, and every clause of the prediction held.** The pull request run is
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/34037636675>,
+from draft pull request 21,
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/pull/21>,
+head `phase/p13-rehearsal-growth-curve` at `8156253`, base `main`. The step's log
+ends with
+
+```
+--check has no fit to check. Measure at two sizes or more, at sizes large
+enough for the pass to take a measurable time.
+No fit: a growth exponent needs at least two sizes and a nonzero pass time at
+every one of them.
+Process completed with exit code 1
+```
+
+after the one row table, exactly as predicted. `lint`, `ndebug`, `sanitizers` and
+`coverage` were green, every step before the growth curve passed, and the steps
+after it did not run.
+
+**A second sample arrived without being asked for**, because CI also runs on
+`push` to `phase/**`, so pushing the branch fired
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/34037402488>
+first, with the same red at the same step and the same message. It is recorded
+because it happened. **It is not the proof**: Section 19.1 names the
+`pull_request` trigger and the run above is the one on it.
+
+**So the step is proven both ways on the runner it guards**: green on
+33994477434, 34023218917, 34030451953 and 34037620630, red on 34037636675. The
+pull request was closed unmerged and the branch deleted, which is the whole
+lifetime a proof of failure is supposed to have.
