@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "4e9816d7c93375d51c5aba236a98bef5501eb5b2",
+  "git_sha": "c0a677cb9799a4f8de4763e5b5256e7a743ba11d",
   "levels": [
     0,
     1,
@@ -1174,7 +1174,7 @@
     "check-npu": {
       "failed": 0,
       "failures": [],
-      "passed": 36,
+      "passed": 37,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1185,6 +1185,7 @@
         "NPU :: Dialect/NPUISA/async-window-allocation.mlir",
         "NPU :: Dialect/NPUISA/canonicalize.mlir",
         "NPU :: Dialect/NPUISA/dma-boundaries.mlir",
+        "NPU :: Dialect/NPUISA/double-buffer-unknown-option.mlir",
         "NPU :: Dialect/NPUISA/invalid.mlir",
         "NPU :: Dialect/NPUISA/lowering-diagnostics.mlir",
         "NPU :: Dialect/NPUISA/lowering.mlir",
