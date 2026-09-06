@@ -712,7 +712,22 @@ jobs:
             exit 1
           fi
           export PYTHONPATH="/opt/llvm/python_packages/mlir_core:${PWD}/python"
-          python3 experiments/compile_time_benchmark.py --check
+          # ---- REHEARSAL ONLY, per Section 19.1. ------------------------
+          #
+          # This branch exists to prove the step above can fail on the
+          # `pull_request` trigger, which is the half of Section 19.1 a
+          # local rehearsal cannot reach. `--sizes 500` is the no fit
+          # branch: one size gives the fit nothing to fit, so the script
+          # refuses rather than reporting an exponent it could not measure.
+          #
+          # **The allocator is not touched and must not be.** P12 recorded
+          # that making the scan quadratic to drive this red would be a
+          # different program rather than a fault in this one, so the
+          # rehearsal drives the guard rather than the thing it guards.
+          #
+          # This commit is never merged. `phase/p13-tiling` carries the
+          # unmodified line.
+          python3 experiments/compile_time_benchmark.py --check --sizes 500
 
       # ---- the external cross validation tools. OFF at P11, and it says so. --
       #
