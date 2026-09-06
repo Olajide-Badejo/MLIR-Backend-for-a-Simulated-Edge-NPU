@@ -81,23 +81,44 @@ from npu_frontend.compile import (  # noqa: E402
 from npu_frontend.input_classes import make_inputs  # noqa: E402
 from npu_frontend.model_generator import MODELS, generate_model  # noqa: E402
 
+#: The budget at which nothing in this suite is over budget, and therefore the
+#: control row of every configuration.
+#:
+#: **Without it the fusion ablated rows have no control.** With `-npu-fuse-ops`
+#: left out the tiling pass fires at every budget in the swept ranges below, so
+#: comparing those rows against each other says what a smaller budget costs and
+#: never what tiling costs. At the default budget the pass runs, finds nothing
+#: over budget and answers no, which is the same configuration with the arm
+#: switched off by the input rather than by a pass list.
+CONTROL_BUDGET = 1048576
+
 #: The budgets each model is measured at.
 #:
 #: The swept ranges are the measured ones: `docs/PHASE_STATE.md` records that
 #: tiling starts firing between 6000 and 6464 on `resnet_block` and
 #: `conv_bn_relu_stack` and between 4000 and 6000 on `inception_block`. Every
-#: model also gets its own frozen tight budget, so that the two published cells
-#: appear in the table beside the swept ones, and the floors
+#: model also gets its own frozen tight budget, so that the published cells
+#: appear in the table beside the swept ones; the floors
 #: `experiments/tight_budget_floor.py` measured, so that the bottom of the range
-#: is a budget something still places at rather than a round number.
+#: is a budget something still places at rather than a round number; and the
+#: control budget above.
 SWEPT: dict[str, tuple[int, ...]] = {
-    "resnet_block": (6000, 6144, 6272, 6400, 6464),
-    "conv_bn_relu_stack": (4672, 4928, 6000, 6144, 6272, 6400, 6464),
-    "inception_block": (4000, 4608, 5120, 5632, 6000, 6144),
-    "lenet": (194240, 194624),
-    "lenet_batched": (199872, 200832),
-    "depthwise_separable": (8064, 8192),
-    "dilated_stack": (7936, 8064),
+    "resnet_block": (6000, 6144, 6272, 6400, 6464, CONTROL_BUDGET),
+    "conv_bn_relu_stack": (
+        4672,
+        4928,
+        6000,
+        6144,
+        6272,
+        6400,
+        6464,
+        CONTROL_BUDGET,
+    ),
+    "inception_block": (4000, 4608, 5120, 5632, 6000, 6144, CONTROL_BUDGET),
+    "lenet": (194240, 194624, CONTROL_BUDGET),
+    "lenet_batched": (199872, 200832, CONTROL_BUDGET),
+    "depthwise_separable": (8064, 8192, CONTROL_BUDGET),
+    "dilated_stack": (7936, 8064, CONTROL_BUDGET),
 }
 
 #: The six configurations, as the level options that make each one.

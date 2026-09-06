@@ -404,6 +404,136 @@ all printed identically.
 
 ---
 
+## Section 13.3, the three arms
+
+*Measured at P13 by `experiments/three_arms.py`, over
+`experiments/results-three-arms/arms.json`. Seven models, a budget list per
+model, six configurations per point, compiled and simulated on a quiet machine
+in fourteen seconds. The prediction is
+`experiments/predictions/p13-three-arms.md`, committed at `b302661`, strictly
+before the script existed.*
+
+**The question and the three answers.** Section 13.3 asks what a compiler should
+do when a program does not fit: **spill** it, **tile** it, or **recompute** the
+halo rather than keep it. Each arm is two configurations, which is Section 13.3's
+own treatment of arm one applied to all three: the two spill heuristics of
+Section 13.1, the two fusion configurations the fused region resolution names,
+and the two halo answers.
+
+**Every point has a control and it is a budget rather than a pass list.** At
+1048576 bytes nothing in this suite is over budget, so all six configurations
+produce the identical program on every model: 15 instructions and 1160.5 cycles
+on `conv_bn_relu_stack`, 14 and 1626.0 on `resnet_block`, 14 and 2398.5 on
+`inception_block`. That row is what says the differences below are the budget
+biting rather than the configurations differing in themselves.
+
+### What each arm costs at the frozen tight budget
+
+Instructions, cycles, DRAM bytes and spills, at each model's own ADR 0008 budget.
+`spill` is `-npu-tile-to-scratchpad` ablated under the default heuristic, `tile`
+is the level as it stands, `tile unfused` is the level with `-npu-fuse-ops`
+ablated, and `no halo` is the same with `halo=cache`.
+
+| Model, budget | spill, longest range | spill, cost | tile | tile unfused | no halo, fused |
+|---|---|---|---|---|---|
+| `conv_bn_relu_stack` 6464 | 15 / 1160.5 / 4144 / 0 | same | same | 19 / 1572.5 / 8240 / 0 | same as tile |
+| `depthwise_separable` 8192 | 12 / 1324.0 / 3008 / 0 | same | same | 16 / 2008.0 / 11200 / 0 | same as tile |
+| `dilated_stack` 8064 | 12 / 1234.1 / 5364 / 0 | same | same | 30 / 4929.2 / 14092 / 0 | same as tile |
+| `inception_block` 6144 | 22 / **3799.0** / 21936 / **3** | 22 / 3648.0 / 14784 / 4 | 22 / **3395.0** / 12720 / **0** | same as tile | 22 / 4547.0 / 12720 / 0 |
+| `lenet` 194624 | 25 / 17766.2 / 250000 / 0 | same | same | 33 / 20617.2 / 250960 / 0 | same as tile |
+| `lenet_batched` 200832 | 25 / 20000.0 / 259528 / 0 | same | same | 29 / 22963.0 / 263368 / 0 | same as tile |
+| `resnet_block` 6464 | **17 / 2018.0 / 14944 / 1** | 19 / 2018.0 / 15008 / 2 | **21 / 2660.0 / 19040 / 1** | 26 / 3646.0 / 25184 / 1 | 21 / 2980.0 / 19040 / 1 |
+
+**The two cells the suite publishes are in that table and they are the two the
+mechanism is about.** `inception_block` is where tiling wins: 404 cycles, all
+three spills and 42 percent of the DRAM traffic. `resnet_block` is where it
+loses: **642 cycles and four instructions**, because the operand the budget runs
+out on is the block's own residual, which is on chip, and a slice of a scratchpad
+value is a view rather than a transfer, so the producer stays whole resident and
+the tile buffers are added on top of a residency tiling cannot remove. That is
+the per slice convention as a number rather than as an argument.
+
+### Where each arm stops placing, which is the other half of the answer
+
+A program an arm cannot place is reported as exactly that. Below each model's
+frozen budget:
+
+| Model | spill places down to | tile places down to | tile unfused places down to |
+|---|---|---|---|
+| `conv_bn_relu_stack` | 6464 | 6464 | **4672** |
+| `depthwise_separable` | 8192 | 8192 | 8192 |
+| `dilated_stack` | 8064 | 8064 | 8064 |
+| `inception_block` | 6144 | 6144 | 6144 |
+| `lenet` | 194624 | 194624 | **194240** |
+| `lenet_batched` | 200832 | 200832 | **199872** |
+| `resnet_block` | 6464 | 6464 | **6144** |
+
+**Tiling buys budget on four models and only with fusion ablated**, and on the
+three others it buys none at all. As the compiler stands, with `-npu-fuse-ops`
+in the level, **tiling extends no model's range by a single byte**, because
+fusion hides thirty of the forty four compute operations from the pass. The
+fusion and tiling conflict is the largest single effect in this experiment.
+
+### The crossover, per model
+
+The lowest budget at which tiling is at least as good as spilling, where "at
+least as good" means fewer cycles or a program where spilling has none.
+
+| Model | as the compiler stands | with fusion ablated |
+|---|---|---|
+| `conv_bn_relu_stack` | none | **4672** |
+| `depthwise_separable` | none | none |
+| `dilated_stack` | none | none |
+| `inception_block` | **6144** | **6144** |
+| `lenet` | none | **194240** |
+| `lenet_batched` | none | **199872** |
+| `resnet_block` | none | **6144** |
+
+**On five of the seven models the crossover exists only because fusion was taken
+out of the way**, and on two it does not exist at all.
+
+### The prediction, adjudicated clause by clause
+
+`experiments/predictions/p13-three-arms.md` is not edited. Two clauses are met,
+two are wrong, and two are half right.
+
+| Clause | Verdict |
+|---|---|
+| The mechanism decides: tiling relieves a DRAM operand and not an on chip producer | **met on the two models it was written for.** `inception_block` wins by 404 cycles and three spills; `resnet_block` loses by 642 cycles, and the loss is the residual staying resident, exactly as stated |
+| Tiling wins on `conv_bn_relu_stack`, `lenet` and `lenet_batched` | **half right, and the half is a distinction the clause did not draw.** At the shared budget spilling is cheaper on all three, by 412, 2851 and 2963 cycles. Below it only tiling places. **Tiling wins on range and loses on cost**, and a clause that said "wins" without saying which was answering two questions with one word |
+| Tiling wins on `depthwise_separable` and `dilated_stack` | **wrong.** Tiling fires on both with fusion ablated and buys nothing: it neither costs fewer cycles at any budget nor places at any budget spilling cannot. Their floors are set by something a single operation's working set does not reach |
+| The two spill heuristics differ on at most one model at one budget | **wrong.** They differ on two, both at their frozen budgets. `resnet_block`: 17 instructions and one spill against 19 and two, the same 2018.0 cycles, 64 more DRAM bytes for `cost`. `inception_block`: 3799.0 cycles and three spills against **3648.0 and four**, and 21936 DRAM bytes against **14784** |
+| Where they differ, `cost` wins on cycles | **met.** 151 cycles better on `inception_block` and a tie on `resnet_block`. The rule that counts reloads is the one that helps, and it helps by spilling **more** buffers and moving less traffic |
+| The fusion gap is the largest effect in arm two | **met.** It is what takes `conv_bn_relu_stack` from stopping at 6464 to placing at 4672, and it is worth up to 18 instructions per model at the shared budget, on `dilated_stack`, against 0 on `inception_block`, whose three convolutions fusion never hid |
+| Arm three does nothing in the swept range | **wrong, and it is the most interesting of the four.** `halo=cache` moves the answer on five of the seven models: 320 cycles on `resnet_block` at 6464 and 1280 at 6272, 320 on `conv_bn_relu_stack` at 6464, 2240 at 4928 and 1920 at 4672, 1152 on `inception_block`, 32 on `depthwise_separable`. **The search does take spatial splits**, which the clause assumed it would not |
+| The crossover is within 512 bytes of the first spilling budget | **half right.** 0 bytes on `inception_block` and 320 on `resnet_block`, both inside; **1792 bytes on `conv_bn_relu_stack`**, which is outside and is a model that never spills at all, so "the first spilling budget" was the wrong anchor for it |
+| `resnet_block` has no crossover at any budget its program places at | **right as the compiler stands and wrong with fusion ablated**, where it has one at 6144 |
+| Arm one stops placing before arm two where tiling relieves a DRAM operand | **met on four models** and not on `depthwise_separable` or `dilated_stack`, where the two stop together |
+
+**And one result the prediction did not reach for at all.** On `dilated_stack`
+with fusion ablated, `halo=cache` is **cheaper** than `halo=recompute`: 26
+instructions against 30, 4691.5 cycles against 4929.2, and 13372 DRAM bytes
+against 14092. Refusing to split the spatial axes gives a better program there.
+That is the third arm answering in the direction nobody asked about: on that
+model the halo costs more than the tiling it enables buys.
+
+### What this experiment does not answer
+
+**There is no configuration with both fusion and tiling removed.** Section 16.2's
+leave one out ablation takes one pass at a time by design, and assembling a pass
+list beside the level would measure a pass list rather than the compiler. The
+control budget is what stands in for it: at 1048576 bytes the tiling pass runs,
+finds nothing over budget and answers no, in every configuration, so the fusion
+ablated rows have a same configuration row with the arm switched off by the input.
+
+**All three arms ran on all seven models**, so this is not the two arm result
+Section 13.3 says would have to be reported as incomplete. What is incomplete is
+narrower and is stated here rather than left out: the halo arm has no subject on
+the two models where nothing tiles at any swept budget, and it is reported as
+having none rather than as being worth nothing.
+
+---
+
 ## Numerics
 
 | Number | Value | Source |
