@@ -6257,3 +6257,137 @@ nothing was written to touch a line for its own sake: the missing test was one
 the file should always have had, and the measurement came back at **86.0**, from
 5866 lines of 6824. A coverage number that goes up because a real assertion was
 added is the only kind worth having.
+
+## 2026-09-06 Phase P13: the three arms, and the pass that leaves two of them nothing to do
+
+**The predictions went in first, which is the one part of the protocol that
+cannot be recovered afterwards.** `experiments/predictions/p13-three-arms.md`
+and `experiments/predictions/p13-zigzag-same-mapping.md` are at `b302661`; the
+two scripts that answer them are at `f2c2cdf` and `c08d42e`, both descendants of
+it. Section 17.8 asks for the ancestry rather than for a date written in a
+header, and `git merge-base --is-ancestor b302661 c08d42e` is the whole check. I
+wrote six clauses I expected to be right and four of them are not, which is what
+a prediction is for.
+
+### The floors first, because Section 13.3 needed to know whether it was standing on stale numbers
+
+ADR 0008 fixed the seven tight budgets on 2026-08-31 against a tree with no
+tiling pass in it, and closed by saying the remedy it could not reach lands at
+P13. It has landed, so before running anything I re-measured the same quantity:
+the lowest budget at which each model still produces a program, at the
+allocator's 64 byte quantum, at `-O2`, with tiling ablated, and with fusion
+ablated. 473 compilations.
+
+**At `-O2` not one of the seven floors moved**, and taking the tiling pass out
+did not move them either. The frozen budgets are still exactly the floors. That
+is the answer I wanted least and trust most: the pass has neither invalidated
+ADR 0008 nor given anyone a reason to reopen it.
+
+**With fusion ablated four of them fall**, by 1792, 384, 960 and 320 bytes, and
+that is the first appearance of the effect that turns out to dominate the whole
+experiment.
+
+### One cell is why the tool is not a bisection
+
+`conv_bn_relu_stack` with fusion ablated does not place at 4928 and does place at
+4736 and at 4672. **Allocatability is not monotone in the budget.** I had assumed
+it was, because the allocator's own behaviour is monotone: a buffer set that
+places in N bytes places in N plus 64.
+
+The assumption is true and the conclusion does not follow, because **the budget
+is an input to the tiling pass as well**. A smaller budget makes the search
+choose smaller tiles, which is a different buffer set, which can place where the
+larger budget's buffer set could not. The composition is what a bisection over
+the level is actually searching, and the composition is not monotone.
+
+So `bisect_floor` is followed by `verify_window`, which tests ten quanta below
+whatever the bisection returned, and `descend`, which walks down from the lowest
+of those that placed until 24 consecutive budgets have failed. Every search
+function takes an `Allocates = Callable[[int], bool]` predicate rather than a
+tool path, which is what let the tests drive all three over synthetic shapes
+including this one, instead of over whichever models happen to be non monotone
+this week.
+
+### The two cells the suite publishes, and the convention that decides both
+
+Arm one spills, arm two tiles, arm three drops the halo. At each model's frozen
+budget, with six configurations per point:
+
+- `inception_block` at 6144: spilling costs 3799.0 cycles, 21936 DRAM bytes and
+  three spills; tiling costs 3395.0 cycles, 12720 DRAM bytes and none. **Tiling
+  wins by 404 cycles.**
+- `resnet_block` at 6464: spilling costs 2018.0 cycles over 17 instructions;
+  tiling costs 2660.0 over 21. **Tiling loses by 642 cycles**, and the reason is
+  the per slice convention: the operand the budget runs out on is the block's own
+  residual, which is on chip, and a slice of a scratchpad value is a view rather
+  than a transfer. The producer stays whole resident, the tile buffers are added
+  on top of a residency tiling cannot remove, and the program pays for both.
+
+**That is the same sentence as the spill refusal in the entry above**, arriving
+from the other direction. There the residual was refused as a spill victim
+because a view was taken of it, until the rule was narrowed to views written
+through; here it cannot be relieved by tiling at all, because the views the
+tiling takes are views of it and a view moves nothing off chip. One convention,
+two costs, and both of them are in the suite now.
+
+### Fusion is the largest single effect and neither arm was designed to measure it
+
+As the compiler stands, **tiling extends no model's range by a single byte**.
+Every crossover in Section 13.3's table except `inception_block`'s exists only
+with `-npu-fuse-ops` ablated. Thirty of the suite's forty four compute
+operations are inside fused regions and the tiling pass does not look inside one,
+so on five of seven models arm two is handed nothing to work on at any budget.
+`inception_block` is the exception because its three convolutions have no
+consumer fusion ever folded them into.
+
+I predicted this gap would be the largest effect in arm two and it is. What I did
+not predict is that it would be large enough to be the answer to Section 13.3's
+own question, which is a defect shaped observation rather than a measurement:
+the pass ordering means the compiler cannot use the remedy ADR 0008 named for it
+without giving up a pass that is worth more.
+
+### Arm three was predicted to do nothing and it moves five models
+
+I wrote that recompute against cache "changes nothing at any budget in the swept
+range", reasoning that the search would not take spatial splits. It does.
+`halo=cache` moves the answer on five of the seven models, by up to 2240 cycles
+on `conv_bn_relu_stack` at 4928, and on `dilated_stack` with fusion ablated it is
+**cheaper** than recompute: 26 instructions against 30, 4691.5 cycles against
+4929.2, 13372 DRAM bytes against 14092. On that model the halo costs more than
+the tiling it buys. That is the third arm answering a question in the direction
+nobody put it.
+
+### Three plumbing mistakes, all of them the same mistake
+
+**The two new options do not go to the same stage.** `halo` belongs to
+`-npu-tile-to-scratchpad`, a tensor level pass, so it goes on the `npu` stage;
+`spill-heuristic` belongs to the allocator, which is in the other half, so it
+does not. `compile.py` already had the rule written above the budget option, an
+option belongs on a stage some pass of which can consume it, and following it was
+the entire fix.
+
+**`ablate` takes a space and not a comma.** `npu-O2{budget=6464
+ablate=npu-fuse-ops}` is the form; a comma parses into the pass name, the level
+ablates nothing, and the run completes with plausible numbers in it. The symptom
+is the only one it has: the ablated column read identical to the unablated one on
+all seven models, which is not a result, it is a configuration that did not
+happen.
+
+**The statistic is `tiled-ops` and not `tiled`.** Reading a statistic by a name
+nothing publishes returns a zero that looks like a pass deciding no.
+
+All three are the same error, which is writing an interface down from memory
+beside the file that defines it. The floor tool's `FROZEN` dictionary has a test
+that asserts it equals `{name: spec.tight_budget for ...}` off the registry for
+exactly this reason, and that test is the one that caught me writing
+`tight_scratchpad_budget`, which is not the field's name either.
+
+### What the crossover rule had to say out loud
+
+Section 13.3 requires that a program an arm cannot place is reported as that and
+never as a slower one, so `crossover` compares placement before it compares
+cycles: an arm that produces a program where the other produces none has
+overtaken it, and no cycle count is comparable with an absence. Where both place,
+cycles decide, and **a tie is read as tiling not overtaking**, because the burden
+is on the arm that adds transfers. All three arms ran on all seven models, so
+this is not the two arm result Section 13.3 says must be reported as incomplete.

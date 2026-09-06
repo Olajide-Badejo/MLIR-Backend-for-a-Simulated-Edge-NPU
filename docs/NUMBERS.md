@@ -404,6 +404,70 @@ all printed identically.
 
 ---
 
+## ADR 0008's tight budgets, re-measured at this tree
+
+*Measured at P13 by `experiments/tight_budget_floor.py`, over
+`experiments/results-floors/o2.json`, `no-tiling.json` and `no-fusion.json`. 473
+compilations on a quiet machine. **This is an input to Section 13.3 and to
+nothing else.** ADR 0008's budgets are the suite's and they do not move; what is
+below is the same quantity measured again beside them.*
+
+ADR 0008 fixed seven tight budgets on 2026-08-31 and closed by naming the remedy
+it could not use: "Section 13 already names the remedy, which is tiling rather
+than spilling. Tiling lands at P13." Tiling has landed, so the question that ADR
+owes an answer to is whether it moved any of those seven numbers.
+
+The **floor** is the lowest budget, at the allocator's own 64 byte quantum, at
+which the model still produces a program at all.
+
+| Model | ADR 0008, frozen | floor at `-O2` | tiling ablated | fusion ablated |
+|---|---|---|---|---|
+| `conv_bn_relu_stack` | 6464 | 6464 | 6464 | **4672** |
+| `depthwise_separable` | 8192 | 8192 | 8192 | 8192 |
+| `dilated_stack` | 8064 | 8064 | 8064 | 8064 |
+| `inception_block` | 6144 | 6144 | 6144 | 6144 |
+| `lenet` | 194624 | 194624 | 194624 | **194240** |
+| `lenet_batched` | 200832 | 200832 | 200832 | **199872** |
+| `resnet_block` | 6464 | 6464 | 6464 | **6144** |
+
+**Nothing moved them.** At `-O2` as the level stands, every one of the seven
+re-measured floors is the frozen budget exactly, and taking the tiling pass out
+changes none of them either. ADR 0008's numbers are still the floors of the tree
+they were measured against, which is the strongest form the answer could take:
+the pass that arrived has not made them stale and it has not made them
+achievable to undercut.
+
+**What does move them is taking `-npu-fuse-ops` out**, on four of the seven, by
+1792, 384, 960 and 320 bytes. That is the same mechanism Section 13.3 measures
+below: fusion folds thirty of the suite's forty four compute operations into
+fused regions, and the tiling pass looks at compute operations, so on most models
+it is handed nothing to tile. Remove fusion and the subjects appear, the tiles
+are smaller than the whole operands, and four floors fall. The budgets stay where
+ADR 0008 put them because ADR 0008 measured the compiler, not the compiler with a
+pass removed.
+
+### The floor is not monotone in the budget
+
+`conv_bn_relu_stack` with fusion ablated **fails at 4928 and places at 4736 and
+at 4672**. A bisection alone would have returned 4928, and 4928 would have been
+wrong by 256 bytes and would have cost Section 13.3 the budget at which that
+model crosses over.
+
+The reason is not in the allocator. **The budget is an input to the tiling pass
+as well as to the allocator**, so a smaller budget makes the search choose
+smaller tiles, which is a different buffer set, which is a placement the larger
+budget's buffer set did not have. The map from a buffer set to a placement is
+monotone in the budget; the map from a budget to a buffer set is not, and a
+bisection over the level is searching the composition.
+
+So the tool is three parts and the last two exist for that cell: bisect, then
+test ten quanta below whatever the bisection returned, then descend from the
+lowest of those that placed until 24 consecutive budgets have failed. The
+`non_monotone` and `descended` fields in the JSON record which cells needed
+them, and only that one did.
+
+---
+
 ## Section 13.3, the three arms
 
 *Measured at P13 by `experiments/three_arms.py`, over
