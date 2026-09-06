@@ -14,9 +14,164 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-06.
+**Last updated:** 2026-09-06, at P14 checkpoint A.
 
 ## Current phase
+
+**P14, INT8 quantization. Checkpoint A is complete: the integer path exists and
+is exact.** Branch `phase/p14-int8`, cut from `main` at `e72f610`, which is the
+P13 merge. Three commits, every one of them passing all twelve pre-commit hooks.
+The gate has seven clauses and none of them is closed yet, because six of the
+seven are about measurements that Checkpoints B and C make; what this checkpoint
+establishes is the arithmetic those measurements will be taken over, and the one
+gate clause it does answer outright is `Program::kVersion` unmoved.
+
+**The dialect's operator set is complete for the first time.** P1 built every
+operation of Section 5.3 except `quantize` and `dequantize`, deliberately, and no
+phase between then and here owned them, because law 2 forbids an operator nothing
+can lower, encode, simulate or import. They arrive with all four at once:
+`npu.quantize` and `npu.dequantize` with the verifier rules Section 7.2 states,
+`npuisa.quant` and `npuisa.dequant`, the `QuantizeLinear` and `DequantizeLinear`
+converters, the encoder cases for `QUANT` and `DEQUANT`, and the kernels.
+
+**The integer arithmetic is exact and two independent implementations agree to
+the bit.** Eleven hand computed semantics cases in C++ and seven differential
+cases against a numpy implementation written from Section 14 rather than from the
+kernels. The f32 differential cases have always agreed to a tolerance, because
+two independent summation orders must; the integer ones agree **exactly**,
+because integer addition is associative and neither side has an order the other
+can disagree with. That is a stronger claim than any f32 case in this project can
+make, and it is the same property Section 13.2 rests on when it says a tiled
+reduction under INT8 is bit exact by construction.
+
+**Nothing recorded moved, and that is a measurement rather than an expectation.**
+No pass in any `-O` level emits an integer instruction, so no cell of the 217 can
+reach one. `regression-baseline.sh --check` reports no drift and the 21 golden
+tensors are byte identical. There is nothing to declare in
+`docs/BREAKING_CHANGES.md` for this checkpoint, and a declaration of a movement
+measured to be zero would be a false declaration, which is the rule P13 applied
+at its own wiring commit.
+
+**An i8 result charges against `kPeakMacsPerCycleI8` and that is not a cost model
+change.** The constant has been in `include/NPU/Simulator/CostModel.h` since P7
+with a comment saying in as many words that nothing charges against it until this
+phase. No constant moved, no f32 charge moved, and an f32 result takes the same
+peak it always took. The two are separate assumptions rather than one written as
+a multiple of the other, which is why the header states both.
+
+### The two things Checkpoint A decided, and one of them is the owner's
+
+**The format has one zero point per instruction and the arithmetic needs the
+input's, so a quantized compute result is symmetric.** This is the checkpoint's
+one real design decision and it is forced rather than chosen. Section 14 hoists
+the input zero point out of the multiply accumulate loop by folding
+`- zp_x * sum_k q_w[k]` into the int32 bias at compile time, **over the whole
+window**, and its own rule is that padding contributes the zero point rather than
+zero. Those two together mean the machine has to know `zp_x` at run time: a tap
+outside the input contributes it, and without that the folded term is wrong at
+every padded output position. `Instruction` carries exactly one `zeroPoint`,
+`Program::kVersion` may not move, so that one field is the input's.
+
+**What has nowhere to live is the output zero point.** Section 14's pinned
+arithmetic does not ask for one: quantize adds a zero point, dequantize subtracts
+one, and the compute path between them adds an int32 bias and requantizes, with
+nothing after the rescale. So the implementation is consistent with the section's
+own arithmetic paragraph. **It is not consistent with the section's calibration
+paragraph**, which says activations are calibrated affine, because the output of
+a quantized convolution is an activation and this machine represents it
+symmetrically.
+
+**That is an owner item and it is stated here rather than resolved**, in the
+shape P13 used for the Section 5.5 contradiction. The three ways out are: the
+calibrator computes a symmetric scale for a tensor that is the output of a
+quantized operation, which is what this implementation assumes and costs about
+half the output range on a one sided tensor; or `Instruction` gains a second
+zero point, which moves `Program::kVersion` and is the one thing this phase's
+gate forbids by name; or the requantization gains a form that folds the output
+zero point exactly, which it cannot, because `zp_y / M` is not an integer.
+**Nothing in this repository may edit the specification**, so the measurement of
+what the first costs belongs to Checkpoint C's accuracy table, where it will be
+visible per model rather than argued here.
+
+**The second decision is smaller and is recorded because it is a declared
+interface.** The ISA description gained an **integer profile**, which is two
+lists rather than a widening of the ones it had. `integerOperandTypes` gives an
+element type per operand slot at an integer result, so `CONV2D` and `MATMUL`
+declare `i8, i8, i32` and the bias is the one operand whose type is deliberately
+not the result's. `integerFields` names the fields an opcode gives meaning to
+only at an integer result: `zeroPoint` on `CONV2D`, and nothing on `MATMUL`,
+because a matrix multiplication has no taps outside anything. Both apply exactly
+when the result element type is an integer one, so **every rule is as strong on
+the f32 path as it was before an integer path existed**, and the paired cases in
+`unittests/Encoding/ValidationTest.cpp` drive each rule at i8 and then drive the
+same field on the same opcode at f32, where it is refused.
+
+### What Checkpoint A delivered, commit by commit
+
+| Commit | What |
+|---|---|
+| `f09beac` | the two dialect operations, the two instructions, the lowering, the encoder cases, the ISA integer profile, the integer kernels and eleven hand computed semantics tests |
+| `43d9303` | the two ONNX converters, the reference interpreter's integer executors, the integer half of the differential comparison, and the two dated exemptions |
+| `c9cd6f2` | the format's integer profile driven case by case, the end to end encoding lit test, and the two integer determinism assertions |
+
+### The two exemptions, and the commit that deletes them
+
+`docs/EXEMPTIONS.md` carries `npu.quantize` and `npu.dequantize` on the
+**model** layer alone, dated 2026-09-06, naming P14. Every other layer is met:
+both are importable, both lower, both are named as sources by their opcodes in
+the ISA description, and both have integer kernels with hand computed semantics
+and an exact differential comparison. **What is missing is a producer.** Section
+17.5's step 3 asks for a quantized compilation and `-npu-calibrate` is what makes
+one; the model suite is fp32 by construction and no exported model in it has a
+QDQ node. That is the P8 shape exactly, where `npu.fused_op` waited for
+`-npu-fuse-ops` to be in a level, and the entries can only be deleted by the
+commit that lands the calibration pass and sweeps a quantized compilation into
+`experiments/models/`. **The P14 gate requires an empty block**, so a phase that
+ended with these in it would not have met it.
+
+`test_the_suite_covers_every_converter_the_importer_registers` carries the same
+carve out in the same shape: the two converters are named in a set rather than
+the assertion being deleted, so a **third** converter going uncovered is still a
+failure.
+
+### What Checkpoint A deliberately did not do
+
+**There is no integer compute operation at the `npuisa` level yet**, and that is
+a scope boundary rather than an omission. `npuisa.conv2d` and `npuisa.matmul`
+still take f32 operands, so the integer kernels are reachable from a hand built
+`Program` and from the differential exporter and not from anything the compiler
+emits. The representation belongs with the pass that produces it: in the QDQ
+form the tensor level stays f32 and something has to contract
+`dequantize -> conv2d -> quantize` into an integer instruction, which is
+Checkpoint B's work, and designing the operation before writing the pass that
+fills it in would be designing it twice. Checkpoint A's brief asks for the
+quantization pair in the dialect and for the requantization fields carried,
+validated and disassembled, and both are done.
+
+**Nothing about calibration exists.** No `-npu-calibrate`, no profiles, no
+`calib-method`, no `requant-mode`, no observer. All of it is Checkpoint B.
+
+### Verification at `c9cd6f2`
+
+| Command | Result |
+|---|---|
+| `ninja -C build -j6` | clean, no warnings |
+| `ninja -C build check-npu` | **38 of 38**. 37 at the P13 merge, plus `test/Encoding/quantized.mlir` |
+| `build/bin/NPUInterfaceTests` | 23 passed |
+| `build/bin/NPUTilingTests` | 20 passed |
+| `build/bin/NPUAllocatorTests` | 29 passed |
+| `build/bin/NPUEncodingTests` | **89 passed**, 1 skipped. 84 before, plus the five that drive the integer profile and the format version |
+| `build/bin/NPUSimulatorTests` | **70 passed**, 1 skipped. 56 before, minus the two P7 refusals the kernels replaced, plus eleven semantics cases, two integer determinism cases and the integer coverage guard |
+| `python scripts/check-reachability.py` | pass, all five layers, **2 exemptions in force**, both on the model layer |
+| `python -m pytest test/Python -q -m 'slow or not slow'` | see the report; the differential suite gains one case and the importer three |
+| `mypy`, `ruff`, `black --check`, `dash-lint`, `reuse lint` | clean |
+| `bash scripts/check-isa-staleness.sh build` | up to date |
+
+## P13, merged at `e72f610`
+
+*What follows is P13's own handoff, kept because the numbers in it are what P14's
+are compared against, and because the two owner items it raised are still open.*
+
 
 **P13, tiling, double buffering and layout. Complete, pending merge.** Branch
 `phase/p13-tiling`, cut from `main` at `2f59429`, which is the P12 merge. **The
@@ -180,7 +335,7 @@ rather than after: the arms stay at `-O2`, and arm two is reported in two
 configurations, with fusion and without, which is the treatment Section 13.3
 already gives arm one.
 
-## Gate status
+### The P13 gate status
 
 **Met, on every clause.** Clause by clause, with the evidence for each. The
 tree level evidence is the verification table below, run at `101cb17` on a
@@ -1879,6 +2034,45 @@ answer could take.
 
 ## Open questions
 
+**Three are new at P14 checkpoint A**, and the first is the one only the owner
+can settle. They are stated before P13's because a reader of this handoff has
+not seen them anywhere else.
+
+**Where a quantized compute instruction's output zero point lives, which is a
+contradiction inside Section 14.** The section's pinned arithmetic has no output
+zero point: quantize adds one, dequantize subtracts one, and the compute path
+between them adds an int32 bias and requantizes with nothing after the rescale.
+Its calibration paragraph says activations are affine. The output of a quantized
+convolution is an activation, so the two cannot both hold for it. The format has
+one `zeroPoint` per instruction and the arithmetic needs the **input's**, because
+padding contributes it and because the term folded into the int32 bias was
+computed over the whole window; `Program::kVersion` may not move, so there is no
+second field to put the output's in. **This implementation follows the arithmetic
+paragraph and makes a quantized compute result symmetric**, and what that costs
+is a measurement Checkpoint C's per model accuracy table will carry rather than
+an argument. Stated for the owner, alongside the Section 2 carve out and the
+Section 5.5 contradiction that P13 raised and that are both still open.
+
+**Whether the integer compute instruction should exist at the `npuisa` level
+before the pass that produces it.** Checkpoint A left `npuisa.conv2d` and
+`npuisa.matmul` at f32, so the integer kernels are reachable from a hand built
+program and not from anything the compiler emits. The argument for waiting is
+that the QDQ contraction decides the operation's shape and designing it first
+would be designing it twice; the argument against is that the kernels are the
+only part of the integer path with no compiled program exercising them. It is
+resolved by Checkpoint B one way or the other, and it is written down so the
+answer is a decision rather than a default.
+
+**What the fp32 MAC coefficient's factor of 10.71 becomes at int8.** Section
+16.4's sanity check fails on the fp32 coefficient for a reason P11 identified and
+which is not this project's, and P13 recorded that P14 is where the energy story
+changes shape. Nothing at checkpoint A measures it. The int8 coefficients arrive
+at Checkpoint B from the Accelergy plug ins, recorded the way P11 recorded the
+fp32 ones, and whether the same factor appears is a question with an answer
+rather than an opinion.
+
+### The questions P13 left, all still open
+
 **Sixteen, and seven are new at P13.** One from P12 is answered. **Four of the
 seven arrived in the phase's last two days**, three from the Section 16.5
 comparison and one from checking this project's own account of itself against the
@@ -2070,6 +2264,30 @@ write. **Only the owner may retire it.** Nothing on this branch went near it.
 
 ## Next phase
 
+**P15, and P14 is in progress rather than complete.** What follows is the P13
+handoff's account of what P14 inherits, kept because it is still the plan and
+because two of its three items are Checkpoint C's.
+
+### What P14 has done with what it inherited, so far
+
+**1. The reduction tiling permission is untouched at checkpoint A.**
+`allow-reduction-tiling` is still off and still carries its fp32 reason. Turning
+it on under INT8 is Checkpoint C's, and what checkpoint A adds to the case for it
+is the evidence rather than the argument: the integer kernels are exact and two
+independent implementations agree to the bit, which is what "reassociation moves
+no bit" has to mean before an option rests on it.
+
+**2. `Program::kVersion` is 2 and has not moved**, which is the one gate clause
+checkpoint A closes outright. It is asserted by a test rather than described,
+with the four fields the claim rests on checked at their neutral values on a
+program that has nothing to do with quantization.
+
+**3. D-0060's layer is untouched.** Measuring `lenet_batched`'s matmul against
+ZigZag's preferred nest needs reduction tiling to be legal, which is Checkpoint
+C's.
+
+### The plan P13 handed over
+
 **P14, the integer path. P13 is complete pending merge**: all seven gate
 clauses are met and the two that were open, Section 13.3's three arms and the
 Section 16.5 ZigZag cross check, ran at checkpoint B and are recorded with their
@@ -2193,57 +2411,56 @@ became.**
 
 ## Next command
 
-**The gate is met and the push is not this session's to make.** Pushing this
-branch and opening a pull request for it are the owner's, and nothing in the
-gate being met changes that. **Do not open a pull request for it here.**
+**Checkpoint A is complete and the orchestrator verifies, pushes and watches CI
+before checkpoint B starts.** Nothing here is this session's to push.
 
-**The exact next command**, which is the one that shows what the phase's two
-experiments actually answered, because both contradict part of what was predicted
-and the tables are where that is legible:
-
-```
-python experiments/three_arms.py --models resnet_block inception_block
-python experiments/zigzag_same_mapping.py --models resnet_block --search
-```
-
-The first prints the six configurations per budget with the arm each belongs to,
-and the crossover per model underneath. The second prints one line per tiled
-layer with this project's cycles beside ZigZag's under the same mapping, and the
-array fill on each side, which is the term that decides which way a row goes.
-**The command that shows the mapping itself**, so the next session starts from
-the artefact rather than from the prose:
+**The exact next command**, which is the one that shows what checkpoint A
+actually established, because the claim it rests on is an exact agreement between
+two implementations that have never seen each other's arithmetic:
 
 ```
-ninja -C build check-npu    # test/Pipeline/p13-passes-at-o2.mlir
+build/bin/NPUSimulatorTests --gtest_filter='Quantization.*'
+python -m pytest test/Python/test_refexec_differential.py -q
 ```
 
-Its first case is a convolution over the budget whose result is the function's
-own. It tiles, it lowers, it encodes and it runs.
+The first prints eleven hand computed integer cases, each with its arithmetic
+written out above it in the source. The second runs seven integer cases through
+`npu-sim` and through numpy and compares them **byte for byte** rather than to a
+tolerance, which is a comparison no f32 case in this project can make.
+
+**Where checkpoint B starts**, which is the pass and not the representation:
+
+```
+grep -n "npu-calibrate" docs/PASSES.md include/NPU/Dialect/NPU/Transforms/Passes.td
+```
+
+Section 12 puts `-npu-calibrate` in quantized mode only and never in a default
+`-O` level, and `docs/PASSES.md` already carries that sentence with nothing
+behind it.
 
 **Four things to check before anything else.**
 
-**The suite is 217 cells and the baseline is recorded at the tree where tiling
-reaches it.** `regression-baseline.sh --check` at the tip reports no drift and
-the 21 golden tensors are byte identical. Anything that moves a cell from here
-needs its declaration first.
+**The two exemptions are the phase's own deadline.** `docs/EXEMPTIONS.md` carries
+`npu.quantize` and `npu.dequantize` on the model layer, and the P14 gate requires
+an empty block. They are deleted by the commit that lands `-npu-calibrate` and
+sweeps a quantized compilation into `experiments/models/`, and by no earlier one:
+deleting them before the producer exists would record a gap as closed while it
+was open, which is the rule the P8 entries were closed under.
 
-**The 217 cells have been measured twice, and both runs are commits.** The first
-is the wiring commit, where nothing moved; the second is `80ac24d`, where 31
-tight budget cells moved and every one of them was declared beforehand. If
-something in Section 13.3 moves a number, the re-record repeats in its own commit
-with the declaration before it.
+**Nothing recorded has moved and the next thing that does needs its declaration
+first.** No cell of the 217 can reach an integer instruction at this tip, so
+`regression-baseline --check` reports no drift and there was nothing to declare.
+The first commit that puts a quantized cell in the suite moves the cell count,
+which is a declaration in `docs/BREAKING_CHANGES.md` followed by a re-record in
+its own commit, in that order.
 
-**One CI trigger fired and one did not, and both were re-evaluated with numbers
-rather than with an argument.** `compile_time_benchmark.py --check` waited on a
-function getting longer; seventeen cells have one, so it is wired, with its red
-branch rehearsed first at `--sizes 500`. `kernel_threads.py` waits on the
-convolution kernel's loop nest changing and this branch does not touch it; the
-table was re-run and moved only as a host wall clock, with the output bytes equal
-on every model at every thread count.
+**The output zero point question is the owner's and it is open.** It is in the
+open questions above with the three ways out and the reason two of them are
+closed. Checkpoint B's calibrator has to compute a scale for the output of a
+quantized operation and this implementation needs that scale symmetric; do not
+let that become an assumption nobody wrote down, because it is exactly the shape
+of thing D-0047 and D-0048 both were.
 
-**D-0049 is open and is the reason to run measurements on a quiet machine even
-when the measurement is a test.** P13's own re-record went red at the upper bound
-on a machine whose process table was empty and whose one minute load average was
-3, and the entry has two further misses on a machine that was genuinely idle.
-Wait for the load to fall before measuring anything, and capture the whole
-failure rather than the last few lines of it.
+**D-0049 is open and quiet machines still matter.** Every measurement Checkpoint
+B and C take goes through the 0.30 load quiet gate, and a red at either
+`--mlir-timing` bound is a finding rather than a bound to widen.

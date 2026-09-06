@@ -338,6 +338,60 @@ advisory. A file that sets an activation on `RESHAPE` is rejected, not ignored.
 narrow reason P14 needs no version bump. Their identity is a multiplier of 1 and
 a shift of 0, and every opcode that does not requantize carries exactly that.
 
+**The rescaling pair is `M = M0 * 2^-(31 + requantShift)`**, and the split
+between the two numbers is where the specification's `M = M0 * 2^-n` meets the
+`[0, 31]` that `quant-requantize` bounds the shift to. `M0` is
+`requantMultiplier`, an int32 in `[2^30, 2^31)`, and the machine applies the pair
+as a saturating doubling high multiply, which is a division by `2^31`, followed
+by a rounding divide by `2^requantShift`. So the specification's `n` is
+`31 + requantShift`, and the largest `M` this scheme can express is `1 - 2^-31`.
+The two halves round differently and both are stated rather than reconciled: the
+multiply's nudge takes the sign of the product, so its tie goes **up**, and the
+divide's correction term makes its tie go **away from zero**. That is the
+arithmetic the scheme's reference implementations perform, and a machine that
+rounded more consistently than they do would disagree with every integer
+inference stack on the values that matter.
+
+### The integer profile of an opcode
+
+**Two things about a compute opcode change when its result element type is an
+integer one**, and both are declared in the ISA description rather than being
+rules the validator carries on its own. They apply exactly at an integer result,
+so every f32 program validates precisely as it did before an integer path
+existed, which is the property the paired cases in `unittests/Encoding/
+ValidationTest.cpp` assert one rule at a time.
+
+**`integerOperandTypes` gives an element type per operand slot**, read the way
+`operandSpaces` is, with the last entry repeating for a variadic opcode's
+operands beyond the ones listed. `CONV2D` and `MATMUL` declare `i8, i8, i32`.
+The reason is the accumulator: Section 14 accumulates in int32 and adds the bias
+to the accumulator rather than to the result, so the bias operand is int32 while
+the data operands and the result are int8. It is the one place in this format
+where an operand's element type is deliberately not the result's, and
+`element-type-supported` is the check that says so.
+
+**`integerFields` names the fields an opcode gives meaning to only at an integer
+result.** `CONV2D` declares `zeroPoint` there, and `MATMUL` declares nothing.
+The difference is padding. Section 14 hoists the input zero point out of the
+multiply accumulate loop by folding `- zp_x * sum_k q_w[k]` into the int32 bias
+at compile time, over the **whole** window, so a tap that falls outside the input
+has to contribute `zp_x` here for the two to cancel to
+`sum_k (q_x[k] - zp_x) * q_w[k]` at every output position. A matrix
+multiplication has no taps outside anything, so the folded term is the input zero
+point's whole contribution and the machine never needs the value; carrying it
+there would be carrying a field nothing reads.
+
+**A quantized compute instruction carries no output zero point, and that is a
+consequence of this format rather than a choice.** `Instruction` has one
+`zeroPoint`, the arithmetic needs the input's, and the affine zero points of
+Section 14's calibration live on `QUANT` and `DEQUANT`, which is where that
+section's own pinned arithmetic puts them: quantize adds a zero point, dequantize
+subtracts one, and the compute path in between adds a bias and rescales. The
+result of a quantized convolution or matrix multiplication is therefore symmetric
+int8. `docs/PHASE_STATE.md` records this as an item for the owner, because
+Section 14 also says activations are calibrated affine, and the two sentences
+cannot both hold for a tensor that is the output of a quantized operation.
+
 There is no `ceil_mode` field, and its absence is a decision rather than an
 omission. `ceil_mode` changes a pooling operation's *output extent*, and the
 output extent is already in the instruction as the result shape. The encoder has

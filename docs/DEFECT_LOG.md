@@ -4231,3 +4231,61 @@ the one minute number alone is what three of these four reds have in common.
   when it was true, and which nothing re-read when the thing it described
   changed. It is D-0055's shape and D-0059's and D-0061's: checkable from inside
   the artefact the whole time, in one command, and nothing ever asked.
+
+### D-0063 the test for the quantization refusal was passing on a different refusal
+
+- **Found:** 2026-09-06, phase P14, checkpoint A, by deleting the thing the test
+  was supposed to be testing and watching it pass.
+- **Status:** **fixed**, in the commit that landed the two converters. The test
+  is gone and three tests are in its place, one per claim it was conflating.
+
+- **What it was.**
+  `test_the_quantization_pair_is_refused_by_name_rather_than_generically` built a
+  one node `QuantizeLinear` graph and asserted that `import_model` raised an
+  `ONNXImportError` matching `"quantization phase"`. Its subject was the
+  `DEFERRED` table in `op_mapping.py`, which refuses an operator this project
+  will support and does not yet, with a message naming the phase that brings it
+  rather than a generic "unsupported".
+
+- **Reproduce, at any commit before `43d9303`.** Delete both `DEFERRED` entries
+  and add nothing else:
+
+  ```
+  python -m pytest test/Python/test_onnx_importer.py -q -k quantization
+  ```
+
+  It passes. The entries the test exists to check are gone and the test does not
+  notice.
+
+- **Why.** The fixture declares its graph output as `INT8`, because a
+  `QuantizeLinear` produces one. `_static_shape` refuses a graph input or output
+  that is not f32, and that refusal fired **first**, before any node reached a
+  converter, with a message that also happened to end in the words "The integer
+  types arrive with the quantization phase". Two different refusals, both true at
+  the time, both matching the same four words.
+
+- **What it cost.** Nothing yet, and that is the point of recording it: the test
+  had never been wrong, because both refusals were correct until this phase. What
+  it could not do was tell the two apart, so the day one of them was supposed to
+  go away it would have reported the other one instead. That day was this commit.
+
+- **The fix is three tests rather than one, because there were three claims.**
+  `test_a_qdq_pair_imports_to_the_quantization_operations` builds the shape a
+  real exported QDQ graph has, quantize then the integer region then dequantize,
+  and asserts both operations appear with the scale and the zero point as
+  attributes, which is what a converter that read the initializers in the wrong
+  order would fail. `test_a_per_axis_quantize_is_refused_rather_than_collapsed`
+  is the refusal that is still a refusal, and it matches on `per tensor form
+  only`, which is the converter's own words and nothing else's.
+  `test_a_graph_boundary_stays_f32_even_in_a_quantized_graph` is the boundary
+  rule on its own, matching on `graph input or output of this`, which is the
+  message the type check gives and which no converter can produce.
+
+- **The shape, and it is one this log already has three of.** A test whose
+  assertion is satisfiable by more than one mechanism, where only one of them is
+  the subject. D-0047's determinism test asserted a comparison of two identical
+  single threaded runs, D-0040's slow marker count was satisfied by tests
+  nobody had marked, and this one's `match=` pattern was satisfied by a
+  message from the wrong layer. **The way each was found is the same and is the
+  only way any of them could be found:** break the thing on purpose and check
+  that the test breaks with it.

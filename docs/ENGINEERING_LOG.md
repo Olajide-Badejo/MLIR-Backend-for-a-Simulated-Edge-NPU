@@ -6641,3 +6641,158 @@ because it happened. **It is not the proof**: Section 19.1 names the
 33994477434, 34023218917, 34030451953 and 34037620630, red on 34037636675. The
 pull request was closed unmerged and the branch deleted, which is the whole
 lifetime a proof of failure is supposed to have.
+
+## 2026-09-06 Phase P14, checkpoint A: the integer path, and the field that has nowhere to live
+
+**What this checkpoint was for.** Section 14's arithmetic, made executable and
+made checkable, before anything is calibrated or measured. Three commits:
+`f09beac` for the dialect, the instructions, the lowering, the encoder and the
+kernels; `43d9303` for the two ONNX converters, the reference interpreter's
+integer executors and the integer half of the differential comparison;
+`c9cd6f2` for the format's integer profile driven case by case and the two
+integer determinism assertions.
+
+### The thing worth writing down is a contradiction inside Section 14
+
+**Symptom.** Designing the quantized convolution's instruction, there was one
+`zeroPoint` field and two zero points that wanted it.
+
+**Where each comes from.** The **input** zero point is needed at run time and
+there is no way around it. Section 14 hoists it out of the multiply accumulate
+loop by folding `- zp_x * sum_k q_w[k]` into the int32 bias at compile time,
+**over the whole window**, and its own kernel rule is that a tap outside the
+input contributes `zp_x` rather than zero. Those two are one mechanism: the
+folded term is a constant per output channel, so it is only correct at a padded
+output position if the padded taps contribute `zp_x` too. Skipping them would
+need a per position bias, which is not a thing this format or any integer
+inference stack has.
+
+The **output** zero point comes from the calibration paragraph, which says
+activations are affine with `zero_point = round(-min / scale) - 128`. The output
+of a quantized convolution is an activation.
+
+**And the format cannot hold both.** `Instruction` carries one `zeroPoint`, one
+`scale`, and the requantization pair. `Program::kVersion` is 2 and this phase's
+gate says by name that it does not move, because a bump would invalidate
+`test_binary_stability` and every seed in the fuzz corpus in the same commit that
+introduced quantization.
+
+**Options considered.**
+
+1. **Carry the input's and make the result symmetric.** Consistent with Section
+   14's *arithmetic* paragraph, which has no output zero point at all: quantize
+   adds one, dequantize subtracts one, and the compute path between them adds a
+   bias and rescales with nothing after. Inconsistent with its *calibration*
+   paragraph. Costs about half the output range on a one sided tensor, which is
+   a measurable cost rather than an argued one.
+2. **Carry the output's and require symmetric inputs.** Makes the padding rule
+   vacuous, because a tap outside a symmetric input contributes zero, and
+   Section 10.1 asks for a padding case where padding contributes the zero point
+   **rather than** zero. Refused: it would turn a required test into one that
+   cannot fail.
+3. **Fold the output zero point into the requantization.** `zp_y` enters after
+   the multiply by `M`, so folding it into the accumulator means adding
+   `zp_y / M`, which is not an integer. Refused: it is not exact, and exactness
+   is the whole claim.
+4. **A second field.** Moves `kVersion`. Refused by the gate.
+
+**Chosen: option 1**, and the reason it is defensible is that it follows the
+paragraph Section 14 says is pinned. That paragraph opens by saying the
+arithmetic is pinned once "because the Python observer and the C++ kernel both
+compute against it and a disagreement would surface as an accuracy bug nobody
+can localize". A design that followed the calibration paragraph instead would
+have to invent the mechanism the arithmetic paragraph does not describe.
+
+**Recorded rather than resolved**, in `docs/PHASE_STATE.md` under the open
+questions, in the shape P13 used for the Section 5.5 contradiction: the
+measurement of what it costs goes in Checkpoint C's per model accuracy table,
+where it is visible per model, and nothing in this repository edits the
+specification.
+
+### The integer profile, which is two declarations rather than a widening
+
+The other design decision, and it is smaller. A quantized convolution's operands
+are not all the result's element type: the data is i8 and the bias is i32,
+because Section 14 adds the bias to the accumulator rather than to the result.
+The validator's rule until now was "every operand takes the result's type", with
+one exception for the bridging opcodes, whose operands take a single other type.
+
+`integerOperandTypes` is a type per operand slot, read the way `operandSpaces`
+already is, applied **only** at an integer result. `integerFields` names the
+fields an opcode gives meaning to only at an integer result. Both are in the ISA
+description, so the manual and the validator read them from the same place, and
+both are gated on the result element type, so the f32 path's rules are exactly
+what they were. **The tests are pairs for that reason**: each rule is driven at
+i8 and then the same field is driven on the same opcode at f32, where it has to
+be refused. A test that only drove the i8 half would prove the new rule works and
+say nothing about whether the old one still does.
+
+### The result: two implementations that agree to the bit
+
+**The f32 differential comparison has always been to a tolerance**, and the file
+that runs it says why: two implementations that sum in different orders are
+supposed to disagree in the last bits, and agreement there would mean one was
+copied from the other. **The integer comparison is exact**, because integer
+addition is associative and neither side has a summation order the other can
+disagree with, so any difference at all is a defect.
+
+Seven cases carry it: a padded convolution at a non zero input zero point, the
+same shape unpadded, a depthwise one, a symmetric one where a kernel ignoring the
+zero point would still pass, a matrix multiplication with a shift, and the two
+quantization opcodes. **All seven agreed on the first run**, which was not the
+expectation: the two were written days apart from the same section, one walking
+one output element at a time and the other slicing whole tensors, and the folded
+bias arithmetic is exactly the kind of thing two readers get subtly differently.
+
+The comparison is proved capable of failing by perturbing the reference by **one
+count**, which is the smallest thing an integer result can differ by and is the
+whole resolution of an 8 bit output. A tolerance based comparison of the same two
+answers would not report a kernel that was one count out on every element, which
+is precisely the failure mode a quantized path has.
+
+### The accumulator is checked rather than wrapped
+
+Section 14 proves int32 accumulation statically: `-npu-calibrate` refuses an
+operation whose `K * 128 * 127` reaches `2^31`. The simulator could have
+accumulated in int32 and let it wrap, which is what the machine would do, or in
+int64 and checked. It checks, after **every** product rather than once at the
+end, and traps naming the guard.
+
+The reason for checking every step rather than the total is that the bound holds
+for every partial sum as well: a partial sum is bounded by the sum of the
+magnitudes of the products taken so far. So an excursion that came back inside
+range is still a guard that was violated, and it is caught where it happens.
+
+The reason for trapping rather than wrapping is law 1. Signed overflow is
+undefined behaviour on the host, so "what the machine would do" is not something
+this simulator can faithfully reproduce anyway, and a wrapped answer is a
+silently wrong number where a trap is a diagnostic. Three cases drive it: the
+extreme held exactly at `2^31 - 1`, one past it refused, and the reduction driven
+over the bound at 133145 taps of 127 by 127, which is the case the static guard
+is literally about.
+
+### D-0063, found by deleting the thing under test
+
+`test_the_quantization_pair_is_refused_by_name_rather_than_generically` had been
+green since P3 and was testing the wrong refusal. Its fixture declared an int8
+graph output, the importer's boundary type check refused that **before** any node
+reached a converter, and both messages ended in the words "the quantization
+phase". Deleting both `DEFERRED` entries left the test green.
+
+It had never given a wrong answer, because both refusals were correct until this
+phase. What it could not do was tell them apart, so the day one was supposed to
+go away it reported the other. **The way it was found is the only way it could
+have been found**: break the thing on purpose and check that the test breaks with
+it. That is D-0047's practice and D-0048's, applied to a test rather than to a
+build or a claim.
+
+### What is deliberately not here
+
+No integer compute operation at the `npuisa` level, so the integer kernels are
+reachable from a hand built program and from the differential exporter and not
+from anything the compiler emits. The representation belongs with the pass that
+produces it, which is Checkpoint B's QDQ contraction, and designing it first
+would be designing it twice. It is an open question in `docs/PHASE_STATE.md`
+rather than an assumption, because the argument against waiting is real: the
+kernels are the only part of the integer path with no compiled program exercising
+them.

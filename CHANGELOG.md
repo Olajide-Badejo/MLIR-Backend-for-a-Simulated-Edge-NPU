@@ -6,6 +6,68 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Phase P14: INT8 quantization
+
+**In progress. Checkpoint A is complete: the integer path exists and is exact.**
+The dialect's operator set is complete for the first time, the integer kernels
+have hand computed semantics and an independent numpy implementation that agrees
+with them **to the bit**, and `Program::kVersion` has not moved.
+
+**No recorded number has moved and none was expected to.** Nothing in an `-O`
+level emits an integer instruction yet, so no cell of the 217 can reach one, and
+a declaration of a movement measured to be zero would be a false declaration.
+The measurement is in `docs/PHASE_STATE.md` beside the claim.
+
+- **`npu.quantize` and `npu.dequantize` are in the dialect**, with the verifier
+  rules Section 7.2 states, the two frontend converters, the lowering to
+  `npuisa.quant` and `npuisa.dequant`, the encoder cases for `QUANT` and
+  `DEQUANT`, and round trip and verifier failure lit tests in the P1 pattern.
+  P1 built every other operation of Section 5.3 and deliberately left these two,
+  because law 2 forbids an operator nothing can lower, encode, simulate or
+  import; they arrive here with all four at once.
+- **The integer kernels are exact and eleven hand computed cases say so.** The
+  tie rule is round half to even, written out rather than taken from `rint`,
+  because `rint` honours the dynamic floating point rounding mode and the test
+  that proves it runs the same program under `FE_TOWARDZERO`. Padding
+  contributes the input zero point rather than zero, tabulated at all nine
+  positions of a padded window with the answer a kernel that skipped padded taps
+  would give beside it. The folded and unfolded zero point forms are compared
+  over pseudo random int8 tensors at four zero points. The int32 accumulator is
+  **checked rather than wrapped**: the machine traps naming Section 14's static
+  guard, driven both through a bias and through a reduction of 133145 taps.
+- **The integer half of the differential comparison is exact rather than
+  tolerant.** `refexec` gained `quantized_conv2d` and `quantized_matmul`, written
+  from Section 14 under the same independence rule as the rest of that file, and
+  seven cases compare the two implementations byte for byte: a padded
+  convolution at a non zero zero point, the same shape unpadded, a depthwise one,
+  a symmetric one, a matrix multiplication with a shift, and the two
+  quantization opcodes. Integer addition is associative, so there is no
+  summation order for them to disagree about and any difference at all is a
+  defect. All seven agreed on the first run.
+- **The ISA description gained an integer profile**, which is two declarations
+  rather than a widening: `integerOperandTypes` gives an element type per operand
+  slot at an integer result, so a quantized convolution reads i8 data and an
+  int32 bias, and `integerFields` names the fields an opcode gives meaning to
+  only at an integer result, which is the input zero point on `CONV2D` and
+  nothing on `MATMUL`, because a matrix multiplication has no padding. Both apply
+  exactly at an integer result and every f32 program validates as it did before.
+- **Section 14's I8 rejections are enforced by the format and driven one opcode
+  at a time.** `ADD`, `MUL`, `RELU`, `POOL_MAX` and `POOL_AVG` each refuse an i8
+  operand by name.
+- **`Program::kVersion` is 2 and a test says so**, with the four fields the claim
+  rests on checked at their neutral values on a program that has nothing to do
+  with quantization. A bump here would invalidate `test_binary_stability` and
+  every seed in the fuzz corpus in the same commit that introduced quantization.
+- **D-0063**: the test for the quantization refusal was passing on a different
+  refusal. Deleting the `DEFERRED` entries it existed to check left it green,
+  because the fixture's int8 graph output was refused by the boundary type check
+  first and both messages ended in the same four words. Three tests are in its
+  place, one per claim it was conflating.
+- **Two reachability exemptions, on the model layer alone**, dated and with the
+  commit that closes them named: no compilation emits a quantization operation
+  until `-npu-calibrate` lands later in this phase, which is the P8 shape
+  repeating. Every other layer is met. The gate requires an empty block.
+
 ### Phase P13: tiling, double buffering, layout
 
 **Complete pending merge, and the gate is met on all seven clauses.** Section
