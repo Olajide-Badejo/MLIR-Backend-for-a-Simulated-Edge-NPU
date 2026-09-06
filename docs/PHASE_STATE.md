@@ -18,13 +18,25 @@ costs more than writing these lines did.
 
 ## Current phase
 
-**P13, tiling, double buffering and layout.** Branch `phase/p13-tiling`, cut
-from `main` at `2f59429`, which is the P12 merge. **The gate is met on all seven
-clauses**, and the two that closed last are the ones this phase existed for:
-Section 13.3's three arms, run on all seven models, and the Section 16.5 ZigZag
-comparison under the mapping the pass chose. Both are recorded in
-`docs/NUMBERS.md` beside the predictions they answer, and both answer some of
-their own clauses in the negative.
+**P13, tiling, double buffering and layout. Complete, pending merge.** Branch
+`phase/p13-tiling`, cut from `main` at `2f59429`, which is the P12 merge. **The
+gate is met on all seven clauses** and the evidence for each is in the gate table
+below. The two clauses that closed last are the ones this phase existed for:
+Section 13.3's three arms, run on all seven models with six configurations per
+point, and the Section 16.5 ZigZag comparison under the mapping the pass chose.
+Both are recorded in `docs/NUMBERS.md` beside the predictions they answer, and
+**both answer several of their own clauses in the negative**, which is what the
+registered report protocol is for.
+
+**The phase's shape in one paragraph.** It was briefed to fix D-0045 under full
+declare then re-record governance; its first commit is the measurement that says
+there is nothing there to fix, and the governance sequence was therefore not run.
+What it delivered instead is three passes wired into `-O2`, four defects in the
+things that had to work before tiling could reach the suite, two experiments with
+their predictions committed first, and thirteen defect entries. **Two of the
+phase's three passes produce a measured zero on cycles and both zeros have a
+reason that is a property of this machine rather than of the pass**, which is the
+result a reader should take from it.
 
 **All three passes are in `-O2`, and tiling reaches the suite.**
 `-npu-assign-layout`, `-npu-tile-to-scratchpad` and `-npu-double-buffer` went in
@@ -190,6 +202,32 @@ not run, because no charge moves. The Section 2 carve out **is** re-derived, to
 217 cells, 11 ablatable passes and 154 ablation cells, in "The Section 2 carve
 out, for the owner" below, because the three passes Section 12 names did land in
 `-O2` and the arithmetic became derivable in the commit that put them there.
+
+## The re-record decision, which is not to re-record
+
+**The suite was re-recorded three times on this branch and the last was
+`887b973`, the prefetch tree.** Nothing after it has moved a counted field, and
+that is a measurement rather than a belief: `regression-baseline --check` at the
+final tip reports **no drift** over 42 cells and 21 byte identical golden
+tensors, and the A4 adjudication compared all 217 cells against `80ac24d` field
+by field and found 138 that moved `npuisa_op_counts`, 57 that moved
+`simulation.fragmentation_ratio`, and **nothing else on any cell**, both declared
+before the commit that caused them.
+
+**So the quiet serialized re-record happened once at the wired tree per
+declaration, and that is the correct number.** The rule this project follows is
+that a re-record is the one run of the tree whose numbers it records, and a tree
+whose numbers have not moved is not a new tree. Checkpoint B added two experiment
+scripts, seventeen tests and one three line fix to the compile driver, and none
+of the three can reach a recorded cell: `experiments/` is not in the suite,
+tests are not cells, and D-0059's fix only affects `--emit npu` with a budget,
+which no recorded cell uses. **A fourth re-record would produce the same 217
+cells at a different wall clock and would say, falsely, that something had
+changed.**
+
+**What would change this.** Any commit that moves a counted field, which is
+declared in `docs/BREAKING_CHANGES.md` first and re-recorded in its own commit
+afterwards, in that order. Nothing in checkpoint B was one.
 
 ## D-0048, which is the phase
 
@@ -783,8 +821,11 @@ budgets is 154 ablation cells; 238 in total, at 15 seconds per cell as a
 planning figure, giving 59.5 minutes against a stated budget of 90.
 
 **What the repository measures.** 63 benchmark cells, 154 ablation cells, **217
-in total**, at **1.14 seconds per cell**, 4.12 minutes, serially, on an Intel
-Core i7-14700K under WSL2 with nothing else running.
+in total**, at **1.16 seconds per cell**, 4.19 minutes, serially, on an Intel
+Core i7-14700K under WSL2 with nothing else running. That figure has read 1.14,
+1.17 and 1.16 across the three re-records of the same 217 cells, and the drop in
+paragraph below quotes the last of them, which is the one taken at the tree this
+phase hands over.
 
 **One of the two disagreements is now closed and the other is a real decision.**
 The **ablation** half agrees exactly: 11 ablatable passes and 154 ablation cells,
@@ -821,6 +862,45 @@ never in a default `-O` level, and the model suite is fixed. The 1.16 seconds
 will move with the host and is a wall clock, which is why the paragraph gives it
 as a measurement on a named machine rather than as a property, and it has read
 1.14, 1.17 and 1.16 across three re-records of the same 217 cells.
+
+## The Section 5.5 contradiction, for the owner
+
+**This is the second thing on this branch that only the owner can settle, and
+unlike the Section 2 carve out it is not arithmetic.** It is stated here because
+P13 is the phase that measured it, and because a pass that is correct and can
+never help is a thing a specification should say out loud rather than leave a
+reader to discover.
+
+**What Section 5.1 asks for.** `-npu-double-buffer` exists so a transfer can be
+issued early and overlapped with the compute that precedes its consumer. That is
+the standard reason for the pass and it is why Section 5.1 puts it before the
+allocator.
+
+**What Section 5.5 makes possible.** The machine's schedule is a two port
+dataflow: an instruction starts at the later of its own port becoming free and
+its last operand becoming ready. It is **not** a program order schedule. So
+moving a transfer earlier in the instruction stream changes when it is *written*
+and not when it *runs*, unless it moves onto a port that was idle. Both halves of
+a prefetch are charged to the same DMA port, so lifting a load above another load
+moves work along a saturated timeline.
+
+**And tiling makes the timeline saturated.** `docs/PASSES.md` records 1524 DMA
+cycles against 596 of compute on the hand written two tile convolution, which is
+the shape every tiled program in this suite has: tiling multiplies transfers and
+leaves the MAC count alone. **There is nothing to hide a transfer under.**
+
+**So the pass is implemented, wired, correct, fires on one to four transfers per
+model, declines the hoists whose doubled residency would not place, and moves
+zero cycles on every cell of the suite.** Its ablation row is zero at both
+budgets on all seven models and the zero is true twice over.
+
+**The decision, which is the owner's.** Either Section 5.5's model gains
+something that makes an early issue worth cycles, a DMA queue depth or a second
+port, and the pass has a reason to exist as written; or Section 5.1 records that
+on this machine the pass is a correctness preserving reordering whose value is
+not in cycles, and the ablation row's zero is the expected answer rather than a
+finding. **Nothing in this repository may edit the specification**, so it is
+recorded rather than resolved, with the measurement beside it.
 
 ## Verification output
 
@@ -1191,6 +1271,22 @@ them was importable would be wrong in the direction that matters.
 > a slope and not a wall clock compared across machines. A red means the
 > allocator's growth left the band between the two hypotheses Section 13.1
 > names, and it does not mean the runner was slow.
+
+**The three proofs this step needs, and where each of them is.**
+
+| Proof | Where |
+|---|---|
+| **green in CI**, on the real image and the real runner | runs **33994477434** and **34023218917**, both on the `push` trigger to `phase/p13-tiling`, both with this step passing |
+| **red locally**, the rehearsal that says the guard can fail at all | `python experiments/compile_time_benchmark.py --check --sizes 500` prints "No fit: a growth exponent needs at least two sizes and a nonzero pass time at every one of them" and exits 1. `--check` at the four real sizes exits 0 at a fitted exponent that has read **1.1072, 1.1093 and 1.1131** at three trees of this branch, against a ceiling of 1.5683 |
+| **red in CI on the `pull_request` trigger**, which is the half a local rehearsal cannot reach | prepared and **not pushed**: branch `phase/p13-rehearsal-growth-curve`, one commit `8156253`, cut from `49bf65b`, editing **only that step's arguments** to `--check --sizes 500`. The prediction is in the commit message, written before any run existed. `PROOF OF FAILURE PR: <url to be recorded when the run exists>` and `RUN: <id>` |
+
+**Why the third proof is a branch rather than a commit on this one.** Section
+19.1 asks for the failure on the trigger the step will actually guard, and this
+project's agents never push, so the artefact that can be pushed is prepared and
+left in place. **The allocator is not touched by it.** P12 recorded that making
+the offset assignment scan quadratic to drive this red would be measuring a
+different program rather than proving this one's guard works, so the rehearsal
+drives the guard and not the thing it guards, and the branch is never merged.
 
 > **Trigger evaluated a third time and still unfired:
 > `experiments/kernel_threads.py` into `nightly.yml`.** P12 recorded it as "the
@@ -1670,7 +1766,11 @@ the row is still answered wrong and the reason for it is again open. See
 D-0048. The prediction file itself is not edited, which is the rule, and this
 correction lives here and in `docs/NUMBERS.md` rather than in it.
 
-## What is left in P13, in the order it should be done
+## What P13 delivered, in the order it happened
+
+**Nothing is left. The list below is the plan P12 handed over and the two items
+that were open at checkpoint A4 are the last two entries, both now closed with
+their measurements in `docs/NUMBERS.md`.**
 
 **Six of the previous list's eight items are done and are the wiring commit**:
 the wiring itself, the no `scf` assertion as a statement about the lowering, the
@@ -1711,14 +1811,64 @@ new.
    bytes short of it on `dilated_stack`. Declared before the commit and
    adjudicated clause by clause afterwards, with one of eleven clauses wrong.
 
+6. **Section 13.3's three arms ran**, at `c08d42e` with the tables at
+   `ff43954`. Seven models, six configurations per point, the swept ranges, each
+   model's frozen budget, the measured floors and a control budget at which all
+   six agree. **Tiling wins on `inception_block` by 404 cycles and loses on
+   `resnet_block` by 642**, and as the compiler stands it extends no model's
+   budget range at all, because fusion hides thirty of the suite's forty four
+   compute operations from it.
+7. **The Section 16.5 ZigZag comparison ran**, at `101cb17`. 42 tiled layers
+   under the mapping the pass chose, verified against ZigZag's own evaluation on
+   every one, geometric mean 1.160, in 59.1 seconds and 747 MiB against an 8192
+   MiB ceiling. Three defects came out of it, one fixed and two open.
+8. **ADR 0008's budgets were re-measured as an input and did not move**, at
+   `f2c2cdf`. 473 compilations, every floor at `-O2` equal to its frozen budget,
+   four falling only with fusion ablated.
+
 **The one thing the wiring commit deliberately did not do** is move the suite's
 recorded tight budgets. The tiling disabled row was only checkable at the
 budgets the old numbers were measured at, so re-measuring ADR 0008's budgets is
-an input to Section 13.3 rather than part of the wiring.
+an input to Section 13.3 rather than part of the wiring. **It was re-measured
+that way and the budgets still did not move**, which is the strongest form that
+answer could take.
 
 ## Open questions
 
-Twelve, and three are new at P13. One from P12 is answered.
+**Fourteen, and five are new at P13.** One from P12 is answered. The two newest
+are the ZigZag comparison's, and they are stated first because they are the ones
+a reader of this handoff has not seen anywhere else.
+
+**Whether the tiling search should be able to block a reduction, which is
+D-0060.** On one layer of 42, `lenet_batched`'s matmul at 199872 bytes, ZigZag's
+own engine prefers a loop nest it scores **17.9 percent** better than this
+compiler's, and the nest it prefers splits the reduction and re-enters the row
+loop. `-npu-tile-to-scratchpad` produces a tile grid with one whole operation
+inside each tile, so it has no form for that. **It is not 17.9 percent under this
+project's cost model** and no attempt was made to measure it there, because
+scoring a nest this machine cannot express against a model that cannot express it
+would be inventing the comparison. What is open is whether a reduction blocking
+tiling is worth having, and it sits beside D-0056's two follow ups.
+
+**What `npu.tiling_choice` should record, which is D-0061.** Its `loop_order`
+field names the tile loops and reads as though it named the whole nest, and the
+loops **inside** a tile are fixed by `cost_model.gemm_charge` and are recorded
+nowhere. The first version of the Section 16.5 export read the field as the whole
+nest and described a machine that reloads its weights at every output position;
+ZigZag's search found a nest 57 percent cheaper and the nest it found was this
+machine's own. The rename to `tile_loop_order` is honest and free and moves an
+attribute string in every tiled program's IR, so it belongs at the start of a
+phase rather than the end of one.
+
+**Whether the fusion and tiling conflict should be resolved, and by whom.** As
+the compiler stands, `-npu-tile-to-scratchpad` extends no model's budget range by
+a single byte, and every crossover Section 13.3 found except `inception_block`'s
+exists only with `-npu-fuse-ops` ablated. Thirty of the suite's forty four
+compute operations are inside fused regions and the tiling pass does not look
+inside one. **That is the largest single effect in the phase's own experiment**
+and it is a pass ordering question rather than a defect in either pass: fusion is
+worth more than tiling on these models, so the answer is not simply to move
+tiling first.
 
 **What the two tools actually disagree about, now that it is not the weight
 preload.** This is D-0048's remainder and it is the phase's largest open
@@ -1864,12 +2014,63 @@ write. **Only the owner may retire it.** Nothing on this branch went near it.
 
 ## Next phase
 
-**P13, continued. Not P14.** The gate is met: all seven clauses are met, and
-the two that were open, Section 13.3's three arms and the ZigZag cross check,
-were run at checkpoint B and are recorded with their predictions adjudicated
-clause by clause. What follows is the plan as it stands after D-0048 and the nine defects
-the wiring and the work after it found, which is different from the plan P12
-handed over, and the differences are the point.
+**P14, the integer path. P13 is complete pending merge**: all seven gate
+clauses are met and the two that were open, Section 13.3's three arms and the
+Section 16.5 ZigZag cross check, ran at checkpoint B and are recorded with their
+predictions adjudicated clause by clause.
+
+### What P14 inherits from P13, and it is three things rather than a list
+
+**1. The reduction tiling permission has a reason to exist under INT8.**
+`-npu-tile-to-scratchpad` refuses to split an fp32 reduction dimension, and the
+reason is not conservatism: splitting the reduction of a convolution or a matmul
+changes the summation order and therefore the bits. The permission is written and
+wired, `allow-reduction-tiling`, off by default, and Section 13.2 requires it to
+carry its own golden set. **Integer accumulation is exact and reassociation moves
+no bit**, so under INT8 the argument that keeps the option off does not apply.
+P14 is the first phase in which turning it on is a decision about performance
+rather than about numerics, and the golden set Section 13.2 asks for is what
+makes the difference checkable rather than argued.
+
+**2. `Program::kVersion` is 2, and P14's gate is written around the baseline that
+moved.** The bump landed at `670dd0b` so a buffer can be written in pieces, which
+is what a tiled result needs; it reseeded the fuzz corpus and re-recorded the
+binary stability test, and it is declared in `docs/BREAKING_CHANGES.md` with the
+table of what moved. **P14 starts from version 2 rather than from version 1**,
+and the encoder's checks 8 and 9 now track exact coverage inside a declared spill
+slot. Anything P14 writes about format stability compares against that, not
+against P12's.
+
+**3. D-0060 is the concrete place reduction tiling could reach.** On
+`lenet_batched`'s matmul, ZigZag's own engine prefers a nest that **splits the
+reduction and re-enters the row loop**, and scores it 17.9 percent better than
+this compiler's on its own model. That nest is exactly what
+`allow-reduction-tiling` would make expressible. **It is not evidence that the
+option should be on**, because ZigZag's cost model has no per transfer descriptor
+and this one charges 64 cycles for each, so the two are optimising different
+objectives. It is a named layer, a named budget and a recorded ordering to
+measure against once the option is legal, which is a better starting point than a
+hypothesis.
+
+### What P14 should not inherit, and why it is written here
+
+**The fusion and tiling conflict is not P14's to resolve by moving a pass.** As
+the compiler stands, tiling extends no model's budget range because fusion hides
+thirty of forty four compute operations from it, and fusion is worth more than
+tiling on these models. Reordering the two to make P13's experiment read better
+would be tuning the compiler to the experiment. It is an open question in this
+file with the measurement beside it.
+
+**The two D-0056 follow ups stay out of scope until something needs them**: a
+tiling pass that consults the allocator and undoes a tiling that does not improve
+the placement, and a pass that tiles a chain so the assembly never comes back
+whole. Both carry P13's evidence and neither is on P14's critical path.
+
+### The plan P12 handed to P13, and what became of it
+
+What follows is that plan as it stood after D-0048 and the thirteen defects the
+wiring and the work after it found, which is different from the plan P12 handed
+over, and the differences are the point.
 
 **What is deleted from the brief P12 wrote.**
 
@@ -1940,8 +2141,8 @@ became.**
 branch and opening a pull request for it are the owner's, and nothing in the
 gate being met changes that. **Do not open a pull request for it here.**
 
-The next command is the one that shows what the phase's two experiments
-actually answered, because both of them contradict part of what was predicted
+**The exact next command**, which is the one that shows what the phase's two
+experiments actually answered, because both contradict part of what was predicted
 and the tables are where that is legible:
 
 ```
