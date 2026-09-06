@@ -6391,3 +6391,90 @@ overtaken it, and no cycle count is comparable with an absence. Where both place
 cycles decide, and **a tie is read as tiling not overtaking**, because the burden
 is on the arm that adds transfers. All three arms ran on all seven models, so
 this is not the two arm result Section 13.3 says must be reported as incomplete.
+
+## 2026-09-06 Phase P13: ZigZag under the same mapping, and the export that described a different machine
+
+**Section 16.5 asks for cost under one mapping and forbids two totals from two
+mappers, and the difference between those turns out to be a property of the
+input file rather than of the intention.** ZigZag treats a temporal ordering as a
+hint when it does not multiply out and runs its own search instead, silently. So
+an export that dropped a factor anywhere would produce exactly the comparison the
+section forbids and would look identical from the outside.
+
+Two things stop that here. `check_complete` asserts, dimension by dimension,
+that the temporal factors times the spatial factor equal the layer's size, before
+ZigZag is called. And after the call the evaluated nest is read back off ZigZag's
+own `CostModelEvaluation` and compared to the one that was handed over. All 42
+layers pass both.
+
+### Getting the mapping out needed the compiler fixed first
+
+`npu.tiling_choice` lives in the tensor level IR, and `--emit npu` was dropping
+the budget, so the stage a caller can read had no tiling in it at any budget.
+That is D-0059 and it is three lines. The file already stated the rule the
+omission broke, two lines above the code that broke it.
+
+The join needs both stages anyway: a tiled operation carries the **tile's**
+shape, and the layer it came from is only in the untiled program. The location
+survives the rewrite, so the name is what joins them, and there is a test that
+says so rather than a comment.
+
+### The export was wrong and ZigZag is what found it
+
+The first version put the reduction innermost inside a tile, reading
+`loop_order = "domain"` as though it described the whole nest. ZigZag's own
+engine then answered that a different nest was **57 percent cheaper** on
+`resnet_block`, `conv_bn_relu_stack` and `inception_block`, and preferred its own
+mapping on 26 of the 42 layers.
+
+**It was right, and the nest it preferred is what this machine does.**
+`cost_model.gemm_charge` walks the reduction in bands of sixteen, the columns in
+bands of sixteen, and streams every activation row through each loaded band. The
+rows are the innermost loop. My export had described an array that reloads its
+weights at every output position, which is a different machine, and the number I
+would have published about the compiler would have been about my own file.
+
+Correcting it moved the geometric mean from 0.880 to 1.160 and took the layers
+where ZigZag prefers its own mapping from 26 to **1**. That is what a cross check
+is for, and it is worth saying plainly that it caught me rather than the
+compiler. The attribute that let me get it wrong is D-0061.
+
+### What the comparison says once it is honest
+
+Over 42 tiled layers, this project reads between 0.598 and 3.053 times ZigZag
+under the same mapping, geometric mean 1.160, above on 28 and below on 14. The
+prediction said above on every layer between 1.2 and 6 times with a mean between
+1.5 and 4, and three of its clauses are wrong.
+
+**Two terms pull in opposite directions and both have a clean control.**
+
+The **descriptor** is the one the prediction named: 64 cycles per transfer here,
+none in ZigZag. On `conv_bn_relu_stack`'s `conv1`, the same 36864 MACs at the
+same fill ratio at every budget, the ratio reads 0.76 at two tiles, 1.14 at four
+and 1.96 at eight. That is the term isolated on one layer with everything else
+held.
+
+The **fold** is the one it did not have. This project packs a reduction of 72
+into five bands of at most sixteen; ZigZag unrolls a divisor, and 72 has no
+factor near sixteen, so its array runs emptier and its compute term grows. On
+`dilated_stack`'s `conv0` the fill is 0.328 here against 0.047 there and the
+ratio is 0.60.
+
+**And the control that matters most.** The two matmuls fold identically on both
+sides, because 400 divides by sixteen and 120 by fifteen. There the two cost
+models agree to **five percent and to nothing**: 14402 against 15116 on `lenet`,
+15498 against 15509 on `lenet_batched`. When the array is filled the same way,
+two independently written cost models produce the same number for the same
+mapping. That is the strongest single result of this comparison and it was not
+predicted in either direction.
+
+### The tools that were not run, and the ceiling that was not reached
+
+Timeloop is not installed and no Timeloop number appears anywhere. The mapping is
+exported in its form, 42 files, because Section 16.5 asks for both forms, and an
+exported mapping is an artefact rather than a result.
+
+The bounded run took 59.1 seconds and 747 MiB against a stated ceiling of 8192,
+so the rule about stopping and recording why did not fire. It exists in the code
+anyway, checked before every layer, because a bound that is only written in a
+document is not a bound.

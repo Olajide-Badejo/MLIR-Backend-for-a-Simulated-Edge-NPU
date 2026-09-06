@@ -598,6 +598,188 @@ having none rather than as being worth nothing.
 
 ---
 
+## Section 16.5, ZigZag under the mapping this compiler chose
+
+*Measured at P13 by `experiments/zigzag_same_mapping.py`, over
+`experiments/results-zigzag/same-mapping.json`. 42 tiled layers, 25 distinct
+mappings, on a quiet machine in 59.1 seconds at a peak of 747 MiB. The prediction
+is `experiments/predictions/p13-zigzag-same-mapping.md`, committed at `b302661`,
+strictly before the exporter existed and before ZigZag had been run against
+anything in this repository.*
+
+**One mapping, two cost models.** Section 16.5 forbids comparing two totals from
+two mappers, so every run here is handed a **complete** temporal ordering, which
+is what `npu.tiling_choice` recorded, plus the spatial mapping the array imposes.
+ZigZag skips its search engine when an ordering is complete, and this is not
+taken on trust: the exporter reads the loop nest back off ZigZag's own evaluation
+and refuses if it is not the nest that went in. All 42 layers passed that check.
+
+### What is compared, and what could not be carried across
+
+`npu.tiling_choice.makespan_cycles`, the Section 5.5 two port makespan the tiling
+search chose the mapping by, against ZigZag's `latency_total2` for the same layer
+under the same loop nest.
+
+**One thing did not carry across and it is the largest term in the result.** This
+project folds a weight matrix of `reduction` by `columns` onto the array in bands
+of at most sixteen and charges each band by its own occupancy, so a reduction of
+72 is four full bands and one of eight. **ZigZag unrolls a loop dimension by a
+factor and a factor has to divide its dimension**, so 72 over three dimensions of
+8, 3 and 3 becomes 12 rows of 16 and not 72 spread over five bands. The exported
+mapping takes the largest product of divisors that fits, which is deterministic
+and is the closest thing ZigZag can be handed, and the shortfall is reported per
+layer as `array_fill_here` against `array_fill_zigzag` rather than absorbed.
+
+**Energy is not compared.** The accelerator description carries zeros for every
+access cost, because this project has no energy model at this level and Section
+16.4 owns the one it does have. The prediction says the same and says why.
+
+### The suite's tight cells
+
+Cycles for one layer, under one mapping. `fill` is the fraction of the 256 array
+cells the fold occupies on each side.
+
+| Model | Layer | MACs | Tiles | Here | ZigZag | Ratio | fill here | fill ZigZag |
+|---|---|---|---|---|---|---|---|---|
+| `conv_bn_relu_stack` | `conv1` | 36864 | 2 | 1400.0 | 1166 | **1.20** | 0.450 | 0.375 |
+| `depthwise_separable` | `node_conv2d_1` | 8192 | 2 | 1052.0 | 480 | **2.19** | 0.500 | 0.500 |
+| `dilated_stack` | `conv0` | 36036 | 7 | 3876.0 | 6487 | **0.60** | 0.328 | 0.047 |
+| `dilated_stack` | `conv1` | 5670 | 2 | 1177.0 | 466 | **2.53** | 0.308 | 0.176 |
+| `inception_block` | `node_conv2d_1` | 27648 | 2 | 1295.0 | 1098 | **1.18** | 0.338 | 0.281 |
+| `inception_block` | `node_conv2d_2` | 25600 | 2 | 1772.5 | 2818 | **0.63** | 0.120 | 0.078 |
+| `lenet` | `node_linear` | 48000 | 4 | 14402.0 | 15116 | **0.95** | 0.938 | 0.938 |
+| `lenet_batched` | `node_linear` | 192000 | 2 | 15498.0 | 15509 | **1.00** | 0.938 | 0.938 |
+| `resnet_block` | `node_conv2d` | 36864 | 2 | 1400.0 | 1166 | **1.20** | 0.450 | 0.375 |
+| `resnet_block` | `node_conv2d_1` | 36864 | 2 | 1400.0 | 1166 | **1.20** | 0.450 | 0.375 |
+
+### Every distinct mapping in the swept range
+
+Budgets that produce the same loop nest on the same layer are one run and are
+listed as a span. `tiles` is `npu.tiling_choice.temporal_tiles`, the tile extent
+per axis in the pass's own domain order.
+
+| Model | Layer | Budgets | Tiles | Here | ZigZag | Ratio |
+|---|---|---|---|---|---|---|
+| `conv_bn_relu_stack` | `conv1` | 4672 | 1, 1, 4, 2, 8 | 3564.0 | 1822 | 1.96 |
+| `conv_bn_relu_stack` | `conv1` | 4928 | 1, 1, 4, 4, 8 | 2136.0 | 1838 | 1.16 |
+| `conv_bn_relu_stack` | `conv1` | 6000 to 6272 | 1, 1, 4, 4, 8 | 2136.0 | 1870 | 1.14 |
+| `conv_bn_relu_stack` | `conv1` | 6400 | 1, 1, 4, 8, 8 | 1478.0 | 1934 | 0.76 |
+| `conv_bn_relu_stack` | `conv1` | 6464 | 1, 1, 8, 4, 8 | 1400.0 | 1166 | 1.20 |
+| `depthwise_separable` | `node_conv2d_1` | 8064 to 8192 | 1, 1, 16, 4, 8 | 1052.0 | 480 | 2.19 |
+| `dilated_stack` | `conv0` | 7936 to 8064 | 1, 1, 1, 11, 13 | 3876.0 | 6487 | 0.60 |
+| `dilated_stack` | `conv1` | 7936 to 8064 | 1, 1, 5, 3, 3 | 1177.0 | 466 | 2.53 |
+| `inception_block` | `node_conv2d` | 4000 to 5120 | 1, 1, 4, 4, 8 | 806.0 | 264 | 3.05 |
+| `inception_block` | `node_conv2d_1` | 4000 | 1, 1, 2, 4, 8 | 2767.0 | 2498 | 1.11 |
+| `inception_block` | `node_conv2d_1` | 4608 to 5120 | 1, 1, 3, 4, 8 | 2031.0 | 1818 | 1.12 |
+| `inception_block` | `node_conv2d_1` | 5632 to 6144 | 1, 1, 6, 4, 8 | 1295.0 | 1098 | 1.18 |
+| `inception_block` | `node_conv2d_2` | 4000 | 1, 1, 1, 2, 8 | 3798.0 | 5362 | 0.71 |
+| `inception_block` | `node_conv2d_2` | 4608 | 1, 1, 1, 2, 8 | 3798.0 | 5378 | 0.71 |
+| `inception_block` | `node_conv2d_2` | 5120 to 5632 | 1, 1, 2, 2, 8 | 2326.0 | 2818 | 0.83 |
+| `inception_block` | `node_conv2d_2` | 6000 to 6144 | 1, 1, 2, 4, 8 | 1772.5 | 2818 | 0.63 |
+| `lenet` | `node_linear` | 194240 to 194624 | 1, 1, 30, 1, 1 | 14402.0 | 15116 | 0.95 |
+| `lenet_batched` | `node_linear` | 199872 | 4, 1, 60, 1, 1 | 15498.0 | 15449 | 1.00 |
+| `lenet_batched` | `node_linear` | 200832 | 4, 1, 60, 1, 1 | 15498.0 | 15509 | 1.00 |
+| `resnet_block` | `node_conv2d` | 6000 to 6272 | 1, 1, 4, 4, 8 | 2136.0 | 1870 | 1.14 |
+| `resnet_block` | `node_conv2d` | 6400 | 1, 1, 4, 8, 8 | 1478.0 | 1934 | 0.76 |
+| `resnet_block` | `node_conv2d` | 6464 | 1, 1, 8, 4, 8 | 1400.0 | 1166 | 1.20 |
+| `resnet_block` | `node_conv2d_1` | 6000 to 6272 | 1, 1, 4, 4, 8 | 2136.0 | 1870 | 1.14 |
+| `resnet_block` | `node_conv2d_1` | 6400 | 1, 1, 4, 8, 8 | 1478.0 | 1934 | 0.76 |
+| `resnet_block` | `node_conv2d_1` | 6464 | 1, 1, 8, 4, 8 | 1400.0 | 1166 | 1.20 |
+
+Over the 42 layers: **minimum 0.598, maximum 3.053, geometric mean 1.160**. This
+project reads above ZigZag on 28 and below on 14. By band: 14 below 1.0, 17
+between 1.0 and 1.2, 11 between 1.2 and 6.0, none above 6.0.
+
+### The divergence decomposed, and it is two terms pulling opposite ways
+
+**Term one is the descriptor, which the prediction named.** This project charges
+`DMA_DESCRIPTOR_CYCLES = 64` per transfer on top of bytes over bandwidth, and
+ZigZag charges no fixed cost per transfer at all. A convolution tile moves four
+operands, so a two tile layer carries 512 cycles of descriptor before a single
+multiply. On `inception_block`'s 1 by 1, which is 2048 MACs in two tiles, this
+project reads 806 cycles and ZigZag reads 264: **512 of this project's 806 cycles
+are descriptors**, and that one term is the whole ratio of 3.05.
+
+**Term two is the fold, which the prediction did not have.** Where the reduction
+does not factorise, ZigZag's array runs emptier than this machine's and its
+compute term grows to match. On `dilated_stack`'s `conv0`, four channels of a 3
+by 3 kernel against seven output channels, the fill is 0.328 here and **0.047**
+for ZigZag, a factor of seven, and the cycle ratio is 0.60.
+
+**The two terms are separable and each has a clean control.**
+
+- **Nine layers fold identically on both sides**, `array_fill_here` equal to
+  `array_fill_zigzag` to three places. Four are the matmuls, whose 400 by 120
+  weight matrix divides by sixteen and fifteen: **`lenet` reads 0.95 and
+  `lenet_batched` reads 1.00**. With the fold identical and the layer large, the
+  two cost models agree to within five percent. The other five are the two
+  smallest layers in the suite, 8192 and 2048 MACs, and they read **2.19 and
+  3.05**, which is the descriptor with nothing else in the way.
+- **One layer isolates the tile count.** `conv_bn_relu_stack`'s `conv1` is the
+  same 36864 MACs at the same fill ratio of 2.40 at every budget, and the ratio
+  goes **0.76 at two tiles, 1.14 at four, 1.96 at eight**. The descriptor term is
+  linear in the tile count and ZigZag's is not, which is the prediction's own
+  mechanism measured on one layer with everything else held.
+
+### The second question, which is a different one
+
+`--search` asks ZigZag's own engine for a mapping over the same layer with the
+same spatial mapping and no ordering supplied, and scores **both** with ZigZag's
+cost model. That is one mapper's opinion of two mappings rather than two mappers'
+totals, so it is a legitimate question about this project's search and it is
+reported apart from the comparison above.
+
+**ZigZag's engine agrees with the mapping this compiler chose on 41 of the 42
+layers**, to within the ten percent this module calls material. The exception is
+`lenet_batched`'s `node_linear` at 199872 bytes, where ZigZag scores its own nest
+at 12680 cycles against 15449 for this compiler's, **17.9 percent better by
+ZigZag's own model**. It is D-0060, with the reproduction, and **the search is
+not retuned**: 17.9 percent under ZigZag's cost model is not 17.9 percent under
+this one, and the nest it prefers interleaves the reduction with the row loop in
+a way this pass cannot emit.
+
+### The prediction, adjudicated clause by clause
+
+`experiments/predictions/p13-zigzag-same-mapping.md` is not edited. Two clauses
+are met, two are wrong, and one is half right.
+
+| Clause | Verdict |
+|---|---|
+| This project reads above ZigZag on every tiled layer | **wrong, and the falsifier the prediction wrote fired.** It said two or more layers reading the other way would falsify it; **fourteen do**. The direction holds on 28 of 42 and the reason it fails on the rest is a term the prediction did not have, which is the fold |
+| The ratio is between 1.2 and 6 per layer | **wrong.** Eleven of 42 are inside it, 31 are below 1.2, and the minimum is 0.598 |
+| The geometric mean is between 1.5 and 4 | **wrong.** It is **1.160**. The descriptor is real and it is not the dominant term on most of these layers: it dominates only where the layer is small enough for a fixed cost to matter |
+| `npu.tiling_choice` carries enough to write both mappings with no free parameter | **half right, and the missing piece is named rather than defaulted.** The attribute carries the tile extents, the array's spatial factors and the tile loop order, and that is enough for the outer half of the nest. It does not carry **how the reduction is distributed over the array's rows**, nor the loop order **inside** a tile. Neither is a free parameter: both are fixed by `cost_model.gemm_charge`, and the exporter reads them from there. But `loop_order = "domain"` names the tile loops and reads as though it named the whole nest, which is D-0061 |
+| The bounded run finishes under ten minutes and under two gigabytes | **met, with room.** 59.1 seconds and 747 MiB over 42 layers, including the second question's 42 extra searches. Nothing was near the ceiling and nothing about this machine had to change |
+| ZigZag's own search finds a better mapping on at least one layer | **met, on exactly one of 42**, and the prediction's own falsifier came within one layer of firing. `lenet_batched` at 199872, 17.9 percent by ZigZag's model, logged as D-0060 with a reproduction and not retuned |
+
+**And the thing that was not in the prediction at all.** The first version of this
+exporter put the reduction innermost inside a tile, and ZigZag's search answered
+that a nest with the output positions innermost was 57 percent cheaper. It was
+right, and the reason is that the second nest is what this machine does:
+`gemm_charge` streams the activation rows through a loaded array. **The export
+was describing a machine that reloads its weights per output position.**
+Correcting it moved the geometric mean from 0.880 to 1.160 and took the layers
+where ZigZag prefers its own mapping from 26 to 1. An external tool caught a
+mistake in the export before the export could publish a number about the
+compiler, which is the whole reason Section 16.5 asks for one.
+
+### What this comparison does not cover
+
+**No Timeloop number appears anywhere here.** The mapping is exported in Timeloop
+form, 42 files beside the ZigZag ones in
+`experiments/results-zigzag/mappings/`, because Section 16.5 asks for both forms.
+This project installs no Timeloop, `docs/adr/0003-resolved-tool-matrix.md`
+records why, and an exported mapping is an artefact rather than a result.
+
+**Only tiled layers are here.** Section 16.5 says to bound the exploration to
+them and the population is exactly the layers carrying `npu.tiling_choice`: the
+tight cells and every budget `experiments/three_arms.py` sweeps. A model's other
+layers, its pooling, its elementwise work and its transfers are outside this
+comparison and are not counted in either total, which is why no whole model
+figure is quoted.
+
+---
+
 ## Numerics
 
 | Number | Value | Source |

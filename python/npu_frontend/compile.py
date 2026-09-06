@@ -460,12 +460,21 @@ def compile_model(
     # the same `stage` argument for the same reason.
     started = time.perf_counter()
     npu_options = ["stop-after=npu"]
+    if budget is not None:
+        npu_options.append(f"budget={budget}")
     if ablate is not None:
         npu_options.append(f"ablate={ablate}")
     # **The halo reaches this stage and the spill heuristic does not**, by the
     # rule stated above the budget: an option belongs on a stage some pass of
     # which can consume it. `-npu-tile-to-scratchpad` is a tensor level pass and
     # is in this half; the allocator is not.
+    #
+    # **The budget reaches it by that same rule and did not until P13**, which
+    # is D-0059. The tiling pass is told the allocator's budget and is in this
+    # half, so a stage that dropped the option ran the tensor level passes
+    # against the default budget and printed a program in which nothing was ever
+    # over budget. Every stage is the same pipeline stopped at a different point
+    # and this is what makes that true of the budget as well.
     if halo is not None:
         npu_options.append(f"halo={halo}")
     command = [

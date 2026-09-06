@@ -10,8 +10,9 @@ Semantic Versioning once a release is tagged.
 
 **This phase is incomplete and the section says so first**, because a changelog
 that reads as though a phase finished is worse than no entry. Section 13.3's
-three arms and the ZigZag cross check have not been run, and one of them is now
-blocked on an owner decision rather than on work.
+three arms and the Section 16.5 ZigZag cross check have both run now and are
+recorded in `docs/NUMBERS.md`; what remains is the Section 2 carve out, which is
+an owner decision rather than work.
 
 **All three passes are in `-O2`**, the ablatable set is eleven, the suite is 217
 cells, and the suite has been re-recorded twice: once at the wiring commit and
@@ -35,6 +36,30 @@ branch the constants and their headers are untouched; what did change under
   exactly** at 154 cells. Nine hardcoded count sites moved together, three of
   which were tripwires that turned red exactly as their own docstrings said they
   would.
+- **Section 13.3's three arms ran on all seven models**, spilling under both
+  heuristics, tiling with and without `-npu-fuse-ops`, and the halo boolean
+  either way, over each model's frozen budget, the swept ranges and a control
+  budget at which nothing is over budget and all six configurations agree.
+  Tiling wins on `inception_block` by 404 cycles and loses on `resnet_block` by
+  642, and as the compiler stands it extends no model's budget range at all,
+  because fusion hides thirty of the suite's forty four compute operations from
+  it. `experiments/three_arms.py` is the script and
+  `experiments/results-three-arms/arms.json` the record.
+- **ADR 0008's tight budgets were re-measured at this tree and did not move.**
+  At `-O2` every one of the seven floors is the frozen budget exactly, with the
+  tiling pass in or out; four fall only with fusion ablated. The floor is **not
+  monotone in the budget**, because the budget is an input to the tiling pass as
+  well as to the allocator, so `experiments/tight_budget_floor.py` is a bisection
+  followed by a window check and a patient descent rather than a bisection.
+- **The ZigZag cross check ran under the mapping the pass chose**, per Section
+  16.5, over 42 tiled layers in 59.1 seconds and 747 MiB. The ordering is
+  asserted complete before each call and read back off ZigZag's own evaluation
+  after it, so the comparison is one mapping and two cost models rather than two
+  mappers' totals. Geometric mean 1.160. The mapping is exported in Timeloop
+  form as well; no Timeloop is installed and no Timeloop number is claimed.
+- **`--emit npu` was dropping `--budget`**, so the tensor level half a caller can
+  read was not the half that runs. Fixed, D-0059, and no recorded number moves
+  through that path.
 - **The pipeline hands the tiling search two things the pass would otherwise
   guess**: the allocator's budget, because there is one budget on this machine,
   and whether `-npu-double-buffer` is in this pipeline, because Section 13.2

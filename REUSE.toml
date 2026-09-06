@@ -89,6 +89,7 @@ path = [
   "experiments/results-runtime.json",
   "experiments/results-floors/**",
   "experiments/results-three-arms/**",
+  "experiments/results-zigzag/**",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"

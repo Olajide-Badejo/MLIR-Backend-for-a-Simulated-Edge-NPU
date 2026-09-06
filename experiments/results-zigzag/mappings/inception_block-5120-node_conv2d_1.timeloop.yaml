@@ -1,0 +1,14 @@
+# node_conv2d_1, conv2d, exported from npu.tiling_choice.
+mapping:
+  - target: DRAM
+    type: temporal
+    factors: Q=1 P=2 K=2 G=1 N=1
+    permutation: QPKGN
+  - target: scratchpad
+    type: temporal
+    factors: Q=8 P=4 N=1 K=1 C=2 R=1 S=3 G=1
+    permutation: QPNKCRSG
+  - target: PE
+    type: spatial
+    factors: K=3 C=4 R=3 S=1
+    permutation: KCRS

@@ -4038,3 +4038,133 @@ the one minute number alone is what three of these four reds have in common.
 - **What is not being changed.** `TIMING_GAP_FRACTION` stays at 0.5 and
   `half_ulp_ms` stays derived. A misread bound is corrected by reading it
   correctly.
+
+### D-0059 `--emit npu` drops the budget, so the half a caller can read is not the half that runs
+
+- **Found:** 2026-09-06, phase P13, while building the Section 16.5 export, which
+  needs the tensor level IR at a tight budget and got the IR at the default one.
+- **Status:** **fixed here**, in `python/npu_frontend/compile.py`. No recorded
+  number moved, because no committed cell and no golden is produced through this
+  path.
+
+- **Reproduce, before the fix:**
+
+  ```python
+  onnx = generate_model("resnet_block", work, batch=1)
+  compile_model(onnx, level=2, emit="npu", budget=6464).text.count("tiling_choice")
+  # 0
+  compile_model(onnx, level=2, emit="npuisa", budget=6464).text.count("subview")
+  # not zero: the same level at the same budget did tile
+  ```
+
+  The same level, the same budget, at two stages, and the tensor level half has
+  no tiling in it at all. It is not that the pass declined: it was told the
+  default budget of 1048576 bytes, at which nothing in this suite is over budget,
+  so it correctly answered no to a question nobody meant to ask. `npu-compile
+  --emit npu --budget 6464` on the command line has the same hole, because the
+  driver passes `--budget` straight into `compile_model`.
+
+- **Root cause.** `compile_model` assembles the npu stage's options as
+  `stop-after=npu` plus `ablate` plus `halo`, and the budget is added only to the
+  npuisa stage. The file states the rule the omission breaks, two lines above the
+  code that breaks it: an option belongs on a stage some pass of which can
+  consume it. `-npu-tile-to-scratchpad` is a tensor level pass, it is in this
+  half, and Section 13.2 has the pipeline hand it the allocator's budget
+  precisely because there is one budget on this machine.
+
+- **What it did and did not reach.** `--emit npu` and `--emit npuisa` are
+  described as the same pipeline stopped at different points, and that claim was
+  false for the budget from the moment the tiling pass entered `-O2`. Nothing
+  measured is affected: `experiments/run_benchmarks.py`, the regression baseline
+  and `scripts/build-model-ir.py` all compile to `nbin` or to the default budget,
+  and `regression-baseline --check` reports no drift at the fixed tree. What it
+  reached was every reader who asked the compiler to show its tensor level half
+  at a tight budget, which at P13 is the export this defect was found by.
+
+- **The fix.** Three lines, and `test_the_npu_stage_is_the_same_pipeline_at_the_
+  same_budget` in `test/Python/test_zigzag_same_mapping.py` compiles
+  `resnet_block` at 6464 through `--emit npu` and asserts a mapping attribute is
+  there, which is the assertion nothing had.
+
+### D-0060 ZigZag prefers a nest on `lenet_batched`'s matmul that this pass cannot emit
+
+- **Found:** 2026-09-06, phase P13, by the second question of
+  `experiments/zigzag_same_mapping.py --search`.
+- **Status:** **open, and deliberately not acted on.** Section 16.5 forbids
+  retuning this project's search to match an external tool, and this entry is
+  what that rule produces instead of a change.
+
+- **Reproduce:**
+
+  ```
+  python experiments/zigzag_same_mapping.py --models lenet_batched --search
+  ```
+
+  `node_linear` at 199872 bytes. This compiler's mapping, exported and scored by
+  ZigZag, costs **15449** cycles. ZigZag's own `loma` engine, given the same
+  spatial mapping and the same accelerator and no ordering, finds one it scores
+  at **12680**, which is **17.9 percent better by its own model**. Every other
+  layer of the 42 is inside ten percent, and 33 of them are inside two.
+
+- **What the two nests are.** Innermost first, this compiler's is
+  `[D 4] [K 4] [C 25] [K 2]`: the whole row block, then the column bands, then
+  the reduction, then the tile loop. ZigZag's is
+  `[D 2] [K 4] [K 2] [C 5] [D 2] [C 5]`, which **splits both the reduction and
+  the row loop across two memory levels** and interleaves them.
+
+- **Why the pass cannot emit it.** `-npu-tile-to-scratchpad` produces a tile grid
+  with one whole operation inside each tile, so the loops inside a tile are the
+  operation's own and the loops outside it are the grid. A nest that re-enters
+  the row loop after part of the reduction is not a tile grid, it is a two level
+  blocking of the reduction, and Section 13.2's tiling has no form for it.
+
+- **What it is worth, and it is not 17.9 percent.** ZigZag's model has no per
+  transfer descriptor and this one charges 64 cycles for each, so the two are
+  optimising different objectives; the same comparison on this project's own
+  model is not run here because running it would mean scoring ZigZag's nest with
+  a cost model that cannot express it. The honest statement is the narrow one:
+  **on one layer of 42 an external mapper, on its own terms, prefers a shape this
+  pass has no way to produce.** That is a candidate for a reduction blocking
+  follow up beside D-0056's two, and it is the only layer in the suite that asks
+  for one.
+
+### D-0061 `npu.tiling_choice.loop_order` names half a loop nest and reads as though it named all of it
+
+- **Found:** 2026-09-06, phase P13, by getting the export wrong and having ZigZag
+  say so.
+- **Status:** **open**, with the resolution written down. No number moves either
+  way; what moves is what a reader of the attribute is told.
+
+- **What the field says.** `loop_order = "domain"`, beside `temporal_tiles`,
+  `spatial_factors`, `tile_count`, `tile_bytes` and `makespan_cycles`. The
+  attribute's own comment calls it "the mapping, as an attribute a reader and an
+  exporter can both use", and Section 16.5's comparison is the exporter it was
+  added for.
+
+- **What it means.** The order of the **tile loops**, which is batch, group,
+  channel, height, width. It says nothing about the loops inside a tile, and a
+  tiled layer's cost is mostly made inside a tile.
+
+- **What that cost.** The first version of `experiments/zigzag_same_mapping.py`
+  read the field as the whole nest and put the reduction innermost, which
+  describes an array that reloads its weights at every output position. ZigZag's
+  own search then found a nest 57 percent cheaper, and the nest it found was the
+  one `cost_model.gemm_charge` actually walks: the activation rows stream through
+  a loaded array, so the output positions are innermost and the reduction bands
+  are the outer loop. Correcting the export moved the geometric mean of the
+  comparison from 0.880 to 1.160 and took the layers where ZigZag prefers its own
+  mapping from 26 of 42 to 1.
+
+- **Why it is a defect and not a note.** Nothing in the repository was wrong: the
+  pass records what it decided and the cost model computes what the hardware
+  does. But the record a cross check reads was **incomplete in a way that reads
+  as complete**, and the only reason it did not publish a wrong number is that
+  the tool it was checked against disagreed loudly enough to be investigated.
+
+- **Resolution, not taken in this phase.** Either the field is renamed to
+  `tile_loop_order`, or a second field records the within tile order that
+  `gemm_charge` fixes. The first is honest and free; the second is honest and
+  puts the same fact in two places, which is what Section 16.2 forbids for the
+  ablatable set and for the same reason. The rename is the one to make, and it
+  moves an attribute string in every tiled program's IR, so it belongs at the
+  start of a phase rather than at the end of one.

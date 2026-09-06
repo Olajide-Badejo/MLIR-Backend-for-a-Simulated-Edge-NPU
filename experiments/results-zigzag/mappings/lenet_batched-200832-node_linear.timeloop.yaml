@@ -1,0 +1,14 @@
+# node_linear, matmul, exported from npu.tiling_choice.
+mapping:
+  - target: DRAM
+    type: temporal
+    factors: K=2 P=1
+    permutation: KP
+  - target: scratchpad
+    type: temporal
+    factors: P=4 K=4 C=25
+    permutation: PKC
+  - target: PE
+    type: spatial
+    factors: K=15 C=16
+    permutation: KC
