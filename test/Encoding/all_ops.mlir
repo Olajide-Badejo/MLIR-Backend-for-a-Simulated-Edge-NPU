@@ -4,13 +4,20 @@
 
 // Every instruction the compiler can emit, encoded, in one program.
 //
-// Three opcodes are absent and each is absent for a reason the ISA description
+// Two opcodes are absent and both are absent for a reason the ISA description
 // records. `NOP` and `HALT` are not compiler concepts: nothing in the IR ever
 // says "do nothing" or "stop", and the encoder emits the `HALT` at the end of
-// this program itself. `QUANT` and `DEQUANT` have no dialect operation until
-// P14. All four are covered structurally by `unittests/Encoding/PropertyTest`,
-// which builds them directly rather than through the IR, and that is all the
-// coverage Section 17.2 asks for at this phase.
+// this program itself. Both are covered structurally by
+// `unittests/Encoding/PropertyTest`, which builds them directly rather than
+// through the IR.
+//
+// `QUANT` and `DEQUANT` are not here either and they are not absent: they have
+// their own file, `quantized.mlir`, because they start at the tensor level and
+// this one starts at hand written `npuisa`, and because the property they pin
+// is the agreement between the lowering, the allocator and the encoder about an
+// operation whose result element type differs from its operand's. Putting them
+// here would have meant recomputing every offset below for two instructions
+// that assert something this file does not.
 //
 // This file is hand written **allocated** `npuisa` IR rather than `npu` tensor
 // IR piped through the pipeline, and the reason is coverage rather than

@@ -595,6 +595,204 @@ TEST(Validation, DebugSize) {
 }
 
 //===----------------------------------------------------------------------===//
+// The integer profile of the compute opcodes.
+//
+// Section 14 puts the quantized convolution's data operands at i8, its bias at
+// i32 and its result at i8, which is the one place in this format where an
+// operand's element type is deliberately not the result's. The rules below are
+// declared in the ISA description as `integerOperandTypes` and `integerFields`,
+// and they apply **only** at an integer result, so every f32 program validates
+// exactly as it did before an integer path existed. The pairs of cases here are
+// what say so: each rule is driven at i8 and then the same field is driven on
+// the same opcode at f32, where it must be refused.
+//===----------------------------------------------------------------------===//
+
+/// A load, a quantized convolution with an int32 bias, a store and a `HALT`.
+///
+/// The scratchpad holds an i8 input of 1 by 1 by 4 by 4, an i8 filter of
+/// 1 by 1 by 1 by 1, an i32 bias of one element and an i8 result of the input's
+/// shape. Sixteen plus one plus four plus sixteen is 37 bytes, and the bias sits
+/// at offset 0 because a four byte element needs a four byte aligned address.
+inline Program quantizedConvProgram() {
+  Program program;
+  program.scratchpadBytes = 40;
+  program.dramBytes = 128;
+
+  program.inputs.push_back(region(0, ElemType::I8, {1, 1, 4, 4}));
+  program.outputs.push_back(region(64, ElemType::I8, {1, 1, 4, 4}));
+
+  Constant filter;
+  filter.region = region(32, ElemType::I8, {1, 1, 1, 1});
+  filter.data.assign(1, 1);
+  program.constants.push_back(filter);
+
+  Constant bias;
+  bias.region = region(96, ElemType::I32, {1});
+  bias.data.assign(4, 0);
+  program.constants.push_back(bias);
+
+  // The bias first, at offset 0, then the two i8 buffers and the result.
+  Instruction loadBias = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                     ElemType::I32, 0, {1});
+  loadBias.operands.push_back(operand(MemSpace::Dram, ElemType::I32, 96, {1}));
+  program.instructions.push_back(loadBias);
+
+  Instruction loadInput = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                      ElemType::I8, 4, {1, 1, 4, 4});
+  loadInput.operands.push_back(
+      operand(MemSpace::Dram, ElemType::I8, 0, {1, 1, 4, 4}));
+  program.instructions.push_back(loadInput);
+
+  Instruction loadFilter = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                       ElemType::I8, 20, {1, 1, 1, 1});
+  loadFilter.operands.push_back(
+      operand(MemSpace::Dram, ElemType::I8, 32, {1, 1, 1, 1}));
+  program.instructions.push_back(loadFilter);
+
+  Instruction conv = instruction(Opcode::CONV2D, MemSpace::Scratchpad,
+                                 ElemType::I8, 21, {1, 1, 4, 4});
+  conv.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::I8, 4, {1, 1, 4, 4}));
+  conv.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::I8, 20, {1, 1, 1, 1}));
+  conv.operands.push_back(operand(MemSpace::Scratchpad, ElemType::I32, 0, {1}));
+  conv.strides = {1, 1};
+  conv.pads = {0, 0, 0, 0};
+  conv.dilations = {1, 1};
+  conv.group = 1;
+  conv.zeroPoint = -11;
+  conv.requantMultiplier = 1073741824;
+  conv.requantShift = 0;
+  program.instructions.push_back(conv);
+
+  Instruction store = instruction(Opcode::DMA_STORE, MemSpace::Dram,
+                                  ElemType::I8, 64, {1, 1, 4, 4});
+  store.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::I8, 21, {1, 1, 4, 4}));
+  program.instructions.push_back(store);
+
+  program.instructions.push_back(halt());
+  return program;
+}
+
+TEST(Validation, TheQuantizedConvolutionProgramValidates) {
+  const std::optional<ProgramError> failure =
+      quantizedConvProgram().validate();
+  EXPECT_FALSE(failure.has_value())
+      << (failure ? failure->toString() : std::string());
+}
+
+TEST(Validation, AQuantizedConvolutionTakesAnInt32Bias) {
+  // The bias is the one operand whose type is deliberately not the result's,
+  // and both of the wrong answers are refused: an f32 bias, which is what a
+  // copy of the f32 rule would produce, and an i8 one, which is what "every
+  // operand takes the result's type" would produce.
+  Program asFloat = quantizedConvProgram();
+  asFloat.instructions[3].operands[2].elementType = ElemType::F32;
+  EXPECT_EQ(expectRejected(asFloat), Check::ElementTypeSupported);
+
+  Program asInt8 = quantizedConvProgram();
+  asInt8.instructions[3].operands[2].elementType = ElemType::I8;
+  EXPECT_EQ(expectRejected(asInt8), Check::ElementTypeSupported);
+
+  // And the data operands stay i8: an i32 activation is the same rule read
+  // from the other end.
+  Program wideInput = quantizedConvProgram();
+  wideInput.instructions[3].operands[0].elementType = ElemType::I32;
+  EXPECT_EQ(expectRejected(wideInput), Check::ElementTypeSupported);
+}
+
+TEST(Validation, TheZeroPointIsMeaningfulOnlyAtAnIntegerResult) {
+  // At an i8 result the convolution carries the zero point of its input, which
+  // is what its padding contributes. The program above already validates with
+  // one, so what is left to check is the bound and the f32 refusal.
+  Program outOfRange = quantizedConvProgram();
+  outOfRange.instructions[3].zeroPoint = -129;
+  EXPECT_EQ(expectRejected(outOfRange), Check::QuantZeroPoint);
+
+  // The same field on the same opcode at f32 is refused, which is what makes
+  // this a profile rather than a widening: nothing about the f32 path moved.
+  Program asFloat = chainProgram();
+  Instruction conv = instruction(Opcode::CONV2D, MemSpace::Scratchpad,
+                                 ElemType::F32, 64, {1, 1, 2, 2});
+  conv.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, {1, 1, 2, 2}));
+  conv.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, {1, 1, 1, 1}));
+  conv.strides = {1, 1};
+  conv.pads = {0, 0, 0, 0};
+  conv.dilations = {1, 1};
+  conv.group = 1;
+  conv.zeroPoint = 3;
+  asFloat.instructions[1] = conv;
+  EXPECT_EQ(expectRejected(asFloat), Check::QuantZeroPoint);
+}
+
+TEST(Validation, TheOpcodesSectionFourteenScopesOutRejectI8) {
+  // Section 14: ADD, MUL, POOL_AVG, RELU and POOL_MAX reject I8 operands with a
+  // named diagnostic, because the QDQ rewrite only quantizes convolution and
+  // matrix multiplication. That boundary is deliberate and its cost is measured
+  // rather than asserted, so it needs to be a refusal the format enforces and
+  // not a convention the compiler happens to follow.
+  //
+  // Each of the five is driven, rather than one of them standing for the set,
+  // because the rule is per opcode in the description and an opcode that gained
+  // `[F32, I8]` by a copy paste would be invisible behind any other.
+  const Opcode rejecting[] = {Opcode::ADD, Opcode::MUL, Opcode::RELU,
+                              Opcode::POOL_MAX, Opcode::POOL_AVG};
+  for (Opcode opcode : rejecting) {
+    Program program = chainProgram();
+    Instruction subject = instruction(opcode, MemSpace::Scratchpad,
+                                      ElemType::I8, 64, {4, 4});
+    subject.operands.push_back(
+        operand(MemSpace::Scratchpad, ElemType::I8, 0, {4, 4}));
+    if (opcode == Opcode::ADD || opcode == Opcode::MUL)
+      subject.operands.push_back(
+          operand(MemSpace::Scratchpad, ElemType::I8, 0, {4, 4}));
+    if (opcode == Opcode::POOL_MAX || opcode == Opcode::POOL_AVG) {
+      subject.resultShape = {1, 1, 4, 4};
+      subject.resultStrides = contiguousStrides(subject.resultShape);
+      subject.operands.front().shape = {1, 1, 4, 4};
+      subject.operands.front().strides =
+          contiguousStrides(subject.operands.front().shape);
+      subject.kernel = {1, 1};
+      subject.strides = {1, 1};
+      subject.pads = {0, 0, 0, 0};
+      subject.dilations = {1, 1};
+    }
+    program.instructions[1] = subject;
+    program.instructions[2].operands.front().elementType = ElemType::I8;
+    program.instructions[2].resultElementType = ElemType::I8;
+    program.outputs.front().elementType = ElemType::I8;
+    EXPECT_EQ(expectRejected(program), Check::ElementTypeSupported)
+        << opcodeInfo(opcode).name;
+  }
+}
+
+TEST(Validation, TheQuantizationPhaseDidNotMoveTheFormatVersion) {
+  // Section 9.1's narrow claim, asserted rather than described: the element
+  // types and the requantization pair have been present since version one, so
+  // the phase that uses them bumps nothing. Version 2 is P13's, for
+  // `resultStrides`, and the number this gate counts from is that one.
+  //
+  // It is here rather than in a document because a version bump in this phase
+  // would invalidate `test_binary_stability` and every seed in the fuzz corpus
+  // in the same commit that introduced quantization, which is the worst moment
+  // to lose the format's regression net.
+  EXPECT_EQ(Program::kVersion, 2u);
+
+  // And the fields it is a claim about are on every instruction, at their
+  // neutral values, on a program that has nothing to do with quantization.
+  const Program program = chainProgram();
+  for (const Instruction &carried : program.instructions) {
+    EXPECT_EQ(carried.scale, 0.0f);
+    EXPECT_EQ(carried.zeroPoint, 0);
+    EXPECT_EQ(carried.requantMultiplier, 1);
+    EXPECT_EQ(carried.requantShift, 0);
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // The gate on this file.
 //===----------------------------------------------------------------------===//
 

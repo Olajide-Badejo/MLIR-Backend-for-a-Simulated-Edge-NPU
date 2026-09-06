@@ -45,6 +45,10 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -236,6 +240,177 @@ TEST(Determinism, TheCycleCountDoesNotDependOnTheThreadCount) {
   ASSERT_TRUE(many.ok()) << many.error.value_or("");
   EXPECT_DOUBLE_EQ(single.stats.cycles, many.stats.cycles);
   EXPECT_EQ(single.stats.macs, many.stats.macs);
+}
+
+//===----------------------------------------------------------------------===//
+// The integer kernel, under the same two assertions.
+//
+// Section 10.3's determinism rule is about the parallel region, not about the
+// element type, so the integer convolution is held to it too. The two claims
+// are not the same claim twice, and saying why is the point of the pair:
+//
+// **The f32 case can fail for two reasons and the integer case for one.** In
+// f32 a reduction moved into the parallel region changes the summation order
+// and therefore the bits, so the bitwise comparison catches an ordering bug and
+// a race alike. Integer addition is associative, so a reordering alone cannot
+// move a bit; what is left for this case to catch is the **race**, two threads
+// writing the same output element, which no amount of associativity forgives.
+//
+// A test that only ran the f32 case would leave the integer kernel's own team
+// cap and its own `collapse(2)` unexercised, and those are two clauses this
+// phase wrote rather than inherited.
+//===----------------------------------------------------------------------===//
+
+/// The integer twin of `buildConvolution`, at the same extents.
+///
+/// The same thirty two iterations of the collapsed loop and the same eight
+/// channel by three by three reduction, so the two are comparable, and a padded
+/// window at a non zero input zero point so that the padding rule runs inside
+/// the parallel region rather than beside it.
+Program buildIntegerConvolution() {
+  Stream stream;
+  std::vector<int8_t> input(4 * 8 * 8 * 8);
+  for (int8_t &value : input)
+    value = static_cast<int8_t>(std::floor(stream.next() * 128.0f));
+  std::vector<int8_t> filter(8 * 8 * 3 * 3);
+  for (int8_t &value : filter)
+    value = static_cast<int8_t>(std::floor(stream.next() * 128.0f));
+  std::vector<int32_t> bias(8);
+  for (int32_t &value : bias)
+    value = static_cast<int32_t>(std::floor(stream.next() * 4096.0f));
+
+  Builder builder;
+  const std::vector<int64_t> inputShape = {4, 8, 8, 8};
+  const std::vector<int64_t> filterShape = {8, 8, 3, 3};
+  const std::vector<int64_t> biasShape = {8};
+  const std::vector<int64_t> resultShape = {4, 8, 8, 8};
+
+  const int64_t inputRegion = builder.constantI8(inputShape, input);
+  const int64_t filterRegion = builder.constantI8(filterShape, filter);
+  const int64_t biasRegion = builder.constantI32(biasShape, bias);
+
+  // The i32 bias first, at offset zero: a four byte element is read through an
+  // accessor that requires a four byte aligned address, and this builder packs
+  // tightly where the real allocator aligns to 64.
+  const int64_t biasBuffer = builder.scratch(8, ElemType::I32);
+  const int64_t inputBuffer = builder.scratch(4 * 8 * 8 * 8, ElemType::I8);
+  const int64_t filterBuffer = builder.scratch(8 * 8 * 3 * 3, ElemType::I8);
+  const int64_t resultBuffer = builder.scratch(4 * 8 * 8 * 8, ElemType::I8);
+  const int64_t sink = builder.output(resultShape, ElemType::I8);
+
+  builder.add(dmaLoad(biasBuffer, biasShape,
+                      at(MemSpace::Dram, biasRegion, biasShape,
+                         ElemType::I32)));
+  builder.add(dmaLoad(inputBuffer, inputShape,
+                      at(MemSpace::Dram, inputRegion, inputShape,
+                         ElemType::I8)));
+  builder.add(dmaLoad(filterBuffer, filterShape,
+                      at(MemSpace::Dram, filterRegion, filterShape,
+                         ElemType::I8)));
+
+  Instruction convolution =
+      compute(Opcode::CONV2D, resultBuffer, resultShape,
+              {at(MemSpace::Scratchpad, inputBuffer, inputShape, ElemType::I8),
+               at(MemSpace::Scratchpad, filterBuffer, filterShape,
+                  ElemType::I8),
+               at(MemSpace::Scratchpad, biasBuffer, biasShape, ElemType::I32)},
+              ElemType::I8);
+  convolution.strides = {1, 1};
+  convolution.pads = {1, 1, 1, 1};
+  convolution.dilations = {1, 1};
+  convolution.group = 1;
+  convolution.zeroPoint = -19;
+  convolution.requantMultiplier = kHalfMultiplier;
+  convolution.requantShift = 4;
+  builder.add(std::move(convolution));
+
+  builder.add(dmaStore(sink, resultShape,
+                       at(MemSpace::Scratchpad, resultBuffer, resultShape,
+                          ElemType::I8)));
+  builder.add(halt());
+
+  // Scratchpad: the bias is 8 int32, which is 32 bytes, and the three i8
+  // buffers are 2048, 576 and 2048 elements at one byte each. 32 + 4672 = 4704.
+  return builder.finish(4704);
+}
+
+std::vector<int32_t> runIntegerWith(int threads) {
+#ifdef _OPENMP
+  omp_set_num_threads(threads);
+#else
+  (void)threads;
+#endif
+  Harness harness(buildIntegerConvolution());
+  const SimResult result = harness.run();
+  EXPECT_TRUE(result.ok()) << result.error.value_or("");
+  return harness.outputI8(0);
+}
+
+TEST(Determinism, TheIntegerKernelAgreesWithItselfAtEveryThreadCount) {
+#ifdef _OPENMP
+  const int maximum = omp_get_max_threads();
+#else
+  const int maximum = 1;
+#endif
+
+  const std::vector<int32_t> single = runIntegerWith(1);
+  const std::vector<int32_t> many = runIntegerWith(maximum);
+
+  ASSERT_EQ(single.size(), many.size());
+  ASSERT_FALSE(single.empty());
+  EXPECT_EQ(single, many)
+      << "the quantized convolution produced different bytes at " << maximum
+      << " threads than at one. Integer addition is associative, so this is "
+         "not a summation order: it is two threads writing the same output "
+         "element";
+
+  // The output has to be worth comparing. A quantized convolution whose every
+  // element saturated to one rail would compare a constant against a constant
+  // and pass whatever the kernel did, and the requantization shift above is
+  // chosen so that it does not.
+  const int32_t low = *std::min_element(single.begin(), single.end());
+  const int32_t high = *std::max_element(single.begin(), single.end());
+  EXPECT_LT(low, 0) << "every output is non negative, so this comparison is "
+                       "weaker than it looks";
+  EXPECT_GT(high, 0);
+  EXPECT_GT(high - low, 8)
+      << "the outputs span " << (high - low)
+      << " counts, which is close enough to constant that comparing two runs "
+         "of it asserts very little";
+
+#ifdef _OPENMP
+  omp_set_num_threads(maximum);
+#endif
+}
+
+TEST(Determinism, TheIntegerCycleCountDoesNotDependOnTheThreadCount) {
+#ifdef _OPENMP
+  const int maximum = omp_get_max_threads();
+#endif
+
+  Harness first(buildIntegerConvolution());
+#ifdef _OPENMP
+  omp_set_num_threads(1);
+#endif
+  const SimResult single = first.run();
+
+  Harness second(buildIntegerConvolution());
+#ifdef _OPENMP
+  omp_set_num_threads(maximum);
+#endif
+  const SimResult many = second.run();
+
+  ASSERT_TRUE(single.ok()) << single.error.value_or("");
+  ASSERT_TRUE(many.ok()) << many.error.value_or("");
+  EXPECT_DOUBLE_EQ(single.stats.cycles, many.stats.cycles);
+  EXPECT_EQ(single.stats.macs, many.stats.macs);
+
+  // And the integer MAC counter is the one that separates an int8 cell from an
+  // f32 one in the result schema, so it is asserted here rather than assumed:
+  // an integer convolution counts its multiplies in both fields, and an f32 one
+  // counts them in neither of the two ways this would catch.
+  EXPECT_EQ(single.stats.int8Macs, single.stats.macs);
+  EXPECT_GT(single.stats.int8Macs, 0u);
 }
 
 } // namespace
