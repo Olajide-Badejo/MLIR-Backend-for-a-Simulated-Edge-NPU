@@ -3044,6 +3044,33 @@ the way a stale comment is never merely cosmetic.
   test is not flaky, the bound is conditional, and the condition is not being
   checked.
 
+- **The P14 sighting, recorded as a sighting and nothing else.** At checkpoint A
+  the `regression-baseline --check` at `dab3e76` went red with two pytest
+  failures,
+  `test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing` and
+  `test_a_rerun_reproduces_the_external_fields_too`, on a machine whose one
+  minute load average was 16.76 when the run ended. **The cell half of that same
+  run was clean**: 42 cells, 21 golden tensors, largest movement against `-O0`
+  4.470e-08, which is P13's figure to the digit.
+
+  The pair was then run in isolation four times, and the pattern is the entry's
+  own:
+
+  | Run | One and five minute load at the start | Result |
+  |---|---|---|
+  | both, first | 0.25, 0.20 | **2 passed** |
+  | both, second | 5.20, 1.62 | **2 passed** |
+  | both, third | 6.16, 2.66 | `test_a_rerun_reproduces_the_external_fields_too` **failed** |
+  | the failing one alone | 0.14, 0.38 | **1 passed** |
+
+  Three passes and one failure, the failure from the busiest start, and the
+  machine was busy because the two runs before it had made it so. **No bound was
+  touched and none should be**: this is the fifth and sixth data point on a
+  conditional bound whose condition is not being checked, which is what the
+  entry above says the defect is. The two test names are recorded because the
+  script names them now, which is the change P13 made to it after the first
+  sighting was nearly lost.
+
 - **A note on how it was nearly lost.** The first observation was a single red
   in a battery script that tailed three lines of output, so the message was
   gone before anybody read it and the session recorded it as unexplained.
