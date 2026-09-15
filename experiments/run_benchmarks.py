@@ -96,6 +96,10 @@ happen is caught by measurement rather than trusted to a flag.
   performance, which is a finding rather than a table entry. The band is
   `npu_frontend.tolerances.ABSOLUTE_TOLERANCE`, imported and never restated.
 - **A pass in the pipeline and absent from the statistics raises.**
+- **A run that needs an external tool it cannot reach refuses before its first
+  cell**, naming each thing missing and the two ways forward, unless
+  `--skip-external` says not to run the tools at all. D-0064: the refusal used to
+  arrive after every cell had been measured.
 """
 
 from __future__ import annotations
@@ -153,7 +157,7 @@ sys.path.insert(0, str(_mlir_python_packages_dir()))
 
 import numpy as np  # noqa: E402
 import onnxruntime as ort  # noqa: E402
-from npu_frontend import cost_model  # noqa: E402
+from npu_frontend import cost_model, external_tools  # noqa: E402
 from npu_frontend.compile import (  # noqa: E402
     ablatable_passes,
     compile_model,
@@ -1037,6 +1041,88 @@ def divergence_findings(divergence: scalesim_export.CellDivergence) -> list[str]
     return []
 
 
+#: The external tools the P11 fields are computed with, by their key in
+#: `npu_frontend.external_tools.EXTERNAL_TOOLS`. **ZigZag is in that table and
+#: not in this one**, because this harness never runs it: Section 16.5's
+#: comparison is `experiments/zigzag_same_mapping.py`.
+EXTERNAL_FIELD_TOOLS: tuple[str, ...] = ("scalesim", "accelergy")
+
+#: The clones whose commits every manifest records, under `external_dir()`.
+EXTERNAL_CLONES: tuple[str, ...] = (
+    "scale-sim-v2",
+    "accelergy",
+    "accelergy-library-plug-in",
+    "accelergy-aladdin-plug-in",
+    "accelergy-cacti-plug-in",
+    "accelergy-table-based-plug-ins",
+)
+
+
+def external_dir() -> Path:
+    """Where the clones are: `NPU_EXTERNAL_DIR`, or `~/npu-external` by default."""
+    return Path(os.environ.get("NPU_EXTERNAL_DIR", str(Path.home() / "npu-external")))
+
+
+def missing_external() -> list[str]:
+    """What the P11 fields need and this environment lacks, one line for each.
+
+    *Added after D-0064.* The tools are asked of `npu_frontend.external_tools`,
+    which is the one home of that answer, and the clones are the ones
+    `external_tool_shas` reads. `missing_tools` names a module that does not
+    import by its bare name and a binary that is not on `PATH` with a note of its
+    own, so the bare name is given its half here and the note is left alone.
+
+    **Two things are deliberately not asked for.** ZigZag, which this harness
+    never runs. And the SCALE-Sim example topologies under
+    `NPU_SCALESIM_SOURCE`, because the two headers the exporter needs from them
+    are copied into `scalesim_export.py` at the pinned sha, and the tests that
+    compare those copies with the clone carry their own guard. A refusal naming
+    either would name something this run does not use.
+    """
+    absent = [
+        f"{tool}: the module does not import" if tool in EXTERNAL_FIELD_TOOLS else tool
+        for tool in external_tools.missing_tools(EXTERNAL_FIELD_TOOLS)
+    ]
+    root = external_dir()
+    for name in EXTERNAL_CLONES:
+        clone = root / name
+        if not (clone / ".git").exists():
+            absent.append(f"the clone of {name}: nothing at {clone}")
+    return absent
+
+
+def refuse_missing_external() -> None:
+    """Section 16.4's loud failure, before the first cell rather than after the last.
+
+    *Added after D-0064.* A run without `--skip-external` is asked for the
+    roofline, SCALE-Sim and Accelergy fields, and until this it found out whether
+    it could produce them only by trying, which was after every cell had been
+    measured. The nightly measured the whole suite on twelve scheduled runs in a
+    row and then died each time on a `FileNotFoundError` for a binary its image
+    has never had.
+
+    **It never skips on a caller's behalf.** A machine that has lost its tools
+    must not re-record the suite with null energy and call that a run: a null a
+    flag asked for and a null an accident produced would read the same, and
+    silence and success must not look alike.
+    """
+    absent = missing_external()
+    if not absent:
+        return
+    listed = "\n".join(f"  {line}" for line in absent)
+    raise BenchmarkError(
+        f"this run was asked for the roofline, SCALE-Sim and Accelergy fields "
+        f"and this environment cannot produce them, so it refuses before "
+        f"measuring a cell rather than after measuring all of them. "
+        f"Missing:\n\n{listed}\n\n"
+        f"Two ways forward. Pass --skip-external, and every one of those fields "
+        f"is recorded as null with a reason naming the flag, which is Section "
+        f"16.4's opt out. Or run where the tools are installed, from the pinned "
+        f"shas in docs/adr/0003-resolved-tool-matrix.md, with NPU_EXTERNAL_DIR "
+        f"set if the clones are not in ~/npu-external."
+    )
+
+
 def external_tool_shas() -> dict[str, str]:
     """The tool provenance Section 16.1 asks the manifest to carry.
 
@@ -1046,17 +1132,14 @@ def external_tool_shas() -> dict[str, str]:
     installed from, and the installed SCALE-Sim tree's own hash beside its sha,
     because `scripts/patch-scalesim.py` means the sha does not describe the code
     that ran. D-0044.
+
+    `refuse_missing_external` asks for the same clones before the first cell, and
+    the check below stays, because a run is minutes long and a clone can go in
+    that time.
     """
     shas: dict[str, str] = {}
-    root = Path(os.environ.get("NPU_EXTERNAL_DIR", str(Path.home() / "npu-external")))
-    for name in (
-        "scale-sim-v2",
-        "accelergy",
-        "accelergy-library-plug-in",
-        "accelergy-aladdin-plug-in",
-        "accelergy-cacti-plug-in",
-        "accelergy-table-based-plug-ins",
-    ):
+    root = external_dir()
+    for name in EXTERNAL_CLONES:
         clone = root / name
         if not (clone / ".git").exists():
             raise BenchmarkError(
@@ -1203,6 +1286,12 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run(arguments: argparse.Namespace) -> int:
     import tempfile
+
+    # D-0064: asked before the first cell rather than discovered after the last.
+    # A refusal that could have come first and comes after the whole suite has
+    # been measured is a run already lost, and paid for in full.
+    if not arguments.skip_external:
+        refuse_missing_external()
 
     cells = planned_cells(arguments.models)
     current_hash = content_hash(tool_versions=tool_versions())

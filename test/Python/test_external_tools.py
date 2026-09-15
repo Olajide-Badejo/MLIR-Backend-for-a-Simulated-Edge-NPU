@@ -135,6 +135,25 @@ def test_a_finder_that_raises_is_read_as_absent(
     assert external_tools.missing_tools() == ["a_library", "a_tool"]
 
 
+def test_a_caller_can_ask_about_the_tools_it_drives_and_no_others(
+    two_tools: dict[str, str | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """*Added after D-0064.* The benchmark harness drives two of the three tools.
+
+    Refusing a benchmark run because a tool it never runs is absent would be a
+    refusal for something that is not true, so the question can be narrowed. A
+    name the table does not have is a `KeyError` rather than an empty answer,
+    because an empty answer says the tool is here.
+    """
+    monkeypatch.setattr("importlib.util.find_spec", fake_finder({"a_library"}))
+    monkeypatch.setattr("shutil.which", fake_which(set()))
+    assert external_tools.missing_tools(["a_library"]) == []
+    assert external_tools.missing_tools(["a_tool"]) == ["a_tool"]
+    assert external_tools.missing_tools([]) == []
+    with pytest.raises(KeyError):
+        external_tools.missing_tools(["not_a_tool"])
+
+
 # ---------------------------------------------------------------------------
 # The source clone, which is a third thing and not either tool.
 # ---------------------------------------------------------------------------

@@ -28,12 +28,16 @@ being present and shaped.
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-from npu_frontend import ablatable_passes, implemented_levels
+import yaml
+from npu_frontend import ablatable_passes, external_tools, implemented_levels
 from npu_frontend.model_generator import DEFAULT_BUDGET, MODELS, TIGHT_BUDGETS
 from npu_frontend.results import (
     RESULTS_DIR,
@@ -349,6 +353,167 @@ def test_the_opt_out_records_a_null_and_a_reason(built: None, tmp_path: Path) ->
     with pytest.raises(ResultSchemaError) as failure:
         values_of(cells, "normalized.energy_pj_per_inference")
     assert "--skip-external" in str(failure.value)
+
+
+def test_a_missing_tool_refuses_the_run_before_a_cell_is_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The state the nightly was in every night, which no test was in.
+
+    *Added after D-0064.* The test above covers the flag. Nothing covered a tool
+    being absent with the flag not passed, and the harness answered that by
+    measuring every cell and then dying on a `FileNotFoundError`.
+
+    **Absence is simulated, never assumed**, because this machine has the tools
+    and the CI image does not, and the test has to mean one thing in both.
+    `PATH` loses every directory holding an `accelergy`, which is the CI shim's
+    own second difference, and the simulation is asserted to have taken before
+    anything relies on it. Here that leaves the module importable and the binary
+    unreachable; in the image the module does not import either. Both are a
+    refusal that names `accelergy`.
+
+    **No cell is measured**, asserted on the filesystem rather than read off the
+    message: nothing is written under the results directory or beside it. That
+    is also why this is a fast test of a fault that used to cost a whole suite.
+    """
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            entry
+            for entry in os.environ.get("PATH", "").split(os.pathsep)
+            if entry and not (Path(entry) / "accelergy").exists()
+        ),
+    )
+    assert shutil.which("accelergy") is None, "the simulated absence did not take"
+
+    status = run_benchmarks.main(
+        ["--models", "conv_bn_relu_stack", "--results", str(tmp_path / "results")]
+    )
+    refusal = capsys.readouterr().err
+
+    assert status == 2, (
+        f"a run that cannot produce the fields it was asked for refuses to "
+        f"measure, which is this harness's exit 2, and it exited {status}:\n"
+        f"{refusal}"
+    )
+    assert "accelergy" in refusal
+    assert "--skip-external" in refusal, "the refusal must name the way forward"
+    written = [path for path in tmp_path.rglob("*") if path.is_file()]
+    assert not written, f"a refused run wrote {written}"
+
+
+def test_the_refusal_names_each_missing_thing_and_nothing_the_run_does_not_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each absence on a line of its own, and no absence the run does not need.
+
+    *Added after D-0064.* `find_spec`, `which` and the environment are
+    substituted, which is `test_external_tools.py`'s method, so this asserts the
+    same thing on a machine with the tools and in an image without them.
+
+    - **A clone is named with the path it was looked for at**, because a clone
+      in the wrong place and a clone never made want different fixes.
+    - **A tool says which half is absent**: a module that does not import, or a
+      module that imports with no binary on `PATH`.
+    - **ZigZag and the SCALE-Sim example topologies are not asked for.** The
+      harness never runs ZigZag, and the two headers the exporter needs from the
+      source clone are copied into `scalesim_export.py` at the pinned sha.
+    """
+    root = tmp_path / "external"
+    for name in run_benchmarks.EXTERNAL_CLONES:
+        (root / name / ".git").mkdir(parents=True)
+    monkeypatch.setenv("NPU_EXTERNAL_DIR", str(root))
+    monkeypatch.setenv(external_tools.SOURCE_TREE_VARIABLE, str(tmp_path / "none"))
+
+    importable = {"scalesim", "accelergy"}
+    on_path = {"accelergy"}
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: object() if name in importable else None,
+    )
+    monkeypatch.setattr(
+        "shutil.which", lambda name: f"/usr/bin/{name}" if name in on_path else None
+    )
+
+    # Everything the fields need, and neither ZigZag nor the topologies.
+    assert run_benchmarks.missing_external() == []
+    run_benchmarks.refuse_missing_external()
+
+    (root / "accelergy-cacti-plug-in" / ".git").rmdir()
+    on_path.clear()
+    importable.discard("scalesim")
+    missing = run_benchmarks.missing_external()
+    assert missing == [
+        "scalesim: the module does not import",
+        "accelergy (the accelergy binary is not on PATH)",
+        f"the clone of accelergy-cacti-plug-in: nothing at {root / 'accelergy-cacti-plug-in'}",
+    ]
+
+    with pytest.raises(run_benchmarks.BenchmarkError) as refusal:
+        run_benchmarks.refuse_missing_external()
+    for line in missing:
+        assert line in str(refusal.value)
+    assert "--skip-external" in str(refusal.value)
+
+
+def test_the_nightly_suite_skips_external_while_the_image_has_no_tools() -> None:
+    """The nightly's benchmark step and the CI image agree about the tools.
+
+    *Added after D-0064.* The image has no external tools by design, and
+    `ci.yml`'s external cross validation step is off and asserts all three
+    absent. The nightly's benchmark step did not pass `--skip-external`, so from
+    2026-09-04 it measured every cell and then died on `accelergy`, twelve
+    scheduled runs in a row, and nothing in the suite read the workflow.
+
+    **The flag and the image are one decision written in two files**, so what is
+    asserted is that they agree rather than that the flag is present. The day
+    the image gains the tools, the external step turns on and this is red until
+    the flag comes off in the same commit; the day the flag is dropped while the
+    step is still off, it is red for the reason D-0064 exists.
+    """
+    workflows = REPO_ROOT / ".github" / "workflows"
+    nightly = yaml.safe_load((workflows / "nightly.yml").read_text(encoding="utf-8"))
+    harness = [
+        shlex.split(command)
+        for step in nightly["jobs"]["full-matrix"]["steps"]
+        for command in _shell_commands(step.get("run", ""))
+        if command.startswith("python3 experiments/run_benchmarks.py")
+    ]
+    assert len(harness) == 1, f"full-matrix should run the harness once: {harness}"
+
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    external = [
+        step["name"]
+        for job in ci["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("name", "")).startswith("external cross validation")
+    ]
+    assert len(external) == 1, f"ci.yml should have one external step: {external}"
+    image_has_no_tools = external[0].endswith(", off)")
+
+    assert ("--skip-external" in harness[0]) == image_has_no_tools, (
+        f"ci.yml's step is {external[0]!r} and the nightly runs "
+        f"{' '.join(harness[0])!r}. While that step is off the image has no "
+        f"external tools, and the harness refuses before its first cell unless "
+        f"it is passed --skip-external; once the step is on, the flag comes off "
+        f"in the same commit."
+    )
+
+
+def _shell_commands(script: str) -> list[str]:
+    """A `run:` block's command lines, continuations joined and comments dropped.
+
+    To YAML the block is one string, so a comment inside it is text, and a flag
+    that appears only in a comment must not read as a flag passed.
+    """
+    lines = script.replace("\\\n", " ").splitlines()
+    return [
+        line.strip()
+        for line in lines
+        if line.strip() and not line.strip().startswith("#")
+    ]
 
 
 @pytest.mark.slow

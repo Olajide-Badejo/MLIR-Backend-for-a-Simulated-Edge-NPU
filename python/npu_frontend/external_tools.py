@@ -4,12 +4,13 @@
 """Whether this environment can reach the external cross validation tools.
 
 *Added at P11 after D-0046, and moved here from `test/Python/tools.py` when the
-regression baseline needed the same answer.* Two readers now ask this question:
-the test suite, to decide between skipping and failing, and
+regression baseline needed the same answer.* Three readers now ask this
+question: the test suite, to decide between skipping and failing;
 `scripts/regression_baseline.py`, to record which environment a baseline was
-taken in. A second copy of the answer is exactly the duplication D-0032's fix
-built a test to hunt for, so there is one home and two importers, the same
-arrangement Section 5.5 uses for the cost model.
+taken in; and, from D-0064, `experiments/run_benchmarks.py`, to refuse a run
+before its first cell rather than after its last. A second copy of the answer is
+exactly the duplication D-0032's fix built a test to hunt for, so there is one
+home for it, the same arrangement Section 5.5 uses for the cost model.
 
 **The answer is not "is the package installed".** Accelergy is driven as a
 subprocess, so an importable package whose `accelergy` binary is not on `PATH` is
@@ -31,6 +32,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Final
 
@@ -79,16 +81,28 @@ def tools_promised() -> bool:
     return bool(os.environ.get(EXTERNAL_TOOLS_VARIABLE))
 
 
-def missing_tools() -> list[str]:
+def missing_tools(names: Iterable[str] | None = None) -> list[str]:
     """Which external tools this environment cannot reach, by name.
 
     Both halves are required. A module that imports with no binary on `PATH` is
     reported as missing and says which half is absent, because "not installed"
     and "installed and unreachable" want different responses from whoever reads
     the message.
+
+    **`names` asks about some of the tools rather than all of them**, and it
+    exists because of D-0064: `experiments/run_benchmarks.py` drives SCALE-Sim
+    and Accelergy and never ZigZag, so refusing a run because ZigZag is absent
+    would be refusing it for something it does not use. A name that is not in
+    `EXTERNAL_TOOLS` raises `KeyError`, because "not missing" is the wrong answer
+    about a tool this module has never heard of.
     """
+    table = (
+        EXTERNAL_TOOLS
+        if names is None
+        else {name: EXTERNAL_TOOLS[name] for name in names}
+    )
     absent: list[str] = []
-    for module, binary in EXTERNAL_TOOLS.items():
+    for module, binary in table.items():
         try:
             found = importlib.util.find_spec(module) is not None
         except (ImportError, ValueError):
