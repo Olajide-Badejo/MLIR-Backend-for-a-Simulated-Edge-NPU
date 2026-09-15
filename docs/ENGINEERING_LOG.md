@@ -6641,3 +6641,87 @@ because it happened. **It is not the proof**: Section 19.1 names the
 33994477434, 34023218917, 34030451953 and 34037620630, red on 34037636675. The
 pull request was closed unmerged and the branch deleted, which is the whole
 lifetime a proof of failure is supposed to have.
+
+## 2026-09-15 D-0064: the nightly was red for twelve days, and every red was a full run
+
+**The nightly's benchmark step has not completed since 2026-09-03, and nothing
+told me.** I found it by reading the scheduled runs: twelve reds in a row with
+the same traceback, `run_benchmarks.py` building the Accelergy estimator after
+its measurement loop in an image that has never had Accelergy. D-0064 carries
+the reproduction, the runs, and the four reasons it went unnoticed, the last of
+which is that no phase close of mine ever looked at a scheduled run.
+
+**Every red was a full run, and that is what makes this more than a missing
+flag.** 34949062826's progress bar reached 217 of 217 cells in 3:04, and the
+traceback came 11 milliseconds after the last one. So each night the runner paid
+for the whole measurement and discarded it, and what never executed on CI
+hardware was everything after the loop: the deltas, the ablation numerics
+against the band, the budget verdict, the runtime line. The last green run,
+33731922379 at the P10 merge, printed 175 cells in 2.27 minutes at 0.78 seconds
+per cell, and that is the last time CI checked an ablation's numerics.
+
+### The fix is a policy this project already had
+
+`python/npu_frontend/external_tools.py` has answered "can this environment run
+the tools" since D-0046, and its docstring describes this failure by name. The
+harness never asked. It asks now, before the first cell, about the two tools and
+six clones it uses, and anything missing is exit 2 naming each thing, which half
+is absent, and the two ways forward. Nothing is skipped on a caller's behalf: a
+null the flag asked for and a null an accident produced would read the same.
+The nightly passes `--skip-external`, because what that job checks is the budget
+and the numerics on a second host, and a test reads both workflows so that the
+flag and `ci.yml`'s external step cannot drift apart.
+
+**Two things are deliberately not required.** ZigZag, which this harness never
+runs, and the SCALE-Sim example topologies, whose two headers live in
+`scalesim_export.py` as copies taken at the pinned sha. Refusing a run over
+either would be a check failing a run for something that is fine, and
+`divergence_findings` already records why that is worse than no check.
+
+### Predictions, written before any of them ran
+
+**The CI shim rehearsal**, on `conv_bn_relu_stack`, in the recipe's shape plus
+the one difference the harness adds, the clones under `NPU_EXTERNAL_DIR`:
+
+- **Without the flag:** exit 2 in under 30 seconds, the results directory never
+  created and no file written, and one refusal naming eight things: `scalesim`
+  and `accelergy` as modules that do not import, and the six clones each with
+  the path it was looked for at. `--skip-external` is named; ZigZag, the
+  topologies and a traceback are not.
+- **With the flag:** exit 0, 31 cells planned, 9 benchmark and 22 ablation over
+  11 ablatable passes, all 31 written, and all 20 external fields of every cell
+  null with a reason naming the flag, 620 in all. The per cell cost is this
+  machine's and I bound it rather than predict it: between 0.2 and 1.5 seconds.
+
+**The suite rows.** Developer shape **1135 passed, 18 skipped**: P13's 1131 and
+18 plus the four tests this fix adds, all of which run everywhere. CI shape
+**1120 passed, 33 skipped**: P13's 1116 and 33 plus the same four, and 1116 and
+33 is what 34949062826's own pytest step reported, so the base is CI's rather
+than the shim's. `test_external_tools.py` 11 passed under `NPU_EXTERNAL_TOOLS=1`
+in the shim, and mypy clean in both shapes over the same 26 source files.
+
+**The regression baseline.** Re-recording at the fix moves exactly three things
+in `test/baseline/baseline.json`: the recorded sha, the pytest count from 1131
+passed to 1135, and four test names. No cell and no golden byte moves, and
+`--check` at the tip afterwards reports no drift.
+
+**The nightly dispatched on `phase/p13b-nightly`:**
+
+- `fuzz` green, and `mutation` and `flake` green and off, as on every night.
+- `full-matrix` green. Its pytest step 1120 passed and 33 skipped, 0 failed.
+- The benchmark step prints that `--skip-external` nulled the external fields,
+  plans 217 cells, 63 benchmark and 154 ablation over 11 ablatable passes, and
+  measures 217 with none reused. **Its runtime belongs to whichever runner it
+  lands on, so it is a bound:** between 2.0 and 6.0 minutes, 0.55 to 1.66 seconds
+  per cell, and I expect it near 34949062826's 3.07 minutes and 0.85 seconds,
+  because the flag removes nothing that ran inside the loop.
+- **No ablation outside the band**, no red at either `--mlir-timing` bound, the
+  budget verdict inside 90 minutes, exit 0, and a `nightly-benchmark-results`
+  artifact holding 217 cells and the runtime file.
+- The whole job between 8 and 20 minutes; 34949062826's took 10m14s.
+
+**What a red would mean, decided now rather than after.** This is the first run
+on CI hardware of everything after P13's measurement loop. A red at the ablation
+band or the budget is a finding about P13's suite on a second host and not about
+this fix, and it is reported, not suppressed. A `PassStatisticsError` is D-0049
+on a runner. An exit 2 means the flag did not reach the harness.

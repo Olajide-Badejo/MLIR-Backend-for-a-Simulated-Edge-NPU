@@ -4231,3 +4231,105 @@ the one minute number alone is what three of these four reds have in common.
   when it was true, and which nothing re-read when the thing it described
   changed. It is D-0055's shape and D-0059's and D-0061's: checkable from inside
   the artefact the whole time, in one command, and nothing ever asked.
+
+### D-0064 the nightly benchmark suite measured every cell and then died on a tool its image has never had
+
+- **Found:** 2026-09-15, between P13 and P14, by reading the scheduled runs of
+  `nightly.yml`, which no phase close had done. **Numbered past D-0063**, which
+  is taken on `phase/p14-int8` and has not merged.
+- **Status:** fixed on `phase/p13b-nightly`. The proof is `nightly.yml`
+  dispatched on that branch, with its prediction written into
+  `docs/ENGINEERING_LOG.md` before the run existed.
+- **Reproduce.** At `e72f610`, anywhere the `accelergy` binary is not on `PATH`,
+  which includes the CI shim of `docs/PHASE_STATE.md` section 0:
+
+  ```
+  python experiments/run_benchmarks.py --models conv_bn_relu_stack --results /tmp/cells
+  ```
+
+  Every cell is measured, and then:
+
+  ```
+  File "experiments/run_benchmarks.py", line 1269, in _run
+    estimator = accelergy_energy.Estimator(Path(directory) / "accelergy")
+  File "experiments/accelergy_energy.py", line 650, in __init__
+    self._estimators = registered_estimators()
+  File "experiments/accelergy_energy.py", line 375, in registered_estimators
+    completed = subprocess.run(
+  FileNotFoundError: [Errno 2] No such file or directory: 'accelergy'
+  ```
+
+- **What it cost.** `full-matrix` failed at "The full benchmark suite against its
+  90 minute budget" on **twelve scheduled runs in a row**, from 33851741334 on
+  `2f59429`, the P12 merge, to 34949062826 on `e72f610`, the P13 merge. The last
+  green run is 33731922379 on `d4e19a2`, the P10 merge, which printed 175 cells in
+  2.27 minutes at 0.78 seconds per cell; P11 and P12 both merged between it and
+  the first red. The pytest step before the failing one was green, 1116 passed
+  and 33 skipped on the latest. **The reds were full runs**: 34949062826's
+  progress bar reached `217/217 [03:04<00:00]` at 08:59:26.928 and the traceback
+  followed 11 milliseconds later. So every night paid for the whole measurement
+  and threw it away, and what never ran on CI hardware is the half after the
+  loop that checks anything: the deltas, the ablation numerics against the band,
+  the budget verdict and the runtime line. **P13's 154 ablation cells have had
+  their band checked on this machine and nowhere else.**
+- **Introduced by** `17d63ed`, "feat(energy): Accelergy energy and area, and the
+  schema movement declared", at P11. From that commit every run without
+  `--skip-external` builds `accelergy_energy.Estimator` after its measurement
+  loop, and the estimator's constructor runs `accelergy -l`.
+- **Why nothing caught it, in four parts, and the fourth is mine.**
+  1. **The image lacks the tools by design.** `ci.yml`'s external cross
+     validation step is off and asserts all three absent, with the reason beside
+     it: they install from source, Accelergy's plug ins need a CACTI build, and
+     SCALE-Sim needs D-0044's patch.
+  2. **The policy existed and the harness never asked it.**
+     `python/npu_frontend/external_tools.py` has `missing_tools()`, both halves,
+     and `tools_promised()` under `NPU_EXTERNAL_TOOLS`, and its docstring names
+     this exact shape: D-0046 turning "a readable skip into a
+     `FileNotFoundError` in the middle of a benchmark". `run_benchmarks.py` did
+     not consult it, and the nightly step never passed `--skip-external`, which
+     records the fields as null with a reason.
+  3. **The tests covered the flag and not its absence.**
+     `test_the_opt_out_records_a_null_and_a_reason` checks what the flag records.
+     Nothing covered a tool being absent with the flag not passed, which is the
+     only state the nightly is ever in.
+  4. **The CI shim recipe modelled pytest and mypy and was never pointed at the
+     harness, and I did not read a scheduled run.** Every phase close watched the
+     push, pull request and post merge runs of `ci.yml`, and none looked at the
+     nightly's schedule. That is why twelve reds went unread, and it was a habit
+     rather than a mechanism.
+- **The fix.**
+  - **The harness refuses before it measures, by name.** Without
+    `--skip-external`, `refuse_missing_external` runs before the first cell. It
+    asks `external_tools.missing_tools` about SCALE-Sim and Accelergy and checks
+    the six clones `external_tool_shas` reads under `NPU_EXTERNAL_DIR`, and
+    anything missing is a `BenchmarkError`, which `main` already turns into exit
+    2, the step's own "refusing to measure". The message names each missing
+    thing, which half of a tool is absent, and the two ways forward: the flag, or
+    a machine with the tools. **It never skips on a caller's behalf**, because a
+    machine that lost its tools must not re-record 217 cells with null energy and
+    call that a run. The check `external_tool_shas` makes after the loop stays,
+    because a clone can go during a run.
+  - **Two things are not asked for, deliberately.** ZigZag, which the harness
+    never runs, and the SCALE-Sim example topologies, whose two headers are
+    copied into `scalesim_export.py` at the pinned sha. A refusal for either would
+    refuse a run over something it does not use. `missing_tools` takes an
+    optional list of names for this, and a name it does not know is a `KeyError`
+    rather than an empty answer.
+  - **The nightly passes `--skip-external`**, with the reason beside the step
+    and what reverses it: the day the image gains the tools, the flag comes off
+    in the commit that turns `ci.yml`'s external step on.
+    `test_the_nightly_suite_skips_external_while_the_image_has_no_tools` reads
+    both workflows and is red while they disagree.
+  - **The missing state has tests, and they mean the same thing in both
+    shapes.** One takes every directory holding `accelergy` off `PATH`, asserts
+    the absence took, and asserts exit 2, the tool and the flag named, and no file
+    written. One substitutes `find_spec`, `which` and the environment and asserts
+    every line of the refusal, including that ZigZag and the topologies are not
+    in it.
+- **The lesson.** This is D-0046's shape one layer up. D-0046 was tests that
+  could only pass where the machine had the tools; this is a job that could only
+  pass there, and the policy D-0046 wrote sat one import away from the code that
+  needed it. **The CI shim recipe gains a harness row**, with a difference the
+  suite never needed, the clones under `NPU_EXTERNAL_DIR`. And a scheduled
+  workflow is part of CI: its runs are read at every phase close, the same as the
+  push and pull request runs.
