@@ -16,6 +16,16 @@ costs more than writing these lines did.
 
 **Last updated:** 2026-09-06.
 
+**Interphase P13b, 2026-09-15: a debt fix landed with D-0064, and the P13
+handoff below was not rewritten for it.** The nightly's benchmark step had
+failed on every scheduled run since 2026-09-04, because
+`experiments/run_benchmarks.py` built the Accelergy estimator without asking
+whether Accelergy was reachable, and the CI image has never had it. The harness
+now refuses a missing external tool or clone by name before its first cell, the
+nightly passes `--skip-external`, and section 0's CI shim recipe gains a harness
+row. No measured quantity moved: the committed cells and goldens are untouched,
+and the baseline was re-recorded only for the four new tests.
+
 ## Current phase
 
 **P13, tiling, double buffering and layout. Complete, pending merge.** Branch
@@ -1440,6 +1450,29 @@ rather than at run time and no meta path finder reaches it.
 The recipe predicts CI's suite row exactly: **996 passed, 31 skipped** at
 `1e77083`, which is what run 33707070166 reported. **At P12's tip it predicts
 1063 passed, 31 skipped**, and the shim was re-run at that tip to get it.
+
+**The harness has a row of its own, from D-0064**, because the suite only ever
+runs `experiments/run_benchmarks.py` with `--skip-external` and the nightly ran
+it without the flag. It needs a fourth difference the suite never did:
+`NPU_EXTERNAL_DIR` pointed at a path that is not there, since `~/npu-external/`
+also holds the six clones whose shas every manifest records, and the image has
+none of them. Then one model, both ways:
+
+```
+python experiments/run_benchmarks.py --models conv_bn_relu_stack --results <scratch>/refused
+python experiments/run_benchmarks.py --models conv_bn_relu_stack --results <scratch>/opted --skip-external
+```
+
+The first exits **2** before its first cell, writes nothing, and names eight
+absences: `scalesim` and `accelergy` as modules that do not import, and each
+clone with the path it was looked for at. The second exits **0** with every
+roofline, SCALE-Sim and energy field null and each reason naming the flag. **At
+`0c3cdfd` both were predicted and both held**: 1.07 seconds and no file for the
+first, 31 cells at 0.49 seconds each and 620 of 620 fields for the second. The
+suite row in the same shim is **1120 passed, 33 skipped**, which is CI's 1116
+and 33 at `e72f610` plus D-0064's four tests. Before D-0064 the harness found
+out only after its loop, which is how every scheduled nightly from 2026-09-04 to
+2026-09-15 ended.
 
 ### What P12 activates, which is nothing, and the two triggers that go with it
 

@@ -6753,6 +6753,13 @@ clones all present, the same command exits 2 after 0.85 seconds with nothing
 written and one line, `accelergy (the accelergy binary is not on PATH)`, which
 is the half `missing_tools` exists to tell apart.
 
-**The dispatched nightly on `phase/p13b-nightly`:** not yet run at this commit.
-Its URL, its verdict and its runtime against the bound above are recorded here
-once it has finished.
+**The baseline, measured.** The re-record at `613bdb4`, from a machine at 0.04
+and 0.27, moved exactly the three things predicted: the recorded sha, pytest
+from 1131 passed to 1135 with 18 skipped unchanged, and the four tests by name,
+in six added lines and two removed, committed alone as `2393196`. No cell moved
+and all 21 golden tensors were rewritten byte identical.
+
+**Still to be recorded here, because neither exists at the commit that adds this
+line:** `--check` at that commit, and the dispatched nightly on
+`phase/p13b-nightly`, with its URL, its verdict and its runtime against the
+bound above.
