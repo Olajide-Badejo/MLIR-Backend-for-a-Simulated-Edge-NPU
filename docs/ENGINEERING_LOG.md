@@ -6725,3 +6725,34 @@ on CI hardware of everything after P13's measurement loop. A red at the ablation
 band or the budget is a finding about P13's suite on a second host and not about
 this fix, and it is reported, not suppressed. A `PassStatisticsError` is D-0049
 on a runner. An exit 2 means the flag did not reach the harness.
+
+### Measured, beside what was predicted
+
+**The rehearsal and both suite rows ran at `0c3cdfd`**, the commit that holds
+the predictions above, from a clean tree. The rehearsal started at a one minute
+load of 0.00 and the CI shape row at 0.42. The developer shape row followed it
+and started at 0.46 with the five minute average still at 2.16 from the row
+before, so counts are compared below and timings are not.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| shim, `conv_bn_relu_stack`, without the flag | exit 2 in under 30 seconds; no results directory and no file; eight things named, `scalesim` and `accelergy` as modules that do not import and the six clones with their paths; `--skip-external` named; no ZigZag, topologies or traceback | exit **2** after **1.07 seconds**; the results directory never created and **0** files; **eight** lines and exactly those; the flag named; ZigZag **0**, topologies **0**, tracebacks **0** |
+| shim, the same model with the flag | exit 0; 31 cells, 9 benchmark and 22 ablation over 11 ablatable passes; all 31 written; 620 external fields null with the flag in the reason; 0.2 to 1.5 seconds per cell | exit **0**; **31** planned, **9** and **22** over **11**; **31** measured, 0 reused, 31 written; **620 of 620**; **0.49** seconds per cell, 0.25 minutes; worst `--mlir-timing` gap 0.0810 ms and no red at either bound |
+| suite, developer shape | 1135 passed, 18 skipped | **1135 passed, 18 skipped**, 0 failed, 217.41 s |
+| suite, CI shape | 1120 passed, 33 skipped | **1120 passed, 33 skipped**, 0 failed, 164.95 s |
+| `test_external_tools.py` in the shim with `NPU_EXTERNAL_TOOLS=1` | 11 passed | **11 passed** |
+| mypy | clean in both shapes over 26 source files | **clean in both**, 26 source files, the CI shape's under `--python-executable /usr/bin/python3` |
+
+**Every clause held.** The shim was checked for being the image before it was
+used: all three of `scalesim`, `accelergy` and `zigzag` refuse to import in it,
+which is the assertion `ci.yml`'s external step makes, and `accelergy` is not on
+its `PATH`. The refusal lists every absence rather than stopping at the first,
+so a machine missing a binary and a clone learns both in one run rather than in
+two. **On this machine with only the binary taken off `PATH`**, the modules and
+clones all present, the same command exits 2 after 0.85 seconds with nothing
+written and one line, `accelergy (the accelergy binary is not on PATH)`, which
+is the half `missing_tools` exists to tell apart.
+
+**The dispatched nightly on `phase/p13b-nightly`:** not yet run at this commit.
+Its URL, its verdict and its runtime against the bound above are recorded here
+once it has finished.
