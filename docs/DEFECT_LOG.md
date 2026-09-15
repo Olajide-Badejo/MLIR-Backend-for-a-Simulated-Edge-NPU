@@ -4333,3 +4333,77 @@ the one minute number alone is what three of these four reds have in common.
   suite never needed, the clones under `NPU_EXTERNAL_DIR`. And a scheduled
   workflow is part of CI: its runs are read at every phase close, the same as the
   push and pull request runs.
+
+### D-0065 the nightly's benchmark artifact has never carried the runtime file, and each upload reported success
+
+- **Found:** 2026-09-15, between P13 and P14, while adjudicating the prediction
+  for run 35022460726, whose `nightly-benchmark-results` artifact was predicted
+  to hold the 217 cells and `results-runtime.json` and held 217 files.
+- **Status:** **open, with the fix deferred to P15**, which edits `nightly.yml`
+  when it turns the mutation and flake jobs on. It waits for two reasons. **No
+  gate is weaker for it**: the step's log carries every figure the runtime file
+  carries, at the precision the harness prints them, which is the cells measured
+  and reused, the minutes, the per cell cost, the budget, the seed and the worst
+  `--mlir-timing` gap, and the budget verdict is the harness's exit status rather
+  than the file. **And a fix is a workflow change whose proof is a dispatched run
+  of its own**, which is a separate claim from D-0064's and should not ride on
+  that run's evidence.
+- **Reproduce, by artifact file count**, on the two runs whose benchmark step
+  completed:
+
+  | Run | Cells measured | Files uploaded | `results-runtime.json` |
+  |---|---|---|---|
+  | 33731922379, P10's last green night | 175 | 175 | absent |
+  | 35022460726, dispatched on `phase/p13b-nightly` | 217 | 217 | absent |
+
+  The harness wrote the file both times: it prints the per cell line and writes
+  the file on the same branch, and both logs carry that line. Neither upload
+  warned about it, and each reported the artifact "successfully uploaded", at
+  775379 and 955976 bytes.
+- **The step names two paths, and only one of them arrives in the container.**
+  Every run logs the step's input as host paths:
+
+  ```
+  path: /home/runner/work/_temp/results
+  /home/runner/work/_temp/results-runtime.json
+  ```
+
+  The red run 34949062826, whose benchmark step died before writing either,
+  warned with the two paths it had actually searched:
+
+  ```
+  ##[warning]No files were found with the provided path: /__w/_temp/results
+  /home/runner/work/_temp/results-runtime.json. No artifacts will be uploaded.
+  ```
+
+  One container path and one host path. The job runs inside the container, and
+  the runtime file is written at `/__w/_temp/results-runtime.json`, not at the
+  host path the step searched.
+- **The likely mechanism, unverified.** Only the leading host prefix of a multi
+  line `path` input is translated into the container, so the first line is
+  rewritten and every later line is searched as the host path it was given. It
+  fits all three runs, and it is inferred from their logs rather than read from
+  the runner's source or tested by a run built to show it, so it is recorded as
+  the likely mechanism and not as the mechanism.
+- **Candidate fixes, for P15.**
+  - **Write or copy the runtime file inside the directory the first path
+    names.** Copying it into the results directory itself puts a JSON that is
+    not a cell among the cells, which `run_benchmarks.py` rules out because
+    every consumer globs that directory. The form that keeps the rule is a first
+    path naming a parent of both: `--results "${RUNNER_TEMP}/nightly/results"`
+    and an upload of `${{ runner.temp }}/nightly`, where the harness already
+    writes the runtime file beside the results directory, so it lands inside the
+    uploaded one with no copy at all.
+  - **A second upload step** for the runtime file alone.
+  - Either way the proof is a dispatched run whose upload reports one file more
+    than it measured cells.
+- **The shape, and it is the lossy channel again.** `if-no-files-found: warn` is
+  the only thing in the step that can say a file is missing, and on the evidence
+  of these three runs it is asked only when nothing at all matches: 34949062826,
+  with neither file, warned, and the two green nights, with one path matching
+  and one matching nothing, reported a successful upload and no warning. So a
+  missing file looked like a successful upload on every night the harness
+  completed. It is the shape of D-0040 to D-0043, a value through a lossy channel
+  treated as exact, where the channel is a list of paths and the loss is every
+  path after the first. **Silence and success looked alike**, which Section 19.0
+  forbids for a step and which nobody had checked for an artifact.

@@ -6759,7 +6759,64 @@ from 1131 passed to 1135 with 18 skipped unchanged, and the four tests by name,
 in six added lines and two removed, committed alone as `2393196`. No cell moved
 and all 21 golden tensors were rewritten byte identical.
 
-**Still to be recorded here, because neither exists at the commit that adds this
-line:** `--check` at that commit, and the dispatched nightly on
-`phase/p13b-nightly`, with its URL, its verdict and its runtime against the
-bound above.
+**`--check` at `16fdb23`**, the commit that held this paragraph's place, from a
+machine at 0.10 and 0.27: **no drift** in 227 seconds, 42 cells, 21 golden
+tensors byte identical, largest movement against `-O0` 4.470e-08, pytest 1135
+passed and 18 skipped.
+
+### The dispatched nightly, measured
+
+**Run 35022460726**,
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/35022460726>,
+dispatched on `phase/p13b-nightly` at `16fdb23` and started at 20:54 UTC on
+2026-09-15. Every measured figure below is read from that run's own log, and the
+prediction it is set against is the one above, unedited.
+
+| Clause | Predicted | Measured on 35022460726 |
+|---|---|---|
+| the other three jobs | `fuzz` green; `mutation` and `flake` green and off | `mutation` and `flake` **green**, 4 seconds each, both off; `fuzz` on the line below this table |
+| `full-matrix` | green; pytest 1120 passed, 33 skipped, 0 failed | **green in 10m20s**; pytest **1120 passed, 33 skipped**, none failed, 229.84 s |
+| the opt out | the step prints that `--skip-external` nulled the external fields | **printed**, the harness's own opt out line |
+| the plan | 217 cells, 63 benchmark and 154 ablation over 11 ablatable passes | **217** planned, **63** and **154** over **11** |
+| the measurement | 217 measured, none reused | **217 measured, 0 reused** |
+| runtime | 2.0 to 6.0 minutes and 0.55 to 1.66 seconds per cell, expected near 3.07 and 0.85 | **3.04 minutes, 0.84 seconds per cell** |
+| the checks | no ablation outside the band, no red at either `--mlir-timing` bound, inside 90 minutes, exit 0 | **none outside the band**; worst upper gap **0.0678 ms** at SCCP in `lenet_batched-O2-tight-n4-fp32-normal-ablate-npu-fuse-bias`, **no red at either bound**; **inside the budget, 3.04 minutes against 90**; exit **0** |
+| the artifact | `nightly-benchmark-results` holding 217 cells and the runtime file | present, 955976 bytes, **217 files: the cells, and not the runtime file** |
+| the job | 8 to 20 minutes | **10m20s** |
+
+**`fuzz`:** predicted green, measured **green in 31m19s**, and with it the whole
+run concluded success.
+
+**Every clause held but the artifact's, and that one is D-0065.** The upload
+step reported "there will be 217 files uploaded". The harness wrote
+`results-runtime.json`, because the line it prints with the per cell figure is
+on the same branch as the write, and the step did not find it. The step names
+two paths, `${{ runner.temp }}/results` and
+`${{ runner.temp }}/results-runtime.json`, and only the first reaches the
+container translated: the same step on 34949062826, with nothing to upload,
+warned that it found no files at `/__w/_temp/results` and
+`/home/runner/work/_temp/results-runtime.json`, one container path and one host
+path. **It has never uploaded the runtime file**: 33731922379, P10's last green
+night, uploaded 175 files for 175 cells, and both green uploads reported success
+without a warning. Nothing reads that file from the artifact, and the figures it
+carries are in the step's log, which is where this table read them, so no gate
+was weaker for it. **D-0065** records it as a defect in the step rather than in
+the harness, open, with its fix deferred to P15, which edits this workflow when
+it turns the mutation and flake jobs on.
+
+**0.84 seconds per cell is the first figure CI hardware has measured for the
+suite as it stands**: 217 cells, with P12's parallel kernel and P13's three
+passes in `-O2`, against the 15 seconds Section 2 still states. This run's own
+projection line still printed "projected 54.2 minutes at 15.0 s per cell
+(Section 2's planning figure, not yet measured here)", because the projection
+reads the runtime file beside the results directory and every runner starts
+without one. The last figure CI measured before it was 0.78 seconds over P10's
+175 cells on 33731922379, and the two are different suites on different runners
+rather than a trend.
+
+**It is also the first benchmark step to complete on CI since 2026-09-03**, so
+it is the first time the checks after the loop ran on a runner over P13's suite:
+the deltas, all 154 ablation cells against the end to end band, and the budget
+verdict. **They passed**, and inside the loop no cell went red at either timing
+bound. D-0064 recorded that P13's ablation band had been checked on this machine
+and nowhere else; it has now been checked on two.
