@@ -2476,6 +2476,15 @@ Section 12 puts `-npu-calibrate` in quantized mode only and never in a default
 `-O` level, and `docs/PASSES.md` already carries that sentence with nothing
 behind it.
 
+**The representation the pass lowers into now exists.** Checkpoint A left the
+integer form reachable only by hand: the binary format carried it and the
+simulator executed it, and no operation in either dialect could write one down.
+`npuisa.matmul` and `npuisa.conv2d` now take the integer form with an i32 bias,
+the transfer instructions and `npuisa.const` move i32 so a quantized bias
+reaches the scratchpad as an ordinary constant, and
+`test/Encoding/quantized-compute.mlir` takes both instructions the whole way to
+the bytes and back out. What is missing is the producer, which is the pass.
+
 **Four things to check before anything else.**
 
 **The two exemptions are the phase's own deadline.** `docs/EXEMPTIONS.md` carries

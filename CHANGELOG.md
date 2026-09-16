@@ -29,6 +29,20 @@ The measurement is in `docs/PHASE_STATE.md` beside the claim.
   the malformed corpus compared case by case at the parent and at the change.
   A relu now clamps at the value that represents real zero rather than at zero,
   which is the same thing only when the zero point is zero.
+- **The integer compute instructions exist at the instruction level**, so a
+  quantized model has something to lower into. `npuisa.matmul` and
+  `npuisa.conv2d` take i8 data with an **i32 bias**, because Section 14 adds the
+  bias to the int32 accumulator rather than to the result. The rescaling pair is
+  required at an integer result, since a fixed point rescale is how an int32
+  accumulator becomes an i8 result at all, and every quantization attribute is
+  refused at an f32 one. A transfer may move i32 where a multiply may not read
+  it, which is what lets a quantized bias reach the scratchpad as an ordinary
+  constant, and a case says the compute constraints did not widen with the
+  transfers.
+- **`npu-objdump` prints the rescaling pair**, which it never did, so the
+  arithmetic of an integer instruction can be checked by reading it. The fields
+  print in the order the machine applies them, and every f32 line is byte
+  identical: the pair was declared in the opcode all along and had no renderer.
 - **`npu.quantize` and `npu.dequantize` are in the dialect**, with the verifier
   rules Section 7.2 states, the two frontend converters, the lowering to
   `npuisa.quant` and `npuisa.dequant`, the encoder cases for `QUANT` and

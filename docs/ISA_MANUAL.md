@@ -403,6 +403,18 @@ term; rescale by the requantization pair; **add the output zero point**; apply
 the fused activation at the value that represents real zero, which is that zero
 point and not zero; and saturate to the i8 rails.
 
+**The disassembly of an integer instruction is that arithmetic in order.**
+`npu-objdump` appends the integer fields after the opcode's format string, so an
+f32 line is byte identical to what it has always been and an integer one reads
+`zeroPoint`, then `requantMultiplier` and `requantShift`, then
+`outputZeroPoint`. Reading down the line reads the computation.
+
+The rescaling pair is the one of those declared in the opcode's ordinary fields
+rather than its integer ones, because an f32 instruction does carry the neutral
+pair and the validator's neutrality rule is written against that list. What is
+true only at an integer result is that the pair **means** something, which is
+why that is the only result whose disassembly prints it.
+
 `QUANT` and `DEQUANT` are unaffected. They declare `scale`, they use it as a
 scale, and the word means there exactly what it has always meant.
 

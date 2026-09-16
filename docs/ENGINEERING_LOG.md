@@ -6858,3 +6858,55 @@ not zero. At a zero point of zero the two agree exactly, which is why the
 symmetric path passed every test it had; the case that separates them uses the
 zero point a post ReLU tensor actually gets, which is -128, where the old code
 answers 127 and 0 and the new one answers -27 and -128.
+
+### The representation, and the two gaps that only a real program found
+
+**The instruction level had no way to say it.** The binary format has carried a
+quantized convolution since checkpoint A and the simulator has executed one, but
+`npuisa.matmul` and `npuisa.conv2d` were written against f32 operands, so the
+only way to obtain an integer instruction was to build the record by hand in a
+unit test. That is the gap this closes: the attributes and the element types
+move up to the level where the instruction is written, so a bad one is refused
+where it was written rather than three passes later at the encoder.
+
+**The bias is the one operand whose element type is deliberately not the
+result's**, and it is worth saying out loud because every other rule in this
+dialect is an agreement rule. At an i8 result the data is i8 and the bias is
+i32, since Section 14 adds the bias to the int32 accumulator rather than to the
+result. The verifier says exactly that when it refuses an f32 bias, because a
+reader who has just been told that element types must agree needs to know why
+this one does not.
+
+**The first gap: a bias that nothing could deliver.** With the compute
+instructions widened, an attempt to encode a whole quantized program stopped at
+`npuisa.dma_load`, which refused an i32 operand. The bias had to be an
+`npuisa.const` in DRAM and a transfer into the scratchpad, and neither would
+take it, so the compute instruction could name an operand that no instruction in
+the dialect could ever have filled. The fix is a separate constraint rather than
+a general widening: a DMA copies bytes and does not interpret them, so transfers
+move i32, and the compute constraints stay narrow. A case asserts the second
+half, because a widening that quietly let an i32 operand into a multiply would
+have passed every test the first half has.
+
+**The second gap: an arithmetic that could not be read.** The first quantized
+program this project ever produced disassembled to a line showing a zero point
+being added and no sign of the rescale that produced the value it was added to.
+`FieldRequantize` had been declared on both opcodes since P7 and `fieldText`
+simply had no case for it, which is precisely the failure the table in
+`appendIntegerFields` carries a comment against. It now prints at an integer
+result, in the order the machine applies the fields, and the f32 lines are byte
+identical because the append never runs at an f32 result.
+
+**Both gaps have the same shape**, and it is the shape worth carrying forward:
+a piece that exists at one level and is missing at the level that would use it,
+invisible to every test that exercises one level at a time. Neither was found by
+reading code. Both were found by trying to take one real program the whole way
+through, which is the argument `test/Encoding/quantized-compute.mlir` now makes
+permanent.
+
+**Predicted before measured.** The CHECK lines of that file were written from
+the arithmetic, before it was run: eleven disassembly lines including the two
+integer instructions with the rescale inserted in arithmetic order, the DRAM map
+with an 8 byte bias and a 12 byte one, and the 512 byte scratchpad. The run
+matched every line, the lit suite went from 38 tests to 39 with all passing, and
+the four unit suites held at 23, 91, 74 and 29.
