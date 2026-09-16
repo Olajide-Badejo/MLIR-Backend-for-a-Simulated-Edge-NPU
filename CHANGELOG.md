@@ -18,6 +18,17 @@ level emits an integer instruction yet, so no cell of the 217 can reach one, and
 a declaration of a movement measured to be zero would be a false declaration.
 The measurement is in `docs/PHASE_STATE.md` beside the claim.
 
+- **An integer compute instruction carries its output zero point in the `scale`
+  word**, which the owner settled on 2026-09-07 after checkpoint A found one
+  `zeroPoint` field and two zero points that wanted it. Activations stay affine
+  as Section 14 specifies, `Program::kVersion` does not move, and no byte of any
+  existing program moves: the word is idle on exactly those instructions,
+  because their scale is already folded into `requantMultiplier` and
+  `requantShift`. Declared in `docs/BREAKING_CHANGES.md` before the commit that
+  made it, refused on decode when it is fractional or outside the i8 range, and
+  the malformed corpus compared case by case at the parent and at the change.
+  A relu now clamps at the value that represents real zero rather than at zero,
+  which is the same thing only when the zero point is zero.
 - **`npu.quantize` and `npu.dequantize` are in the dialect**, with the verifier
   rules Section 7.2 states, the two frontend converters, the lowering to
   `npuisa.quant` and `npuisa.dequant`, the encoder cases for `QUANT` and

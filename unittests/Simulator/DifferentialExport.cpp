@@ -563,7 +563,8 @@ std::vector<Case> cases() {
                        std::vector<int64_t> resultShape,
                        std::vector<int64_t> strides, std::vector<int64_t> pads,
                        std::vector<int64_t> dilations, int64_t group,
-                       int32_t zeroPoint, int32_t multiplier) {
+                       int32_t zeroPoint, int32_t outputZeroPoint,
+                       int32_t multiplier) {
     Case entry;
     entry.name = std::move(name);
     entry.operation = "conv2d";
@@ -581,10 +582,15 @@ std::vector<Case> cases() {
     entry.dilations = std::move(dilations);
     entry.group = group;
     entry.zeroPoint = zeroPoint;
+    // The output zero point travels in the scale word, which is where the
+    // machine carries it on an integer compute instruction.
+    entry.scale = static_cast<float>(outputZeroPoint);
     entry.requantMultiplier = multiplier;
     entry.requantShift = 0;
     entry.attributes = convAttributes(entry) + ", \"zero_point\": " +
                        std::to_string(entry.zeroPoint) +
+                       ", \"output_zero_point\": " +
+                       std::to_string(outputZeroPoint) +
                        ", \"requant_multiplier\": " +
                        std::to_string(entry.requantMultiplier) +
                        ", \"requant_shift\": " +
@@ -596,15 +602,17 @@ std::vector<Case> cases() {
   // whole folded bias argument rests on, and the same shape unpadded beside it
   // so that a padding rule that was wrong in both directions cannot hide.
   quantConv("conv2d_i8_padded", {1, 3, 5, 5}, {4, 3, 3, 3}, {1, 4, 5, 5},
-            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, -11, kHalf);
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, -11, 12, kHalf);
   quantConv("conv2d_i8_unpadded", {1, 3, 5, 5}, {4, 3, 3, 3}, {1, 4, 3, 3},
-            {1, 1}, {0, 0, 0, 0}, {1, 1}, 1, -11, kIdentity);
+            {1, 1}, {0, 0, 0, 0}, {1, 1}, 1, -11, -5, kIdentity);
+  // This one keeps an output zero point of zero, so the symmetric case stays
+  // covered: it is a legal value and the case that used to be the only one.
   quantConv("conv2d_i8_depthwise", {2, 6, 5, 5}, {6, 1, 3, 3}, {2, 6, 5, 5},
-            {1, 1}, {1, 1, 1, 1}, {1, 1}, 6, 23, kHalf);
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 6, 23, 0, kHalf);
   // A zero point of zero, which is the symmetric case and the one where a
   // kernel that ignored the field entirely would still pass.
   quantConv("conv2d_i8_symmetric", {1, 2, 6, 6}, {3, 2, 3, 3}, {1, 3, 6, 6},
-            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, 0, kIdentity);
+            {1, 1}, {1, 1, 1, 1}, {1, 1}, 1, 0, -40, kIdentity);
 
   {
     Case entry;
@@ -616,9 +624,10 @@ std::vector<Case> cases() {
     entry.inputs.push_back(i8Input({19, 3}, stream.int8Values(57)));
     entry.inputs.push_back(i32Input({3}, stream.int32Values(3)));
     entry.resultShape = {5, 3};
+    entry.scale = 7.0f;
     entry.requantMultiplier = kHalf;
     entry.requantShift = 2;
-    entry.attributes = "\"requant_multiplier\": " +
+    entry.attributes = "\"output_zero_point\": 7, \"requant_multiplier\": " +
                        std::to_string(entry.requantMultiplier) +
                        ", \"requant_shift\": " +
                        std::to_string(entry.requantShift);

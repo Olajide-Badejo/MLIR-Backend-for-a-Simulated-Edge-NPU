@@ -59,10 +59,10 @@ phase. No constant moved, no f32 charge moved, and an f32 result takes the same
 peak it always took. The two are separate assumptions rather than one written as
 a multiple of the other, which is why the header states both.
 
-### The two things Checkpoint A decided, and one of them is the owner's
+### The two things Checkpoint A decided, and what the owner settled
 
 **The format has one zero point per instruction and the arithmetic needs the
-input's, so a quantized compute result is symmetric.** This is the checkpoint's
+input's, so the output's needed somewhere else to live.** This is the checkpoint's
 one real design decision and it is forced rather than chosen. Section 14 hoists
 the input zero point out of the multiply accumulate loop by folding
 `- zp_x * sum_k q_w[k]` into the int32 bias at compile time, **over the whole
@@ -72,26 +72,36 @@ outside the input contributes it, and without that the folded term is wrong at
 every padded output position. `Instruction` carries exactly one `zeroPoint`,
 `Program::kVersion` may not move, so that one field is the input's.
 
-**What has nowhere to live is the output zero point.** Section 14's pinned
-arithmetic does not ask for one: quantize adds a zero point, dequantize subtracts
-one, and the compute path between them adds an int32 bias and requantizes, with
-nothing after the rescale. So the implementation is consistent with the section's
-own arithmetic paragraph. **It is not consistent with the section's calibration
-paragraph**, which says activations are calibrated affine, because the output of
-a quantized convolution is an activation and this machine represents it
-symmetrically.
+**The output zero point had nowhere to live, and checkpoint A shipped it
+symmetric while the question went to the owner.** Section 14's pinned arithmetic
+does not ask for an output zero point: quantize adds one, dequantize subtracts
+one, and the compute path between them adds an int32 bias and requantizes with
+nothing after the rescale. Its calibration paragraph says activations are
+affine. The output of a quantized convolution is an activation, so the two
+cannot both hold for it, and checkpoint A followed the arithmetic paragraph and
+recorded the contradiction rather than choosing for the owner.
 
-**That is an owner item and it is stated here rather than resolved**, in the
-shape P13 used for the Section 5.5 contradiction. The three ways out are: the
-calibrator computes a symmetric scale for a tensor that is the output of a
-quantized operation, which is what this implementation assumes and costs about
-half the output range on a one sided tensor; or `Instruction` gains a second
-zero point, which moves `Program::kVersion` and is the one thing this phase's
-gate forbids by name; or the requantization gains a form that folds the output
-zero point exactly, which it cannot, because `zp_y / M` is not an integer.
-**Nothing in this repository may edit the specification**, so the measurement of
-what the first costs belongs to Checkpoint C's accuracy table, where it will be
-visible per model rather than argued here.
+**The owner settled it on 2026-09-07: the activations stay affine, and the
+output zero point goes in the `scale` word.** That word is free on exactly the
+instructions that needed somewhere to put one, because an integer compute
+instruction's scale is already carried folded into `requantMultiplier` and
+`requantShift`. It is declared as its own field, `outputZeroPoint`, in the
+opcode's integer profile rather than as a second reading of `scale`, because a
+scale is finite and strictly positive while a zero point is integral and may be
+negative or zero, and an opcode that declared both would be claiming one word
+means two things at once. The generator refuses to build such an opcode.
+
+**What that closed, and what it cost.** `Program::kVersion` does not move, no
+byte of any existing program moves, and the f32 path keeps the rule it has
+always had: the word holds zero, refused by the same check with the same
+message. The symmetric path never shipped a number, so nothing in
+`docs/NUMBERS.md` is restated. What it would have cost is the negative half of
+the int8 range on every post ReLU tensor in the suite, which is most of them,
+and that is an argument rather than a measurement because the path was replaced
+before anything was measured under it. `docs/BREAKING_CHANGES.md` carries the
+declaration, written before the commit that caused it, and the malformed corpus
+was run at the parent and at the change with every verdict compared case by
+case.
 
 **The second decision is smaller and is recorded because it is a declared
 interface.** The ISA description gained an **integer profile**, which is two
@@ -2069,20 +2079,17 @@ answer could take.
 can settle. They are stated before P13's because a reader of this handoff has
 not seen them anywhere else.
 
-**Where a quantized compute instruction's output zero point lives, which is a
-contradiction inside Section 14.** The section's pinned arithmetic has no output
-zero point: quantize adds one, dequantize subtracts one, and the compute path
-between them adds an int32 bias and requantizes with nothing after the rescale.
-Its calibration paragraph says activations are affine. The output of a quantized
-convolution is an activation, so the two cannot both hold for it. The format has
-one `zeroPoint` per instruction and the arithmetic needs the **input's**, because
-padding contributes it and because the term folded into the int32 bias was
-computed over the whole window; `Program::kVersion` may not move, so there is no
-second field to put the output's in. **This implementation follows the arithmetic
-paragraph and makes a quantized compute result symmetric**, and what that costs
-is a measurement Checkpoint C's per model accuracy table will carry rather than
-an argument. Stated for the owner, alongside the Section 2 carve out and the
-Section 5.5 contradiction that P13 raised and that are both still open.
+**Where a quantized compute instruction's output zero point lives. Settled by
+the owner on 2026-09-07 and no longer open.** The contradiction was real: Section
+14's pinned arithmetic has no output zero point and its calibration paragraph
+says activations are affine, and the output of a quantized convolution is an
+activation. The answer is that it lives in the `scale` word, which an integer
+compute instruction does not otherwise use because its scale is folded into the
+requantization pair. Activations stay affine as Section 14 specifies,
+`Program::kVersion` does not move, and the change is declared in
+`docs/BREAKING_CHANGES.md` before the commit that made it. The Section 2 carve
+out and the Section 5.5 contradiction that P13 raised are both still open and
+are still the owner's.
 
 **Whether the integer compute instruction should exist at the `npuisa` level
 before the pass that produces it.** Checkpoint A left `npuisa.conv2d` and
@@ -2485,12 +2492,15 @@ The first commit that puts a quantized cell in the suite moves the cell count,
 which is a declaration in `docs/BREAKING_CHANGES.md` followed by a re-record in
 its own commit, in that order.
 
-**The output zero point question is the owner's and it is open.** It is in the
-open questions above with the three ways out and the reason two of them are
-closed. Checkpoint B's calibrator has to compute a scale for the output of a
-quantized operation and this implementation needs that scale symmetric; do not
-let that become an assumption nobody wrote down, because it is exactly the shape
-of thing D-0047 and D-0048 both were.
+**The output zero point question is settled and the calibrator has to honour
+it.** The owner decided on 2026-09-07 that activations stay affine and the
+output zero point rides in the `scale` word of an integer compute instruction.
+Checkpoint B's calibrator therefore computes an **affine** scale and zero point
+for the output of a quantized operation, per Section 14's range rules, and the
+machine adds that zero point after the rescale. What must not happen is the old
+symmetric assumption surviving in the calibrator after the machine stopped
+making it, because a compiler and a machine that disagree about what a number
+means is exactly the shape D-0047 and D-0048 both were.
 
 **D-0049 is open and quiet machines still matter.** Every measurement Checkpoint
 B and C take goes through the 0.30 load quiet gate, and a red at either

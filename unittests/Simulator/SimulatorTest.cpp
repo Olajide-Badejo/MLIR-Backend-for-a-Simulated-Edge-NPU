@@ -1379,4 +1379,97 @@ TEST(Quantization, TheReductionRefusesWhenItOverflows) {
       << *outcome.result.error;
 }
 
+TEST(Quantization, ConvolutionAddsItsOutputZeroPoint) {
+  // The owner's decision, in the smallest program that shows it. A one by one
+  // convolution over a single element, two output channels, both weights 1, and
+  // an output zero point of 5 in the scale word.
+  //
+  //   channel   accumulator   plus bias   plus zero point
+  //   0         1             11          16
+  //   1         1             -9          -4
+  //
+  // Under the symmetric path this instruction used to take, the answers were 11
+  // and -9: the zero point is the whole difference, and it is the difference on
+  // every element rather than on the edges.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{2, 1, 1, 1}, {1, 1}}}, {10, -10}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+        instruction.scale = 5.0f;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{16, -4}));
+}
+
+TEST(Quantization, AReluClampsAtTheOutputZeroPointRatherThanZero) {
+  // **The post ReLU case, at the zero point a post ReLU tensor actually gets.**
+  // Section 14 calibrates an activation affine over a range extended to include
+  // real zero, so a tensor whose observed minimum is zero has
+  // `zero_point = round(-0 / scale) - 128`, which is -128: every one of the 255
+  // levels sits at or above real zero and none is wasted below it.
+  //
+  // One by one over a single element, two output channels, both weights 1,
+  // biases 100 and -100, an output zero point of -128, and a fused relu:
+  //
+  //   channel   accumulator   plus bias   plus zero point   after the relu
+  //   0         1             101         -27               -27
+  //   1         1             -99         -227              -128
+  //
+  // The relu clamps at the value that **represents** real zero, which is -128
+  // and not 0. A kernel clamping at zero would answer 0 for the second channel,
+  // which is 128 counts above real zero and is the entire bug this case exists
+  // to catch. The symmetric path this replaces answered 127 and 0 here.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{2, 1, 1, 1}, {1, 1}}}, {100, -100}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+        instruction.scale = -128.0f;
+        instruction.activation = Activation::Relu;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{-27, -128}));
+}
+
+TEST(Quantization, TheOutputZeroPointSaturatesRatherThanWrapping) {
+  // The zero point pushes a value that was inside the range out of it, and the
+  // rails take it rather than the addition wrapping. Accumulators 120 and -120
+  // at a zero point of 100 are 220 and -20.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {1}}, {{2, 1, 1, 1}, {1, 1}}}, {119, -121}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D, [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+        instruction.scale = 100.0f;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{127, -20}));
+}
+
+TEST(Quantization, MatMulAddsItsOutputZeroPointToo) {
+  // `(1, 2)` by `(2, 1)` with a bias of 1 and an output zero point of -3.
+  // `1 * 3 + 2 * 4` is 11, plus the bias is 12, plus the zero point is 9.
+  //
+  // A matrix multiplication carries the output zero point and not the input
+  // one, which is the asymmetry the instruction's own shape rule states: it has
+  // no padding, so the input zero point's whole contribution is the compile
+  // time term already folded into the bias.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 2}, {1, 2}}, {{2, 1}, {3, 4}}}, {1}, {1}, {1, 1}, Opcode::MATMUL,
+      [](Instruction &instruction) { instruction.scale = -3.0f; });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{9}));
+}
+
 } // namespace

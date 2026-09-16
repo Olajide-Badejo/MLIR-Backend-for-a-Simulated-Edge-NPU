@@ -626,6 +626,7 @@ def quantized_conv2d(
     dilations: tuple[int, int] | list[int] = (1, 1),
     group: int = 1,
     zero_point: int = 0,
+    output_zero_point: int = 0,
     requant_multiplier: int,
     requant_shift: int,
     relu: bool = False,
@@ -637,6 +638,12 @@ def quantized_conv2d(
     whole window, so a tap outside the input has to contribute ``zp_x`` for the
     two to cancel to the unfolded form at a padded output position. Here that is
     one argument to ``np.pad``, where the f32 convolution above pads with zero.
+
+    **The output zero point is added after the rescale**, which is the affine
+    output Section 14's calibration paragraph asks for. The machine carries it
+    in the scale word of the instruction, because that word is idle on an
+    integer compute instruction whose scale is already folded into the
+    requantization pair; `docs/BREAKING_CHANGES.md` declares it.
 
     The structure is the f32 convolution's, accumulating over kernel positions
     with whole tensor slices, which is a different order from the simulator's
@@ -690,9 +697,14 @@ def quantized_conv2d(
         out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1, 1, 1)
     _check_int32_accumulator(out, "quantized_conv2d")
 
-    rescaled = requantize(out, requant_multiplier, requant_shift)
+    rescaled = requantize(out, requant_multiplier, requant_shift) + np.int64(
+        output_zero_point
+    )
+    # A relu clamps at the value that represents real zero, which is the output
+    # zero point and not zero, because Section 14 calibrates activations affine.
+    # The two agree exactly when the zero point is zero.
     if relu:
-        rescaled = np.maximum(rescaled, np.int64(0))
+        rescaled = np.maximum(rescaled, np.int64(output_zero_point))
     return np.clip(rescaled, -128, 127).astype(np.int8)
 
 
@@ -701,25 +713,31 @@ def quantized_matmul(
     b: QuantTensor,
     bias: NDArray[np.int32] | None = None,
     *,
+    output_zero_point: int = 0,
     requant_multiplier: int,
     requant_shift: int,
     relu: bool = False,
 ) -> QuantTensor:
     """The int8 matrix multiplication: int32 accumulation, then requantization.
 
-    There is no zero point here and there is one on the convolution, and the
-    difference is padding: every tap of a matrix multiplication is in range, so
-    the input zero point's whole contribution is the compile time term already
-    folded into the int32 bias.
+    There is no **input** zero point here and there is one on the convolution,
+    and the difference is padding: every tap of a matrix multiplication is in
+    range, so the input zero point's whole contribution is the compile time term
+    already folded into the int32 bias.
+
+    The **output** zero point is carried by both, in the instruction's scale
+    word, and is added after the rescale.
     """
     out = np.matmul(a.astype(np.int64), b.astype(np.int64))
     if bias is not None:
         out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1)
     _check_int32_accumulator(out, "quantized_matmul")
 
-    rescaled = requantize(out, requant_multiplier, requant_shift)
+    rescaled = requantize(out, requant_multiplier, requant_shift) + np.int64(
+        output_zero_point
+    )
     if relu:
-        rescaled = np.maximum(rescaled, np.int64(0))
+        rescaled = np.maximum(rescaled, np.int64(output_zero_point))
     return np.clip(rescaled, -128, 127).astype(np.int8)
 
 
@@ -759,6 +777,7 @@ def execute(
                 dilations=attributes["dilations"],
                 group=int(attributes["group"]),
                 zero_point=int(attributes.get("zero_point", 0)),
+                output_zero_point=int(attributes.get("output_zero_point", 0)),
                 requant_multiplier=int(attributes["requant_multiplier"]),
                 requant_shift=int(attributes["requant_shift"]),
                 relu=bool(attributes.get("relu", False)),
@@ -778,6 +797,7 @@ def execute(
                 inputs[0],
                 inputs[1],
                 inputs[2] if len(inputs) > 2 else None,
+                output_zero_point=int(attributes.get("output_zero_point", 0)),
                 requant_multiplier=int(attributes["requant_multiplier"]),
                 requant_shift=int(attributes["requant_shift"]),
                 relu=bool(attributes.get("relu", False)),

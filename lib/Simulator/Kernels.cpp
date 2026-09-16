@@ -317,20 +317,47 @@ int32_t requantize(int32_t accumulator, int32_t multiplier, int32_t shift) {
 }
 
 /// The i8 saturation rails, applied once at the end of every integer kernel.
-int32_t saturateToI8(int32_t value) {
-  return value < -128 ? -128 : (value > 127 ? 127 : value);
+///
+/// It takes 64 bits because the value reaching it is a requantized int32 with an
+/// output zero point already added, and that sum can leave the int32 range on
+/// the way to being clamped back into i8. The rails are where it comes back;
+/// the arithmetic before them must still be defined.
+int32_t saturateToI8(int64_t value) {
+  return static_cast<int32_t>(value < -128 ? -128 : (value > 127 ? 127 : value));
 }
 
-/// The fused activation, in the integer domain.
+/// The output zero point of an integer compute instruction, read out of the
+/// scale word.
 ///
-/// A relu on a quantized value is a clamp at the value that represents real
-/// zero, which after requantization and before the output rails is zero itself,
-/// because a quantized compute instruction's result is symmetric. Writing it as
-/// `max(value, 0)` rather than `max(value, zeroPoint)` is therefore not a
-/// simplification: the two agree here and the second would be claiming an
-/// output zero point this instruction does not carry.
-int32_t activateInteger(const Instruction &instruction, int32_t value) {
-  return instruction.activation == Activation::Relu ? std::max(value, 0) : value;
+/// **That word is where it lives**, because `Instruction` carries one
+/// `zeroPoint` and a quantized convolution needs two: the input's, which
+/// padding contributes and which the folded bias term was computed against, and
+/// the output's, because Section 14 calibrates activations affine. An integer
+/// compute instruction's scale is already carried, folded into
+/// `requantMultiplier` and `requantShift`, so the f32 word is idle there and the
+/// output zero point uses it. `docs/BREAKING_CHANGES.md` declares it.
+///
+/// The cast is a read rather than a decision: the validator has already refused
+/// a file whose word is not a whole number inside the i8 range, so this reads a
+/// value the decoder accepted rather than deciding again what is acceptable.
+int32_t outputZeroPointOf(const Instruction &instruction) {
+  return static_cast<int32_t>(instruction.scale);
+}
+
+/// The last three steps of an integer compute instruction: add the output zero
+/// point, apply the fused activation, and saturate to the i8 rails.
+///
+/// **A relu clamps at the value that represents real zero, which is the output
+/// zero point rather than zero.** Writing it as `max(value, 0)` is correct only
+/// for a symmetric output, and the output is affine. The two agree exactly when
+/// the zero point is zero, which is why the symmetric interim path passed every
+/// test it had, and why the cases that cover this carry a nonzero one.
+int8_t finishInteger(const Instruction &instruction, int32_t rescaled,
+                     int32_t outputZeroPoint) {
+  int64_t value = static_cast<int64_t>(rescaled) + outputZeroPoint;
+  if (instruction.activation == Activation::Relu)
+    value = std::max<int64_t>(value, outputZeroPoint);
+  return static_cast<int8_t>(saturateToI8(value));
 }
 
 //===----------------------------------------------------------------------===//
@@ -960,6 +987,7 @@ std::optional<int32_t> conv2dIntegerReduction(Machine &machine,
 /// besides, so the order inside the reduction cannot move a bit either way.
 void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
                        const Conv2DShape &shape) {
+  const int32_t outputZeroPoint = outputZeroPointOf(instruction);
 #ifdef _OPENMP
   const int64_t outputTiles = shape.batch * shape.outputChannels;
   const int teamSize = static_cast<int>(std::max<int64_t>(
@@ -986,8 +1014,7 @@ void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
               machine.writeI8(instruction.resultSpace, instruction.resultAddress,
                               destination, "CONV2D");
           if (out)
-            *out = static_cast<int8_t>(
-                saturateToI8(activateInteger(instruction, rescaled)));
+            *out = finishInteger(instruction, rescaled, outputZeroPoint);
         }
       }
     }
@@ -1240,6 +1267,7 @@ KernelCost kernelMATMUL(Machine &machine, const Instruction &instruction) {
   // is the `- zp_x * sum_k q_w[k]` term the calibrator folded into the int32
   // bias, and the machine never needs the zero point itself.
   if (integer) {
+    const int32_t outputZeroPoint = outputZeroPointOf(instruction);
     for (int64_t m = 0; m < rows; ++m) {
       for (int64_t n = 0; n < columns; ++n) {
         int64_t accumulator = 0;
@@ -1281,8 +1309,7 @@ KernelCost kernelMATMUL(Machine &machine, const Instruction &instruction) {
                             m * columns + n, "MATMUL");
         if (!out)
           return cost;
-        *out = static_cast<int8_t>(
-            saturateToI8(activateInteger(instruction, rescaled)));
+        *out = finishInteger(instruction, rescaled, outputZeroPoint);
       }
     }
     return cost;

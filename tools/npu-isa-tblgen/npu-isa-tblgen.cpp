@@ -302,6 +302,26 @@ Description readDescription(const RecordKeeper &records) {
                         "profile and accepts no integer result type, so "
                         "nothing could ever reach it");
     }
+    // `scale` and `outputZeroPoint` are the same four bytes of the record, so
+    // an opcode that claimed both would be claiming one word means two things
+    // at once. The two exist separately because their rules differ, not
+    // because there are two fields, and this is the assertion that keeps the
+    // distinction from being used to smuggle in a second meaning.
+    {
+      uint32_t scaleBit = desc.fieldBits.count("FieldScale")
+                              ? desc.fieldBits["FieldScale"]
+                              : 0u;
+      uint32_t outputBit = desc.fieldBits.count("FieldOutputZeroPoint")
+                               ? desc.fieldBits["FieldOutputZeroPoint"]
+                               : 0u;
+      uint32_t combined = op.fieldMask | op.integerFieldMask;
+      if (scaleBit && outputBit && (combined & scaleBit) &&
+          (combined & outputBit))
+        PrintFatalError("opcode " + op.record.str() + " declares both scale "
+                        "and outputZeroPoint, which are the same word of the "
+                        "instruction record. An opcode carries one meaning for "
+                        "it or the other");
+    }
     desc.opcodes.push_back(op);
   }
   llvm::sort(desc.opcodes, [](const OpcodeDesc &a, const OpcodeDesc &b) {

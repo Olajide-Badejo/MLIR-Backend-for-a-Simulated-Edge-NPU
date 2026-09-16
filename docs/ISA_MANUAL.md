@@ -59,8 +59,8 @@ is reverted by the next build and reported as staleness by the next run.
 | `HALT` | 1 | none | none | n/a | none | Stops the machine. The encoder emits one as the last instruction of every program. |
 | `DMA_LOAD` | 2 | 1 in dram | scratchpad | f32, i8, i32 | none | Copies a buffer from DRAM into the scratchpad. |
 | `DMA_STORE` | 3 | 1 in scratchpad | dram | f32, i8, i32 | none | Copies a buffer from the scratchpad back to DRAM. |
-| `MATMUL` | 4 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `requantize`, `activation` | A rank 2 by rank 2 matrix multiplication with an optional bias. |
-| `CONV2D` | 5 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `strides`, `pads`, `dilations`, `group`, `requantize`, `activation`, `zeroPoint` (integer result only) | A two dimensional grouped convolution with an optional bias. |
+| `MATMUL` | 4 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `requantize`, `activation`, `outputZeroPoint` (integer result only) | A rank 2 by rank 2 matrix multiplication with an optional bias. |
+| `CONV2D` | 5 | 2 or 3 in scratchpad | scratchpad | f32, i8 (operand slots at an integer result: i8, i8, i32) | `strides`, `pads`, `dilations`, `group`, `requantize`, `activation`, `zeroPoint` (integer result only), `outputZeroPoint` (integer result only) | A two dimensional grouped convolution with an optional bias. |
 | `ADD` | 6 | 2 in scratchpad | scratchpad | f32 | `requantize`, `activation` | Elementwise addition. |
 | `MUL` | 7 | 2 in scratchpad | scratchpad | f32 | `requantize`, `activation` | Elementwise multiplication. |
 | `RELU` | 8 | 1 in scratchpad | scratchpad | f32 | none | The rectified linear unit, elementwise. |
@@ -80,8 +80,8 @@ is reverted by the next build and reported as staleness by the next run.
 | `HALT` | No operands and no result. | `HALT` | P6 |
 | `DMA_LOAD` | The operand and the result have the same shape and the same element type. The DMA moves bytes and does not change a layout on the way. | `DMA_LOAD %r <- %0` | P7 |
 | `DMA_STORE` | The mirror of DMA_LOAD: same shape, same element type. | `DMA_STORE %r <- %0` | P7 |
-| `MATMUL` | Operand 0 is (M, K), operand 1 is (K, N), the result is (M, N). The optional operand 2 is the bias and has length N. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the requantization pair rescales the accumulator. There is no zero point field here and there is one on CONV2D, because a matrix multiplication has no padding: every tap is in range, so the input zero point's whole contribution is the compile time term folded into the bias. | `MATMUL %r <- %0, %1 {bias %2} {activation}` | P7 |
-| `CONV2D` | Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), the result is (N, F, OH, OW). The optional operand 2 is the bias and has length F. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the zero point field carries the zero point of the input: a tap that falls outside the input contributes it rather than zero, which is what makes the term folded into the bias over the whole window correct at a padded output position. | `CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}` | P7 |
+| `MATMUL` | Operand 0 is (M, K), operand 1 is (K, N), the result is (M, N). The optional operand 2 is the bias and has length N. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the requantization pair rescales the accumulator, after which the output zero point in the scale word is added. There is no **input** zero point field here and there is one on CONV2D, because a matrix multiplication has no padding: every tap is in range, so the input zero point's whole contribution is the compile time term folded into the bias. | `MATMUL %r <- %0, %1 {bias %2} {activation}` | P7 |
+| `CONV2D` | Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), the result is (N, F, OH, OW). The optional operand 2 is the bias and has length F. At an i8 result the two data operands are i8, the bias is the int32 accumulator's own type, and the zero point field carries the zero point of the input: a tap that falls outside the input contributes it rather than zero, which is what makes the term folded into the bias over the whole window correct at a padded output position. The output zero point is carried separately, in the scale word, and is added after the requantization; the scale word is free for it because an integer result's scale is already folded into the requantization pair. | `CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}` | P7 |
 | `ADD` | Both operands have the result's shape. No broadcasting: the frontend materialises every broadcast it accepts, and a rank 1 channel operand arrives as a stride 0 operand rather than as a shape. | `ADD %r <- %0, %1 {activation}` | P7 |
 | `MUL` | The same rule as ADD. | `MUL %r <- %0, %1 {activation}` | P7 |
 | `RELU` | The operand has the result's shape. The operand and the result may be the same buffer: an in place relu is what the allocator produces when it reuses a dead interval. | `RELU %r <- %0` | P7 |
@@ -381,16 +381,35 @@ multiplication has no taps outside anything, so the folded term is the input zer
 point's whole contribution and the machine never needs the value; carrying it
 there would be carrying a field nothing reads.
 
-**A quantized compute instruction carries no output zero point, and that is a
-consequence of this format rather than a choice.** `Instruction` has one
-`zeroPoint`, the arithmetic needs the input's, and the affine zero points of
-Section 14's calibration live on `QUANT` and `DEQUANT`, which is where that
-section's own pinned arithmetic puts them: quantize adds a zero point, dequantize
-subtracts one, and the compute path in between adds a bias and rescales. The
-result of a quantized convolution or matrix multiplication is therefore symmetric
-int8. `docs/PHASE_STATE.md` records this as an item for the owner, because
-Section 14 also says activations are calibrated affine, and the two sentences
-cannot both hold for a tensor that is the output of a quantized operation.
+**A quantized compute instruction carries its output zero point in the `scale`
+word.** `Instruction` has one `zeroPoint` and such an instruction needs two: the
+**input's**, which a tap falling outside the input contributes and which the term
+folded into the int32 bias was computed against, and the **output's**, because
+Section 14 calibrates activations affine. The input's keeps `zeroPoint`, because
+the kernel needs it inside the loop and nothing else can supply it. The output's
+goes in the `scale` word, which an integer compute instruction does not otherwise
+use: its scale is already carried, folded into `requantMultiplier` and
+`requantShift`, which is how the machine applies it.
+
+**It is declared as its own field**, `outputZeroPoint`, in the opcode's integer
+profile, rather than as `scale` read a second way. The two carry different rules:
+a scale is finite and strictly positive, and a zero point is integral, may be
+negative and may be zero. An opcode declaring both would be claiming that one
+word means two things at once, and the generator refuses to build one that does.
+
+So the arithmetic of an integer compute instruction, in order, is: accumulate in
+int32; add the int32 bias, which already carries the input zero point's folded
+term; rescale by the requantization pair; **add the output zero point**; apply
+the fused activation at the value that represents real zero, which is that zero
+point and not zero; and saturate to the i8 rails.
+
+`QUANT` and `DEQUANT` are unaffected. They declare `scale`, they use it as a
+scale, and the word means there exactly what it has always meant.
+
+`docs/BREAKING_CHANGES.md` carries the declaration, written before the commit
+that changed the meaning, with the measurement that no byte of any existing
+program moves, that `Program::kVersion` does not, and that no recorded cell can
+reach it because no pass in any `-O` level emits an integer instruction yet.
 
 There is no `ceil_mode` field, and its absence is a decision rather than an
 omission. `ceil_mode` changes a pooling operation's *output extent*, and the
@@ -563,8 +582,8 @@ that: the C++ enum and this table come out of the same records.
 | `activation` | The activation field holds a defined value, and holds `none` on an opcode that fuses no activation. |
 | `element-type` | Every element type byte is one of the defined values. |
 | `element-type-supported` | The opcode accepts the element type it was given. At an f32 result every operand takes the result's type; at an integer result an opcode with an integer profile takes the type its own operand slot declares, which is how a quantized convolution reads i8 data and an int32 bias. |
-| `quant-scale` | The quantization scale is finite and strictly positive, and is zero on an opcode that does not quantize. |
-| `quant-zero-point` | The zero point lies inside the range of the integer type it belongs to. |
+| `quant-scale` | The quantization scale is finite and strictly positive on an opcode that carries a scale, and the word holds zero on an opcode that gives it no meaning. At an integer result a compute opcode carries its output zero point in that same word instead, and it is checked as a zero point rather than as a scale. |
+| `quant-zero-point` | A zero point lies inside the range of the integer type it belongs to, and an output zero point carried in the scale word is an integer as well: a fractional one is a corrupt file rather than a finer grained zero point. |
 | `quant-types` | QUANT reads f32 and writes i8; DEQUANT reads i8 and writes f32. |
 | `quant-shape` | A quantization instruction's operand and result have the same shape. |
 | `quant-requantize` | The requantization shift is within [0, 31] and the multiplier is a positive int32, which is the range the fixed point decomposition produces. A value outside it is a corrupt file, not an exotic configuration. |

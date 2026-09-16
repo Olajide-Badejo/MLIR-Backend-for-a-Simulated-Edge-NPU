@@ -792,6 +792,76 @@ TEST(Validation, TheQuantizationPhaseDidNotMoveTheFormatVersion) {
   }
 }
 
+TEST(Validation, AnIntegerComputeInstructionCarriesItsOutputZeroPointInTheScaleWord) {
+  // The owner's decision of 2026-09-07, declared in `docs/BREAKING_CHANGES.md`
+  // before the commit that made it: on `CONV2D` and `MATMUL`, and only at an
+  // integer result, the scale word holds the output zero point. The program
+  // this file already validates carries zero there, which is the symmetric case
+  // and stays legal; what is new is that a whole number inside the i8 range is
+  // legal too, and that the two ways of getting it wrong are refused by name.
+  for (float zeroPoint : {-128.0f, -7.0f, 0.0f, 127.0f}) {
+    Program program = quantizedConvProgram();
+    program.instructions[3].scale = zeroPoint;
+    const std::optional<ProgramError> failure = program.validate();
+    EXPECT_FALSE(failure.has_value())
+        << "output zero point " << zeroPoint << ": "
+        << (failure ? failure->toString() : std::string());
+  }
+
+  // A fraction is a corrupt file rather than a finer grained zero point: the
+  // value is added to an integer after the requantization, so a half has no
+  // representation on the way out.
+  for (float fractional : {1.5f, -0.5f, 0.0078125f}) {
+    Program program = quantizedConvProgram();
+    program.instructions[3].scale = fractional;
+    EXPECT_EQ(expectRejected(program), Check::QuantZeroPoint) << fractional;
+  }
+
+  Program notFinite = quantizedConvProgram();
+  notFinite.instructions[3].scale = std::numeric_limits<float>::infinity();
+  EXPECT_EQ(expectRejected(notFinite), Check::QuantZeroPoint);
+
+  Program nan = quantizedConvProgram();
+  nan.instructions[3].scale = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_EQ(expectRejected(nan), Check::QuantZeroPoint);
+
+  // One past each rail. Both, because a bound written with the wrong comparison
+  // fails on one side and passes on the other.
+  Program above = quantizedConvProgram();
+  above.instructions[3].scale = 128.0f;
+  EXPECT_EQ(expectRejected(above), Check::QuantZeroPoint);
+
+  Program below = quantizedConvProgram();
+  below.instructions[3].scale = -129.0f;
+  EXPECT_EQ(expectRejected(below), Check::QuantZeroPoint);
+}
+
+TEST(Validation, TheF32PathKeepsTheRuleItAlwaysHadForTheScaleWord) {
+  // The other half of the pair, and the half that says nothing moved. At an f32
+  // result the same opcode gives the word no meaning and it holds zero, refused
+  // by the same check with the same message as before this phase existed.
+  Program asFloat = chainProgram();
+  asFloat.instructions[1].scale = 1.0f;
+  EXPECT_EQ(expectRejected(asFloat), Check::QuantScale);
+
+  // And an f32 convolution, which is the opcode that changed, rather than the
+  // relu that never could.
+  Program conv = chainProgram();
+  Instruction item = instruction(Opcode::CONV2D, MemSpace::Scratchpad,
+                                 ElemType::F32, 64, {1, 1, 2, 2});
+  item.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, {1, 1, 2, 2}));
+  item.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::F32, 0, {1, 1, 1, 1}));
+  item.strides = {1, 1};
+  item.pads = {0, 0, 0, 0};
+  item.dilations = {1, 1};
+  item.group = 1;
+  item.scale = -7.0f;
+  conv.instructions[1] = item;
+  EXPECT_EQ(expectRejected(conv), Check::QuantScale);
+}
+
 //===----------------------------------------------------------------------===//
 // The gate on this file.
 //===----------------------------------------------------------------------===//

@@ -6709,6 +6709,9 @@ measurement of what it costs goes in Checkpoint C's per model accuracy table,
 where it is visible per model, and nothing in this repository edits the
 specification.
 
+**Resolved on 2026-09-07, and the answer was a fifth option nobody had listed.**
+See the entry below.
+
 ### The integer profile, which is two declarations rather than a widening
 
 The other design decision, and it is smaller. A quantized convolution's operands
@@ -6796,3 +6799,62 @@ would be designing it twice. It is an open question in `docs/PHASE_STATE.md`
 rather than an assumption, because the argument against waiting is real: the
 kernels are the only part of the integer path with no compiled program exercising
 them.
+
+## 2026-09-16 Phase P14, checkpoint B: the owner settled the field that had nowhere to live
+
+**The question.** Checkpoint A found one `zeroPoint` word and two zero points
+that wanted it, listed four ways out, closed three of them, and shipped the
+fourth: a symmetric quantized compute output, consistent with Section 14's
+pinned arithmetic and inconsistent with its calibration paragraph. It went to
+the owner because nothing in this repository edits the specification and because
+the choice changes every accuracy number the phase reports.
+
+**The answer, and it is a fifth option the checkpoint did not list.** Carry the
+output zero point in the **`scale` word**. Activations stay affine, as Section 14
+specifies. `Program::kVersion` does not move.
+
+**Why the option was not on the list, which is the part worth writing down.**
+Checkpoint A enumerated places to put a *new* number: a second field, a fold into
+the requantization, a change of calibration. It never asked whether an existing
+field was **idle on the instructions that needed one**, and one is. An integer
+compute instruction's scale is not absent, it is already carried: `M` is folded
+into `requantMultiplier` and `requantShift`, which is the whole of how the
+machine rescales. So the f32 word sits unused on exactly the opcodes with a
+homeless zero point, and the four way list was a list of places to add storage
+when the question was where storage already existed.
+
+**The lesson is the one D-0047 taught in a different register.** That defect was
+a property nobody could observe from inside the artefact; this was a resource
+nobody looked for because the question had been framed as a shortage. Both are
+answered by inventorying what is there before designing what to add.
+
+### How it is built, and what keeps it honest
+
+**A separate field record, not a second reading of `scale`.** The description
+declares `outputZeroPoint` and an opcode carries it through its integer profile,
+so it applies exactly at an integer result and the f32 path keeps the rule it
+always had. The two are separate because their rules disagree: a scale is finite
+and strictly positive, a zero point is integral and may be negative or zero. An
+opcode declaring both would claim one word means two things at once, and the
+generator refuses to build one, which is a compile time error rather than a
+convention.
+
+**Validated on decode, both ways it can be wrong.** A fractional value is
+refused, because the number is added to an integer after the rescale and a half
+has no representation on the way out; a value outside the i8 range is refused.
+Each is a named check with its own case.
+
+**The corpus was compared case by case rather than by a count.** The declaration
+predicted that no case flips its verdict and no case flips its check name, and
+the instrument for holding it to that was added in its own commit first: the
+malformed corpus prints one line per case under an environment variable, index
+beside name because the names are not unique. A count cannot tell a case that
+started failing from a case that stopped, which is what was available when checks
+8 and 9 changed at P13.
+
+**The relu moved and that is the sharp end.** A relu on a quantized value clamps
+at the value that **represents** real zero, which is the output zero point and
+not zero. At a zero point of zero the two agree exactly, which is why the
+symmetric path passed every test it had; the case that separates them uses the
+zero point a post ReLU tensor actually gets, which is -128, where the old code
+answers 127 and 0 and the new one answers -27 and -128.

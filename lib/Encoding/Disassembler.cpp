@@ -150,6 +150,12 @@ std::optional<std::string> fieldText(const Instruction &instruction,
     return "group=" + std::to_string(instruction.group);
   if (name == "zeroPoint")
     return "zeroPoint=" + std::to_string(instruction.zeroPoint);
+  // Stored in the scale word and printed as a zero point, which is what it is
+  // on the opcodes that declare it. Printing the raw float here would make a
+  // reader of a disassembly work out the convention for themselves.
+  if (name == "outputZeroPoint")
+    return "outputZeroPoint=" +
+           std::to_string(static_cast<int32_t>(instruction.scale));
   if (name == "scale") {
     char buffer[64];
     std::snprintf(buffer, sizeof(buffer), "scale=%g",
@@ -246,6 +252,46 @@ bool renderTokens(const Instruction &instruction, llvm::StringRef text,
   return complete;
 }
 
+/// The fields an opcode gives meaning to only at an integer result, appended
+/// after its format string has been rendered.
+///
+/// **They are not in the format string, and that is why they are appended.** A
+/// format string is per opcode and this is per instruction: the same `CONV2D`
+/// carries them at an i8 result and must not print them at f32, where they hold
+/// their neutral values and would be noise on every line of every disassembly
+/// this project has produced. Appending leaves every existing line byte
+/// identical, which is what the lit tests compare.
+void appendIntegerFields(const Instruction &instruction, const OpcodeInfo &info,
+                         std::string &out) {
+  if (info.integerFieldMask == 0)
+    return;
+  uint32_t rawType = static_cast<uint32_t>(instruction.resultElementType);
+  if (rawType >= 32 || (kIntegerTypeMask & (1u << rawType)) == 0)
+    return;
+
+  // Named one at a time rather than swept out of the mask, for the reason
+  // `fieldText` above names its own: a field added to the description and not
+  // to this list is a field that silently stops being disassembled, and a table
+  // here is the place that becomes visible.
+  static constexpr struct {
+    uint32_t bit;
+    const char *name;
+  } kIntegerOnly[] = {
+      {kFieldZeroPoint, "zeroPoint"},
+      {kFieldOutputZeroPoint, "outputZeroPoint"},
+  };
+
+  for (const auto &field : kIntegerOnly) {
+    if ((info.integerFieldMask & field.bit) == 0)
+      continue;
+    if (std::optional<std::string> text = fieldText(instruction, field.name)) {
+      if (!out.empty() && out.back() != ' ')
+        out += " ";
+      out += *text;
+    }
+  }
+}
+
 std::string renderInstruction(const Instruction &instruction) {
   uint32_t raw = static_cast<uint32_t>(instruction.opcode);
   if (!isKnownOpcode(raw))
@@ -275,6 +321,8 @@ std::string renderInstruction(const Instruction &instruction) {
       out += groupText;
     }
   }
+  appendIntegerFields(instruction, opcodeInfo(instruction.opcode), out);
+
   // A dropped group can leave a double space behind. Squeezing here rather
   // than threading the state through the renderer keeps the substitution
   // machinery simple, and the output is compared byte for byte by a lit test

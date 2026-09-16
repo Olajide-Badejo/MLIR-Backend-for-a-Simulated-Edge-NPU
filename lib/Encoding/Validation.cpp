@@ -551,14 +551,42 @@ bool checkQuantization(Validator &validator, const Instruction &instruction,
   // fixed point pair is what rescales its accumulator.
   const uint32_t fieldMask = effectiveFieldMask(info, instruction);
   const bool carriesScale = (fieldMask & kFieldScale) != 0;
+  const bool carriesOutputZeroPoint = (fieldMask & kFieldOutputZeroPoint) != 0;
   const bool carriesZeroPoint = (fieldMask & kFieldZeroPoint) != 0;
 
+  // The scale word carries one of three things and the opcode says which. On a
+  // quantization opcode it is a scale. On a compute opcode at an integer
+  // result it is the **output zero point**, because that instruction's scale is
+  // already folded into the requantization pair and the word is otherwise idle.
+  // Anywhere else it holds zero. The three are checked apart because their
+  // rules disagree: a scale is finite and strictly positive, a zero point is
+  // integral and may be negative or zero, and the neutral value is exactly
+  // zero.
   if (carriesScale) {
     if (!std::isfinite(instruction.scale) || instruction.scale <= 0.0f)
       return validator.fail(Check::QuantScale,
                             "the quantization scale is not a finite positive "
                             "number",
                             at);
+  } else if (carriesOutputZeroPoint) {
+    // A fractional output zero point is a corrupt file rather than a finer
+    // grained zero point: the value is added to an integer after the
+    // requantization, so a half has no representation on the way out.
+    if (!std::isfinite(instruction.scale) ||
+        instruction.scale != std::floor(instruction.scale))
+      return validator.fail(
+          Check::QuantZeroPoint,
+          std::string(info.name) + " carries its output zero point in the "
+                                   "scale word at an integer result, and the "
+                                   "word is not a whole number",
+          at);
+    if (instruction.scale < -128.0f || instruction.scale > 127.0f)
+      return validator.fail(
+          Check::QuantZeroPoint,
+          std::string(info.name) +
+              " carries its output zero point in the scale word at an integer "
+              "result, and an i8 zero point is within [-128, 127]",
+          at);
   } else if (instruction.scale != 0.0f) {
     return validator.fail(Check::QuantScale,
                           std::string(info.name) +

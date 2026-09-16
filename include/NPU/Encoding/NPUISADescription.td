@@ -101,6 +101,29 @@ def FieldScale : ISAField<"scale",
     "the quantization scale, a finite positive f32">;
 def FieldZeroPoint : ISAField<"zeroPoint",
     "the quantization zero point, within the integer type's range">;
+
+// The output zero point of an integer compute instruction, carried in the
+// `scale` word.
+//
+// **The storage is the scale word and the meaning is a zero point**, which is a
+// decision rather than a pun. `Instruction` carries one `zeroPoint` and a
+// quantized convolution needs two: the **input's**, because a tap that falls
+// outside the input contributes it and because the term folded into the int32
+// bias is taken over the whole window, and the **output's**, because Section 14
+// calibrates activations affine. The input's has nowhere else to go, so it
+// keeps `zeroPoint`. The output's goes here, in a word an integer compute
+// instruction does not otherwise use: its scale is already carried, folded into
+// `requantMultiplier` and `requantShift`, which is how the machine applies it.
+//
+// **It is a separate field record from `FieldScale` rather than the same one,
+// because the two carry different rules.** A scale is finite and strictly
+// positive; a zero point is integral, may be negative, and zero is a legal
+// value for it. An opcode declaring `FieldScale` here would be declaring the
+// wrong check, and the two are mutually exclusive on one opcode because they
+// are the same four bytes.
+def FieldOutputZeroPoint : ISAField<"outputZeroPoint",
+    "the output zero point of an integer compute instruction, carried in the "
+    "scale word, integral and within the i8 range">;
 def FieldRequantize : ISAField<"requantize",
     "requantMultiplier and requantShift, the fixed point rescaling pair">;
 def FieldActivation : ISAField<"activation",
@@ -254,16 +277,18 @@ def MATMUL : ISAOpcode<4, "A rank 2 by rank 2 matrix multiplication with an opti
   let fields = [FieldRequantize, FieldActivation];
   let elementTypes = [F32, I8];
   let integerOperandTypes = [I8, I8, I32];
+  let integerFields = [FieldOutputZeroPoint];
   let format = "MATMUL %r <- %0, %1 {bias %2} {activation}";
   let shapeRule = "Operand 0 is (M, K), operand 1 is (K, N), the result is "
                   "(M, N). The optional operand 2 is the bias and has length N. "
                   "At an i8 result the two data operands are i8, the bias is "
                   "the int32 accumulator's own type, and the requantization "
-                  "pair rescales the accumulator. There is no zero point field "
-                  "here and there is one on CONV2D, because a matrix "
-                  "multiplication has no padding: every tap is in range, so the "
-                  "input zero point's whole contribution is the compile time "
-                  "term folded into the bias.";
+                  "pair rescales the accumulator, after which the output zero "
+                  "point in the scale word is added. There is no **input** zero "
+                  "point field here and there is one on CONV2D, because a "
+                  "matrix multiplication has no padding: every tap is in range, "
+                  "so the input zero point's whole contribution is the compile "
+                  "time term folded into the bias.";
   let sources = ["matmul"];
 }
 
@@ -275,7 +300,7 @@ def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optiona
                 FieldRequantize, FieldActivation];
   let elementTypes = [F32, I8];
   let integerOperandTypes = [I8, I8, I32];
-  let integerFields = [FieldZeroPoint];
+  let integerFields = [FieldZeroPoint, FieldOutputZeroPoint];
   let format = "CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}";
   let shapeRule = "Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), "
                   "the result is (N, F, OH, OW). The optional operand 2 is the "
@@ -284,7 +309,11 @@ def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optiona
                   "the zero point field carries the zero point of the input: a "
                   "tap that falls outside the input contributes it rather than "
                   "zero, which is what makes the term folded into the bias over "
-                  "the whole window correct at a padded output position.";
+                  "the whole window correct at a padded output position. The "
+                  "output zero point is carried separately, in the scale word, "
+                  "and is added after the requantization; the scale word is "
+                  "free for it because an integer result's scale is already "
+                  "folded into the requantization pair.";
   let sources = ["conv2d"];
 }
 
@@ -530,10 +559,15 @@ def CheckElementTypeSupported : ISACheck<20, "element-type-supported",
     "integer profile takes the type its own operand slot declares, which is how "
     "a quantized convolution reads i8 data and an int32 bias.">;
 def CheckQuantScale : ISACheck<21, "quant-scale",
-    "The quantization scale is finite and strictly positive, and is zero on an "
-    "opcode that does not quantize.">;
+    "The quantization scale is finite and strictly positive on an opcode that "
+    "carries a scale, and the word holds zero on an opcode that gives it no "
+    "meaning. At an integer result a compute opcode carries its output zero "
+    "point in that same word instead, and it is checked as a zero point rather "
+    "than as a scale.">;
 def CheckQuantZeroPoint : ISACheck<22, "quant-zero-point",
-    "The zero point lies inside the range of the integer type it belongs to.">;
+    "A zero point lies inside the range of the integer type it belongs to, and "
+    "an output zero point carried in the scale word is an integer as well: a "
+    "fractional one is a corrupt file rather than a finer grained zero point.">;
 def CheckQuantTypes : ISACheck<23, "quant-types",
     "QUANT reads f32 and writes i8; DEQUANT reads i8 and writes f32.">;
 def CheckQuantShape : ISACheck<24, "quant-shape",
