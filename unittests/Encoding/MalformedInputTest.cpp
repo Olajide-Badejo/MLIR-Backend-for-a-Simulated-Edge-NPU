@@ -890,4 +890,33 @@ TEST(MalformedInput, TheCorpusCanBeWrittenOutForTheFuzzer) {
             << "\n";
 }
 
+// Every case's verdict, on one line each, for comparing two trees.
+//
+// It is guarded on an environment variable exactly as the fuzz corpus writer is,
+// because several hundred lines are not what a normal run wants. What it is for
+// is a change to the validator: such a change is a change to what this prints,
+// and the difference between two runs of it is the list of cases whose verdict
+// or whose check name moved. A change that claims to move none can then be held
+// to that claim case by case rather than by a count, which is the difference
+// between a measurement and an impression.
+//
+// The index is printed beside the name because the names are not unique: several
+// are added in a loop over a set of bad values, and a diff of names alone would
+// pair the wrong lines.
+TEST(MalformedInput, TheVerdictsCanBeWrittenOutForComparison) {
+  if (!std::getenv("NPU_CORPUS_VERDICTS")) {
+    std::cout << "[          ] NPU_CORPUS_VERDICTS is not set, so the per case "
+                 "verdicts were not written out. Set it to print them.\n";
+    GTEST_SKIP();
+  }
+
+  for (const auto &[index, item] : llvm::enumerate(corpus().cases())) {
+    Program program;
+    std::optional<ProgramError> error = Program::decode(item.bytes, program);
+    std::cout << "verdict\t" << index << "\t"
+              << (error ? checkName(error->check) : std::string("accepted"))
+              << "\t" << item.name << "\n";
+  }
+}
+
 } // namespace
