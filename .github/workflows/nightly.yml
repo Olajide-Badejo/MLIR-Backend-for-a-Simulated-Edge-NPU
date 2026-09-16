@@ -236,13 +236,28 @@ jobs:
       # and every number this project publishes traces to those files. What this
       # run checks is that the suite still passes and still fits its budget on
       # another host; re-recording stays a deliberate act with a commit.
+      #
+      # **`--skip-external`, which is D-0064.** This image has no SCALE-Sim,
+      # Accelergy or ZigZag, by design: ci.yml's external cross validation step
+      # is off, asserts all three absent, and says why they stay out. What this
+      # job checks is the budget and the numerics on a second host; the
+      # roofline, SCALE-Sim and energy figures are recorded on the developer
+      # machine, where the tools are. Without the flag the harness refuses
+      # before its first cell and names what is missing. Before it did, this
+      # step measured every cell and then died on a FileNotFoundError for
+      # accelergy, on every scheduled run from 2026-09-04 to 2026-09-15.
+      #
+      # **What reverses it** is the image gaining the tools. The flag comes off
+      # in the same commit that turns ci.yml's external step on, and
+      # test_the_nightly_suite_skips_external_while_the_image_has_no_tools in
+      # test/Python/test_benchmarks.py fails until the two agree.
       - name: "The full benchmark suite against its 90 minute budget (activation table: P10, on)"
         env:
           MLIR_PYTHON_PACKAGES_DIR: /opt/llvm/python_packages/mlir_core
           NPU_BUILD_DIR: ${{ github.workspace }}/build
         run: |
           set -uo pipefail
-          python3 experiments/run_benchmarks.py --results "${RUNNER_TEMP}/results"
+          python3 experiments/run_benchmarks.py --results "${RUNNER_TEMP}/results" --skip-external
           status=$?
           if [ "$status" -eq 1 ]; then
             echo "::error::the benchmark suite failed."

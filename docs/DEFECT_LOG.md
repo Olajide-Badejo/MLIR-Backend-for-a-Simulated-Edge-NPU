@@ -4231,3 +4231,179 @@ the one minute number alone is what three of these four reds have in common.
   when it was true, and which nothing re-read when the thing it described
   changed. It is D-0055's shape and D-0059's and D-0061's: checkable from inside
   the artefact the whole time, in one command, and nothing ever asked.
+
+### D-0064 the nightly benchmark suite measured every cell and then died on a tool its image has never had
+
+- **Found:** 2026-09-15, between P13 and P14, by reading the scheduled runs of
+  `nightly.yml`, which no phase close had done. **Numbered past D-0063**, which
+  is taken on `phase/p14-int8` and has not merged.
+- **Status:** fixed on `phase/p13b-nightly`. The proof is `nightly.yml`
+  dispatched on that branch, with its prediction written into
+  `docs/ENGINEERING_LOG.md` before the run existed.
+- **Reproduce.** At `e72f610`, anywhere the `accelergy` binary is not on `PATH`,
+  which includes the CI shim of `docs/PHASE_STATE.md` section 0:
+
+  ```
+  python experiments/run_benchmarks.py --models conv_bn_relu_stack --results /tmp/cells
+  ```
+
+  Every cell is measured, and then:
+
+  ```
+  File "experiments/run_benchmarks.py", line 1269, in _run
+    estimator = accelergy_energy.Estimator(Path(directory) / "accelergy")
+  File "experiments/accelergy_energy.py", line 650, in __init__
+    self._estimators = registered_estimators()
+  File "experiments/accelergy_energy.py", line 375, in registered_estimators
+    completed = subprocess.run(
+  FileNotFoundError: [Errno 2] No such file or directory: 'accelergy'
+  ```
+
+- **What it cost.** `full-matrix` failed at "The full benchmark suite against its
+  90 minute budget" on **twelve scheduled runs in a row**, from 33851741334 on
+  `2f59429`, the P12 merge, to 34949062826 on `e72f610`, the P13 merge. The last
+  green run is 33731922379 on `d4e19a2`, the P10 merge, which printed 175 cells in
+  2.27 minutes at 0.78 seconds per cell; P11 and P12 both merged between it and
+  the first red. The pytest step before the failing one was green, 1116 passed
+  and 33 skipped on the latest. **The reds were full runs**: 34949062826's
+  progress bar reached `217/217 [03:04<00:00]` at 08:59:26.928 and the traceback
+  followed 11 milliseconds later. So every night paid for the whole measurement
+  and threw it away, and what never ran on CI hardware is the half after the
+  loop that checks anything: the deltas, the ablation numerics against the band,
+  the budget verdict and the runtime line. **P13's 154 ablation cells have had
+  their band checked on this machine and nowhere else.**
+- **Introduced by** `17d63ed`, "feat(energy): Accelergy energy and area, and the
+  schema movement declared", at P11. From that commit every run without
+  `--skip-external` builds `accelergy_energy.Estimator` after its measurement
+  loop, and the estimator's constructor runs `accelergy -l`.
+- **Why nothing caught it, in four parts, and the fourth is mine.**
+  1. **The image lacks the tools by design.** `ci.yml`'s external cross
+     validation step is off and asserts all three absent, with the reason beside
+     it: they install from source, Accelergy's plug ins need a CACTI build, and
+     SCALE-Sim needs D-0044's patch.
+  2. **The policy existed and the harness never asked it.**
+     `python/npu_frontend/external_tools.py` has `missing_tools()`, both halves,
+     and `tools_promised()` under `NPU_EXTERNAL_TOOLS`, and its docstring names
+     this exact shape: D-0046 turning "a readable skip into a
+     `FileNotFoundError` in the middle of a benchmark". `run_benchmarks.py` did
+     not consult it, and the nightly step never passed `--skip-external`, which
+     records the fields as null with a reason.
+  3. **The tests covered the flag and not its absence.**
+     `test_the_opt_out_records_a_null_and_a_reason` checks what the flag records.
+     Nothing covered a tool being absent with the flag not passed, which is the
+     only state the nightly is ever in.
+  4. **The CI shim recipe modelled pytest and mypy and was never pointed at the
+     harness, and I did not read a scheduled run.** Every phase close watched the
+     push, pull request and post merge runs of `ci.yml`, and none looked at the
+     nightly's schedule. That is why twelve reds went unread, and it was a habit
+     rather than a mechanism.
+- **The fix.**
+  - **The harness refuses before it measures, by name.** Without
+    `--skip-external`, `refuse_missing_external` runs before the first cell. It
+    asks `external_tools.missing_tools` about SCALE-Sim and Accelergy and checks
+    the six clones `external_tool_shas` reads under `NPU_EXTERNAL_DIR`, and
+    anything missing is a `BenchmarkError`, which `main` already turns into exit
+    2, the step's own "refusing to measure". The message names each missing
+    thing, which half of a tool is absent, and the two ways forward: the flag, or
+    a machine with the tools. **It never skips on a caller's behalf**, because a
+    machine that lost its tools must not re-record 217 cells with null energy and
+    call that a run. The check `external_tool_shas` makes after the loop stays,
+    because a clone can go during a run.
+  - **Two things are not asked for, deliberately.** ZigZag, which the harness
+    never runs, and the SCALE-Sim example topologies, whose two headers are
+    copied into `scalesim_export.py` at the pinned sha. A refusal for either would
+    refuse a run over something it does not use. `missing_tools` takes an
+    optional list of names for this, and a name it does not know is a `KeyError`
+    rather than an empty answer.
+  - **The nightly passes `--skip-external`**, with the reason beside the step
+    and what reverses it: the day the image gains the tools, the flag comes off
+    in the commit that turns `ci.yml`'s external step on.
+    `test_the_nightly_suite_skips_external_while_the_image_has_no_tools` reads
+    both workflows and is red while they disagree.
+  - **The missing state has tests, and they mean the same thing in both
+    shapes.** One takes every directory holding `accelergy` off `PATH`, asserts
+    the absence took, and asserts exit 2, the tool and the flag named, and no file
+    written. One substitutes `find_spec`, `which` and the environment and asserts
+    every line of the refusal, including that ZigZag and the topologies are not
+    in it.
+- **The lesson.** This is D-0046's shape one layer up. D-0046 was tests that
+  could only pass where the machine had the tools; this is a job that could only
+  pass there, and the policy D-0046 wrote sat one import away from the code that
+  needed it. **The CI shim recipe gains a harness row**, with a difference the
+  suite never needed, the clones under `NPU_EXTERNAL_DIR`. And a scheduled
+  workflow is part of CI: its runs are read at every phase close, the same as the
+  push and pull request runs.
+
+### D-0065 the nightly's benchmark artifact has never carried the runtime file, and each upload reported success
+
+- **Found:** 2026-09-15, between P13 and P14, while adjudicating the prediction
+  for run 35022460726, whose `nightly-benchmark-results` artifact was predicted
+  to hold the 217 cells and `results-runtime.json` and held 217 files.
+- **Status:** **open, with the fix deferred to P15**, which edits `nightly.yml`
+  when it turns the mutation and flake jobs on. It waits for two reasons. **No
+  gate is weaker for it**: the step's log carries every figure the runtime file
+  carries, at the precision the harness prints them, which is the cells measured
+  and reused, the minutes, the per cell cost, the budget, the seed and the worst
+  `--mlir-timing` gap, and the budget verdict is the harness's exit status rather
+  than the file. **And a fix is a workflow change whose proof is a dispatched run
+  of its own**, which is a separate claim from D-0064's and should not ride on
+  that run's evidence.
+- **Reproduce, by artifact file count**, on the two runs whose benchmark step
+  completed:
+
+  | Run | Cells measured | Files uploaded | `results-runtime.json` |
+  |---|---|---|---|
+  | 33731922379, P10's last green night | 175 | 175 | absent |
+  | 35022460726, dispatched on `phase/p13b-nightly` | 217 | 217 | absent |
+
+  The harness wrote the file both times: it prints the per cell line and writes
+  the file on the same branch, and both logs carry that line. Neither upload
+  warned about it, and each reported the artifact "successfully uploaded", at
+  775379 and 955976 bytes.
+- **The step names two paths, and only one of them arrives in the container.**
+  Every run logs the step's input as host paths:
+
+  ```
+  path: /home/runner/work/_temp/results
+  /home/runner/work/_temp/results-runtime.json
+  ```
+
+  The red run 34949062826, whose benchmark step died before writing either,
+  warned with the two paths it had actually searched:
+
+  ```
+  ##[warning]No files were found with the provided path: /__w/_temp/results
+  /home/runner/work/_temp/results-runtime.json. No artifacts will be uploaded.
+  ```
+
+  One container path and one host path. The job runs inside the container, and
+  the runtime file is written at `/__w/_temp/results-runtime.json`, not at the
+  host path the step searched.
+- **The likely mechanism, unverified.** Only the leading host prefix of a multi
+  line `path` input is translated into the container, so the first line is
+  rewritten and every later line is searched as the host path it was given. It
+  fits all three runs, and it is inferred from their logs rather than read from
+  the runner's source or tested by a run built to show it, so it is recorded as
+  the likely mechanism and not as the mechanism.
+- **Candidate fixes, for P15.**
+  - **Write or copy the runtime file inside the directory the first path
+    names.** Copying it into the results directory itself puts a JSON that is
+    not a cell among the cells, which `run_benchmarks.py` rules out because
+    every consumer globs that directory. The form that keeps the rule is a first
+    path naming a parent of both: `--results "${RUNNER_TEMP}/nightly/results"`
+    and an upload of `${{ runner.temp }}/nightly`, where the harness already
+    writes the runtime file beside the results directory, so it lands inside the
+    uploaded one with no copy at all.
+  - **A second upload step** for the runtime file alone.
+  - Either way the proof is a dispatched run whose upload reports one file more
+    than it measured cells.
+- **The shape, and it is the lossy channel again.** `if-no-files-found: warn` is
+  the only thing in the step that can say a file is missing, and on the evidence
+  of these three runs it is asked only when nothing at all matches: 34949062826,
+  with neither file, warned, and the two green nights, with one path matching
+  and one matching nothing, reported a successful upload and no warning. So a
+  missing file looked like a successful upload on every night the harness
+  completed. It is the shape of D-0040 to D-0043, a value through a lossy channel
+  treated as exact, where the channel is a list of paths and the loss is every
+  path after the first. **Silence and success looked alike**, which Section 19.0
+  forbids for a step and which nobody had checked for an artifact.

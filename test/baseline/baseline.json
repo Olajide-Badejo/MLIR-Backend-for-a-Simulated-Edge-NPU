@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "101cb1763a1ad23d050b1e9cc25b5be24c46aef9",
+  "git_sha": "613bdb49ef584e3d13e131d335ca9a3c00cc9a15",
   "levels": [
     0,
     1,
@@ -1229,7 +1229,7 @@
     "pytest": {
       "failed": 0,
       "failures": [],
-      "passed": 1131,
+      "passed": 1135,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1244,6 +1244,7 @@
         "test.Python.test_accelergy_energy::test_the_schema_block_carries_no_null_reason",
         "test.Python.test_accelergy_energy::test_the_scratchpad_depth_is_rounded_up_and_never_down",
         "test.Python.test_accelergy_energy::test_the_three_components_are_estimated_and_say_by_what",
+        "test.Python.test_benchmarks::test_a_missing_tool_refuses_the_run_before_a_cell_is_measured",
         "test.Python.test_benchmarks::test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing",
         "test.Python.test_benchmarks::test_a_rerun_reproduces_the_external_fields_too",
         "test.Python.test_benchmarks::test_a_tight_cell_runs_at_the_models_declared_batch",
@@ -1258,8 +1259,10 @@
         "test.Python.test_benchmarks::test_the_counts_are_what_adr_0010_says",
         "test.Python.test_benchmarks::test_the_double_buffer_row_is_the_tiling_row_wherever_the_two_are_coupled",
         "test.Python.test_benchmarks::test_the_layout_row_is_zero_on_every_model_at_every_budget",
+        "test.Python.test_benchmarks::test_the_nightly_suite_skips_external_while_the_image_has_no_tools",
         "test.Python.test_benchmarks::test_the_opt_out_records_a_null_and_a_reason",
         "test.Python.test_benchmarks::test_the_planned_cells_are_the_computed_cross_product",
+        "test.Python.test_benchmarks::test_the_refusal_names_each_missing_thing_and_nothing_the_run_does_not_use",
         "test.Python.test_benchmarks::test_the_run_fails_when_it_exceeds_its_budget",
         "test.Python.test_benchmarks::test_the_tiling_disabled_row_reproduces_the_spilling_numbers_to_the_cycle",
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
@@ -1772,6 +1775,7 @@
         "test.Python.test_end_to_end::test_the_simulated_answer_matches_the_reference_interpreter[resnet_block-O2-n4-normal]",
         "test.Python.test_end_to_end::test_the_simulated_answer_matches_the_reference_interpreter[resnet_block-O2-n4-relu_knee]",
         "test.Python.test_end_to_end::test_the_simulated_answer_matches_the_reference_interpreter[resnet_block-O2-n4-zeros]",
+        "test.Python.test_external_tools::test_a_caller_can_ask_about_the_tools_it_drives_and_no_others",
         "test.Python.test_external_tools::test_a_finder_that_raises_is_read_as_absent",
         "test.Python.test_external_tools::test_a_library_with_no_binary_needs_no_binary",
         "test.Python.test_external_tools::test_a_module_that_does_not_import_is_missing",

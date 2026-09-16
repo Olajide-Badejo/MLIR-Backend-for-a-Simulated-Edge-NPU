@@ -6641,3 +6641,182 @@ because it happened. **It is not the proof**: Section 19.1 names the
 33994477434, 34023218917, 34030451953 and 34037620630, red on 34037636675. The
 pull request was closed unmerged and the branch deleted, which is the whole
 lifetime a proof of failure is supposed to have.
+
+## 2026-09-15 D-0064: the nightly was red for twelve days, and every red was a full run
+
+**The nightly's benchmark step has not completed since 2026-09-03, and nothing
+told me.** I found it by reading the scheduled runs: twelve reds in a row with
+the same traceback, `run_benchmarks.py` building the Accelergy estimator after
+its measurement loop in an image that has never had Accelergy. D-0064 carries
+the reproduction, the runs, and the four reasons it went unnoticed, the last of
+which is that no phase close of mine ever looked at a scheduled run.
+
+**Every red was a full run, and that is what makes this more than a missing
+flag.** 34949062826's progress bar reached 217 of 217 cells in 3:04, and the
+traceback came 11 milliseconds after the last one. So each night the runner paid
+for the whole measurement and discarded it, and what never executed on CI
+hardware was everything after the loop: the deltas, the ablation numerics
+against the band, the budget verdict, the runtime line. The last green run,
+33731922379 at the P10 merge, printed 175 cells in 2.27 minutes at 0.78 seconds
+per cell, and that is the last time CI checked an ablation's numerics.
+
+### The fix is a policy this project already had
+
+`python/npu_frontend/external_tools.py` has answered "can this environment run
+the tools" since D-0046, and its docstring describes this failure by name. The
+harness never asked. It asks now, before the first cell, about the two tools and
+six clones it uses, and anything missing is exit 2 naming each thing, which half
+is absent, and the two ways forward. Nothing is skipped on a caller's behalf: a
+null the flag asked for and a null an accident produced would read the same.
+The nightly passes `--skip-external`, because what that job checks is the budget
+and the numerics on a second host, and a test reads both workflows so that the
+flag and `ci.yml`'s external step cannot drift apart.
+
+**Two things are deliberately not required.** ZigZag, which this harness never
+runs, and the SCALE-Sim example topologies, whose two headers live in
+`scalesim_export.py` as copies taken at the pinned sha. Refusing a run over
+either would be a check failing a run for something that is fine, and
+`divergence_findings` already records why that is worse than no check.
+
+### Predictions, written before any of them ran
+
+**The CI shim rehearsal**, on `conv_bn_relu_stack`, in the recipe's shape plus
+the one difference the harness adds, the clones under `NPU_EXTERNAL_DIR`:
+
+- **Without the flag:** exit 2 in under 30 seconds, the results directory never
+  created and no file written, and one refusal naming eight things: `scalesim`
+  and `accelergy` as modules that do not import, and the six clones each with
+  the path it was looked for at. `--skip-external` is named; ZigZag, the
+  topologies and a traceback are not.
+- **With the flag:** exit 0, 31 cells planned, 9 benchmark and 22 ablation over
+  11 ablatable passes, all 31 written, and all 20 external fields of every cell
+  null with a reason naming the flag, 620 in all. The per cell cost is this
+  machine's and I bound it rather than predict it: between 0.2 and 1.5 seconds.
+
+**The suite rows.** Developer shape **1135 passed, 18 skipped**: P13's 1131 and
+18 plus the four tests this fix adds, all of which run everywhere. CI shape
+**1120 passed, 33 skipped**: P13's 1116 and 33 plus the same four, and 1116 and
+33 is what 34949062826's own pytest step reported, so the base is CI's rather
+than the shim's. `test_external_tools.py` 11 passed under `NPU_EXTERNAL_TOOLS=1`
+in the shim, and mypy clean in both shapes over the same 26 source files.
+
+**The regression baseline.** Re-recording at the fix moves exactly three things
+in `test/baseline/baseline.json`: the recorded sha, the pytest count from 1131
+passed to 1135, and four test names. No cell and no golden byte moves, and
+`--check` at the tip afterwards reports no drift.
+
+**The nightly dispatched on `phase/p13b-nightly`:**
+
+- `fuzz` green, and `mutation` and `flake` green and off, as on every night.
+- `full-matrix` green. Its pytest step 1120 passed and 33 skipped, 0 failed.
+- The benchmark step prints that `--skip-external` nulled the external fields,
+  plans 217 cells, 63 benchmark and 154 ablation over 11 ablatable passes, and
+  measures 217 with none reused. **Its runtime belongs to whichever runner it
+  lands on, so it is a bound:** between 2.0 and 6.0 minutes, 0.55 to 1.66 seconds
+  per cell, and I expect it near 34949062826's 3.07 minutes and 0.85 seconds,
+  because the flag removes nothing that ran inside the loop.
+- **No ablation outside the band**, no red at either `--mlir-timing` bound, the
+  budget verdict inside 90 minutes, exit 0, and a `nightly-benchmark-results`
+  artifact holding 217 cells and the runtime file.
+- The whole job between 8 and 20 minutes; 34949062826's took 10m14s.
+
+**What a red would mean, decided now rather than after.** This is the first run
+on CI hardware of everything after P13's measurement loop. A red at the ablation
+band or the budget is a finding about P13's suite on a second host and not about
+this fix, and it is reported, not suppressed. A `PassStatisticsError` is D-0049
+on a runner. An exit 2 means the flag did not reach the harness.
+
+### Measured, beside what was predicted
+
+**The rehearsal and both suite rows ran at `0c3cdfd`**, the commit that holds
+the predictions above, from a clean tree. The rehearsal started at a one minute
+load of 0.00 and the CI shape row at 0.42. The developer shape row followed it
+and started at 0.46 with the five minute average still at 2.16 from the row
+before, so counts are compared below and timings are not.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| shim, `conv_bn_relu_stack`, without the flag | exit 2 in under 30 seconds; no results directory and no file; eight things named, `scalesim` and `accelergy` as modules that do not import and the six clones with their paths; `--skip-external` named; no ZigZag, topologies or traceback | exit **2** after **1.07 seconds**; the results directory never created and **0** files; **eight** lines and exactly those; the flag named; ZigZag **0**, topologies **0**, tracebacks **0** |
+| shim, the same model with the flag | exit 0; 31 cells, 9 benchmark and 22 ablation over 11 ablatable passes; all 31 written; 620 external fields null with the flag in the reason; 0.2 to 1.5 seconds per cell | exit **0**; **31** planned, **9** and **22** over **11**; **31** measured, 0 reused, 31 written; **620 of 620**; **0.49** seconds per cell, 0.25 minutes; worst `--mlir-timing` gap 0.0810 ms and no red at either bound |
+| suite, developer shape | 1135 passed, 18 skipped | **1135 passed, 18 skipped**, 0 failed, 217.41 s |
+| suite, CI shape | 1120 passed, 33 skipped | **1120 passed, 33 skipped**, 0 failed, 164.95 s |
+| `test_external_tools.py` in the shim with `NPU_EXTERNAL_TOOLS=1` | 11 passed | **11 passed** |
+| mypy | clean in both shapes over 26 source files | **clean in both**, 26 source files, the CI shape's under `--python-executable /usr/bin/python3` |
+
+**Every clause held.** The shim was checked for being the image before it was
+used: all three of `scalesim`, `accelergy` and `zigzag` refuse to import in it,
+which is the assertion `ci.yml`'s external step makes, and `accelergy` is not on
+its `PATH`. The refusal lists every absence rather than stopping at the first,
+so a machine missing a binary and a clone learns both in one run rather than in
+two. **On this machine with only the binary taken off `PATH`**, the modules and
+clones all present, the same command exits 2 after 0.85 seconds with nothing
+written and one line, `accelergy (the accelergy binary is not on PATH)`, which
+is the half `missing_tools` exists to tell apart.
+
+**The baseline, measured.** The re-record at `613bdb4`, from a machine at 0.04
+and 0.27, moved exactly the three things predicted: the recorded sha, pytest
+from 1131 passed to 1135 with 18 skipped unchanged, and the four tests by name,
+in six added lines and two removed, committed alone as `2393196`. No cell moved
+and all 21 golden tensors were rewritten byte identical.
+
+**`--check` at `16fdb23`**, the commit that held this paragraph's place, from a
+machine at 0.10 and 0.27: **no drift** in 227 seconds, 42 cells, 21 golden
+tensors byte identical, largest movement against `-O0` 4.470e-08, pytest 1135
+passed and 18 skipped.
+
+### The dispatched nightly, measured
+
+**Run 35022460726**,
+<https://github.com/Olajide-Badejo/MLIR-Backend-for-a-Simulated-Edge-NPU/actions/runs/35022460726>,
+dispatched on `phase/p13b-nightly` at `16fdb23` and started at 20:54 UTC on
+2026-09-15. Every measured figure below is read from that run's own log, and the
+prediction it is set against is the one above, unedited.
+
+| Clause | Predicted | Measured on 35022460726 |
+|---|---|---|
+| the other three jobs | `fuzz` green; `mutation` and `flake` green and off | `mutation` and `flake` **green**, 4 seconds each, both off; `fuzz` on the line below this table |
+| `full-matrix` | green; pytest 1120 passed, 33 skipped, 0 failed | **green in 10m20s**; pytest **1120 passed, 33 skipped**, none failed, 229.84 s |
+| the opt out | the step prints that `--skip-external` nulled the external fields | **printed**, the harness's own opt out line |
+| the plan | 217 cells, 63 benchmark and 154 ablation over 11 ablatable passes | **217** planned, **63** and **154** over **11** |
+| the measurement | 217 measured, none reused | **217 measured, 0 reused** |
+| runtime | 2.0 to 6.0 minutes and 0.55 to 1.66 seconds per cell, expected near 3.07 and 0.85 | **3.04 minutes, 0.84 seconds per cell** |
+| the checks | no ablation outside the band, no red at either `--mlir-timing` bound, inside 90 minutes, exit 0 | **none outside the band**; worst upper gap **0.0678 ms** at SCCP in `lenet_batched-O2-tight-n4-fp32-normal-ablate-npu-fuse-bias`, **no red at either bound**; **inside the budget, 3.04 minutes against 90**; exit **0** |
+| the artifact | `nightly-benchmark-results` holding 217 cells and the runtime file | present, 955976 bytes, **217 files: the cells, and not the runtime file** |
+| the job | 8 to 20 minutes | **10m20s** |
+
+**`fuzz`:** predicted green, measured **green in 31m19s**, and with it the whole
+run concluded success.
+
+**Every clause held but the artifact's, and that one is D-0065.** The upload
+step reported "there will be 217 files uploaded". The harness wrote
+`results-runtime.json`, because the line it prints with the per cell figure is
+on the same branch as the write, and the step did not find it. The step names
+two paths, `${{ runner.temp }}/results` and
+`${{ runner.temp }}/results-runtime.json`, and only the first reaches the
+container translated: the same step on 34949062826, with nothing to upload,
+warned that it found no files at `/__w/_temp/results` and
+`/home/runner/work/_temp/results-runtime.json`, one container path and one host
+path. **It has never uploaded the runtime file**: 33731922379, P10's last green
+night, uploaded 175 files for 175 cells, and both green uploads reported success
+without a warning. Nothing reads that file from the artifact, and the figures it
+carries are in the step's log, which is where this table read them, so no gate
+was weaker for it. **D-0065** records it as a defect in the step rather than in
+the harness, open, with its fix deferred to P15, which edits this workflow when
+it turns the mutation and flake jobs on.
+
+**0.84 seconds per cell is the first figure CI hardware has measured for the
+suite as it stands**: 217 cells, with P12's parallel kernel and P13's three
+passes in `-O2`, against the 15 seconds Section 2 still states. This run's own
+projection line still printed "projected 54.2 minutes at 15.0 s per cell
+(Section 2's planning figure, not yet measured here)", because the projection
+reads the runtime file beside the results directory and every runner starts
+without one. The last figure CI measured before it was 0.78 seconds over P10's
+175 cells on 33731922379, and the two are different suites on different runners
+rather than a trend.
+
+**It is also the first benchmark step to complete on CI since 2026-09-03**, so
+it is the first time the checks after the loop ran on a runner over P13's suite:
+the deltas, all 154 ablation cells against the end to end band, and the budget
+verdict. **They passed**, and inside the loop no cell went red at either timing
+bound. D-0064 recorded that P13's ablation band had been checked on this machine
+and nowhere else; it has now been checked on two.

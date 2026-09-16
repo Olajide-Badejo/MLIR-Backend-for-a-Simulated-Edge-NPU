@@ -6,6 +6,18 @@ Semantic Versioning once a release is tagged.
 
 ## [Unreleased]
 
+### Interphase P13b: the nightly suite, red on main for twelve days
+
+- **D-0064: the nightly benchmark suite measured every cell and then died on a
+  tool its image has never had.** `run_benchmarks.py` built the Accelergy
+  estimator without consulting `npu_frontend.external_tools`, and the nightly
+  never passed `--skip-external`, so from 2026-09-04 every scheduled run measured
+  the whole suite and failed on a `FileNotFoundError`. The harness now refuses
+  before its first cell, naming each tool or clone it needs and cannot reach,
+  and never skips on a caller's behalf. The nightly passes the flag, with the
+  reason and the reversal beside the step, and a test holds the flag and
+  `ci.yml`'s external step together. No recorded number moves.
+
 ### Phase P13: tiling, double buffering, layout
 
 **Complete pending merge, and the gate is met on all seven clauses.** Section
