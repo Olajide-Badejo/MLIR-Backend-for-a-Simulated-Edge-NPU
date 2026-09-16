@@ -727,3 +727,177 @@ func.func @quant_from_dram(%x: memref<4xf32, #npu.dram>,
                {scale = 1.000000e+00 : f32, zero_point = 0 : i32}
   return
 }
+
+// =============================================================================
+// The quantized compute instructions.
+//
+// One case per rule, and the rules are of three kinds: the element types the
+// operands may have, the attributes that must be present at an integer result
+// and absent at an f32 one, and the ranges those attributes' values lie in.
+// =============================================================================
+
+// -----
+
+func.func @conv2d_quantized_bias_is_f32(%x: memref<1x2x4x4xi8, #npu.scratchpad>,
+                                        %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+                                        %b: memref<2xf32, #npu.scratchpad>,
+                                        %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{at a 'i8' result the bias is 'i32', but it is 'f32'. A quantized bias is wider than the data it is added to, because it is added to the int32 accumulator rather than to the result}}
+  npuisa.conv2d ins(%x, %w, %b : memref<1x2x4x4xi8, #npu.scratchpad>,
+                                 memref<2x2x3x3xi8, #npu.scratchpad>,
+                                 memref<2xf32, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// An i8 bias, refused by the operand constraint rather than by a rule: the
+// bias is the one operand whose element type is not the result's, and i8 is
+// not one of the two it may have.
+func.func @conv2d_quantized_bias_is_i8(%x: memref<1x2x4x4xi8, #npu.scratchpad>,
+                                       %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+                                       %b: memref<2xi8, #npu.scratchpad>,
+                                       %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{operand #2 must be a statically shaped memref in the Scratchpad memory space, but got 'memref<2xi8, #npu.scratchpad>'}}
+  npuisa.conv2d ins(%x, %w, %b : memref<1x2x4x4xi8, #npu.scratchpad>,
+                                 memref<2x2x3x3xi8, #npu.scratchpad>,
+                                 memref<2xi8, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// An i32 data operand. The transfer instructions move i32 so that a quantized
+// bias can reach the scratchpad, and this is the case that says the compute
+// instructions did not widen with them.
+func.func @matmul_i32_data_operand(%a: memref<4x8xi32, #npu.scratchpad>,
+                                   %b: memref<8x3xi8, #npu.scratchpad>,
+                                   %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{operand #0 must be a statically shaped memref in the Scratchpad memory space, but got 'memref<4x8xi32, #npu.scratchpad>'}}
+  npuisa.matmul ins(%a, %b : memref<4x8xi32, #npu.scratchpad>,
+                             memref<8x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+func.func @conv2d_filter_element_type_differs(
+    %x: memref<1x2x4x4xi8, #npu.scratchpad>,
+    %w: memref<2x2x3x3xf32, #npu.scratchpad>,
+    %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{element types must agree, but the filter has element type 'f32' and the destination has 'i8'}}
+  npuisa.conv2d ins(%x, %w : memref<1x2x4x4xi8, #npu.scratchpad>,
+                             memref<2x2x3x3xf32, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// An integer result with no rescale. There is no default that could stand in
+// for it: the accumulator is int32 and the result is i8, so an instruction
+// without the pair is one nothing could execute.
+func.func @conv2d_quantized_without_a_rescale(
+    %x: memref<1x2x4x4xi8, #npu.scratchpad>,
+    %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+    %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{is quantized, so it requires requant_multiplier and requant_shift: a fixed point rescale is how an int32 accumulator becomes an i8 result}}
+  npuisa.conv2d ins(%x, %w : memref<1x2x4x4xi8, #npu.scratchpad>,
+                             memref<2x2x3x3xi8, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64}
+  return
+}
+
+// -----
+
+// The other direction: an f32 result that carries the arithmetic it does not
+// perform. Refusing this is what keeps the attributes from becoming numbers
+// nothing reads.
+func.func @matmul_rescale_at_an_f32_result(%a: memref<4x8xf32, #npu.scratchpad>,
+                                           %b: memref<8x3xf32, #npu.scratchpad>,
+                                           %d: memref<4x3xf32, #npu.scratchpad>) {
+  // expected-error @+1 {{carries requant_multiplier at a 'f32' result, and that attribute describes an arithmetic only an integer result performs}}
+  npuisa.matmul ins(%a, %b : memref<4x8xf32, #npu.scratchpad>,
+                             memref<8x3xf32, #npu.scratchpad>)
+                outs(%d : memref<4x3xf32, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+func.func @matmul_output_zero_point_out_of_range(
+    %a: memref<4x8xi8, #npu.scratchpad>,
+    %b: memref<8x3xi8, #npu.scratchpad>,
+    %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{output_zero_point is an i8 zero point and is within [-128, 127], but it is 128}}
+  npuisa.matmul ins(%a, %b : memref<4x8xi8, #npu.scratchpad>,
+                             memref<8x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {output_zero_point = 128 : i32,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// The input zero point has the same range and a different job, so it gets its
+// own case rather than being assumed to share one.
+func.func @conv2d_input_zero_point_out_of_range(
+    %x: memref<1x2x4x4xi8, #npu.scratchpad>,
+    %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+    %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{zero_point is an i8 zero point and is within [-128, 127], but it is -129}}
+  npuisa.conv2d ins(%x, %w : memref<1x2x4x4xi8, #npu.scratchpad>,
+                             memref<2x2x3x3xi8, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 zero_point = -129 : i32,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// The multiplier is the M0 of Section 14, which is in [2^30, 2^31) and so is
+// positive by construction. Zero is the value a missing calibration would
+// leave behind and it would silently produce an all zero result.
+func.func @matmul_multiplier_is_not_positive(%a: memref<4x8xi8, #npu.scratchpad>,
+                                             %b: memref<8x3xi8, #npu.scratchpad>,
+                                             %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{the requantization multiplier is a positive int32, but it is 0}}
+  npuisa.matmul ins(%a, %b : memref<4x8xi8, #npu.scratchpad>,
+                             memref<8x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 0 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+func.func @matmul_shift_out_of_range(%a: memref<4x8xi8, #npu.scratchpad>,
+                                     %b: memref<8x3xi8, #npu.scratchpad>,
+                                     %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{the requantization shift is within [0, 31], but it is 32}}
+  npuisa.matmul ins(%a, %b : memref<4x8xi8, #npu.scratchpad>,
+                             memref<8x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 32 : i32}
+  return
+}

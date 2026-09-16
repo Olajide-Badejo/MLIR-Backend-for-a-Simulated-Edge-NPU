@@ -130,6 +130,43 @@ func.func @matmul_with_bias(%a: memref<4x16xf32, #npu.scratchpad>,
   return
 }
 
+// The quantized form. Three things change together and the printed form shows
+// all three: the data operands and the destination are i8, the bias is **i32**
+// because it is added to the int32 accumulator rather than to the result, and
+// the rescale pair is present because a fixed point rescale is how an int32
+// accumulator becomes an i8 result at all.
+// CHECK-LABEL: func.func @matmul_quantized
+func.func @matmul_quantized(%a: memref<4x8xi8, #npu.scratchpad>,
+                            %b: memref<8x3xi8, #npu.scratchpad>,
+                            %c: memref<3xi32, #npu.scratchpad>,
+                            %d: memref<4x3xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.matmul ins(%{{[^,]*}}, %{{[^,]*}}, %{{[^ ]*}} : memref<4x8xi8, #npu.scratchpad>, memref<8x3xi8, #npu.scratchpad>, memref<3xi32, #npu.scratchpad>) outs(%{{[^ ]*}} : memref<4x3xi8, #npu.scratchpad>)
+  // CHECK-SAME: {output_zero_point = -7 : i32, requant_multiplier = 2147483647 : i32, requant_shift = 3 : i32}
+  npuisa.matmul ins(%a, %b, %c : memref<4x8xi8, #npu.scratchpad>,
+                                 memref<8x3xi8, #npu.scratchpad>,
+                                 memref<3xi32, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {output_zero_point = -7 : i32,
+                 requant_multiplier = 2147483647 : i32, requant_shift = 3 : i32}
+  return
+}
+
+// The symmetric case, which is what an absent `output_zero_point` means. It is
+// not a different instruction and it carries no zero point word: zero is what
+// the encoder writes and zero is what adding it does.
+// CHECK-LABEL: func.func @matmul_quantized_symmetric
+func.func @matmul_quantized_symmetric(%a: memref<4x8xi8, #npu.scratchpad>,
+                                      %b: memref<8x3xi8, #npu.scratchpad>,
+                                      %d: memref<4x3xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.matmul
+  // CHECK-SAME: {requant_multiplier = 1073741824 : i32, requant_shift = 1 : i32}
+  npuisa.matmul ins(%a, %b : memref<4x8xi8, #npu.scratchpad>,
+                             memref<8x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 1 : i32}
+  return
+}
+
 // -----------------------------------------------------------------------------
 // npuisa.conv2d
 // -----------------------------------------------------------------------------
@@ -187,6 +224,28 @@ func.func @conv2d_asymmetric_pads(%x: memref<1x1x4x8xf32, #npu.scratchpad>,
                 outs(%d : memref<1x1x4x7xf32, #npu.scratchpad>)
                 {strides = array<i64: 1, 1>, pads = array<i64: 0, 1, 2, 0>,
                  dilations = array<i64: 1, 1>, group = 1 : i64}
+  return
+}
+
+// The quantized convolution, which carries **two** zero points where the matrix
+// multiplication carries one. `zero_point` is the input's, because a tap that
+// falls outside the input contributes it rather than zero; `output_zero_point`
+// is the result's. `group` does not print because it is at its default.
+// CHECK-LABEL: func.func @conv2d_quantized
+func.func @conv2d_quantized(%x: memref<1x2x4x4xi8, #npu.scratchpad>,
+                            %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+                            %b: memref<2xi32, #npu.scratchpad>,
+                            %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.conv2d ins(%{{[^,]*}}, %{{[^,]*}}, %{{[^ ]*}} : memref<1x2x4x4xi8, #npu.scratchpad>, memref<2x2x3x3xi8, #npu.scratchpad>, memref<2xi32, #npu.scratchpad>) outs(%{{[^ ]*}} : memref<1x2x4x4xi8, #npu.scratchpad>)
+  // CHECK-SAME: {dilations = array<i64: 1, 1>, output_zero_point = 12 : i32, pads = array<i64: 1, 1, 1, 1>, requant_multiplier = 1073741824 : i32, requant_shift = 7 : i32, strides = array<i64: 1, 1>, zero_point = -11 : i32}
+  npuisa.conv2d ins(%x, %w, %b : memref<1x2x4x4xi8, #npu.scratchpad>,
+                                 memref<2x2x3x3xi8, #npu.scratchpad>,
+                                 memref<2xi32, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 zero_point = -11 : i32, output_zero_point = 12 : i32,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 7 : i32}
   return
 }
 

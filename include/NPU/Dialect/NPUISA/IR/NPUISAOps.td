@@ -104,6 +104,13 @@ def NPUISA_ConstOp : NPUISA_Op<"const", [
     The value attribute's shape and element type equal the result's, and the
     verifier says so rather than the two being allowed to drift.
 
+    The element types it admits are the transfer set rather than the compute
+    set, which is to say they include `i32`. That is not a general widening: a
+    quantized bias **is** an `i32` constant, it reaches the scratchpad through a
+    `dma_load` like every other constant, and this operation is where it enters
+    the program. What a compute instruction may read is decided at the compute
+    instruction and is narrower.
+
     Both types are printed, and unlike `npu.constant` that is unavoidable here
     rather than a redundancy: a dense elements attribute carries a *tensor*
     type, the result is a *memref*, and neither can be written as the other. So
@@ -119,7 +126,7 @@ def NPUISA_ConstOp : NPUISA_Op<"const", [
   }];
 
   let arguments = (ins ElementsAttr:$value);
-  let results = (outs Res<NPUISA_DramAny, "",
+  let results = (outs Res<NPUISA_DramTransfer, "",
                           [MemAlloc<DefaultResource>]>:$result);
 
   // `->` rather than `:` between the attribute and the result type. The
@@ -153,8 +160,8 @@ class NPUISA_DmaOp<string mnemonic, Type sourceType, Type destType>
   let hasVerifier = 1;
 }
 
-def NPUISA_DmaLoadOp : NPUISA_DmaOp<"dma_load", NPUISA_DramAny,
-                                    NPUISA_ScratchpadAny> {
+def NPUISA_DmaLoadOp : NPUISA_DmaOp<"dma_load", NPUISA_DramTransfer,
+                                    NPUISA_ScratchpadTransfer> {
   let summary = "Copies a buffer from DRAM into the scratchpad.";
   let description = [{
     ```mlir
@@ -184,8 +191,8 @@ def NPUISA_DmaLoadOp : NPUISA_DmaOp<"dma_load", NPUISA_DramAny,
   }];
 }
 
-def NPUISA_DmaStoreOp : NPUISA_DmaOp<"dma_store", NPUISA_ScratchpadAny,
-                                     NPUISA_DramAny> {
+def NPUISA_DmaStoreOp : NPUISA_DmaOp<"dma_store", NPUISA_ScratchpadTransfer,
+                                     NPUISA_DramTransfer> {
   let summary = "Copies a buffer from the scratchpad back to DRAM.";
   let description = [{
     ```mlir
@@ -221,8 +228,9 @@ class NPUISA_DmaAsyncOp<string mnemonic, Type sourceType, Type destType>
   let hasCanonicalizeMethod = 1;
 }
 
-def NPUISA_DmaLoadAsyncOp : NPUISA_DmaAsyncOp<"dma_load_async", NPUISA_DramAny,
-                                              NPUISA_ScratchpadAny> {
+def NPUISA_DmaLoadAsyncOp
+    : NPUISA_DmaAsyncOp<"dma_load_async", NPUISA_DramTransfer,
+                        NPUISA_ScratchpadTransfer> {
   let summary = "Starts a DRAM to scratchpad transfer and returns its token.";
   let description = [{
     ```mlir
@@ -270,8 +278,8 @@ def NPUISA_DmaLoadAsyncOp : NPUISA_DmaAsyncOp<"dma_load_async", NPUISA_DramAny,
 }
 
 def NPUISA_DmaStoreAsyncOp : NPUISA_DmaAsyncOp<"dma_store_async",
-                                               NPUISA_ScratchpadAny,
-                                               NPUISA_DramAny> {
+                                               NPUISA_ScratchpadTransfer,
+                                               NPUISA_DramTransfer> {
   let summary = "Starts a scratchpad to DRAM transfer and returns its token.";
   let description = [{
     ```mlir
@@ -340,13 +348,28 @@ def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul"> {
     `dma_load` has not been emitted for yet. Writing the rule into the operand
     types means that mistake is a parse failure at the point it is made rather
     than an addressing fault in the simulator three phases later.
+
+    **At an `i8` result this is the quantized form of Section 14**, and three
+    things change together. The data operands and the destination are `i8` and
+    the bias is `i32`, because the bias is added to the int32 accumulator rather
+    than to the result. `requant_multiplier` and `requant_shift` are required,
+    because a fixed point rescale is how an int32 accumulator becomes an `i8`
+    result at all. `output_zero_point` carries the affine zero point of the
+    result, defaulting to zero, which is the symmetric case.
+
+    All four attributes are refused at an `f32` result. They describe an
+    arithmetic that result does not perform, and an instruction carrying them
+    there would be one whose extra numbers nothing reads.
   }];
 
   let arguments = (ins
-      Arg<NPUISA_ScratchpadF32, "", [MemRead<DefaultResource>]>:$lhs,
-      Arg<NPUISA_ScratchpadF32, "", [MemRead<DefaultResource>]>:$rhs,
-      Arg<Optional<NPUISA_ScratchpadF32>, "", [MemRead<DefaultResource>]>:$bias,
-      Arg<NPUISA_ScratchpadF32, "", [MemWrite<DefaultResource>]>:$destination
+      Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$lhs,
+      Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$rhs,
+      Arg<Optional<NPUISA_ScratchpadBias>, "", [MemRead<DefaultResource>]>:$bias,
+      OptionalAttr<NPU_SignedI32Attr>:$output_zero_point,
+      OptionalAttr<NPU_SignedI32Attr>:$requant_multiplier,
+      OptionalAttr<NPU_SignedI32Attr>:$requant_shift,
+      Arg<NPUISA_ScratchpadAny, "", [MemWrite<DefaultResource>]>:$destination
   );
 
   let assemblyFormat = [{
@@ -382,17 +405,35 @@ def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d"> {
     attributes describe fits in it. That is the same windowed formula the `npu`
     dialect uses, called from the same helper, which is what stops the two
     levels from ever disagreeing about a shape across the lowering.
+
+    **At an `i8` result this is the quantized convolution of Section 14.** The
+    data operands and the destination are `i8`, the bias is `i32` because it is
+    added to the int32 accumulator, and the rescale pair is required.
+
+    It carries **two** zero points where `npuisa.matmul` carries one, and the
+    difference is padding. `zero_point` is the **input's**: a tap that falls
+    outside the input contributes it rather than zero, which is what makes the
+    `- zp_x * sum_k q_w[k]` term folded into the bias over the whole window
+    correct at a padded output position. `output_zero_point` is the result's.
+    A matrix multiplication has no tap outside anything, so it needs only the
+    second.
+
+    All of them are refused at an `f32` result.
   }];
 
   let arguments = (ins
-      Arg<NPUISA_ScratchpadF32, "", [MemRead<DefaultResource>]>:$input,
-      Arg<NPUISA_ScratchpadF32, "", [MemRead<DefaultResource>]>:$filter,
-      Arg<Optional<NPUISA_ScratchpadF32>, "", [MemRead<DefaultResource>]>:$bias,
+      Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$input,
+      Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$filter,
+      Arg<Optional<NPUISA_ScratchpadBias>, "", [MemRead<DefaultResource>]>:$bias,
       DenseI64ArrayAttr:$strides,
       DenseI64ArrayAttr:$pads,
       DenseI64ArrayAttr:$dilations,
       DefaultValuedAttr<I64Attr, "1">:$group,
-      Arg<NPUISA_ScratchpadF32, "", [MemWrite<DefaultResource>]>:$destination
+      OptionalAttr<NPU_SignedI32Attr>:$zero_point,
+      OptionalAttr<NPU_SignedI32Attr>:$output_zero_point,
+      OptionalAttr<NPU_SignedI32Attr>:$requant_multiplier,
+      OptionalAttr<NPU_SignedI32Attr>:$requant_shift,
+      Arg<NPUISA_ScratchpadAny, "", [MemWrite<DefaultResource>]>:$destination
   );
 
   let assemblyFormat = [{

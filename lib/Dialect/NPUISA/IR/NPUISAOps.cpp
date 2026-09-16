@@ -110,6 +110,113 @@ int64_t elementCount(MemRefType type) {
   return count;
 }
 
+/// The element type a quantized instruction's data operands and result carry.
+bool isQuantizedElementType(Type type) { return type.isInteger(8); }
+
+/// The element type rules of a compute instruction that may be quantized.
+///
+/// At an f32 result every operand takes the result's type, which is the rule
+/// these instructions have always had and which this keeps exactly. At an i8
+/// result the data operands and the destination are i8 and **the bias is i32**,
+/// because Section 14 accumulates in int32 and adds the bias to the accumulator
+/// rather than to the result. That is the one operand in this dialect whose
+/// element type is deliberately not the result's, and it is the same rule the
+/// binary format declares as the opcode's integer operand types, stated at the
+/// level where the instruction is written rather than only at the encoder.
+LogicalResult
+verifyComputeElementTypes(Operation *op, MemRefType destination,
+                          ArrayRef<std::pair<StringRef, MemRefType>> data,
+                          Value bias) {
+  Type resultType = destination.getElementType();
+  for (auto [name, type] : data) {
+    if (type.getElementType() == resultType)
+      continue;
+    return op->emitOpError()
+           << "element types must agree, but " << name << " has element type "
+           << type.getElementType() << " and the destination has "
+           << resultType;
+  }
+
+  if (!bias)
+    return success();
+  Type biasType = memRefOf(bias).getElementType();
+  Type wanted = isQuantizedElementType(resultType)
+                    ? Type(IntegerType::get(op->getContext(), 32))
+                    : resultType;
+  if (biasType == wanted)
+    return success();
+  return op->emitOpError()
+         << "at a " << resultType << " result the bias is " << wanted
+         << ", but it is " << biasType
+         << ". A quantized bias is wider than the data it is added to, because "
+            "it is added to the int32 accumulator rather than to the result";
+}
+
+/// The quantization attributes exist exactly at an integer result.
+///
+/// **Required there**, because a fixed point rescale is how an int32
+/// accumulator becomes an i8 result at all, and an instruction missing it would
+/// be one nothing could execute. **Refused at f32**, where they describe an
+/// arithmetic that result does not perform and would be numbers nothing reads.
+///
+/// The bounds mirror the binary format's own checks rather than deferring to
+/// them, so a bad value is refused at the level it was written rather than
+/// three passes later at the encoder, which is this dialect's rule everywhere
+/// else too.
+LogicalResult verifyQuantAttributes(Operation *op, MemRefType destination,
+                                    std::optional<int32_t> inputZeroPoint,
+                                    std::optional<int32_t> outputZeroPoint,
+                                    std::optional<int32_t> multiplier,
+                                    std::optional<int32_t> shift) {
+  const bool quantized = isQuantizedElementType(destination.getElementType());
+
+  if (!quantized) {
+    static constexpr StringRef kNames[] = {"zero_point", "output_zero_point",
+                                           "requant_multiplier",
+                                           "requant_shift"};
+    const std::optional<int32_t> values[] = {inputZeroPoint, outputZeroPoint,
+                                             multiplier, shift};
+    for (auto [name, value] : llvm::zip_equal(kNames, values)) {
+      if (!value)
+        continue;
+      return op->emitOpError()
+             << "carries " << name << " at a "
+             << destination.getElementType()
+             << " result, and that attribute describes an arithmetic only an "
+                "integer result performs";
+    }
+    return success();
+  }
+
+  if (!multiplier || !shift)
+    return op->emitOpError()
+           << "is quantized, so it requires requant_multiplier and "
+              "requant_shift: a fixed point rescale is how an int32 "
+              "accumulator becomes an i8 result";
+  if (*multiplier <= 0)
+    return op->emitOpError()
+           << "the requantization multiplier is a positive int32, but it is "
+           << *multiplier;
+  if (*shift < 0 || *shift > 31)
+    return op->emitOpError()
+           << "the requantization shift is within [0, 31], but it is "
+           << *shift;
+
+  for (auto [name, value] :
+       {std::pair<StringRef, std::optional<int32_t>>{"zero_point",
+                                                     inputZeroPoint},
+        std::pair<StringRef, std::optional<int32_t>>{"output_zero_point",
+                                                     outputZeroPoint}}) {
+    if (!value)
+      continue;
+    if (*value < -128 || *value > 127)
+      return op->emitOpError() << name << " is an i8 zero point and is within "
+                                          "[-128, 127], but it is "
+                               << *value;
+  }
+  return success();
+}
+
 /// The bias rule, shared by matmul and conv2d: rank 1 of the expected length.
 LogicalResult verifyBias(Operation *op, Value bias, int64_t expectedLength,
                          StringRef what) {
@@ -540,11 +647,16 @@ LogicalResult MatMulOp::verify() {
                          << ", the shape this contraction implies, but it is "
                          << dest;
 
-  if (failed(verifySameElementType(*this, "the left operand", lhs,
-                                   "the right operand", rhs)))
+  if (failed(verifyComputeElementTypes(
+          *this, dest, {{"the left operand", lhs}, {"the right operand", rhs}},
+          getBias())))
     return failure();
-  if (failed(verifySameElementType(*this, "the left operand", lhs,
-                                   "the destination", dest)))
+  // A matrix multiplication has no tap outside anything, so it carries the
+  // output zero point and not the input one: the input zero point's whole
+  // contribution is the compile time term already folded into its bias.
+  if (failed(verifyQuantAttributes(*this, dest, /*inputZeroPoint=*/std::nullopt,
+                                   getOutputZeroPoint(), getRequantMultiplier(),
+                                   getRequantShift())))
     return failure();
 
   return verifyBias(*this, getBias(), n, "the destination column count");
@@ -600,11 +712,13 @@ LogicalResult Conv2DOp::verify() {
           /*ceilMode=*/false, outputChannels)))
     return failure();
 
-  if (failed(verifySameElementType(*this, "the input", input, "the filter",
-                                   filter)))
+  if (failed(verifyComputeElementTypes(
+          *this, dest, {{"the input", input}, {"the filter", filter}},
+          getBias())))
     return failure();
-  if (failed(verifySameElementType(*this, "the input", input,
-                                   "the destination", dest)))
+  if (failed(verifyQuantAttributes(*this, dest, getZeroPoint(),
+                                   getOutputZeroPoint(), getRequantMultiplier(),
+                                   getRequantShift())))
     return failure();
 
   return verifyBias(*this, getBias(), outputChannels,

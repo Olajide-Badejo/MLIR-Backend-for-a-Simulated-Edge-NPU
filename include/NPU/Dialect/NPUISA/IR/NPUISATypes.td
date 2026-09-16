@@ -100,8 +100,37 @@ class NPUISA_MemRefInSpace<string space, list<Type> allowedTypes>
 def NPUISA_ScratchpadF32 : NPUISA_MemRefInSpace<"Scratchpad", [F32]>;
 def NPUISA_ScratchpadI8 : NPUISA_MemRefInSpace<"Scratchpad", [I8]>;
 def NPUISA_ScratchpadAny : NPUISA_MemRefInSpace<"Scratchpad", [F32, I8]>;
+
+// The bias of a compute instruction, which is the one operand whose element
+// type is deliberately not the result's.
+//
+// Section 14 accumulates a quantized convolution in int32 and adds the bias to
+// **the accumulator** rather than to the result, so at an i8 result the bias is
+// i32 while the data it is added to is i8. At an f32 result it is f32 like
+// everything else. The type constraint admits both and the verifier picks which
+// one this instruction must have, because the choice is a function of the
+// result's element type rather than of the operand's own.
+def NPUISA_ScratchpadBias : NPUISA_MemRefInSpace<"Scratchpad", [F32, I32]>;
 def NPUISA_DramF32 : NPUISA_MemRefInSpace<"Dram", [F32]>;
 def NPUISA_DramAny : NPUISA_MemRefInSpace<"Dram", [F32, I8]>;
+
+// What a transfer may move, which is wider than what a compute instruction may
+// read.
+//
+// A DMA copies bytes and does not interpret them, so every element type the
+// binary format has is legal on both ends of one, and `i32` is legal there for
+// exactly the reason `i8` is. The compute constraints stay narrow on purpose:
+// the only `i32` a compute instruction accepts is the bias, which has its own
+// constraint above, so widening the transfer does not widen what can arrive at
+// a multiply.
+//
+// This pair is what lets a quantized bias exist at all. It is an
+// `npuisa.const` in DRAM and a `dma_load` into the scratchpad, like every other
+// constant this machine has, and without it a compute instruction could name an
+// `i32` bias that no instruction in the dialect could ever have filled.
+def NPUISA_ScratchpadTransfer
+    : NPUISA_MemRefInSpace<"Scratchpad", [F32, I8, I32]>;
+def NPUISA_DramTransfer : NPUISA_MemRefInSpace<"Dram", [F32, I8, I32]>;
 
 // Either space. The DMA operations are written against the specific spaces,
 // because the direction is the whole content of the operation; this one exists

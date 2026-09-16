@@ -1250,13 +1250,20 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value destination = buffer(adaptor.getDestination());
+    // The four quantization attributes are absent, spelled out here rather than
+    // defaulted so that the operand order stays readable. This pattern matches
+    // the f32 compute operations of the `npu` dialect, and the instruction
+    // refuses a quantization attribute at an f32 result.
     npuisa::Conv2DOp::create(
         rewriter, loc, resident(adaptor.getInput(), loc, rewriter),
         resident(adaptor.getFilter(), loc, rewriter),
         adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
                           : Value(),
         op.getStridesAttr(), op.getPadsAttr(), op.getDilationsAttr(),
-        op.getGroupAttr(), destination);
+        op.getGroupAttr(), /*zero_point=*/IntegerAttr(),
+        /*output_zero_point=*/IntegerAttr(),
+        /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
+        destination);
     rewriter.replaceOp(op, destination);
     return success();
   }
@@ -1276,6 +1283,8 @@ public:
         resident(adaptor.getRhs(), loc, rewriter),
         adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
                           : Value(),
+        /*output_zero_point=*/IntegerAttr(),
+        /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
         destination);
     rewriter.replaceOp(op, destination);
     return success();

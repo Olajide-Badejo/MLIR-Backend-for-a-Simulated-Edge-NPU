@@ -614,6 +614,15 @@ LogicalResult FunctionEncoder::encodeBody() {
           return failure();
         instruction.operands.push_back(*operand);
       }
+      // The scale word carries the output zero point on an integer compute
+      // instruction, which is the owner's decision of 2026-09-07 and is
+      // declared in `docs/BREAKING_CHANGES.md`. On an f32 one every value below
+      // is the neutral one the record already held, so an f32 program encodes
+      // to the same bytes it always did.
+      instruction.scale =
+          static_cast<float>(matmul.getOutputZeroPoint().value_or(0));
+      instruction.requantMultiplier = matmul.getRequantMultiplier().value_or(1);
+      instruction.requantShift = matmul.getRequantShift().value_or(0);
       if (failed(setResult(instruction, matmul.getDestination(), &op)))
         return failure();
     } else if (auto conv = dyn_cast<npuisa::Conv2DOp>(&op)) {
@@ -636,6 +645,11 @@ LogicalResult FunctionEncoder::encodeBody() {
       instruction.dilations.assign(conv.getDilations().begin(),
                                    conv.getDilations().end());
       instruction.group = conv.getGroup();
+      instruction.zeroPoint = conv.getZeroPoint().value_or(0);
+      instruction.scale =
+          static_cast<float>(conv.getOutputZeroPoint().value_or(0));
+      instruction.requantMultiplier = conv.getRequantMultiplier().value_or(1);
+      instruction.requantShift = conv.getRequantShift().value_or(0);
       if (failed(setResult(instruction, conv.getDestination(), &op)))
         return failure();
     } else if (auto add = dyn_cast<npuisa::AddOp>(&op)) {
