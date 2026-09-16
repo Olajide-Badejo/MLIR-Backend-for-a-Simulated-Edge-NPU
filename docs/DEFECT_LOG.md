@@ -3097,6 +3097,30 @@ that reaches this bound reaches it, and the population is every `slow` test that
 runs a cell. That widens what a precondition at P15 has to cover and narrows
 nothing.
 
+**The seventh observation is the same test again, at P14 checkpoint A, and this
+one names the competitor instead of inferring it.** The CI shape suite reported
+`test_the_run_fails_when_it_exceeds_its_budget` failed, 1121 passed and 33
+skipped, where the same shape on the same tree had measured 1122 and 33 an hour
+earlier. The process table said why: another project's `test_convergence`, built
+under an address and undefined behaviour sanitizer preset, held **95.6 percent
+of the processor** for the length of the run. Run alone from a start at 0.46 and
+0.88, the case **passed in 16.57 seconds**.
+
+**This is the observation the sixth one wanted and could not have**, because its
+failure text was lost. The competitor is named, its share of the processor is
+measured, and the same case passes on the same tree minutes later. It closes the
+question the sixth left open, which was whether the busy machine explanation
+covers this test as well as the timing gap: it does.
+
+**And it says something about where the measurements happen rather than about
+the bound.** This machine is shared and the owner uses it for other heavy work,
+so a competitor arriving mid run is a condition to expect rather than a
+coincidence to wait out. Nothing here moves a bound. What it changes is the
+rule this project already follows for the regression baseline, whose quiet gate
+refuses to record under load: the same discipline belongs on any suite row that
+carries a wall clock, and a red taken under a competitor is reported as a red
+taken under a competitor rather than as a result.
+
 **Two more, both on an idle machine, and they change the diagnosis.** The suite
 re-record at the tree where tiling reaches it took three attempts, and the two
 that failed were on a machine whose one minute load average was 0.01 and 0.03:
