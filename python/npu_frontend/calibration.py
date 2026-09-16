@@ -70,6 +70,8 @@ import onnxruntime as ort
 from numpy.typing import NDArray
 from onnx import ModelProto, numpy_helper
 
+from npu_frontend.onnx_importer import name_every_node
+
 #: The profile format's version, carried in every file this module writes.
 #:
 #: A profile is committed, so a reader years from now needs to know which rules
@@ -116,6 +118,11 @@ TRIM_FRACTIONS: Final[tuple[float, ...]] = (
 #: activation calibration. It is a constant with a source rather than a tuned
 #: one, and the ablation measures whether it pays on this suite.
 PERCENTILE: Final[float] = 99.99
+
+#: The operations Section 14's QDQ rewrite quantizes, and no others. `ADD`,
+#: `MUL`, `POOL_AVG`, `RELU` and `POOL_MAX` reject i8 operands by name at the
+#: instruction level, which is the same boundary stated one level down.
+QUANTIZABLE_OPS: Final[tuple[str, ...]] = ("Conv", "Gemm", "MatMul")
 
 #: The int8 rails, which every rule here is expressed against.
 QMIN: Final[int] = -128
@@ -316,7 +323,7 @@ def observe_weights(model_path: str | Path) -> dict[str, ChannelObservation]:
     initializers = {entry.name: entry for entry in model.graph.initializer}
     weights: dict[str, ChannelObservation] = {}
     for node in model.graph.node:
-        if node.op_type not in ("Conv", "Gemm", "MatMul"):
+        if node.op_type not in QUANTIZABLE_OPS:
             continue
         if len(node.input) < 2:
             continue
@@ -332,6 +339,48 @@ def observe_weights(model_path: str | Path) -> dict[str, ChannelObservation]:
             absolute_maxima=[float(np.abs(row).max()) for row in flattened],
         )
     return weights
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    """One quantizable node, by the name the IR will carry for it."""
+
+    op_type: str
+    inputs: list[str]
+    outputs: list[str]
+
+
+def observe_nodes(model_path: str | Path) -> dict[str, NodeRecord]:
+    """The quantizable nodes, keyed by the name their operation will carry.
+
+    **This is what connects a profile to an operation.** Everything else in a
+    profile is keyed by tensor name, because a tensor is what has a range. The
+    compiler does not see tensor names: the importer gives every operation a
+    `NameLoc` holding the ONNX **node** name, so the pass standing on an
+    `npu.conv2d` knows which node it came from and nothing else. This section is
+    the join, and it names the node's own inputs and outputs so the pass can ask
+    for their ranges.
+
+    The naming comes from the importer's own `name_every_node`, not from a
+    second copy of the rule, so a model whose exporter left its nodes unnamed
+    gets the same synthesised names on both sides.
+
+    Only the operations the QDQ rewrite can quantize are recorded. A profile
+    that also described every `Relu` would be describing operations the rewrite
+    is documented not to touch, and Section 14's boundary is deliberate.
+    """
+    model = onnx.load(str(model_path))
+    name_every_node(model.graph)
+    records: dict[str, NodeRecord] = {}
+    for node in model.graph.node:
+        if node.op_type not in QUANTIZABLE_OPS:
+            continue
+        records[node.name] = NodeRecord(
+            op_type=node.op_type,
+            inputs=[entry for entry in node.input if entry],
+            outputs=[entry for entry in node.output if entry],
+        )
+    return records
 
 
 def _trimmed_bins(observation: Observation, trim: float) -> tuple[int, int]:
@@ -580,6 +629,7 @@ def build_profile(
     count: int,
     observations: dict[str, Observation],
     weights: dict[str, ChannelObservation],
+    nodes: dict[str, NodeRecord] | None = None,
 ) -> dict[str, Any]:
     """The committed profile: what was seen, and what each method makes of it.
 
@@ -597,6 +647,14 @@ def build_profile(
         "inputs": count,
         "seed": calibration_seed(model_name, batch, count),
         "input_distribution": "synthetic standard normal, not sampled data",
+        "nodes": {
+            name: {
+                "op_type": record.op_type,
+                "inputs": record.inputs,
+                "outputs": record.outputs,
+            }
+            for name, record in sorted((nodes or {}).items())
+        },
         "observed": {
             name: {"min": observation.minimum, "max": observation.maximum}
             for name, observation in sorted(observations.items())

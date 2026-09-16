@@ -23,6 +23,7 @@ from npu_frontend.calibration import (
     QMIN,
     CalibrationError,
     ChannelObservation,
+    NodeRecord,
     Observation,
     accumulator_bound_holds,
     activation_scale,
@@ -251,6 +252,9 @@ def test_a_profile_round_trips_and_carries_what_reproduces_it(tmp_path: Path) ->
         count=32,
         observations={"x": Observation(minimum=-1.0, maximum=1.0, counts=[1] * 2048)},
         weights={"w": ChannelObservation(axis=0, absolute_maxima=[1.27, 2.54])},
+        nodes={
+            "Conv_0": NodeRecord(op_type="Conv", inputs=["x", "w", "b"], outputs=["y"])
+        },
     )
     assert profile["schema_version"] == PROFILE_VERSION
     assert profile["inputs"] == 32
@@ -258,6 +262,8 @@ def test_a_profile_round_trips_and_carries_what_reproduces_it(tmp_path: Path) ->
     assert "standard normal" in profile["input_distribution"]
     assert profile["weights"]["w"]["scales"] == pytest.approx([0.01, 0.02])
     assert set(profile["ranges"]["x"]) == set(CALIB_METHODS)
+    assert profile["nodes"]["Conv_0"]["op_type"] == "Conv"
+    assert profile["nodes"]["Conv_0"]["inputs"] == ["x", "w", "b"]
 
     path = write_profile(profile, tmp_path / "calibration" / "lenet.json")
     assert read_profile(path) == profile
@@ -275,3 +281,99 @@ def test_the_rails_are_the_int8_ones() -> None:
     """Stated once, here, so a change to either is a failing test rather than a
     silently different arithmetic."""
     assert (QMIN, QMAX) == (-128, 127)
+
+
+def _one_convolution_model(directory: Path) -> Path:
+    """A one node graph with an unnamed node, built without torch.
+
+    Unnamed on purpose: what this fixture exists to check is that the observer
+    and the importer agree about the name such a node gets.
+    """
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    weight = numpy_helper.from_array(np.ones((2, 1, 3, 3), dtype=np.float32), name="w")
+    bias = numpy_helper.from_array(np.zeros(2, dtype=np.float32), name="b")
+    node = helper.make_node(
+        "Conv",
+        ["x", "w", "b"],
+        ["y"],
+        pads=[1, 1, 1, 1],
+        strides=[1, 1],
+        dilations=[1, 1],
+        group=1,
+    )
+    graph = helper.make_graph(
+        [node],
+        "one_convolution",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2, 4, 4])],
+        initializer=[weight, bias],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    path = directory / "one_convolution.onnx"
+    onnx.save(model, str(path))
+    return path
+
+
+def test_the_node_section_is_keyed_by_the_name_the_ir_will_carry(
+    tmp_path: Path,
+) -> None:
+    """The join between a profile and an operation, and it has to be exact.
+
+    The compiler sees the ONNX node name and nothing else, because that is what
+    the importer puts in the location. An unnamed node gets a synthesised name
+    from the importer's own rule, and the observer calls that same function, so
+    the two cannot drift apart.
+    """
+    from npu_frontend.calibration import observe_nodes
+
+    path = _one_convolution_model(tmp_path)
+    nodes = observe_nodes(path)
+
+    assert list(nodes) == ["Conv_0"]
+    record = nodes["Conv_0"]
+    assert record.op_type == "Conv"
+    assert record.inputs == ["x", "w", "b"]
+    assert record.outputs == ["y"]
+
+
+def test_only_the_quantizable_operations_are_recorded(tmp_path: Path) -> None:
+    """A profile that described a Relu would describe an operation the rewrite
+    is documented not to touch."""
+    import numpy as np
+    import onnx
+    from npu_frontend.calibration import QUANTIZABLE_OPS, observe_nodes
+    from onnx import TensorProto, helper, numpy_helper
+
+    weight = numpy_helper.from_array(np.ones((2, 1, 3, 3), dtype=np.float32), name="w")
+    graph = helper.make_graph(
+        [
+            helper.make_node(
+                "Conv",
+                ["x", "w"],
+                ["c"],
+                pads=[1, 1, 1, 1],
+                strides=[1, 1],
+                dilations=[1, 1],
+                group=1,
+            ),
+            helper.make_node("Relu", ["c"], ["y"]),
+        ],
+        "conv_relu",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2, 4, 4])],
+        initializer=[weight],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    path = tmp_path / "conv_relu.onnx"
+    onnx.save(model, str(path))
+
+    nodes = observe_nodes(path)
+    assert set(nodes) == {"Conv_0"}
+    assert "Relu" not in QUANTIZABLE_OPS

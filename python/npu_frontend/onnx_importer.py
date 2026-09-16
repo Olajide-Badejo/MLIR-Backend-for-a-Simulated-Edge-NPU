@@ -207,7 +207,7 @@ def _collect_initializers(graph: GraphProto) -> dict[str, np.ndarray]:
     }
 
 
-def _name_every_node(graph: GraphProto) -> None:
+def name_every_node(graph: GraphProto) -> None:
     """Give every node a name, so every diagnostic and every location has one.
 
     Section 11 requires every operation the importer creates to carry a
@@ -215,6 +215,12 @@ def _name_every_node(graph: GraphProto) -> None:
     its nodes. A synthesised name is deterministic, derived from the operator
     type and the node's index in the graph, so two imports of the same model
     produce the same locations and a golden file over the IR is stable.
+
+    **Public because the calibration observer needs the same answer.** A profile
+    is keyed by the names the IR will carry, and the IR carries these. An
+    observer that synthesised its own names would agree with this one until an
+    exporter left a node unnamed, and then a calibrated operation would silently
+    fail to match the operation it was calibrated for.
     """
     for index, node in enumerate(graph.node):
         if not node.name:
@@ -232,7 +238,7 @@ def import_model(model: ModelProto, *, function_name: str = "main") -> str:
     inferred = _infer_shapes(model)
 
     graph = inferred.graph
-    _name_every_node(graph)
+    name_every_node(graph)
 
     initializers = _collect_initializers(graph)
     shapes = _collect_shapes(graph)
