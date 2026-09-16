@@ -2075,9 +2075,69 @@ answer could take.
 
 ## Open questions
 
-**Three are new at P14 checkpoint A**, and the first is the one only the owner
-can settle. They are stated before P13's because a reader of this handoff has
-not seen them anywhere else.
+**Four are new at P14**, three at checkpoint A and one at checkpoint B, and the
+first of them is the one only the owner can settle. They are stated before P13's
+because a reader of this handoff has not seen them anywhere else.
+
+**How a per output channel weight scale reaches the machine. New at checkpoint
+B, and it is the owner's.** Section 14 opens with the granularity decision:
+weights get one symmetric scale per output channel, axis 0 for a regular
+convolution and axis 3 for a depthwise one, and the P14 gate asks for the
+ablation that measures it, expected near zero on LeNet and large on the
+depthwise block. Section 9 pins the instruction record in the same document:
+`requantMultiplier` and `requantShift` are one `i32` each, present from version
+1, and those specific fields "and nothing broader" are what let this phase land
+without moving `Program::kVersion`, because any other change to the layout still
+bumps the version and Section 14 forbids a bump here by name.
+
+**Both cannot hold for one instruction.** The rescale of output channel `c` is
+`M_c = (scale_x * scale_w_c) / scale_y`, so a weight scale that varies per
+channel makes the multiplier vary per channel by construction. One scalar pair
+expresses exactly one channel's rescale. Unlike the output zero point, there is
+no idle word to reuse here: the arithmetic wants `F` multipliers and `F` shifts
+rather than one more number.
+
+**What the artifact is today: per tensor, at every level.** The kernel applies
+`instruction.requantMultiplier` once per instruction, the numpy reference takes
+a plain `int`, and `npu.quantize` carries a single `f32` scale attribute, so the
+QDQ form cannot express a per channel weight either. Nothing in this repository
+had mentioned per channel before this entry, which is why it is a question
+rather than a defect.
+
+**Three ways out, and their costs.**
+
+*An operand slot, which is the one I recommend.* The per channel multipliers and
+shifts arrive as an `i32` buffer in the scratchpad, like the bias, and the
+opcode's operand profile grows from three slots to four. **This moves no byte of
+any existing program and does not touch the layout**: the operand list is
+already length prefixed, `putCount(out, instruction.operands.size())` on the way
+out and `operands.resize(operandCount)` on the way in, so a program with three
+operands encodes exactly as it does today and `Program::kVersion` stays 2. The
+work is an ISA description change, declared and regenerated with the staleness
+gate clean, plus the arity and element type rules, the kernels, both oracles,
+the disassembly and the encoder, with the malformed corpus compared case by case
+at the parent and at the change as the output zero point change was. It is also
+what the hardware Section 14 cites does, which is per output channel multiplier
+and shift in silicon. The vectors are small on this suite: the largest output
+channel count in the seven models is 16, so a per channel pair is 128 bytes.
+
+*Per tensor weights, which is what the artifact already is.* It contradicts
+Section 14's granularity paragraph, and it makes the gate's ablation
+unmeasurable, because there is nothing to ablate against.
+
+*A wider instruction record.* Section 14 forbids it in this phase by name: a
+version bump invalidates `test_binary_stability` and every seed in the fuzz
+corpus in the same commit that introduces quantization.
+
+**What checkpoint B does while it is open.** The calibrator, the profile, the
+range rules and the QDQ rewrite compute a per channel weight scale the same way
+under every option, so they are built now and the profile carries the per
+channel scales. What cannot be built until this is settled is the execution of
+one, so the interim path quantizes weights per tensor, the profile records both,
+and **no accuracy number measured under the interim is published as the phase's
+result**. That is the shape checkpoint A used for the output zero point: ship
+the consistent interim, record the contradiction, and do not choose for the
+owner.
 
 **Where a quantized compute instruction's output zero point lives. Settled by
 the owner on 2026-09-07 and no longer open.** The contradiction was real: Section

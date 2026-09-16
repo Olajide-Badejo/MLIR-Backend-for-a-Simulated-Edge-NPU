@@ -6910,3 +6910,48 @@ integer instructions with the rescale inserted in arithmetic order, the DRAM map
 with an 8 byte bias and a 12 byte one, and the 512 byte scratchpad. The run
 matched every line, the lit suite went from 38 tests to 39 with all passing, and
 the four unit suites held at 23, 91, 74 and 29.
+
+### The granularity the format cannot express, found while designing the calibrator
+
+**The calibrator was not written yet and the design stopped on a question the
+code could not answer.** Section 14's first paragraph is the granularity
+decision: per output channel weight scales, per tensor activations, with the
+ablation that measures it named in the phase gate. So the calibrator has to emit
+a weight scale per output channel. I went looking for where such a scale lands
+and found that it lands nowhere. `npu.quantize` carries one `f32` scale
+attribute, so the QDQ form cannot say it. `Instruction` carries one
+`requantMultiplier` and one `requantShift`, so the machine cannot apply it. The
+kernel takes those two scalars once per instruction and the numpy reference
+takes plain `int`s, which is the same arithmetic on both sides, exactly as
+intended, and per tensor on both sides too. The word "channel" appears in this
+repository's documentation only in the sense of a channel count.
+
+**It is a contradiction inside Section 14 rather than a gap in the build.**
+Paragraph one wants per output channel weight scales. The Section 9 paragraph
+pins `requantMultiplier` and `requantShift` as one `i32` each and says those
+fields "and nothing broader" are what let the phase land without moving
+`Program::kVersion`, with any other layout change bumping the version, and
+Section 14 forbids a bump here because it would invalidate the format's whole
+regression net in the commit that introduces quantization. `M_c` varies with
+`scale_w_c` by construction, so one scalar pair expresses one channel.
+
+**The shape is the output zero point's and the answer cannot be.** That one was
+a homeless number with an idle word to live in, and the inventory found it. This
+one is `F` numbers and there is no idle vector anywhere in the record. What
+there is instead is an operand list that has always been length prefixed, which
+is why the recommendation in the open questions is an operand slot: a fourth
+operand holding the per channel pair moves no byte of any existing program,
+because a three operand instruction still writes three, and leaves
+`Program::kVersion` where Section 14 insists it stays. That is a change to an
+opcode's profile rather than to the layout, and this phase has already made one
+of those and knows what it costs.
+
+**What I did rather than choose.** The question went into the open questions as
+the owner's, with the three options and the measured cost of the recommended
+one: the largest output channel count in the seven models is 16, so a per
+channel pair is 128 bytes of scratchpad. Checkpoint B continues on everything
+that is common to all three options, which is the observer, the profile, the
+range rules, the accumulator guard and the QDQ rewrite, because a per channel
+weight scale is computed the same way whatever carries it. The interim executes
+per tensor, the profile records both, and no accuracy number taken under the
+interim is published as the phase's result.
