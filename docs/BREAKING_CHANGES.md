@@ -42,6 +42,88 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-16, Phase P14: an integer compute instruction carries its output zero point in the `scale` field
+
+**Written before the commit that causes it.** The commit that changes the
+meaning of the field is the next one but two, and this entry is what makes it a
+decision rather than an explanation. The one in between adds the instrument that
+measures it, and adds no behaviour.
+
+**What changes, in one sentence.** On `CONV2D` and `MATMUL`, and **only when the
+result element type is an integer one**, the `scale` word of `Instruction` stops
+being required to hold zero and starts holding the output zero point.
+
+**Why, and it is the owner's decision of 2026-09-07.** Checkpoint A found that a
+quantized convolution needs two zero points and `Instruction` carries one. The
+input's is needed at run time, because Section 14's rule is that padding
+contributes `zp_x` and because the `- zp_x * sum_k q_w[k]` term folded into the
+int32 bias is taken over the whole window; so the `zeroPoint` word is the
+input's and cannot be anything else. The interim implementation therefore made
+quantized compute results **symmetric**, which is consistent with Section 14's
+pinned arithmetic paragraph and **inconsistent with its calibration paragraph**,
+where activations are affine. Symmetric output costs the negative half of the
+int8 range on every post ReLU tensor in the suite, which is most of them. The
+owner settled it: the activations stay affine as Section 14 specifies, and the
+output zero point goes in the `scale` word.
+
+**Why that word is the place, rather than a new one.** On an integer compute
+instruction the scale is **already** carried, folded into `requantMultiplier`
+and `requantShift`: `M = (scale_x * scale_w) / scale_y` is the whole of the
+rescale and the fixed point pair is how the machine applies it. So the f32 word
+is idle on exactly the instructions that need somewhere to put a zero point, and
+using it costs no layout change. `QUANT` and `DEQUANT` are untouched: they
+declare `FieldScale`, they use it as a scale, and nothing about them moves.
+
+**Which baseline fields move: none, and the measurement says so rather than the
+prose.** No cell of the 217 contains an integer instruction, because no pass in
+any `-O` level emits one yet, so no recorded number can reach this change.
+`regression-baseline --check` reports no drift at the parent and is expected to
+report none at the change, with the 21 fp32 golden tensors byte identical.
+
+**So why this file rather than the changelog.** Because it changes the meaning of
+a field in a **declared interface**. The ISA description, `docs/ISA_MANUAL.md`
+and `docs/ISA_OPCODES.json` all state what the `scale` word means, and a reader
+of a `.nbin` decides what a number is by reading them. That is the same class as
+P13's entry for checks 8 and 9, which moved no cell either and changed what the
+validator accepts. A change that alters how a committed file is to be read
+belongs where changes are declared in advance.
+
+**No byte of any existing program moves.** `Program::kVersion` stays 2, the
+layout is untouched, the fuzz corpus is not reseeded, and the field was already
+physically present on every instruction. An f32 program is accepted or refused
+exactly as before, because the new rule is gated on the result element type and
+the f32 path keeps the rule it has always had: the word holds zero.
+
+**What becomes newly legal, and what becomes newly refused.** At an integer
+result on those two opcodes, a `scale` word holding an integral value inside the
+i8 range becomes legal where only zero was legal before, which is strictly a
+widening; zero stays legal and is the symmetric case. Two values that were
+already refused are still refused and are refused **by name** now: a non
+integral value, because a zero point is an integer, and a value outside
+`[-128, 127]`, because it is an i8 zero point. Each gets its own unit test.
+
+**The prediction on the malformed corpus, written before it is run.** **No case
+flips its verdict and no case flips its check name.** Every case in the corpus is
+a mutation of `chainProgram`, whose second instruction is an `f32` `RELU`, and
+the cases that reach an integer result element type do it by setting the opcode
+to `QUANT`, which declares `FieldScale` and is not part of this change. The one
+case that writes a scale onto an opcode that does not quantize writes it onto
+that `f32` `RELU`, which still refuses it with the same check and the same
+message. The corpus is run at the parent and at the change and every difference
+is listed; a flip that this paragraph did not predict is a finding.
+
+**Where the old behaviour is recorded.** The symmetric path never shipped and no
+published number was measured under it, so nothing is restated in `NUMBERS.md`.
+What it cost is an argument rather than a measurement, and `PHASE_STATE.md` and
+the engineering log say the owner decided rather than pretending the question
+was never open.
+
+**Why the change is worth making.** The alternative is a machine that cannot
+represent an affine activation, on a suite whose tensors are mostly one sided
+after a ReLU, measured in a phase whose gate is accuracy per model. Shipping the
+symmetric path would have put a representational choice inside every accuracy
+number the phase reports, where no reader could see it.
+
 ### 2026-09-06, Phase P13: `-npu-double-buffer` starts firing, and declines the prefetches that would not place
 
 **Written before the commit that causes it.** The commit that changes the pass
