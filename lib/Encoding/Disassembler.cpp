@@ -156,6 +156,14 @@ std::optional<std::string> fieldText(const Instruction &instruction,
   if (name == "outputZeroPoint")
     return "outputZeroPoint=" +
            std::to_string(static_cast<int32_t>(instruction.scale));
+  // The rescaling pair, printed as the two numbers it is. `M0` and the shift
+  // are what the machine applies, so a disassembly that showed a zero point
+  // being added but not the rescale that produced the value it is added to
+  // would be one a reader could not check the arithmetic of.
+  if (name == "requantize")
+    return "requantMultiplier=" +
+           std::to_string(instruction.requantMultiplier) +
+           " requantShift=" + std::to_string(instruction.requantShift);
   if (name == "scale") {
     char buffer[64];
     std::snprintf(buffer, sizeof(buffer), "scale=%g",
@@ -263,7 +271,8 @@ bool renderTokens(const Instruction &instruction, llvm::StringRef text,
 /// identical, which is what the lit tests compare.
 void appendIntegerFields(const Instruction &instruction, const OpcodeInfo &info,
                          std::string &out) {
-  if (info.integerFieldMask == 0)
+  const bool rescales = (info.fieldMask & kFieldRequantize) != 0;
+  if (info.integerFieldMask == 0 && !rescales)
     return;
   uint32_t rawType = static_cast<uint32_t>(instruction.resultElementType);
   if (rawType >= 32 || (kIntegerTypeMask & (1u << rawType)) == 0)
@@ -273,16 +282,31 @@ void appendIntegerFields(const Instruction &instruction, const OpcodeInfo &info,
   // `fieldText` above names its own: a field added to the description and not
   // to this list is a field that silently stops being disassembled, and a table
   // here is the place that becomes visible.
+  //
+  // The order is **the order the arithmetic applies them**: the input zero
+  // point is what a tap outside the input contributes, the pair rescales the
+  // accumulator, and the output zero point is added to what the rescale
+  // produced. Read down the line and the line is the computation.
+  //
+  // The rescaling pair is the one entry that reads the ordinary field mask
+  // rather than the integer one, because the opcode declares it in `fields`:
+  // an f32 instruction carries the neutral pair and the validator's neutrality
+  // rule is written against that list. What is true only at an integer result
+  // is that the pair *means* something, which is why it is printed here and
+  // nowhere else.
   static constexpr struct {
     uint32_t bit;
     const char *name;
-  } kIntegerOnly[] = {
-      {kFieldZeroPoint, "zeroPoint"},
-      {kFieldOutputZeroPoint, "outputZeroPoint"},
+    bool integerOnly;
+  } kAtAnIntegerResult[] = {
+      {kFieldZeroPoint, "zeroPoint", true},
+      {kFieldRequantize, "requantize", false},
+      {kFieldOutputZeroPoint, "outputZeroPoint", true},
   };
 
-  for (const auto &field : kIntegerOnly) {
-    if ((info.integerFieldMask & field.bit) == 0)
+  for (const auto &field : kAtAnIntegerResult) {
+    uint32_t mask = field.integerOnly ? info.integerFieldMask : info.fieldMask;
+    if ((mask & field.bit) == 0)
       continue;
     if (std::optional<std::string> text = fieldText(instruction, field.name)) {
       if (!out.empty() && out.back() != ' ')
