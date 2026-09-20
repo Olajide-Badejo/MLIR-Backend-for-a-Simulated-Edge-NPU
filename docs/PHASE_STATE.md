@@ -2079,8 +2079,23 @@ answer could take.
 first of them is the one only the owner can settle. They are stated before P13's
 because a reader of this handoff has not seen them anywhere else.
 
-**How a per output channel weight scale reaches the machine. New at checkpoint
-B, and it is the owner's.** Section 14 opens with the granularity decision:
+**How a per output channel weight scale reaches the machine. Settled by the
+owner on 2026-09-20 and no longer open.** The answer is the operand, which is
+the recommendation below: `CONV2D` and `MATMUL` take a fourth operand of shape
+(2, C), `Program::kVersion` stays 2, and the malformed corpus came back
+identical at the parent and at the change. Two parts of the decision are worth
+carrying forward. The condition to refuse an out of range **shift** at decode
+could not be met, because the record holds an address and an extent for that
+operand and the values are bytes a `DMA_LOAD` writes later; a validator
+claiming to check them would be reading whatever sat at that address, so the
+refusals live at the machine and at the numpy reference and are documented as
+weaker. And the `axes` alternative, which would have satisfied that condition
+literally, was **rejected**: it would overload a declared field with an
+unrelated meaning and leave two sources of truth for the same values. The
+question as originally posed follows.
+
+**The original question, kept because the argument is what the answer rests
+on.** Section 14 opens with the granularity decision:
 weights get one symmetric scale per output channel, axis 0 for a regular
 convolution and axis 3 for a depthwise one, and the P14 gate asks for the
 ablation that measures it, expected near zero on LeNet and large on the

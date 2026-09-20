@@ -6988,17 +6988,29 @@ reference refuses the same shapes by name. That is a weaker guarantee than a
 decode time refusal and it is written down as weaker rather than presented as
 equivalent.
 
-**There was a design that would have satisfied the condition literally**, and
-it is recorded because the owner may still want it. The instruction record has
-an idle variable length field on these two opcodes: `axes`, which `TRANSPOSE`
-uses for its permutation and `CONCAT` for its axis, and which a compute
-instruction leaves empty. Two integers per channel would fit there, visible at
-decode, checkable exactly as asked, and still length prefixed so no existing
-program moves. It was not chosen, because the owner chose the operand and
-because reusing `axes` for a second unrelated meaning is the pun the output
-zero point decision deliberately avoided when it declared `outputZeroPoint` as
-its own field rather than a second reading of `scale`. The trade is a
-representation that can be validated early against one that reads honestly.
+**There was a design that would have satisfied the condition literally, and
+the owner rejected it on 2026-09-20.** The instruction record has an idle
+variable length field on these two opcodes: `axes`, which `TRANSPOSE` uses for
+its permutation and `CONCAT` for its axis, and which a compute instruction
+leaves empty. Two integers per channel would fit there, visible at decode,
+checkable exactly as asked, and still length prefixed so no existing program
+moves.
+
+**The reason it was rejected is worth more than the option was.** Putting the
+rescale in `axes` would overload a declared field with an unrelated meaning,
+and it would create **two sources of truth for the same values**: the field and
+the operand would both be places a per channel multiplier could live, and every
+reader of a program would have to know which one this instruction meant. That
+is the same objection the output zero point decision already acted on when it
+declared `outputZeroPoint` as its own field rather than a second reading of
+`scale`, and it is a stronger objection here, because a zero point is one word
+and this is a vector that the kernels, both oracles, the disassembler and the
+encoder would each have to look for in two places.
+
+So the trade was not taken. The operand reads honestly and cannot be validated
+early; `axes` could be validated early and would read as a pun. **The decision
+is that a representation which says what it is beats a representation that can
+be checked sooner**, and the check went where the values exist instead.
 
 **What the arithmetic now says, on both sides.** Two channels accumulating 100
 each, multipliers 2^30 and 2^30, shifts 0 and 1, give 50 and 25. The simulator
