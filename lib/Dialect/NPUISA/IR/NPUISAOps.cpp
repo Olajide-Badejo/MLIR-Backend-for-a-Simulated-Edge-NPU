@@ -217,6 +217,57 @@ LogicalResult verifyQuantAttributes(Operation *op, MemRefType destination,
   return success();
 }
 
+/// The per output channel rescale operand's rules.
+///
+/// Section 14 makes weight scales per output channel, so `M_c` varies with the
+/// channel and the instruction's two scalar fields express one channel between
+/// them. This operand carries the rest: an `i32` buffer of shape (2, C), the
+/// multipliers in row 0 and the shifts in row 1.
+///
+/// **It requires the bias, and that is the operand list speaking.** One level
+/// down the operands are positional, so a rescale with no bias would occupy
+/// the bias's slot and be read as one. A quantized instruction has a bias in
+/// any case, because the input zero point's folded term lives there.
+///
+/// **The values are not checked here and cannot be.** What this sees is a
+/// buffer; what is in it arrives by `dma_load` at run time. The shift's range
+/// is enforced by the machine, which traps naming the channel, and by the
+/// numpy reference, which refuses by name. That is weaker than a check here
+/// would be and it is said plainly rather than papered over.
+LogicalResult verifyRescale(Operation *op, MemRefType destination, Value bias,
+                            Value rescale) {
+  if (!rescale)
+    return success();
+
+  if (!isQuantizedElementType(destination.getElementType()))
+    return op->emitOpError()
+           << "carries a per output channel rescale at a "
+           << destination.getElementType()
+           << " result, and that operand describes an arithmetic only an "
+              "integer result performs";
+
+  if (!bias)
+    return op->emitOpError()
+           << "carries a per output channel rescale and no bias. The operand "
+              "list is positional at the instruction level, so a rescale "
+              "without a bias would sit in the bias's slot and be read as one";
+
+  if (destination.getRank() < 2)
+    return op->emitOpError()
+           << "carries a per output channel rescale and its result has no "
+              "channel extent to match";
+
+  MemRefType table = memRefOf(rescale);
+  const int64_t channels = destination.getDimSize(1);
+  if (table.getRank() != 2 || table.getDimSize(0) != 2 ||
+      table.getDimSize(1) != channels)
+    return op->emitOpError()
+           << "takes a per output channel rescale of shape (2, " << channels
+           << "), one multiplier row and one shift row against the result's "
+           << channels << " output channels, and it is " << table;
+  return success();
+}
+
 /// The bias rule, shared by matmul and conv2d: rank 1 of the expected length.
 LogicalResult verifyBias(Operation *op, Value bias, int64_t expectedLength,
                          StringRef what) {
@@ -658,6 +709,8 @@ LogicalResult MatMulOp::verify() {
                                    getOutputZeroPoint(), getRequantMultiplier(),
                                    getRequantShift())))
     return failure();
+  if (failed(verifyRescale(*this, dest, getBias(), getRescale())))
+    return failure();
 
   return verifyBias(*this, getBias(), n, "the destination column count");
 }
@@ -719,6 +772,8 @@ LogicalResult Conv2DOp::verify() {
   if (failed(verifyQuantAttributes(*this, dest, getZeroPoint(),
                                    getOutputZeroPoint(), getRequantMultiplier(),
                                    getRequantShift())))
+    return failure();
+  if (failed(verifyRescale(*this, dest, getBias(), getRescale())))
     return failure();
 
   return verifyBias(*this, getBias(), outputChannels,

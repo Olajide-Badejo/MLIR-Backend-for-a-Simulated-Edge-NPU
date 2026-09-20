@@ -167,6 +167,30 @@ func.func @matmul_quantized_symmetric(%a: memref<4x8xi8, #npu.scratchpad>,
   return
 }
 
+// The per output channel form, which is the other arm of Section 14's
+// granularity ablation. The fourth operand is an i32 table of shape (2, N):
+// one multiplier row and one shift row, one column per output channel. It
+// comes with the bias rather than instead of it, because the operand list is
+// positional one level down and a rescale in the bias's slot would be read as
+// a bias.
+// CHECK-LABEL: func.func @matmul_per_channel
+func.func @matmul_per_channel(%a: memref<4x8xi8, #npu.scratchpad>,
+                              %b: memref<8x3xi8, #npu.scratchpad>,
+                              %c: memref<3xi32, #npu.scratchpad>,
+                              %r: memref<2x3xi32, #npu.scratchpad>,
+                              %d: memref<4x3xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.matmul ins(%{{[^,]*}}, %{{[^,]*}}, %{{[^,]*}}, %{{[^ ]*}} : memref<4x8xi8, #npu.scratchpad>, memref<8x3xi8, #npu.scratchpad>, memref<3xi32, #npu.scratchpad>, memref<2x3xi32, #npu.scratchpad>) outs(%{{[^ ]*}} : memref<4x3xi8, #npu.scratchpad>)
+  // CHECK-SAME: {output_zero_point = -7 : i32, requant_multiplier = 2147483647 : i32, requant_shift = 3 : i32}
+  npuisa.matmul ins(%a, %b, %c, %r : memref<4x8xi8, #npu.scratchpad>,
+                                     memref<8x3xi8, #npu.scratchpad>,
+                                     memref<3xi32, #npu.scratchpad>,
+                                     memref<2x3xi32, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {output_zero_point = -7 : i32,
+                 requant_multiplier = 2147483647 : i32, requant_shift = 3 : i32}
+  return
+}
+
 // -----------------------------------------------------------------------------
 // npuisa.conv2d
 // -----------------------------------------------------------------------------
@@ -246,6 +270,28 @@ func.func @conv2d_quantized(%x: memref<1x2x4x4xi8, #npu.scratchpad>,
                  dilations = array<i64: 1, 1>, group = 1 : i64,
                  zero_point = -11 : i32, output_zero_point = 12 : i32,
                  requant_multiplier = 1073741824 : i32, requant_shift = 7 : i32}
+  return
+}
+
+// The convolution's per output channel form, where the table's column count is
+// the result's channel extent rather than its column count.
+// CHECK-LABEL: func.func @conv2d_per_channel
+func.func @conv2d_per_channel(%x: memref<1x2x4x4xi8, #npu.scratchpad>,
+                              %w: memref<2x2x3x3xi8, #npu.scratchpad>,
+                              %b: memref<2xi32, #npu.scratchpad>,
+                              %r: memref<2x2xi32, #npu.scratchpad>,
+                              %d: memref<1x2x4x4xi8, #npu.scratchpad>) {
+  // CHECK: npuisa.conv2d ins(%{{[^,]*}}, %{{[^,]*}}, %{{[^,]*}}, %{{[^ ]*}} : memref<1x2x4x4xi8, #npu.scratchpad>, memref<2x2x3x3xi8, #npu.scratchpad>, memref<2xi32, #npu.scratchpad>, memref<2x2xi32, #npu.scratchpad>)
+  // CHECK-SAME: outs(%{{[^ ]*}} : memref<1x2x4x4xi8, #npu.scratchpad>)
+  npuisa.conv2d ins(%x, %w, %b, %r : memref<1x2x4x4xi8, #npu.scratchpad>,
+                                     memref<2x2x3x3xi8, #npu.scratchpad>,
+                                     memref<2xi32, #npu.scratchpad>,
+                                     memref<2x2xi32, #npu.scratchpad>)
+                outs(%d : memref<1x2x4x4xi8, #npu.scratchpad>)
+                {strides = array<i64: 1, 1>, pads = array<i64: 1, 1, 1, 1>,
+                 dilations = array<i64: 1, 1>, group = 1 : i64,
+                 zero_point = -11 : i32, output_zero_point = 12 : i32,
+                 requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
   return
 }
 

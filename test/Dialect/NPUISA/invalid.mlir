@@ -901,3 +901,80 @@ func.func @matmul_shift_out_of_range(%a: memref<4x8xi8, #npu.scratchpad>,
                 {requant_multiplier = 1073741824 : i32, requant_shift = 32 : i32}
   return
 }
+
+// -----
+
+// The table is one multiplier and one shift per output channel, so a column
+// count that is not the result's is a rescale for a different operation.
+func.func @rescale_with_the_wrong_column_count(
+    %a: memref<4x8xi8, #npu.scratchpad>,
+    %b: memref<8x3xi8, #npu.scratchpad>,
+    %c: memref<3xi32, #npu.scratchpad>,
+    %r: memref<2x4xi32, #npu.scratchpad>,
+    %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{takes a per output channel rescale of shape (2, 3), one multiplier row and one shift row against the result's 3 output channels, and it is 'memref<2x4xi32, #npu.scratchpad>'}}
+  npuisa.matmul ins(%a, %b, %c, %r : memref<4x8xi8, #npu.scratchpad>,
+                                     memref<8x3xi8, #npu.scratchpad>,
+                                     memref<3xi32, #npu.scratchpad>,
+                                     memref<2x4xi32, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// A rank 1 table, which is what someone thinking of it as a vector of
+// multipliers would write, and which has nowhere to put the shifts.
+func.func @rescale_without_a_shift_row(%a: memref<4x8xi8, #npu.scratchpad>,
+                                       %b: memref<8x3xi8, #npu.scratchpad>,
+                                       %c: memref<3xi32, #npu.scratchpad>,
+                                       %r: memref<6xi32, #npu.scratchpad>,
+                                       %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{takes a per output channel rescale of shape (2, 3)}}
+  npuisa.matmul ins(%a, %b, %c, %r : memref<4x8xi8, #npu.scratchpad>,
+                                     memref<8x3xi8, #npu.scratchpad>,
+                                     memref<3xi32, #npu.scratchpad>,
+                                     memref<6xi32, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}
+
+// -----
+
+// An f32 result never rescales, so the operand describes an arithmetic that
+// result does not perform.
+func.func @rescale_at_an_f32_result(%a: memref<4x8xf32, #npu.scratchpad>,
+                                    %b: memref<8x3xf32, #npu.scratchpad>,
+                                    %c: memref<3xf32, #npu.scratchpad>,
+                                    %r: memref<2x3xi32, #npu.scratchpad>,
+                                    %d: memref<4x3xf32, #npu.scratchpad>) {
+  // expected-error @+1 {{carries a per output channel rescale at a 'f32' result, and that operand describes an arithmetic only an integer result performs}}
+  npuisa.matmul ins(%a, %b, %c, %r : memref<4x8xf32, #npu.scratchpad>,
+                                     memref<8x3xf32, #npu.scratchpad>,
+                                     memref<3xf32, #npu.scratchpad>,
+                                     memref<2x3xi32, #npu.scratchpad>)
+                outs(%d : memref<4x3xf32, #npu.scratchpad>)
+  return
+}
+
+// -----
+
+// The table is i32 and nothing else, unlike the bias, whose element type is a
+// function of the result's. Refused by the operand constraint rather than by a
+// rule.
+func.func @rescale_that_is_not_i32(%a: memref<4x8xi8, #npu.scratchpad>,
+                                   %b: memref<8x3xi8, #npu.scratchpad>,
+                                   %c: memref<3xi32, #npu.scratchpad>,
+                                   %r: memref<2x3xi8, #npu.scratchpad>,
+                                   %d: memref<4x3xi8, #npu.scratchpad>) {
+  // expected-error @+1 {{operand #3 must be a statically shaped memref in the Scratchpad memory space, but got 'memref<2x3xi8, #npu.scratchpad>'}}
+  npuisa.matmul ins(%a, %b, %c, %r : memref<4x8xi8, #npu.scratchpad>,
+                                     memref<8x3xi8, #npu.scratchpad>,
+                                     memref<3xi32, #npu.scratchpad>,
+                                     memref<2x3xi8, #npu.scratchpad>)
+                outs(%d : memref<4x3xi8, #npu.scratchpad>)
+                {requant_multiplier = 1073741824 : i32, requant_shift = 0 : i32}
+  return
+}

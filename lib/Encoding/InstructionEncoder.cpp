@@ -614,6 +614,16 @@ LogicalResult FunctionEncoder::encodeBody() {
           return failure();
         instruction.operands.push_back(*operand);
       }
+      // The per output channel rescale is operand 3 and follows the bias,
+      // which is the order the opcode declares and the order the kernels read.
+      // The verifier has already refused a rescale without a bias, so nothing
+      // here can land in the wrong slot.
+      if (Value rescale = matmul.getRescale()) {
+        FailureOr<Operand> operand = makeOperand(rescale, &op);
+        if (failed(operand))
+          return failure();
+        instruction.operands.push_back(*operand);
+      }
       // The scale word carries the output zero point on an integer compute
       // instruction, which is the owner's decision of 2026-09-07 and is
       // declared in `docs/BREAKING_CHANGES.md`. On an f32 one every value below
@@ -635,6 +645,12 @@ LogicalResult FunctionEncoder::encodeBody() {
       }
       if (Value bias = conv.getBias()) {
         FailureOr<Operand> operand = makeOperand(bias, &op);
+        if (failed(operand))
+          return failure();
+        instruction.operands.push_back(*operand);
+      }
+      if (Value rescale = conv.getRescale()) {
+        FailureOr<Operand> operand = makeOperand(rescale, &op);
         if (failed(operand))
           return failure();
         instruction.operands.push_back(*operand);

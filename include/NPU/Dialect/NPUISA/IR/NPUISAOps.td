@@ -330,7 +330,7 @@ def NPUISA_AwaitOp : NPUISA_Op<"await"> {
 // npuisa.matmul
 //===----------------------------------------------------------------------===//
 
-def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul"> {
+def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul", [AttrSizedOperandSegments]> {
   let summary = "A rank 2 by rank 2 matrix multiplication with an optional bias.";
   let description = [{
     ```mlir
@@ -366,15 +366,21 @@ def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul"> {
       Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$lhs,
       Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$rhs,
       Arg<Optional<NPUISA_ScratchpadBias>, "", [MemRead<DefaultResource>]>:$bias,
+      Arg<Optional<NPUISA_ScratchpadRescale>, "",
+          [MemRead<DefaultResource>]>:$rescale,
       OptionalAttr<NPU_SignedI32Attr>:$output_zero_point,
       OptionalAttr<NPU_SignedI32Attr>:$requant_multiplier,
       OptionalAttr<NPU_SignedI32Attr>:$requant_shift,
       Arg<NPUISA_ScratchpadAny, "", [MemWrite<DefaultResource>]>:$destination
   );
 
+  // The rescale is nested inside the bias's group, which is the parser saying
+  // what the verifier also says: the operand list is positional, so a rescale
+  // without a bias would sit in the bias's slot and mean something else.
   let assemblyFormat = [{
-      `ins` `(` $lhs `,` $rhs (`,` $bias^)? `:`
-          type($lhs) `,` type($rhs) (`,` type($bias)^)? `)`
+      `ins` `(` $lhs `,` $rhs (`,` $bias^ (`,` $rescale^)?)? `:`
+          type($lhs) `,` type($rhs) (`,` type($bias)^)?
+          (`,` type($rescale)^)? `)`
       `outs` `(` $destination `:` type($destination) `)` attr-dict
   }];
 }
@@ -383,7 +389,7 @@ def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul"> {
 // npuisa.conv2d
 //===----------------------------------------------------------------------===//
 
-def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d"> {
+def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d", [AttrSizedOperandSegments]> {
   let summary = "A two dimensional grouped convolution with an optional bias.";
   let description = [{
     ```mlir
@@ -425,6 +431,8 @@ def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d"> {
       Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$input,
       Arg<NPUISA_ScratchpadAny, "", [MemRead<DefaultResource>]>:$filter,
       Arg<Optional<NPUISA_ScratchpadBias>, "", [MemRead<DefaultResource>]>:$bias,
+      Arg<Optional<NPUISA_ScratchpadRescale>, "",
+          [MemRead<DefaultResource>]>:$rescale,
       DenseI64ArrayAttr:$strides,
       DenseI64ArrayAttr:$pads,
       DenseI64ArrayAttr:$dilations,
@@ -437,8 +445,9 @@ def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d"> {
   );
 
   let assemblyFormat = [{
-      `ins` `(` $input `,` $filter (`,` $bias^)? `:`
-          type($input) `,` type($filter) (`,` type($bias)^)? `)`
+      `ins` `(` $input `,` $filter (`,` $bias^ (`,` $rescale^)?)? `:`
+          type($input) `,` type($filter) (`,` type($bias)^)?
+          (`,` type($rescale)^)? `)`
       `outs` `(` $destination `:` type($destination) `)` attr-dict
   }];
 }

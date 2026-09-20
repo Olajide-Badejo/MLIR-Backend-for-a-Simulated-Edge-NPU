@@ -1259,7 +1259,8 @@ public:
         resident(adaptor.getFilter(), loc, rewriter),
         adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
                           : Value(),
-        op.getStridesAttr(), op.getPadsAttr(), op.getDilationsAttr(),
+        /*rescale=*/Value(), op.getStridesAttr(), op.getPadsAttr(),
+        op.getDilationsAttr(),
         op.getGroupAttr(), /*zero_point=*/IntegerAttr(),
         /*output_zero_point=*/IntegerAttr(),
         /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
@@ -1283,7 +1284,7 @@ public:
         resident(adaptor.getRhs(), loc, rewriter),
         adaptor.getBias() ? resident(adaptor.getBias(), loc, rewriter)
                           : Value(),
-        /*output_zero_point=*/IntegerAttr(),
+        /*rescale=*/Value(), /*output_zero_point=*/IntegerAttr(),
         /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
         destination);
     rewriter.replaceOp(op, destination);

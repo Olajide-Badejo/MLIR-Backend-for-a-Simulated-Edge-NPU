@@ -111,6 +111,11 @@ def NPUISA_ScratchpadAny : NPUISA_MemRefInSpace<"Scratchpad", [F32, I8]>;
 // one this instruction must have, because the choice is a function of the
 // result's element type rather than of the operand's own.
 def NPUISA_ScratchpadBias : NPUISA_MemRefInSpace<"Scratchpad", [F32, I32]>;
+// The per output channel rescale of a quantized compute instruction: one
+// multiplier and one shift for each output channel, so an i32 buffer of shape
+// (2, C). It is i32 and nothing else, unlike the bias, whose element type is a
+// function of the result's.
+def NPUISA_ScratchpadRescale : NPUISA_MemRefInSpace<"Scratchpad", [I32]>;
 def NPUISA_DramF32 : NPUISA_MemRefInSpace<"Dram", [F32]>;
 def NPUISA_DramAny : NPUISA_MemRefInSpace<"Dram", [F32, I8]>;
 
