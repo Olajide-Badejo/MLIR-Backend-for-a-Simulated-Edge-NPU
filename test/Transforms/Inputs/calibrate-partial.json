@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "model": "calibrate-lit",
+  "batch": 1,
+  "inputs": 8,
+  "seed": 1,
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "nodes": {
+    "Conv_0": {"op_type": "Conv", "inputs": ["x", "w"], "outputs": ["y"]}
+  },
+  "activation_scales": {
+    "x": {"minmax": {"scale": 0.025, "zero_point": -3, "degenerate": false}}
+  }
+}

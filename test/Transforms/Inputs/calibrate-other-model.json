@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "model": "some-other-model",
+  "batch": 1,
+  "inputs": 8,
+  "seed": 1,
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "nodes": {
+    "Conv_99": {"op_type": "Conv", "inputs": ["a"], "outputs": ["b"]}
+  },
+  "activation_scales": {
+    "a": {"minmax": {"scale": 0.1, "zero_point": 0, "degenerate": false}},
+    "b": {"minmax": {"scale": 0.1, "zero_point": 0, "degenerate": false}}
+  }
+}

@@ -87,12 +87,14 @@ they land.
 | `-npu-lower-to-npuisa` | all | no | P4 | implemented |
 | `-npu-double-buffer` | O2 | yes | P13 | implemented |
 | `-npu-allocate-scratchpad` | all | no | P5 | implemented |
+| `-npu-calibrate` | none | no | P14 | implemented |
 
 **Eleven ablatable, which is Section 12's own number.** The three P13 rows went
 into `-O2` in one commit, so the ablatable set is eleven, the suite is 217 cells
 and the ablation half of Section 2's arithmetic agrees exactly at 154.
-`-npu-calibrate` is P14 and is never in a default `-O` level, which is why
-eleven rather than twelve. The table's order is the order `-O2` runs them, which
+`-npu-calibrate` is quantized mode only and never in a default `-O` level,
+which is why eleven rather than twelve: it exists, it has a row above, and no
+`-O` level runs it. The table's order is the order `-O2` runs them, which
 is why `-npu-double-buffer` sits between the lowering and the allocator: it
 rewrites asynchronous transfer tokens, and those exist only below the
 conversion.
@@ -996,6 +998,120 @@ at the level in `test/Pipeline/p13-passes-at-o2.mlir`.
   operands still reach it.
 
 ---
+
+## `-npu-calibrate`
+
+Section 12's calibration pass, **quantized mode only and never in a default
+`-O` level**. It rewrites covered convolutions and matrix multiplications into
+the standard QDQ form, reading its numbers from a committed profile.
+
+```
+npu-opt model.mlir --npu-calibrate="profile=experiments/calibration/lenet.json"
+```
+
+### The calibration methodology, in one place
+
+*Section 14 asks for this to be written once and cited rather than restated,
+so everything else in this repository that needs it points here.*
+
+**The observer runs the model and writes down what it saw.** It runs
+onnxruntime with every intermediate tensor promoted to a graph output, over a
+fixed set of seeded inputs, and accumulates a per tensor minimum and maximum;
+a second pass over the same inputs fills a histogram against that settled
+range. It is `python/npu_frontend/calibration.py`, and the pass never runs a
+model.
+
+**The calibration inputs are seeded synthetic standard normal draws and are not
+samples from any data distribution.** That is a real limitation of a suite with
+no dataset, and it is stated plainly here rather than buried: a calibrated
+range is only as representative as the inputs that produced it, and these
+represent nothing but themselves. What they do give is reproducibility, which
+is the property every accuracy number in this phase rests on. The seed is
+derived from the model, the batch and the input count, and it is deliberately
+from a different namespace than the evaluation inputs' seed, so a model is
+never measured on the draw it was calibrated against.
+
+**The range rules, applied in this order.** The range is extended to include
+real zero **first**: `min = min(observed, 0)` and `max = max(observed, 0)`.
+That is a correctness requirement rather than a refinement, because the scheme
+needs real zero exactly representable for zero padding to be exact, and this
+project's kernel rule that padding contributes the zero point is only correct
+if it holds. Then activations take the affine rule,
+`scale = (max - min) / 255` and `zero_point = round(-min / scale) - 128`, and
+weights take the symmetric per output channel rule,
+`scale_c = max(abs(min_c), abs(max_c)) / 127` with a zero point of zero. A
+range with no width after the extension, which is to say an all zero tensor,
+yields a scale of 1 and a zero point of 0 and is marked degenerate, because a
+zero scale must never escape the calibrator: the verifier refuses one and that
+refusal must not be how a user finds out.
+
+**The output channel axis is 0 here and Section 14 says 0 or 3.** That section
+takes its axis from the reference specification, whose depthwise weights are
+laid out `[1, kH, kW, C]`. This project imports ONNX, where a convolution
+weight is `(M, C/group, kH, kW)` in both the regular and the depthwise case, so
+the rule implemented is the one Section 14 means, one scale per output channel,
+with the axis read from the layout in front of it.
+
+**The four methods are computed by the observer and selected by the pass.**
+`minmax` takes the observed range. `percentile`, `mse` and `entropy` each trim
+a fraction of the mass from **both tails** and differ only in what they
+minimise: a fixed quantile, the estimated squared error, or the divergence from
+the observed distribution. Trimming both tails matters because a convolution's
+output before its activation is two sided. `minmax` is the pinned default, and
+Section 14's own reading of the published evidence is the one this project
+takes: min/max is adequate at 8 bits and the ablation measures whether that
+holds on this suite.
+
+**Where the numbers live is a decision, not an accident.** The profile carries
+the ranges and the affine pair derived from them, and the pass reads them.
+Deriving the pair in the compiler would put one rule in two implementations
+with nothing comparing them, which is the observer against kernel disagreement
+Section 14 opens by warning about.
+
+### What the rewrite does, and what it deliberately does not
+
+A covered operation has its activations wrapped in a quantize and a dequantize
+pair, so the graph stays f32 and the integer values are interior. Nothing here
+emits an integer instruction: the contraction in the lowering is what turns
+`quantize(conv2d(dequantize, ...))` into one, and keeping this level in f32 is
+what lets every pass after it stay unchanged.
+
+**The weights are not quantized here, and that is a limit of the level rather
+than an omission.** `npu.quantize` carries a single scale, so the QDQ form can
+express per tensor activation quantization exactly and per channel weight
+quantization not at all. The per channel scales travel in the profile to the
+instruction, whose fourth operand holds one multiplier and one shift per output
+channel.
+
+### The three diagnostics, each saying something different
+
+| Case | What happens | Why |
+|---|---|---|
+| The profile option is empty | The pass fails | A pass asked to calibrate from nothing has been misconfigured, and a no op would leave the model f32 while every report said it had been quantized |
+| The profile names no operation in the function | One remark, with both counts | A real configuration: the profile of another model. It should be visible without being fatal, and once rather than per operation |
+| The profile names an operation without a full set of ranges | Skipped and counted | An operation whose output has no calibrated range has no scale to quantize its result with, and inventing one is what this forbids. Never half rewritten |
+
+The remark reports the two counts separately, because they have different
+fixes: an operation the profile does not name was never observed, and one it
+names without ranges was observed with something missing from the file.
+
+### The static accumulator guard
+
+Section 14 accumulates in int32 and proves it before the program exists:
+`K * 128 * 127 < 2^31`, which admits a reduction depth up to **132104**. The
+pass checks it for every operation it would rewrite and diagnoses the operation
+by name if it fails. A static guard is both more honest than a wider
+accumulator and a better error than a trap, and the simulator carries the same
+bound for a program that reaches it anyway.
+
+### Where it does not fire
+
+On an operation the profile does not name, on one it names without a full set
+of ranges, and on every operation that is not a convolution or a matrix
+multiplication. That last boundary is Section 14's own: `ADD`, `MUL`,
+`POOL_AVG`, `RELU` and `POOL_MAX` reject i8 operands by name one level down,
+and the cost of the boundary is measured rather than asserted, through the
+`quant_boundary_crossings` counter in the result schema.
 
 ## The four upstream passes the levels run
 

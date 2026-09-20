@@ -10,7 +10,7 @@
 // P13 adds `-npu-assign-layout` and `-npu-tile-to-scratchpad`. Double buffering
 // is an `npuisa` pass and lives in the other Passes.td, because it rewrites the
 // asynchronous transfer tokens and those exist only below the tensor level.
-// Calibration is P14 and is absent here rather than declared empty.
+// Calibration arrives at P14, below, and is never in a default `-O` level.
 //
 //===----------------------------------------------------------------------===//
 
@@ -414,6 +414,85 @@ def NPUTileToScratchpad
     "::mlir::npu::NPUDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect",
+  ];
+}
+
+def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
+  let summary = "Rewrites calibrated convolutions and matmuls into the QDQ "
+                "form.";
+  let description = [{
+    Section 12's `-npu-calibrate`, **quantized mode only and never in a default
+    `-O` level**, which is why the ablatable set is eleven rather than twelve.
+
+    A covered operation has its activations wrapped in a quantize and a
+    dequantize pair, so the graph stays f32 and the integer values are
+    interior:
+
+    ```mlir
+    %qx = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+    %dx = npu.dequantize %qx {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+    %y  = npu.conv2d ins(%dx, %w : ...) outs(...)
+    %qy = npu.quantize %y {...}
+    %dy = npu.dequantize %qy {...}
+    ```
+
+    Nothing here emits an integer instruction. The contraction in the lowering
+    is what turns `quantize(conv2d(dequantize, ...))` into one, and keeping
+    this level in f32 is what lets every pass after it stay unchanged.
+
+    **The numbers come from the profile rather than from this pass.** A range
+    and the affine pair derived from it are arithmetic over observed data,
+    pinned by Section 14 and held to hand computed cases in
+    `test/Python/test_calibration.py`. Deriving them again here would be a
+    second implementation of one rule with nothing comparing the two, which is
+    the observer against kernel disagreement that section opens by warning
+    about.
+
+    **The weights are not quantized here**, and that is a limit of the level.
+    Section 14 makes weight scales per output channel and `npu.quantize`
+    carries a single scale, so this form can express per tensor activation
+    quantization exactly and per channel weight quantization not at all. The
+    per channel scales travel in the profile to the instruction, whose fourth
+    operand holds one multiplier and one shift per output channel.
+
+    **Three diagnostics, each saying something different.** An empty profile is
+    a pass failure, because a pass asked to calibrate from nothing has been
+    misconfigured and a no op would leave the model f32 while every report said
+    otherwise. A profile covering no operation in the function is a single
+    remark with the count, because that is a real configuration, the profile of
+    another model. A partially covered operation is skipped and counted, never
+    half rewritten, because an operation whose output has no calibrated range
+    has no scale to quantize its result with.
+  }];
+
+  let options = [
+    Option<"profile", "profile", "std::string", "\"\"",
+           "The calibration profile to read, as written by the observer in "
+           "`npu_frontend.calibration`. There is no default: a pass asked to "
+           "calibrate from nothing fails rather than doing nothing.">,
+    Option<"calibMethod", "calib-method", "std::string", "\"minmax\"",
+           "Which range the profile's four are read from: 'minmax', "
+           "'percentile', 'mse' or 'entropy'. Section 14 pins minmax as the "
+           "default and asks for the other three to be measured rather than "
+           "asserted. An unknown value is a diagnostic naming it.">,
+    Option<"requantMode", "requant-mode", "std::string", "\"fixed\"",
+           "'fixed' is the integer multiplier and shift the machine applies; "
+           "'float' exists so that a previously published number stays "
+           "reproducible. An unknown value is a diagnostic naming it.">,
+  ];
+
+  let statistics = [
+    Statistic<"rewritten", "rewritten",
+              "Operations rewritten into the QDQ form">,
+    Statistic<"skipped", "skipped",
+              "Operations the profile names but does not fully cover">,
+    Statistic<"uncovered", "uncovered",
+              "Operations the profile does not name at all">,
+  ];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::npu::NPUDialect",
   ];
 }
 

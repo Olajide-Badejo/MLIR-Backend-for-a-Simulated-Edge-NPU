@@ -10,6 +10,7 @@
 
 add_mlir_dialect_library(MLIRNPUTransforms
         AssignLayout.cpp
+        Calibrate.cpp
         ConstantFold.cpp
         FoldBatchNorm.cpp
         FuseBias.cpp

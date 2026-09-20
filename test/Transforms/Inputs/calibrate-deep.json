@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "model": "too-deep",
+  "batch": 1,
+  "inputs": 8,
+  "seed": 1,
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "nodes": {
+    "Gemm_0": {"op_type": "Gemm", "inputs": ["a"], "outputs": ["m"]}
+  },
+  "activation_scales": {
+    "a": {"minmax": {"scale": 0.02, "zero_point": 0, "degenerate": false}},
+    "m": {"minmax": {"scale": 0.02, "zero_point": 0, "degenerate": false}}
+  }
+}
