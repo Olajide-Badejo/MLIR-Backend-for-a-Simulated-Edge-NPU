@@ -29,6 +29,25 @@ The measurement is in `docs/PHASE_STATE.md` beside the claim.
   the malformed corpus compared case by case at the parent and at the change.
   A relu now clamps at the value that represents real zero rather than at zero,
   which is the same thing only when the zero point is zero.
+- **A quantized compute instruction takes a per output channel rescale**, which
+  is Section 14's granularity decision reaching the machine. `CONV2D` and
+  `MATMUL` accept a fourth operand, an i32 buffer of shape (2, C) holding one
+  requantization multiplier and one shift per output channel, and the kernels
+  and the numpy reference both apply it. It costs no byte of any existing
+  program and no version bump, because the operand list has always been length
+  prefixed: the malformed corpus was compared case by case at the parent and at
+  the change and came back identical, 768 lines each. The owner settled the
+  design on 2026-09-20 and `docs/BREAKING_CHANGES.md` carries the declaration,
+  written before the commit that caused it.
+- **The per tensor arm is not a legacy path.** An instruction without the
+  operand rescales with the two scalar fields exactly as before, which is the
+  arm Section 14's ablation compares against, and it keeps its own cases.
+- **What cannot be checked at decode is checked where the values exist.** The
+  validator sees the rescale as an address and an extent, so it refuses a table
+  whose column count is not the result's output channel count, and one carried
+  at an f32 result. The multipliers and shifts are bytes a `DMA_LOAD` puts in
+  the scratchpad, so a shift outside [0, 31] is trapped by the machine, naming
+  the channel, rather than being silently applied.
 - **The integer compute instructions exist at the instruction level**, so a
   quantized model has something to lower into. `npuisa.matmul` and
   `npuisa.conv2d` take i8 data with an **i32 bias**, because Section 14 adds the

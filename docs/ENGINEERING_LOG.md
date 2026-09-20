@@ -6955,3 +6955,54 @@ range rules, the accumulator guard and the QDQ rewrite, because a per channel
 weight scale is computed the same way whatever carries it. The interim executes
 per tensor, the profile records both, and no accuracy number taken under the
 interim is published as the phase's result.
+
+### The granularity, settled: a fourth operand, and what it could not carry
+
+**The owner took the recommendation and the conditions came with it.** Per
+output channel weight scales land as a fourth operand on `CONV2D` and `MATMUL`,
+an i32 buffer of shape (2, C) with the multipliers in row 0 and the shifts in
+row 1. `Program::kVersion` stays 2, and the reason is the one the open question
+argued: the operand list has always been length prefixed, so an instruction
+with two or three operands writes exactly the bytes it wrote before.
+
+**The corpus says so rather than the argument saying so.** The declaration
+predicted that only a case whose mutated operand count is exactly four on those
+two opcodes could flip, that such a case would flip from `arity` to the new
+refusal, and that nothing could flip from refused to accepted. Measured at the
+parent and at the change: 768 lines each, **identical line for line**. The
+corpus holds no four operand case on those opcodes, so the conditional was
+never exercised; what mattered, that nothing became accepted, held.
+
+**One of the owner's conditions could not be met where it was asked for, and
+this is the part worth recording.** The condition was to refuse, on decode, a
+per channel operand whose shift is out of range. The extent can be refused
+there and is. The shift cannot: the instruction record holds an address and an
+extent for this operand, the numbers are bytes a `DMA_LOAD` will put in the
+scratchpad later, and nothing in the file ties the operand back to the constant
+that fills it. A validator that claimed to check them would be reading whatever
+happened to be at that address at decode time, which is nothing at all.
+
+So the check went where the values exist. The machine traps on a shift outside
+[0, 31] and on a multiplier of zero, naming the channel, and the numpy
+reference refuses the same shapes by name. That is a weaker guarantee than a
+decode time refusal and it is written down as weaker rather than presented as
+equivalent.
+
+**There was a design that would have satisfied the condition literally**, and
+it is recorded because the owner may still want it. The instruction record has
+an idle variable length field on these two opcodes: `axes`, which `TRANSPOSE`
+uses for its permutation and `CONCAT` for its axis, and which a compute
+instruction leaves empty. Two integers per channel would fit there, visible at
+decode, checkable exactly as asked, and still length prefixed so no existing
+program moves. It was not chosen, because the owner chose the operand and
+because reusing `axes` for a second unrelated meaning is the pun the output
+zero point decision deliberately avoided when it declared `outputZeroPoint` as
+its own field rather than a second reading of `scale`. The trade is a
+representation that can be validated early against one that reads honestly.
+
+**What the arithmetic now says, on both sides.** Two channels accumulating 100
+each, multipliers 2^30 and 2^30, shifts 0 and 1, give 50 and 25. The simulator
+asserts that pair and the numpy reference asserts the same pair, from
+implementations that share no code. The per tensor arm on the same program
+answers 50 and 50, which is not a defect of that arm but the measurement
+Section 14's ablation exists to take.
