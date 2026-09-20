@@ -272,13 +272,13 @@ def DMA_STORE : ISAOpcode<3, "Copies a buffer from the scratchpad back to DRAM."
 
 def MATMUL : ISAOpcode<4, "A rank 2 by rank 2 matrix multiplication with an optional bias."> {
   let minOperands = 2;
-  let maxOperands = 3;
-  let operandSpaces = [Scratchpad, Scratchpad, Scratchpad];
+  let maxOperands = 4;
+  let operandSpaces = [Scratchpad, Scratchpad, Scratchpad, Scratchpad];
   let fields = [FieldRequantize, FieldActivation];
   let elementTypes = [F32, I8];
-  let integerOperandTypes = [I8, I8, I32];
+  let integerOperandTypes = [I8, I8, I32, I32];
   let integerFields = [FieldOutputZeroPoint];
-  let format = "MATMUL %r <- %0, %1 {bias %2} {activation}";
+  let format = "MATMUL %r <- %0, %1 {bias %2} {rescale %3} {activation}";
   let shapeRule = "Operand 0 is (M, K), operand 1 is (K, N), the result is "
                   "(M, N). The optional operand 2 is the bias and has length N. "
                   "At an i8 result the two data operands are i8, the bias is "
@@ -288,20 +288,28 @@ def MATMUL : ISAOpcode<4, "A rank 2 by rank 2 matrix multiplication with an opti
                   "point field here and there is one on CONV2D, because a "
                   "matrix multiplication has no padding: every tap is in range, "
                   "so the input zero point's whole contribution is the compile "
-                  "time term folded into the bias.";
+                  "time term folded into the bias. **Operand 3 is the per "
+                  "output channel rescale**, an i32 buffer of shape (2, N): row "
+                  "0 is one multiplier per output channel and row 1 is one "
+                  "shift. It is legal only at an integer result, and only "
+                  "together with the bias, because the operand list is "
+                  "positional and a rescale without a bias would sit in the "
+                  "bias's slot. Absent, the scalar requantMultiplier and "
+                  "requantShift rescale every channel alike, which is the per "
+                  "tensor arm Section 14's ablation compares against.";
   let sources = ["matmul"];
 }
 
 def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optional bias."> {
   let minOperands = 2;
-  let maxOperands = 3;
-  let operandSpaces = [Scratchpad, Scratchpad, Scratchpad];
+  let maxOperands = 4;
+  let operandSpaces = [Scratchpad, Scratchpad, Scratchpad, Scratchpad];
   let fields = [FieldStrides, FieldPads, FieldDilations, FieldGroup,
                 FieldRequantize, FieldActivation];
   let elementTypes = [F32, I8];
-  let integerOperandTypes = [I8, I8, I32];
+  let integerOperandTypes = [I8, I8, I32, I32];
   let integerFields = [FieldZeroPoint, FieldOutputZeroPoint];
-  let format = "CONV2D %r <- %0, %1 {bias %2} {strides} {pads} {dilations} {group} {activation}";
+  let format = "CONV2D %r <- %0, %1 {bias %2} {rescale %3} {strides} {pads} {dilations} {group} {activation}";
   let shapeRule = "Operand 0 is (N, C, H, W), operand 1 is (F, C/group, KH, KW), "
                   "the result is (N, F, OH, OW). The optional operand 2 is the "
                   "bias and has length F. At an i8 result the two data operands "
@@ -313,7 +321,17 @@ def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optiona
                   "output zero point is carried separately, in the scale word, "
                   "and is added after the requantization; the scale word is "
                   "free for it because an integer result's scale is already "
-                  "folded into the requantization pair.";
+                  "folded into the requantization pair. **Operand 3 is the per "
+                  "output channel rescale**, an i32 buffer of shape (2, F): row "
+                  "0 is one multiplier per output channel and row 1 is one "
+                  "shift. Section 14 makes weight scales per output channel, so "
+                  "M_c = (scale_x * scale_w_c) / scale_y varies with c and the "
+                  "two scalar fields express one channel between them. It is "
+                  "legal only at an integer result, and only together with the "
+                  "bias, because the operand list is positional and a rescale "
+                  "without a bias would sit in the bias's slot. Absent, the "
+                  "scalar pair rescales every channel alike, which is the per "
+                  "tensor arm Section 14's ablation compares against.";
   let sources = ["conv2d"];
 }
 

@@ -870,6 +870,52 @@ bool checkInstruction(Validator &validator, const Instruction &instruction,
                               " and has " + std::to_string(operandCount),
                           at);
 
+  // ---- The per output channel rescale operand. ---------------------------
+  //
+  // **What can be checked here and what cannot.** This operand is an address
+  // and an extent in the instruction record, and the multipliers and shifts
+  // themselves are bytes a `DMA_LOAD` will put in the scratchpad later. So the
+  // extent is checkable at decode and the values are not: nothing in the file
+  // ties this operand back to the constant that fills it. The values are
+  // refused where they first exist, which is the `npuisa` verifier at the
+  // level they are written, and trapped by the simulator if a program presents
+  // an out of range shift at run time anyway.
+  if (instruction.operands.size() == 4) {
+    const Operand &rescale = instruction.operands[3];
+    if (!isIntegerElemType(instruction.resultElementType))
+      return validator.fail(
+          Check::QuantRequantize,
+          std::string(info.name) +
+              " carries a per output channel rescale at a " +
+              elemTypeName(instruction.resultElementType) +
+              " result, and that operand describes an arithmetic only an "
+              "integer result performs",
+          at);
+
+    // Shape (2, C): row 0 one multiplier per output channel, row 1 one shift.
+    // The output channel count is extent 1 of the result on both opcodes that
+    // take this operand, because a convolution's result is (N, F, OH, OW) and
+    // a matrix multiplication's is (M, N).
+    if (instruction.resultShape.size() < 2)
+      return validator.fail(Check::QuantRequantize,
+                            std::string(info.name) +
+                                " carries a per output channel rescale and its "
+                                "result has no channel extent to match",
+                            at);
+    const int64_t channels = instruction.resultShape[1];
+    if (rescale.shape.size() != 2 || rescale.shape[0] != 2 ||
+        rescale.shape[1] != channels)
+      return validator.fail(
+          Check::QuantRequantize,
+          std::string(info.name) +
+              " takes a per output channel rescale of shape (2, " +
+              std::to_string(channels) +
+              "), one multiplier row and one shift row against the result's " +
+              std::to_string(channels) + " output channels, and operand 3 is " +
+              shapeText(rescale.shape),
+          at);
+  }
+
   // ---- Element types. ----------------------------------------------------
   uint32_t rawResultType = static_cast<uint32_t>(instruction.resultElementType);
   if (!isKnownElemType(rawResultType))

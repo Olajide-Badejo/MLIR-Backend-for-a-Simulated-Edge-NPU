@@ -682,6 +682,90 @@ TEST(Validation, TheQuantizedConvolutionProgramValidates) {
       << (failure ? failure->toString() : std::string());
 }
 
+/// The same program with the per output channel rescale operand.
+///
+/// Section 14 makes weight scales per output channel, so `M_c` varies with the
+/// channel and the two scalar fields express one channel between them. The
+/// fourth operand carries the rest: an i32 buffer of shape (2, C), one
+/// multiplier row and one shift row. It arrives in the scratchpad the way the
+/// bias does, as a constant and a `DMA_LOAD`, because the compute units of this
+/// machine address the scratchpad and nothing else.
+///
+/// The scratchpad grows from 40 bytes to 48 to hold it, four byte aligned at
+/// offset 40, and the constant sits at DRAM 104, which is inside the 128 the
+/// program already declares.
+inline Program perChannelConvProgram() {
+  Program program = quantizedConvProgram();
+  program.scratchpadBytes = 48;
+
+  Constant rescale;
+  rescale.region = region(104, ElemType::I32, {2, 1});
+  rescale.data.assign(8, 0);
+  program.constants.push_back(rescale);
+
+  Instruction load = instruction(Opcode::DMA_LOAD, MemSpace::Scratchpad,
+                                 ElemType::I32, 40, {2, 1});
+  load.operands.push_back(operand(MemSpace::Dram, ElemType::I32, 104, {2, 1}));
+  // Before the convolution, because an operand has to be written before it is
+  // read and `operand-defined` is the check that says so.
+  program.instructions.insert(program.instructions.begin() + 3, load);
+
+  Instruction &conv = program.instructions[4];
+  conv.operands.push_back(
+      operand(MemSpace::Scratchpad, ElemType::I32, 40, {2, 1}));
+  return program;
+}
+
+TEST(Validation, AQuantizedConvolutionTakesAPerOutputChannelRescale) {
+  const std::optional<ProgramError> failure =
+      perChannelConvProgram().validate();
+  EXPECT_FALSE(failure.has_value())
+      << (failure ? failure->toString() : std::string());
+}
+
+TEST(Validation, APerOutputChannelRescaleHasOneColumnPerOutputChannel) {
+  // The whole content of the operand is one pair per output channel, so an
+  // extent that does not match the result's channel count is a rescale for a
+  // different convolution. This result has one output channel.
+  Program tooMany = perChannelConvProgram();
+  tooMany.instructions[4].operands[3].shape = {2, 2};
+  EXPECT_EQ(expectRejected(tooMany), Check::QuantRequantize);
+
+  // A single row is the other way to get it wrong: multipliers and no shifts.
+  Program oneRow = perChannelConvProgram();
+  oneRow.instructions[4].operands[3].shape = {1, 1};
+  EXPECT_EQ(expectRejected(oneRow), Check::QuantRequantize);
+
+  // And a rank 1 buffer, which is what a caller who thought of it as a vector
+  // of multipliers would write.
+  Program flat = perChannelConvProgram();
+  flat.instructions[4].operands[3].shape = {2};
+  EXPECT_EQ(expectRejected(flat), Check::QuantRequantize);
+}
+
+TEST(Validation, APerOutputChannelRescaleIsRefusedAtAnF32Result) {
+  // The f32 path never rescales, so the operand describes an arithmetic that
+  // result does not perform. It is refused for carrying the operand at all
+  // rather than for the operand's element type, which is why the check runs
+  // before the element type loop: the better message is the structural one.
+  Program asFloat = perChannelConvProgram();
+  asFloat.instructions[4].resultElementType = ElemType::F32;
+  EXPECT_EQ(expectRejected(asFloat), Check::QuantRequantize);
+}
+
+TEST(Validation, ThePerTensorRescaleIsUnchangedByTheWidening) {
+  // Section 14's ablation compares per channel against per tensor, so the
+  // three operand form is not a legacy path: it is the other arm, and it keeps
+  // the rules it had. A shift outside [0, 31] is still refused there.
+  Program shifted = quantizedConvProgram();
+  shifted.instructions[3].requantShift = 32;
+  EXPECT_EQ(expectRejected(shifted), Check::QuantRequantize);
+
+  Program negative = quantizedConvProgram();
+  negative.instructions[3].requantMultiplier = -1;
+  EXPECT_EQ(expectRejected(negative), Check::QuantRequantize);
+}
+
 TEST(Validation, AQuantizedConvolutionTakesAnInt32Bias) {
   // The bias is the one operand whose type is deliberately not the result's,
   // and both of the wrong answers are refused: an f32 bias, which is what a
