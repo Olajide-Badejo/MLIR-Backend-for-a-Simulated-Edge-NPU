@@ -915,12 +915,19 @@ struct IntegerOperandSpec {
   std::vector<int8_t> data;
 };
 
+/// `rescale` is the per output channel pair, laid out as the instruction takes
+/// it: shape (2, C), the multipliers in row 0 and the shifts in row 1, so a two
+/// channel table is `{m0, m1, s0, s1}`. Empty means the per tensor arm, which
+/// rescales with the instruction's two scalar fields. It is passed **with** a
+/// bias, because the operand list is positional and a rescale without one would
+/// sit in the bias's slot.
 IntegerOutcome computeInteger(llvm::ArrayRef<IntegerOperandSpec> inputs,
                               llvm::ArrayRef<int32_t> bias,
                               llvm::ArrayRef<int64_t> biasShape,
                               llvm::ArrayRef<int64_t> resultShape,
                               Opcode opcode,
-                              const std::function<void(Instruction &)> &configure) {
+                              const std::function<void(Instruction &)> &configure,
+                              llvm::ArrayRef<int32_t> rescale = {}) {
   Builder builder;
   std::vector<int64_t> sources;
   std::vector<int64_t> buffers;
@@ -941,6 +948,19 @@ IntegerOutcome computeInteger(llvm::ArrayRef<IntegerOperandSpec> inputs,
     biasBuffer =
         builder.scratch(static_cast<int64_t>(bias.size()), ElemType::I32);
     scratchBytes += static_cast<int64_t>(bias.size()) * 4;
+  }
+
+  // Beside the bias and for the same reason: both are i32, and the i8 buffers
+  // below have byte sized extents, so anything four byte aligned goes first.
+  int64_t rescaleSource = 0;
+  int64_t rescaleBuffer = 0;
+  std::vector<int64_t> rescaleShape;
+  if (!rescale.empty()) {
+    rescaleShape = {2, static_cast<int64_t>(rescale.size()) / 2};
+    rescaleSource = builder.constantI32(rescaleShape, rescale);
+    rescaleBuffer =
+        builder.scratch(static_cast<int64_t>(rescale.size()), ElemType::I32);
+    scratchBytes += static_cast<int64_t>(rescale.size()) * 4;
   }
 
   for (const IntegerOperandSpec &spec : inputs) {
@@ -965,6 +985,10 @@ IntegerOutcome computeInteger(llvm::ArrayRef<IntegerOperandSpec> inputs,
     builder.add(dmaLoad(
         biasBuffer, biasShape,
         at(MemSpace::Dram, biasSource, biasShape, ElemType::I32)));
+  if (!rescale.empty())
+    builder.add(dmaLoad(
+        rescaleBuffer, rescaleShape,
+        at(MemSpace::Dram, rescaleSource, rescaleShape, ElemType::I32)));
 
   std::vector<Operand> operands;
   for (auto [index, spec] : llvm::enumerate(inputs))
@@ -973,6 +997,9 @@ IntegerOutcome computeInteger(llvm::ArrayRef<IntegerOperandSpec> inputs,
   if (!bias.empty())
     operands.push_back(
         at(MemSpace::Scratchpad, biasBuffer, biasShape, ElemType::I32));
+  if (!rescale.empty())
+    operands.push_back(
+        at(MemSpace::Scratchpad, rescaleBuffer, rescaleShape, ElemType::I32));
 
   Instruction instruction =
       compute(opcode, result, resultShape, std::move(operands), ElemType::I8);
@@ -1403,6 +1430,98 @@ TEST(Quantization, ConvolutionAddsItsOutputZeroPoint) {
 
   ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
   EXPECT_EQ(outcome.values, (std::vector<int32_t>{16, -4}));
+}
+
+TEST(Quantization, APerOutputChannelRescaleScalesEachChannelByItsOwn) {
+  // **The whole point of the fourth operand, in the smallest program that
+  // shows it.** Section 14 makes weight scales per output channel, so the
+  // rescale of channel c is its own, and two channels with the same
+  // accumulator come out different.
+  //
+  // A one by one convolution over a single input of 100, two output channels,
+  // both weights 1, both biases 0, so both accumulators are 100. The table is
+  // shape (2, 2): multipliers {2^30, 2^30} in row 0 and shifts {0, 1} in row 1.
+  //
+  //   channel   accumulator   M0     shift   doubling high multiply   divide
+  //   0         100           2^30   0       50                       50
+  //   1         100           2^30   1       50                       25
+  //
+  // The instruction's scalar pair is left at the identity, where it would
+  // answer 100 for both channels, so this case also says which of the two the
+  // machine reads when both are present: the operand wins.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {100}}, {{2, 1, 1, 1}, {1, 1}}}, {0, 0}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D,
+      [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      },
+      {1073741824, 1073741824, 0, 1});
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{50, 25}));
+}
+
+TEST(Quantization, APerChannelShiftOutsideItsRangeTraps) {
+  // **The check the binary format cannot make.** The validator sees this
+  // operand as an address and an extent; the shifts are bytes a DMA put in the
+  // scratchpad, and nothing in the file ties the operand to the constant that
+  // filled it. So the range is enforced here, and the trap names the channel
+  // rather than saying the instruction was bad.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {100}}, {{2, 1, 1, 1}, {1, 1}}}, {0, 0}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D,
+      [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      },
+      {1073741824, 1073741824, 0, 32});
+
+  EXPECT_FALSE(outcome.result.ok());
+  ASSERT_TRUE(outcome.result.error.has_value());
+  EXPECT_NE(outcome.result.error->find("requantization shift of 32"),
+            std::string::npos)
+      << *outcome.result.error;
+  EXPECT_NE(outcome.result.error->find("output channel 1"), std::string::npos)
+      << *outcome.result.error;
+}
+
+TEST(Quantization, APerChannelMultiplierOfZeroTraps) {
+  // Zero is what a missing calibration leaves behind, and an all zero channel
+  // is the quietest possible wrong answer.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1, 1, 1}, {100}}, {{2, 1, 1, 1}, {1, 1}}}, {0, 0}, {2},
+      {1, 2, 1, 1}, Opcode::CONV2D,
+      [](Instruction &instruction) {
+        instruction.strides = {1, 1};
+        instruction.pads = {0, 0, 0, 0};
+        instruction.dilations = {1, 1};
+        instruction.group = 1;
+      },
+      {1073741824, 0, 0, 0});
+
+  EXPECT_FALSE(outcome.result.ok());
+  ASSERT_TRUE(outcome.result.error.has_value());
+  EXPECT_NE(outcome.result.error->find("requantization multiplier of 0"),
+            std::string::npos)
+      << *outcome.result.error;
+}
+
+TEST(Quantization, AMatMulRescalesPerColumnWhenItCarriesTheOperand) {
+  // The matrix multiplication's output channel is its column, which is the one
+  // thing that differs from the convolution. One row, two columns, both
+  // accumulating 100, and the same table as the convolution case.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1}, {100}}, {{1, 2}, {1, 1}}}, {0, 0}, {2}, {1, 2},
+      Opcode::MATMUL, [](Instruction &) {},
+      {1073741824, 1073741824, 0, 1});
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{50, 25}));
 }
 
 TEST(Quantization, AReluClampsAtTheOutputZeroPointRatherThanZero) {

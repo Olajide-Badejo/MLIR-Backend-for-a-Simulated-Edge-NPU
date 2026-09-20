@@ -985,6 +985,73 @@ std::optional<int32_t> conv2dIntegerReduction(Machine &machine,
 /// each thread writes a disjoint output region, no clause changes which
 /// iterations exist or what one computes, and integer addition is associative
 /// besides, so the order inside the reduction cannot move a bit either way.
+/// The rescaling pair one output channel is finished with.
+///
+/// **Per tensor with three operands, per channel with four.** Section 14 makes
+/// weight scales per output channel, so `M_c = (scale_x * scale_w_c) / scale_y`
+/// varies with the channel and the instruction's two scalar fields express one
+/// channel between them. The fourth operand carries the rest: an i32 buffer of
+/// shape (2, C), the multipliers in row 0 and the shifts in row 1. An
+/// instruction without it rescales every channel alike, which is the per tensor
+/// arm Section 14's ablation compares against, and it is not a legacy path.
+///
+/// **This is also where a bad shift is caught, and the reason is the format.**
+/// The validator sees this operand as an address and an extent; the numbers in
+/// it are bytes a `DMA_LOAD` put in the scratchpad, and nothing in the file
+/// ties the operand back to the constant that filled it. So the range of a
+/// shift cannot be a decode time check, and a machine that read one anyway and
+/// shifted by it would be giving a silently wrong answer, which is what law 1
+/// forbids. It traps instead, naming the channel.
+struct Rescale {
+  int32_t multiplier;
+  int32_t shift;
+};
+
+std::optional<Rescale> rescaleFor(Machine &machine,
+                                  const Instruction &instruction,
+                                  int64_t channel, const char *name) {
+  if (instruction.operands.size() < 4)
+    return Rescale{instruction.requantMultiplier, instruction.requantShift};
+
+  const Operand &table = instruction.operands[3];
+  const int64_t multiplierAt[2] = {0, channel};
+  const int64_t shiftAt[2] = {1, channel};
+  const bool strided = table.strides.size() == 2;
+  const int64_t channels = table.shape.size() == 2 ? table.shape[1] : 0;
+
+  const int32_t *multiplier = machine.readI32(
+      table.space, table.address,
+      strided ? offsetOf(multiplierAt, table.strides) : channel, name);
+  const int32_t *shift = machine.readI32(
+      table.space, table.address,
+      strided ? offsetOf(shiftAt, table.strides) : channels + channel, name);
+  if (!multiplier || !shift)
+    return std::nullopt;
+
+  if (*shift < 0 || *shift > 31) {
+    machine.recordTrap(std::string(name) +
+                       " was given a requantization shift of " +
+                       std::to_string(*shift) + " for output channel " +
+                       std::to_string(channel) +
+                       ", and the shift is a right shift within [0, 31]. The "
+                       "binary format cannot check this one: the per channel "
+                       "rescale is a buffer a DMA filled, not a field of the "
+                       "instruction, so the machine is where it is caught");
+    return std::nullopt;
+  }
+  if (*multiplier <= 0) {
+    machine.recordTrap(std::string(name) +
+                       " was given a requantization multiplier of " +
+                       std::to_string(*multiplier) + " for output channel " +
+                       std::to_string(channel) +
+                       ", and the multiplier is a positive int32. Zero is what "
+                       "a missing calibration leaves behind and it would "
+                       "produce an all zero channel rather than a diagnostic");
+    return std::nullopt;
+  }
+  return Rescale{*multiplier, *shift};
+}
+
 void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
                        const Conv2DShape &shape) {
   const int32_t outputZeroPoint = outputZeroPointOf(instruction);
@@ -996,6 +1063,13 @@ void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
 #endif
   for (int64_t n = 0; n < shape.batch; ++n) {
     for (int64_t f = 0; f < shape.outputChannels; ++f) {
+      // Hoisted out of the spatial loops: the pair is a property of the output
+      // channel, so reading it per output element would be reading the same
+      // two words OH by OW times.
+      const std::optional<Rescale> rescale =
+          rescaleFor(machine, instruction, f, "CONV2D");
+      if (!rescale)
+        continue;
       for (int64_t oh = 0; oh < shape.outputH; ++oh) {
         for (int64_t ow = 0; ow < shape.outputW; ++ow) {
           std::optional<int32_t> accumulator =
@@ -1003,9 +1077,8 @@ void conv2dIntegerBody(Machine &machine, const Instruction &instruction,
           if (!accumulator)
             continue;
 
-          const int32_t rescaled =
-              requantize(*accumulator, instruction.requantMultiplier,
-                         instruction.requantShift);
+          const int32_t rescaled = requantize(*accumulator, rescale->multiplier,
+                                              rescale->shift);
           const int64_t destination =
               ((n * shape.outputChannels + f) * shape.outputH + oh) *
                   shape.outputW +
@@ -1301,9 +1374,13 @@ KernelCost kernelMATMUL(Machine &machine, const Instruction &instruction) {
           if (!accumulatesInI32(machine, accumulator, "MATMUL"))
             return cost;
         }
-        const int32_t rescaled =
-            requantize(static_cast<int32_t>(accumulator),
-                       instruction.requantMultiplier, instruction.requantShift);
+        const std::optional<Rescale> rescale =
+            rescaleFor(machine, instruction, n, "MATMUL");
+        if (!rescale)
+          return cost;
+        const int32_t rescaled = requantize(static_cast<int32_t>(accumulator),
+                                            rescale->multiplier,
+                                            rescale->shift);
         int8_t *out =
             machine.writeI8(instruction.resultSpace, instruction.resultAddress,
                             m * columns + n, "MATMUL");
