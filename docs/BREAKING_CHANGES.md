@@ -42,6 +42,65 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-20, Phase P14: a quantized compute instruction gains a fourth operand, the per output channel rescale
+
+**Written before the commit that causes it.** The commit that adds the operand
+is the next one, and this entry is what makes it a decision rather than an
+explanation.
+
+**What changes, in one sentence.** `CONV2D` and `MATMUL` accept a **fourth
+operand**, an `i32` buffer in the scratchpad holding one requantization
+multiplier and one shift per output channel, and it is meaningful only when the
+result element type is an integer one.
+
+**Why, and it is the owner's decision of 2026-09-20.** Section 14 opens with the
+granularity decision: weights get one symmetric scale per output channel, and
+the P14 gate asks for the ablation that measures it. The rescale of output
+channel `c` is `M_c = (scale_x * scale_w_c) / scale_y`, so a weight scale that
+varies per channel makes the multiplier vary per channel by construction, and
+the two scalar fields `requantMultiplier` and `requantShift` express exactly one
+channel between them. Unlike the output zero point, which was a homeless number
+that fitted in an idle word, this is `F` numbers and no vector in the record is
+idle. The three ways out were an operand, per tensor weights, and a wider
+record; the second contradicts Section 14's own granularity paragraph and makes
+the gate's ablation unmeasurable, and the third is forbidden in this phase by
+name, because a version bump invalidates `test_binary_stability` and every seed
+in the fuzz corpus in the commit that introduces quantization.
+
+**Which baseline fields move: none, and that is a measurement rather than a
+hope.** The operand list has always been length prefixed, `putCount(out,
+instruction.operands.size())` on the way out and `operands.resize(operandCount)`
+on the way in, so an instruction with two or three operands writes exactly the
+bytes it writes today and reads back the same. `Program::kVersion` stays **2**.
+No cell of the 217 can reach the new operand, because no pass in any `-O` level
+emits an integer instruction yet. The 21 fp32 golden tensors are untouched by
+construction: an f32 instruction never carries this operand and is refused if it
+does.
+
+**What does change is a declared interface**, which is why this entry exists at
+all rather than a changelog line. The two opcodes' `maxOperands` goes from 3 to
+4 in `include/NPU/Encoding/NPUISADescription.td`, their integer operand profile
+gains a slot, and `docs/ISA_MANUAL.md` and `docs/ISA_OPCODES.json` are
+regenerated in the same commit with `check-isa-staleness.sh` clean.
+
+**The prediction, before the measurement.** The malformed corpus is run at the
+parent and at the change and every verdict compared case by case, as it was for
+the output zero point. **I predict that the only cases that can flip are those
+whose mutated operand count is exactly four on `CONV2D` or `MATMUL`, that such a
+case flips from `arity` to the check that refuses the new operand rather than
+becoming accepted, and that no case flips from refused to accepted.** If a case
+does become accepted, the widening admitted a program the format should still
+refuse and the change is wrong rather than the prediction.
+
+**The per tensor path stays and stays tested.** Section 14's own ablation
+compares per channel against per tensor, so both arms are selectable: an
+instruction without the fourth operand rescales with the two scalar fields
+exactly as it does today, and that path keeps its hand computed tests. **No
+accuracy number measured under the interim per tensor execution is published as
+the phase's result.**
+
+**The commit that causes it:** the next one, named in this entry once it exists.
+
 ### 2026-09-16, Phase P14: an integer compute instruction carries its output zero point in the `scale` field
 
 **Written before the commit that causes it.** The commit that changes the
