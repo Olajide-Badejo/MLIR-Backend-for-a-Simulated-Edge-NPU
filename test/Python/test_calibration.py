@@ -377,3 +377,163 @@ def test_only_the_quantizable_operations_are_recorded(tmp_path: Path) -> None:
     nodes = observe_nodes(path)
     assert set(nodes) == {"Conv_0"}
     assert "Relu" not in QUANTIZABLE_OPS
+
+
+def _conv_relu_model(directory: Path, *, dynamic_batch: bool = False) -> Path:
+    """A two node graph, so there is an intermediate value to see inside."""
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    weight = numpy_helper.from_array(
+        np.array(
+            [[[[0.5, -0.25], [0.125, 0.0]]], [[[1.0, -2.0], [0.25, 0.75]]]],
+            dtype=np.float32,
+        ),
+        name="w",
+    )
+    batch = "n" if dynamic_batch else 1
+    graph = helper.make_graph(
+        [
+            helper.make_node(
+                "Conv",
+                ["x", "w"],
+                ["c"],
+                pads=[0, 0, 0, 0],
+                strides=[1, 1],
+                dilations=[1, 1],
+                group=1,
+            ),
+            helper.make_node("Relu", ["c"], ["y"]),
+        ],
+        "conv_relu",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [batch, 1, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [batch, 2, 3, 3])],
+        initializer=[weight],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    destination = directory / ("dynamic.onnx" if dynamic_batch else "conv_relu.onnx")
+    onnx.save(model, str(destination))
+    return destination
+
+
+def test_promoting_intermediates_makes_every_produced_value_an_output(
+    tmp_path: Path,
+) -> None:
+    """The mechanism the observer depends on.
+
+    A tensor between two nodes is not a graph output, and a runtime returns the
+    outputs it is asked for. Without the promotion the observer could see the
+    model's answer and nothing else, which is every tensor it actually needs.
+    """
+    import onnx
+    from npu_frontend.calibration import promote_intermediates
+
+    model = onnx.load(str(_conv_relu_model(tmp_path)))
+    assert [entry.name for entry in model.graph.output] == ["y"]
+
+    promoted = promote_intermediates(model)
+    names = {entry.name for entry in promoted.graph.output}
+    assert {"c", "y"} <= names
+    # The original is not mutated, which is the importer's rule too.
+    assert [entry.name for entry in model.graph.output] == ["y"]
+
+
+def test_the_observer_sees_inside_the_graph(tmp_path: Path) -> None:
+    """Every intermediate gets a range and a histogram over that range."""
+    from npu_frontend.calibration import observe
+
+    path = _conv_relu_model(tmp_path)
+    observations = observe(path, model_name="conv_relu", count=3, bins=64)
+
+    assert {"c", "y"} <= set(observations)
+    for name in ("c", "y"):
+        entry = observations[name]
+        assert entry.minimum <= entry.maximum
+        assert len(entry.counts) == 64
+        assert sum(entry.counts) > 0
+
+    # The relu's output cannot be negative, and the convolution's can, which is
+    # the cheapest possible check that these are the real tensors rather than
+    # the same one twice.
+    assert observations["y"].minimum >= 0.0
+    assert observations["c"].minimum < 0.0
+
+
+def test_the_observer_is_reproducible_from_its_seed(tmp_path: Path) -> None:
+    """Two runs of the same model at the same count see the same ranges.
+
+    This is what makes a committed profile worth committing: the numbers in it
+    are a function of the model, the seed and the count, and of nothing else.
+    """
+    from npu_frontend.calibration import observe
+
+    path = _conv_relu_model(tmp_path)
+    first = observe(path, model_name="conv_relu", count=2, bins=32)
+    second = observe(path, model_name="conv_relu", count=2, bins=32)
+
+    assert set(first) == set(second)
+    for name in first:
+        assert first[name].minimum == second[name].minimum
+        assert first[name].maximum == second[name].maximum
+        assert first[name].counts == second[name].counts
+
+
+def test_the_weight_observer_reads_the_initializer_rather_than_running_it(
+    tmp_path: Path,
+) -> None:
+    """Exact numbers, because a weight is a constant and needs no observation.
+
+    The two output channels hold 0.5, -0.25, 0.125, 0 and 1, -2, 0.25, 0.75, so
+    the absolute maxima are 0.5 and 2.0 and the symmetric scales are those over
+    127.
+    """
+    from npu_frontend.calibration import observe_weights, weight_scales
+
+    weights = observe_weights(_conv_relu_model(tmp_path))
+    assert set(weights) == {"w"}
+    assert weights["w"].axis == 0
+    assert weights["w"].absolute_maxima == pytest.approx([0.5, 2.0])
+    assert weight_scales(weights["w"].absolute_maxima) == pytest.approx(
+        [0.5 / 127.0, 2.0 / 127.0]
+    )
+
+
+def test_a_profile_of_a_real_graph_carries_all_four_sections(tmp_path: Path) -> None:
+    """The whole observer, end to end, into the file that gets committed."""
+    from npu_frontend.calibration import (
+        observe,
+        observe_nodes,
+        observe_weights,
+    )
+
+    path = _conv_relu_model(tmp_path)
+    profile = build_profile(
+        model_name="conv_relu",
+        batch=1,
+        count=2,
+        observations=observe(path, model_name="conv_relu", count=2, bins=32),
+        weights=observe_weights(path),
+        nodes=observe_nodes(path),
+    )
+
+    assert profile["observed"]
+    assert profile["ranges"]
+    assert profile["weights"]["w"]["axis"] == 0
+    assert profile["nodes"]["Conv_0"]["outputs"] == ["c"]
+
+    written = write_profile(profile, tmp_path / "conv_relu.json")
+    assert read_profile(written)["model"] == "conv_relu"
+
+
+def test_a_dynamic_extent_is_refused_by_name(tmp_path: Path) -> None:
+    """A calibration run has to feed the graph a concrete array, so a dynamic
+    extent is a refusal rather than a guess at a batch size."""
+    import onnx
+    from npu_frontend.calibration import calibration_inputs
+
+    model = onnx.load(str(_conv_relu_model(tmp_path, dynamic_batch=True)))
+    with pytest.raises(CalibrationError, match="dynamic extent on axis"):
+        calibration_inputs(model, model_name="conv_relu", count=1)
