@@ -56,6 +56,7 @@ pinning a rule is for.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -599,6 +600,56 @@ def requantize(accumulator: np.ndarray, multiplier: int, shift: int) -> np.ndarr
     )
 
 
+def requantize_per_channel(
+    accumulator: np.ndarray,
+    multiplier: int | Sequence[int],
+    shift: int | Sequence[int],
+    *,
+    axis: int,
+) -> np.ndarray:
+    """Section 14's rescale, once per output channel when the pair is a list.
+
+    **The two helpers above stay scalar on purpose.** They are the arithmetic
+    the machine performs, pinned tie rule by tie rule, and a vectorised rewrite
+    of them would be a second implementation of the very thing the differential
+    oracle exists to compare. So the per channel form slices and calls them,
+    which is the same arithmetic C times rather than a different arithmetic
+    once.
+
+    A scalar pair is the per tensor arm and takes the fast path unchanged,
+    because Section 14's ablation compares the two and neither is a legacy of
+    the other.
+    """
+    if isinstance(multiplier, int) and isinstance(shift, int):
+        return requantize(accumulator, multiplier, shift)
+
+    multipliers = [int(value) for value in np.atleast_1d(multiplier)]
+    shifts = [int(value) for value in np.atleast_1d(shift)]
+    if len(multipliers) != len(shifts):
+        raise ValueError(
+            f"the per channel rescale has {len(multipliers)} multipliers and "
+            f"{len(shifts)} shifts, and it carries one of each per output "
+            f"channel."
+        )
+    channels = int(accumulator.shape[axis])
+    if len(multipliers) != channels:
+        raise ValueError(
+            f"the per channel rescale has {len(multipliers)} entries and the "
+            f"result has {channels} output channels on axis {axis}. The "
+            f"machine refuses the same mismatch by name at decode."
+        )
+
+    out = np.empty_like(accumulator)
+    for channel in range(channels):
+        index: list[slice] = [slice(None)] * accumulator.ndim
+        index[axis] = slice(channel, channel + 1)
+        window = tuple(index)
+        out[window] = requantize(
+            accumulator[window], multipliers[channel], shifts[channel]
+        )
+    return out
+
+
 def _check_int32_accumulator(accumulator: np.ndarray, name: str) -> None:
     """Section 14's static guard, checked rather than assumed.
 
@@ -627,8 +678,8 @@ def quantized_conv2d(
     group: int = 1,
     zero_point: int = 0,
     output_zero_point: int = 0,
-    requant_multiplier: int,
-    requant_shift: int,
+    requant_multiplier: int | Sequence[int],
+    requant_shift: int | Sequence[int],
     relu: bool = False,
 ) -> QuantTensor:
     """The int8 convolution: int32 accumulation, then requantization.
@@ -697,9 +748,9 @@ def quantized_conv2d(
         out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1, 1, 1)
     _check_int32_accumulator(out, "quantized_conv2d")
 
-    rescaled = requantize(out, requant_multiplier, requant_shift) + np.int64(
-        output_zero_point
-    )
+    rescaled = requantize_per_channel(
+        out, requant_multiplier, requant_shift, axis=1
+    ) + np.int64(output_zero_point)
     # A relu clamps at the value that represents real zero, which is the output
     # zero point and not zero, because Section 14 calibrates activations affine.
     # The two agree exactly when the zero point is zero.
@@ -714,8 +765,8 @@ def quantized_matmul(
     bias: NDArray[np.int32] | None = None,
     *,
     output_zero_point: int = 0,
-    requant_multiplier: int,
-    requant_shift: int,
+    requant_multiplier: int | Sequence[int],
+    requant_shift: int | Sequence[int],
     relu: bool = False,
 ) -> QuantTensor:
     """The int8 matrix multiplication: int32 accumulation, then requantization.
@@ -733,9 +784,9 @@ def quantized_matmul(
         out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1)
     _check_int32_accumulator(out, "quantized_matmul")
 
-    rescaled = requantize(out, requant_multiplier, requant_shift) + np.int64(
-        output_zero_point
-    )
+    rescaled = requantize_per_channel(
+        out, requant_multiplier, requant_shift, axis=1
+    ) + np.int64(output_zero_point)
     if relu:
         rescaled = np.maximum(rescaled, np.int64(output_zero_point))
     return np.clip(rescaled, -128, 127).astype(np.int8)

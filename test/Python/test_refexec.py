@@ -317,3 +317,98 @@ def test_quantize_saturates_and_places_real_zero_at_the_zero_point() -> None:
     q = refexec.quantize(x, 0.25, -3)
     assert q.tolist() == [127, -128, -3, 29, 127, -128]
     assert refexec.quantize(f32([0.0]), 0.25, -3).tolist() == [-3]
+
+
+# ---------------------------------------------------------------------------
+# The per output channel rescale, which is the fourth operand of Section 14.
+# ---------------------------------------------------------------------------
+
+
+def test_a_per_channel_rescale_scales_each_channel_by_its_own() -> None:
+    """The same two numbers the machine's own hand computed case asserts.
+
+    Two output channels accumulating 100 each, multipliers 2^30 and 2^30,
+    shifts 0 and 1. The doubling high multiply halves both to 50, and the
+    second is then divided by two again, so the answers are 50 and 25.
+
+    `Quantization.APerOutputChannelRescaleScalesEachChannelByItsOwn` in the
+    simulator's own tests asserts the same pair on the same arithmetic. Two
+    implementations that never saw each other agreeing on a number a reader can
+    redo is the whole value of having both.
+    """
+    x = np.array([[[[100]]]], dtype=np.int8)
+    weight = np.ones((2, 1, 1, 1), dtype=np.int8)
+    bias = np.zeros(2, dtype=np.int32)
+
+    answer = refexec.quantized_conv2d(
+        x,
+        weight,
+        bias,
+        requant_multiplier=[1 << 30, 1 << 30],
+        requant_shift=[0, 1],
+    )
+    assert answer.tolist() == [[[[50]], [[25]]]]
+
+
+def test_the_scalar_pair_is_the_per_tensor_arm_and_answers_differently() -> None:
+    """The arm Section 14's ablation compares against, on the same program.
+
+    One multiplier for the whole tensor cannot say what the per channel table
+    says: both channels come out the same. That is not a defect of the per
+    tensor arm, it is the measurement the ablation exists to take.
+    """
+    x = np.array([[[[100]]]], dtype=np.int8)
+    weight = np.ones((2, 1, 1, 1), dtype=np.int8)
+    bias = np.zeros(2, dtype=np.int32)
+
+    answer = refexec.quantized_conv2d(
+        x, weight, bias, requant_multiplier=1 << 30, requant_shift=0
+    )
+    assert answer.tolist() == [[[[50]], [[50]]]]
+
+
+def test_a_matmul_rescales_per_column() -> None:
+    """A matrix multiplication's output channel is its column, which is the one
+    thing that differs from the convolution."""
+    a = np.array([[100]], dtype=np.int8)
+    b = np.ones((1, 2), dtype=np.int8)
+    bias = np.zeros(2, dtype=np.int32)
+
+    answer = refexec.quantized_matmul(
+        a,
+        b,
+        bias,
+        requant_multiplier=[1 << 30, 1 << 30],
+        requant_shift=[0, 1],
+    )
+    assert answer.tolist() == [[50, 25]]
+
+
+def test_a_per_channel_rescale_of_the_wrong_length_is_refused() -> None:
+    """The mismatch the machine refuses by name at decode, refused here too.
+
+    A reference that quietly broadcast a three entry table over two channels
+    would disagree with the machine on exactly the programs the check exists
+    to catch, and it would disagree by producing an answer.
+    """
+    x = np.array([[[[100]]]], dtype=np.int8)
+    weight = np.ones((2, 1, 1, 1), dtype=np.int8)
+    bias = np.zeros(2, dtype=np.int32)
+
+    with pytest.raises(ValueError, match="output channels"):
+        refexec.quantized_conv2d(
+            x,
+            weight,
+            bias,
+            requant_multiplier=[1 << 30, 1 << 30, 1 << 30],
+            requant_shift=[0, 0, 0],
+        )
+
+    with pytest.raises(ValueError, match="one of each per output channel"):
+        refexec.quantized_conv2d(
+            x,
+            weight,
+            bias,
+            requant_multiplier=[1 << 30, 1 << 30],
+            requant_shift=[0],
+        )
