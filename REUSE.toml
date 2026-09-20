@@ -100,6 +100,15 @@ SPDX-License-Identifier = "MIT"
 # and half of them are supposed to fail. A header would add lines the fixture
 # did not ask for and, in the .tex and .md cases, would put a comment syntax
 # into a file whose parsing is part of what is under test.
+# The committed calibration profiles of Section 14, one per model, and the
+# smaller ones the pass's own tests read. JSON has no comment syntax, so a
+# header is not available to either, which is the test this file applies.
+[[annotations]]
+path = "experiments/calibration/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Olajide Badejo <olajideayomidebadejo@gmail.com>"
+SPDX-License-Identifier = "MIT"
+
 # The calibration profiles the `-npu-calibrate` tests read. JSON has no comment
 # syntax, so a header is not available to them, which is the test this file
 # applies before an entry is added.

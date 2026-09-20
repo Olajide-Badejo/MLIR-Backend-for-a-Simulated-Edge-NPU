@@ -589,3 +589,89 @@ def test_a_constant_zero_tensor_is_marked_degenerate_in_the_profile() -> None:
     assert entry["scale"] == 1.0
     assert entry["zero_point"] == 0
     assert entry["degenerate"] is True
+
+
+# ---------------------------------------------------------------------------
+# The committed profiles, which are what an accuracy number is measured
+# against and therefore what has to be reproducible from its own header.
+# ---------------------------------------------------------------------------
+
+COMMITTED_PROFILES = Path(__file__).resolve().parents[2] / "experiments" / "calibration"
+
+
+def test_every_model_of_the_suite_has_a_committed_profile() -> None:
+    """Section 14 asks for one per model, and the suite is the registry.
+
+    Read from the registry rather than from a list here, because a model added
+    to the suite without a profile is exactly the gap this should fail on, and
+    a hardcoded list would grow the same blind spot.
+    """
+    from npu_frontend.model_generator import MODELS
+
+    written = {path.stem for path in COMMITTED_PROFILES.glob("*.json")}
+    assert set(MODELS) <= written, sorted(set(MODELS) - written)
+
+
+def test_each_profile_is_reproducible_from_its_own_header() -> None:
+    """The seed is a function of the model, the batch and the input count, so
+    a profile that records all three records how to rebuild itself.
+
+    This is the property that makes a committed profile worth committing. A
+    file whose seed did not follow from its own header would be a file nobody
+    could regenerate, and an accuracy number measured against it would be
+    anecdotal in exactly the way Section 14 is trying to avoid.
+    """
+    from npu_frontend.model_generator import MODELS
+
+    for name in sorted(MODELS):
+        profile = read_profile(COMMITTED_PROFILES / f"{name}.json")
+        assert profile["model"] == name
+        assert profile["inputs"] > 0
+        assert profile["seed"] == calibration_seed(
+            name, int(profile["batch"]), int(profile["inputs"])
+        )
+        assert "standard normal" in profile["input_distribution"]
+
+
+def test_no_committed_profile_carries_a_scale_of_zero() -> None:
+    """A zero scale must never escape the calibrator, on real data and not only
+    on the hand written cases.
+
+    The verifier refuses a zero scale, so one reaching a profile would turn
+    into a compile failure at the far end of the pipeline, which is the worst
+    place to learn that a tensor was constant. The degenerate rule substitutes
+    1.0 and says it did, and this is that rule checked against seven models
+    rather than against one fixture.
+    """
+    from npu_frontend.model_generator import MODELS
+
+    for name in sorted(MODELS):
+        profile = read_profile(COMMITTED_PROFILES / f"{name}.json")
+        for tensor, methods in profile["activation_scales"].items():
+            for method, entry in methods.items():
+                assert entry["scale"] > 0.0, f"{name}:{tensor}:{method}"
+        for weight, record in profile["weights"].items():
+            for scale in record["scales"]:
+                assert scale > 0.0, f"{name}:{weight}"
+
+
+def test_every_profiled_operation_is_covered_end_to_end() -> None:
+    """A node the profile names but cannot supply a range for would be skipped
+    by the pass and counted, which is legal and is not what a committed profile
+    should look like.
+
+    So every quantizable node in every committed profile has a range for the
+    tensor on each side of it, under every method. This is the check that says
+    the observer and the node walk agree about names, which is the join the
+    whole file depends on.
+    """
+    from npu_frontend.model_generator import MODELS
+
+    for name in sorted(MODELS):
+        profile = read_profile(COMMITTED_PROFILES / f"{name}.json")
+        scales = profile["activation_scales"]
+        assert profile["nodes"], name
+        for node, record in profile["nodes"].items():
+            for tensor in (record["inputs"][0], record["outputs"][0]):
+                assert tensor in scales, f"{name}:{node}:{tensor}"
+                assert set(scales[tensor]) == set(CALIB_METHODS)

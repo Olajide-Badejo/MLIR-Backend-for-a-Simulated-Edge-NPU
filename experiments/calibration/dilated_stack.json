@@ -1,0 +1,385 @@
+{
+  "activation_scales": {
+    "activated": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.0072401683887138085,
+        "zero_point": -128
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      }
+    },
+    "biased": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.03440660990628542,
+        "zero_point": 24
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.04249984142827053,
+        "zero_point": 12
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.04249984142827053,
+        "zero_point": 12
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.04249984142827053,
+        "zero_point": 12
+      }
+    },
+    "clipped": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.007536527961857763,
+        "zero_point": -128
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.02293433769076478,
+        "zero_point": -128
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.02293433769076478,
+        "zero_point": -128
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.019910767780361223,
+        "zero_point": -128
+      }
+    },
+    "conv0": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.03740638877977343,
+        "zero_point": -9
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.04186245039397595,
+        "zero_point": -13
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.04186245039397595,
+        "zero_point": -13
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.03740638877977343,
+        "zero_point": -9
+      }
+    },
+    "conv1": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.0338099742828704,
+        "zero_point": 23
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.04193993175730986,
+        "zero_point": 10
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.04193993175730986,
+        "zero_point": 10
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.04193993175730986,
+        "zero_point": 10
+      }
+    },
+    "input": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.029535444110047583,
+        "zero_point": -6
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.029535444110047583,
+        "zero_point": -6
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.029535444110047583,
+        "zero_point": -6
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.029131639210105528,
+        "zero_point": -4
+      }
+    },
+    "output": {
+      "entropy": {
+        "degenerate": false,
+        "scale": 0.0072401683887138085,
+        "zero_point": -128
+      },
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      },
+      "mse": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      },
+      "percentile": {
+        "degenerate": false,
+        "scale": 0.019231990739411,
+        "zero_point": -128
+      }
+    }
+  },
+  "batch": 1,
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "inputs": 32,
+  "model": "dilated_stack",
+  "nodes": {
+    "conv0": {
+      "inputs": [
+        "input",
+        "conv0.weight",
+        "conv0.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv0"
+      ]
+    },
+    "conv1": {
+      "inputs": [
+        "clipped",
+        "conv1.weight"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv1"
+      ]
+    }
+  },
+  "observed": {
+    "activated": {
+      "max": 4.904157638549805,
+      "min": 0.0
+    },
+    "biased": {
+      "max": 4.904157638549805,
+      "min": -5.93330192565918
+    },
+    "clipped": {
+      "max": 5.8482561111450195,
+      "min": 0.0
+    },
+    "conv0": {
+      "max": 5.8482561111450195,
+      "min": -4.826668739318848
+    },
+    "conv1": {
+      "max": 4.8906402587890625,
+      "min": -5.804042339324951
+    },
+    "input": {
+      "max": 3.926844835281372,
+      "min": -3.6046934127807617
+    },
+    "output": {
+      "max": 4.904157638549805,
+      "min": 0.0
+    }
+  },
+  "ranges": {
+    "activated": {
+      "entropy": [
+        0.0,
+        1.8462429391220212
+      ],
+      "minmax": [
+        0.0,
+        4.904157638549805
+      ],
+      "mse": [
+        0.0,
+        4.904157638549805
+      ],
+      "percentile": [
+        0.0,
+        4.904157638549805
+      ]
+    },
+    "biased": {
+      "entropy": [
+        -5.218918604776263,
+        3.554766921326518
+      ],
+      "minmax": [
+        -5.93330192565918,
+        4.904157638549805
+      ],
+      "mse": [
+        -5.93330192565918,
+        4.904157638549805
+      ],
+      "percentile": [
+        -5.93330192565918,
+        4.904157638549805
+      ]
+    },
+    "clipped": {
+      "entropy": [
+        0.0,
+        1.9218146302737296
+      ],
+      "minmax": [
+        0.0,
+        5.8482561111450195
+      ],
+      "mse": [
+        0.0,
+        5.8482561111450195
+      ],
+      "percentile": [
+        0.0,
+        5.077245783992112
+      ]
+    },
+    "conv0": {
+      "entropy": [
+        -4.456590778194368,
+        5.082038360647857
+      ],
+      "minmax": [
+        -4.826668739318848,
+        5.8482561111450195
+      ],
+      "mse": [
+        -4.826668739318848,
+        5.8482561111450195
+      ],
+      "percentile": [
+        -4.456590778194368,
+        5.082038360647857
+      ]
+    },
+    "conv1": {
+      "entropy": [
+        -5.088626560056582,
+        3.5329168820753694
+      ],
+      "minmax": [
+        -5.804042339324951,
+        4.8906402587890625
+      ],
+      "mse": [
+        -5.804042339324951,
+        4.8906402587890625
+      ],
+      "percentile": [
+        -5.804042339324951,
+        4.8906402587890625
+      ]
+    },
+    "input": {
+      "entropy": [
+        -3.6046934127807617,
+        3.926844835281372
+      ],
+      "minmax": [
+        -3.6046934127807617,
+        3.926844835281372
+      ],
+      "mse": [
+        -3.6046934127807617,
+        3.926844835281372
+      ],
+      "percentile": [
+        -3.601015903870575,
+        3.827552094706334
+      ]
+    },
+    "output": {
+      "entropy": [
+        0.0,
+        1.8462429391220212
+      ],
+      "minmax": [
+        0.0,
+        4.904157638549805
+      ],
+      "mse": [
+        0.0,
+        4.904157638549805
+      ],
+      "percentile": [
+        0.0,
+        4.904157638549805
+      ]
+    }
+  },
+  "schema_version": 1,
+  "seed": 2590420259,
+  "weights": {
+    "conv0.weight": {
+      "absolute_maxima": [
+        0.4491146504878998,
+        0.6418999433517456,
+        0.4096490740776062,
+        0.47017762064933777,
+        0.5825980305671692,
+        0.4934019148349762,
+        0.4164685308933258
+      ],
+      "axis": 0,
+      "scales": [
+        0.003536335830613384,
+        0.00505433026261217,
+        0.003225583260453592,
+        0.003702185989364864,
+        0.004587386067458025,
+        0.003885054447519498,
+        0.003279279770813589
+      ]
+    },
+    "conv1.weight": {
+      "absolute_maxima": [
+        0.5889855623245239,
+        0.5978502631187439,
+        0.41373464465141296,
+        0.4123973846435547,
+        0.48202377557754517
+      ],
+      "axis": 0,
+      "scales": [
+        0.004637681593106488,
+        0.004707482386761763,
+        0.0032577531074914406,
+        0.0032472235011303517,
+        0.00379546279982319
+      ]
+    }
+  }
+}

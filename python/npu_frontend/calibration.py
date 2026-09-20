@@ -272,15 +272,27 @@ def observe(
 
     minima: dict[str, float] = {}
     maxima: dict[str, float] = {}
+
+    def widen(name: str, value: NDArray[np.float32]) -> None:
+        if value.size == 0:
+            return
+        low = float(value.min())
+        high = float(value.max())
+        minima[name] = min(minima.get(name, low), low)
+        maxima[name] = max(maxima.get(name, high), high)
+
     for feed in feeds:
+        # **The graph's own inputs are observed too, and that is not a
+        # refinement.** Promotion reaches the values nodes produce, and a
+        # graph input is not one of them, so without this the first operation
+        # of every model has no range for the tensor it reads. The pass would
+        # call that partially covered and skip it, which is legal and would
+        # have quietly left the first convolution of all seven models in f32.
+        # The values need no observing at all: they are the feeds.
+        for name, given in feed.items():
+            widen(name, given)
         for name, value in zip(names, session.run(None, feed), strict=True):
-            array = np.asarray(value, dtype=np.float32)
-            if array.size == 0:
-                continue
-            low = float(array.min())
-            high = float(array.max())
-            minima[name] = min(minima.get(name, low), low)
-            maxima[name] = max(maxima.get(name, high), high)
+            widen(name, np.asarray(value, dtype=np.float32))
 
     edges: dict[str, NDArray[np.float64]] = {}
     totals: dict[str, NDArray[np.int64]] = {}
@@ -290,16 +302,18 @@ def observe(
         edges[name] = np.linspace(low, maxima[name], bins + 1, dtype=np.float64)
         totals[name] = np.zeros(bins, dtype=np.int64)
 
+    def accumulate(name: str, value: NDArray[np.float64]) -> None:
+        if name not in edges or value.size == 0:
+            return
+        counted, _ = np.histogram(value, bins=edges[name])
+        totals[name] += counted
+
     if edges:
         for feed in feeds:
+            for name, given in feed.items():
+                accumulate(name, given.astype(np.float64))
             for name, value in zip(names, session.run(None, feed), strict=True):
-                if name not in edges:
-                    continue
-                array = np.asarray(value, dtype=np.float64)
-                if array.size == 0:
-                    continue
-                counted, _ = np.histogram(array, bins=edges[name])
-                totals[name] += counted
+                accumulate(name, np.asarray(value, dtype=np.float64))
 
     return {
         name: Observation(
