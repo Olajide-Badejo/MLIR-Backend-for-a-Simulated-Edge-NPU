@@ -3112,6 +3112,42 @@ measured, and the same case passes on the same tree minutes later. It closes the
 question the sixth left open, which was whether the busy machine explanation
 covers this test as well as the timing gap: it does.
 
+**The eighth observation is the first on a scheduled run, and that is what is
+new about it.** The nightly on `main` failed once, run **35201496760** on
+2026-09-17, in the full matrix job's pytest step:
+
+```
+--mlir-timing reports NPUDoubleBuffer at 0.2000 ms and this project's
+instrumentation at 0.0469 ms, a gap of 0.1531 ms against a bound of 0.1500 ms
+```
+
+failing `test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing`
+with 1 failed, 1119 passed and 33 skipped. The scheduled runs of 16, 18, 19 and
+20 September were green, so the cron trigger stands at **one red in five**.
+
+**Every earlier sighting was a developer machine or a dispatch, and this one is
+neither.** That matters for the fix rather than for the diagnosis. On this
+machine the competitor can be named by reading the process table while the run
+is still going, which is how the seventh observation got its 95.6 percent. A
+scheduled run on a hosted runner offers nothing of the kind after the fact:
+there is no process table, no load average, and no second run from the same
+start. So the evidence available is what the message itself carries, and the
+message carries two numbers: the two clocks differ by a factor of 4.3, and the
+gap exceeds its bound by 0.0031 ms, which is **2 percent of the bound**.
+
+**What this observation cannot do is separate the two explanations**, and it is
+recorded saying so. A busy runner and D-0043's clock quantum both predict a
+reading of exactly 0.2000 ms against an instrumented 0.0469 ms, the first
+because the process lost the processor and the second because 0.2000 is what a
+coarse timer returns. Six of the seven earlier observations could be settled by
+re-running on a quiet machine. This one cannot be re-run at all, which is
+precisely the property a precondition at P15 has to cope with.
+
+**No bound moved.** `TIMING_GAP_FRACTION` is where it was, the failure is a
+finding rather than a threshold to widen, and the fix remains Section 17.9's
+flake governance at P15, where the trigger for it is now a rate on a trigger
+that cannot be inspected rather than a story about a busy laptop.
+
 **And it says something about where the measurements happen rather than about
 the bound.** This machine is shared and the owner uses it for other heavy work,
 so a competitor arriving mid run is a condition to expect rather than a
