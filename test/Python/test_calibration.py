@@ -537,3 +537,55 @@ def test_a_dynamic_extent_is_refused_by_name(tmp_path: Path) -> None:
     model = onnx.load(str(_conv_relu_model(tmp_path, dynamic_batch=True)))
     with pytest.raises(CalibrationError, match="dynamic extent on axis"):
         calibration_inputs(model, model_name="conv_relu", count=1)
+
+
+def test_the_profile_carries_the_derived_pair_beside_every_range() -> None:
+    """What the compiler reads, and why it is here rather than there.
+
+    The affine rule is arithmetic over observed data and it is pinned by
+    Section 14. Deriving it again in the compiler would put the same rule in
+    two places with nothing comparing them, which is the observer against
+    kernel disagreement that section opens by warning about. So the profile
+    carries the pair and `-npu-calibrate` reads it.
+
+    The numbers here are the post ReLU case: a range of [0, 4.08] gives a scale
+    of 0.016 and a zero point of -128, which is the same pair
+    `test_a_post_relu_tensor_gets_the_zero_point_at_the_bottom_rail` asserts
+    directly.
+    """
+    counts = [0] * 2048
+    counts[2047] = 1000
+    profile = build_profile(
+        model_name="relu_like",
+        batch=1,
+        count=8,
+        observations={"y": Observation(minimum=0.0, maximum=4.08, counts=counts)},
+        weights={},
+    )
+
+    entry = profile["activation_scales"]["y"]["minmax"]
+    assert entry["scale"] == pytest.approx(0.016, abs=1e-12)
+    assert entry["zero_point"] == -128
+    assert entry["degenerate"] is False
+    assert set(profile["activation_scales"]["y"]) == set(CALIB_METHODS)
+
+
+def test_a_constant_zero_tensor_is_marked_degenerate_in_the_profile() -> None:
+    """The warning case, carried as a flag rather than left for the reader.
+
+    A zero scale must never escape the calibrator, so the degenerate rule
+    substitutes 1.0, and the profile says it did. A consumer that saw only the
+    scale would have no way to tell a real unit scale from a substituted one.
+    """
+    profile = build_profile(
+        model_name="dead",
+        batch=1,
+        count=8,
+        observations={"z": Observation(minimum=0.0, maximum=0.0, counts=[])},
+        weights={},
+    )
+
+    entry = profile["activation_scales"]["z"]["minmax"]
+    assert entry["scale"] == 1.0
+    assert entry["zero_point"] == 0
+    assert entry["degenerate"] is True

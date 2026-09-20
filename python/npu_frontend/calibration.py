@@ -622,6 +622,16 @@ def max_reduction() -> int:
     return ((1 << 31) - 1) // (128 * 127)
 
 
+def _activation_entry(low: float, high: float) -> dict[str, Any]:
+    """One tensor's affine scale and zero point, as the profile records them."""
+    answer = activation_scale(low, high)
+    return {
+        "scale": answer.scale,
+        "zero_point": answer.zero_point,
+        "degenerate": answer.degenerate,
+    }
+
+
 def build_profile(
     *,
     model_name: str,
@@ -662,6 +672,21 @@ def build_profile(
         "ranges": {
             name: {
                 method: list(method_range(observation, method))
+                for method in CALIB_METHODS
+            }
+            for name, observation in sorted(observations.items())
+        },
+        # **The derived numbers live here rather than in the compiler**, and
+        # that is the same decision the ranges were: the affine rule is
+        # arithmetic over observed data, it is pinned by Section 14, and it is
+        # held to hand computed cases in `test_calibration.py`. A compiler that
+        # derived them again would be a second implementation of a rule with no
+        # oracle comparing the two, which is exactly the disagreement Section
+        # 14 opens by warning about. `-npu-calibrate` reads the pair for the
+        # method it was asked for and writes it into the instruction.
+        "activation_scales": {
+            name: {
+                method: _activation_entry(*method_range(observation, method))
                 for method in CALIB_METHODS
             }
             for name, observation in sorted(observations.items())
