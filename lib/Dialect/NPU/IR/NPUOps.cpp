@@ -368,6 +368,54 @@ LogicalResult Conv2DOp::inferReturnTypes(
   return success();
 }
 
+/// The per output channel weight scales, when a quantized compilation wrote
+/// them.
+///
+/// **Three rules, and the first is the one that keeps the attribute honest.**
+/// It may appear only where the operation is actually quantized, which at this
+/// level means its data operand is the result of an `npu.dequantize`: that is
+/// what a QDQ form looks like from inside the operation. An attribute on an
+/// operation in an fp32 compilation would be a number nothing reads and a
+/// claim nothing backs, so it is an error rather than something to ignore.
+///
+/// The second is arithmetic: one scale per output channel, so a length that is
+/// not the channel count is a scale set for a different operation. The third
+/// is the rule the calibrator already enforces at its own end, that a scale is
+/// finite and strictly positive, checked again here because an attribute can
+/// be written by hand and a zero scale must never reach the contraction.
+LogicalResult verifyWeightScales(Operation *op, Value data,
+                                 std::optional<::llvm::ArrayRef<float>> scales,
+                                 int64_t channels, llvm::StringRef axis) {
+  if (!scales)
+    return success();
+
+  if (!data.getDefiningOp<DequantizeOp>())
+    return op->emitOpError()
+           << "carries weight_scales and its data operand is not the result "
+              "of an npu.dequantize, so this is not a quantized compilation. "
+              "The attribute is written by -npu-calibrate from a profile and "
+              "read by the contraction in the lowering, and it means nothing "
+              "anywhere else";
+
+  if (static_cast<int64_t>(scales->size()) != channels)
+    return op->emitOpError()
+           << "carries " << scales->size()
+           << " weight scales and has " << channels << " output channels on "
+           << axis << ". Section 14 gives one symmetric scale per output "
+                      "channel, so the two are the same number";
+
+  for (auto [index, scale] : llvm::enumerate(*scales)) {
+    if (std::isfinite(scale) && scale > 0.0f)
+      continue;
+    return op->emitOpError()
+           << "weight scale " << index << " is " << scale
+           << ", and every scale is finite and strictly positive. A zero "
+              "scale is what a degenerate range leaves behind, and the "
+              "calibrator substitutes one rather than emitting it";
+  }
+  return success();
+}
+
 LogicalResult Conv2DOp::verify() {
   auto inputType = cast<RankedTensorType>(getInput().getType());
   auto filterType = cast<RankedTensorType>(getFilter().getType());
@@ -391,6 +439,10 @@ LogicalResult Conv2DOp::verify() {
                             ", inputChannels / group, kernelHeight, kernelWidth"
                             "), but got rank "
                          << filterType.getRank();
+  if (failed(verifyWeightScales(getOperation(), getInput(), getWeightScales(),
+                                filterType.getDimSize(0),
+                                "the filter's axis 0")))
+    return failure();
   if (resultType.getRank() != 4)
     return emitOpError() << "expects a rank 4 result, but got rank "
                          << resultType.getRank();
@@ -522,6 +574,12 @@ LogicalResult MatMulOp::verify() {
     return emitOpError() << "result must be " << m << " by " << n
                          << ", but got " << resultType.getDimSize(0) << " by "
                          << resultType.getDimSize(1);
+
+  // A matrix multiplication's output channel is its column, which is the one
+  // thing that differs from the convolution's reference axis.
+  if (failed(verifyWeightScales(getOperation(), getLhs(), getWeightScales(), n,
+                                "the right operand's axis 1")))
+    return failure();
 
   if (getBias()) {
     auto biasType = cast<RankedTensorType>(getBias().getType());

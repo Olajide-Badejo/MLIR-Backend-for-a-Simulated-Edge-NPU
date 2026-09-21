@@ -118,6 +118,8 @@ struct Profile {
   llvm::StringMap<NodeRecord> nodes;
   /// Keyed by tensor name, for the one method the pass was asked for.
   llvm::StringMap<ActivationScale> activations;
+  /// Keyed by initializer name: one symmetric scale per output channel.
+  llvm::StringMap<llvm::SmallVector<float>> weightScales;
   bool empty() const { return nodes.empty(); }
 };
 
@@ -191,6 +193,22 @@ llvm::Expected<Profile> readProfile(llvm::StringRef path,
                 .push_back(text->str());
       }
       profile.nodes[entry.first.str()] = std::move(node);
+    }
+  }
+
+  if (const llvm::json::Object *weights = root->getObject("weights")) {
+    for (const auto &entry : *weights) {
+      const llvm::json::Object *record = entry.second.getAsObject();
+      if (!record)
+        continue;
+      const llvm::json::Array *scales = record->getArray("scales");
+      if (!scales)
+        continue;
+      llvm::SmallVector<float> values;
+      for (const llvm::json::Value &scale : *scales)
+        if (std::optional<double> number = scale.getAsNumber())
+          values.push_back(static_cast<float>(*number));
+      profile.weightScales[entry.first.str()] = std::move(values);
     }
   }
 
@@ -377,6 +395,24 @@ private:
     result.replaceAllUsesExcept(back, back.getDefiningOp()
                                           ->getOperand(0)
                                           .getDefiningOp());
+
+    // **The per output channel weight scales, carried as an attribute because
+    // the QDQ form cannot carry them.** `npu.quantize` has a single scale, so
+    // this level expresses per tensor activation quantization exactly and per
+    // channel weight quantization not at all. The scales are in the profile,
+    // the contraction in the lowering needs them, and an attribute is how they
+    // travel between the two without a second file read in the lowering or a
+    // per tensor weight that would discard the granularity the gate measures.
+    //
+    // Written from the profile and from nowhere else, and only here, which is
+    // what the verifier's rule that the operand must come from a dequantize
+    // enforces at the other end.
+    if (node->second.inputs.size() >= 2) {
+      auto weights = loaded.weightScales.find(node->second.inputs[1]);
+      if (weights != loaded.weightScales.end() && !weights->second.empty())
+        op->setAttr("weight_scales",
+                    DenseF32ArrayAttr::get(op->getContext(), weights->second));
+    }
 
     ++rewritten;
     if (input->second.degenerate || output->second.degenerate)

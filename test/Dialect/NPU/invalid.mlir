@@ -950,3 +950,87 @@ func.func @quantize_the_wrong_way_round(%q: tensor<4xi8>) -> tensor<4xf32> {
      : tensor<4xi8> to tensor<4xf32>
   return %0 : tensor<4xf32>
 }
+
+// -----
+
+// The attribute may appear only where the operation is actually quantized,
+// which at this level means its data operand is the result of a dequantize.
+// An attribute in an fp32 compilation would be a number nothing reads.
+func.func @weight_scales_without_a_quantized_input(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  // expected-error @+1 {{carries weight_scales and its data operand is not the result of an npu.dequantize, so this is not a quantized compilation}}
+  %c = npu.conv2d ins(%x, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                  outs(%d0 : tensor<1x2x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64,
+                   weight_scales = array<f32: 0.01, 0.02>}
+       -> tensor<1x2x4x4xf32>
+  return %c : tensor<1x2x4x4xf32>
+}
+
+// -----
+
+// One scale per output channel, so a different count is a scale set for a
+// different operation.
+func.func @too_many_weight_scales(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
+  %dq = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+      : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
+  // expected-error @+1 {{carries 3 weight scales and has 2 output channels on the filter's axis 0}}
+  %c = npu.conv2d ins(%dq, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                  outs(%d0 : tensor<1x2x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64,
+                   weight_scales = array<f32: 0.01, 0.02, 0.03>}
+       -> tensor<1x2x4x4xf32>
+  return %c : tensor<1x2x4x4xf32>
+}
+
+// -----
+
+// A zero scale is what a degenerate range leaves behind, and the calibrator
+// substitutes one rather than emitting it. Checked here too, because an
+// attribute can be written by hand and a zero must never reach the
+// contraction.
+func.func @a_weight_scale_of_zero(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
+  %dq = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+      : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
+  // expected-error @+1 {{weight scale 1 is 0.000000e+00, and every scale is finite and strictly positive}}
+  %c = npu.conv2d ins(%dq, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                  outs(%d0 : tensor<1x2x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64,
+                   weight_scales = array<f32: 0.01, 0.0>}
+       -> tensor<1x2x4x4xf32>
+  return %c : tensor<1x2x4x4xf32>
+}
+
+// -----
+
+// And the matrix multiplication counts its columns.
+func.func @matmul_weight_scales_count_columns(%a: tensor<4x8xf32>)
+    -> tensor<4x3xf32> {
+  %b = npu.constant dense<1.000000e+00> : tensor<8x3xf32>
+  %d = tensor.empty() : tensor<4x3xf32>
+  %q = npu.quantize %a {scale = 2.500000e-02 : f32, zero_point = 0 : i32}
+     : tensor<4x8xf32> to tensor<4x8xi8>
+  %dq = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = 0 : i32}
+      : tensor<4x8xi8> to tensor<4x8xf32>
+  // expected-error @+1 {{carries 2 weight scales and has 3 output channels on the right operand's axis 1}}
+  %m = npu.matmul ins(%dq, %b : tensor<4x8xf32>, tensor<8x3xf32>)
+                  outs(%d : tensor<4x3xf32>)
+                  {weight_scales = array<f32: 0.01, 0.02>}
+       -> tensor<4x3xf32>
+  return %m : tensor<4x3xf32>
+}

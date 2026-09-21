@@ -41,6 +41,11 @@
 // CHECK: %[[Q:.*]] = npu.quantize %arg0 {scale = 2.500000e-02 : f32, zero_point = -3 : i32} : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
 // CHECK: %[[D:.*]] = npu.dequantize %[[Q]] {scale = 2.500000e-02 : f32, zero_point = -3 : i32} : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
 // CHECK: %[[C:.*]] = npu.conv2d ins(%[[D]], %{{.*}} : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+// The per output channel weight scales come straight from the profile's
+// weights section, because the QDQ form has nowhere to put them: npu.quantize
+// carries a single scale, so this level says the activation half exactly and
+// the weight half not at all.
+// CHECK-SAME: weight_scales = array<f32: 0.00999999977, 2.000000e-02>
 // CHECK: %[[QY:.*]] = npu.quantize %[[C]] {scale = 1.600000e-02 : f32, zero_point = -128 : i32} : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
 // CHECK: %[[DY:.*]] = npu.dequantize %[[QY]] {scale = 1.600000e-02 : f32, zero_point = -128 : i32} : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
 // CHECK: return %[[DY]]

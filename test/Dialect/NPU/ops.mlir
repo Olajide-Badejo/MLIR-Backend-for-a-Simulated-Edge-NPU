@@ -518,3 +518,53 @@ func.func @memory_spaces(%s: memref<4x4xf32, #npu.scratchpad>,
   // CHECK-SAME: memref<4x4xf32, #npu.dram>
   return
 }
+
+// -----------------------------------------------------------------------------
+// The per output channel weight scales of Section 14.
+//
+// They exist as an attribute because the QDQ form cannot carry them:
+// `npu.quantize` has a single `scale`, so this level expresses per tensor
+// activation quantization exactly and per channel weight quantization not at
+// all. `-npu-calibrate` writes them from the profile and the contraction in
+// the lowering reads them.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: func.func @conv2d_with_weight_scales
+func.func @conv2d_with_weight_scales(%x: tensor<1x2x4x4xf32>)
+    -> tensor<1x2x4x4xf32> {
+  %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %q = npu.quantize %x {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+     : tensor<1x2x4x4xf32> to tensor<1x2x4x4xi8>
+  %dq = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+      : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
+  // One scale per output channel, and the filter has two.
+  // CHECK: npu.conv2d
+  // CHECK-SAME: weight_scales = array<f32: 0.00999999977, 2.000000e-02>
+  %c = npu.conv2d ins(%dq, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                  outs(%d0 : tensor<1x2x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64,
+                   weight_scales = array<f32: 0.01, 0.02>}
+       -> tensor<1x2x4x4xf32>
+  return %c : tensor<1x2x4x4xf32>
+}
+
+// The matrix multiplication's output channel is its column, which is the one
+// thing that differs from the convolution's reference axis.
+// CHECK-LABEL: func.func @matmul_with_weight_scales
+func.func @matmul_with_weight_scales(%a: tensor<4x8xf32>) -> tensor<4x3xf32> {
+  %b = npu.constant dense<1.000000e+00> : tensor<8x3xf32>
+  %d = tensor.empty() : tensor<4x3xf32>
+  %q = npu.quantize %a {scale = 2.500000e-02 : f32, zero_point = 0 : i32}
+     : tensor<4x8xf32> to tensor<4x8xi8>
+  %dq = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = 0 : i32}
+      : tensor<4x8xi8> to tensor<4x8xf32>
+  // CHECK: npu.matmul
+  // CHECK-SAME: weight_scales = array<f32: 0.00999999977, 2.000000e-02, 3.000000e-02>
+  %m = npu.matmul ins(%dq, %b : tensor<4x8xf32>, tensor<8x3xf32>)
+                  outs(%d : tensor<4x3xf32>)
+                  {weight_scales = array<f32: 0.01, 0.02, 0.03>}
+       -> tensor<4x3xf32>
+  return %m : tensor<4x3xf32>
+}

@@ -8,6 +8,9 @@
   "nodes": {
     "Conv_0": {"op_type": "Conv", "inputs": ["x", "w"], "outputs": ["y"]}
   },
+  "weights": {
+    "w": {"axis": 0, "absolute_maxima": [1.27, 2.54], "scales": [0.01, 0.02]}
+  },
   "activation_scales": {
     "x": {"minmax": {"scale": 0.025, "zero_point": -3, "degenerate": false}},
     "y": {"minmax": {"scale": 0.016, "zero_point": -128, "degenerate": false}}

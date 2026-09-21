@@ -516,3 +516,56 @@ def test_a_quantized_compilation_reaches_the_instruction_level(lenet: Path) -> N
     assert lowered.text is not None
     assert "npuisa.quant" in lowered.text
     assert "npuisa.dequant" in lowered.text
+
+
+def test_the_profile_reaches_the_operation_as_an_attribute(lenet: Path) -> None:
+    """Profile to attribute, on a real model, so a divergence is a red.
+
+    The per output channel weight scales cannot ride in the QDQ form, because
+    `npu.quantize` carries a single scale, so they ride as an attribute that
+    `-npu-calibrate` writes from the profile. The profile stays the single
+    source of truth, and this is the assertion that says so: every attribute
+    in the compiled IR is one of the profile's own scale lists, and every
+    quantizable operation the profile names has one.
+
+    On LeNet that is five operations with 6, 16, 120, 84 and 10 channels, the
+    two convolutions and the three fully connected layers.
+    """
+    import json
+    import re
+
+    location = (
+        Path(__file__).resolve().parents[2]
+        / "experiments"
+        / "calibration"
+        / "lenet.json"
+    )
+    profile = json.loads(location.read_text(encoding="utf-8"))
+
+    result = compile_model(lenet, level=0, emit="npu", calibrate=str(location))
+    assert result.text is not None
+    found = re.findall(r"weight_scales = array<f32: ([^>]*)>", result.text)
+
+    # One per quantizable operation the profile names, and no more.
+    assert len(found) == len(profile["weights"])
+
+    wanted = {
+        tuple(round(float(value), 6) for value in record["scales"])
+        for record in profile["weights"].values()
+    }
+    for entry in found:
+        got = tuple(round(float(piece), 6) for piece in entry.split(","))
+        assert got in wanted, got[:4]
+
+    assert sorted(len(entry.split(",")) for entry in found) == sorted(
+        len(record["scales"]) for record in profile["weights"].values()
+    )
+
+
+def test_an_fp32_compilation_carries_no_weight_scales(lenet: Path) -> None:
+    """The attribute is absent wherever the pass did not run, which the
+    verifier also enforces from the other end: an operation carrying it whose
+    input is not a dequantize is refused."""
+    plain = compile_model(lenet, level=0, emit="npu")
+    assert plain.text is not None
+    assert "weight_scales" not in plain.text

@@ -383,6 +383,17 @@ operations from ever disagreeing on the same shape.
 The bias is optional, and when present its length is the output channel
 count. `group` divides both the input and the output channel counts.
 
+**`weight_scales` is the per output channel weight scale of Section 14**,
+one entry per output channel on the reference axis, which is the filter's
+axis 0. It is present only in a quantized compilation, and it exists
+because the QDQ form cannot carry it: `npu.quantize` has a single `scale`
+attribute, so this level expresses per tensor activation quantization
+exactly and per channel weight quantization not at all. `-npu-calibrate`
+writes it from the committed profile and the contraction in the lowering
+reads it; an operation carrying it whose input is not the result of an
+`npu.dequantize` is refused, because that is an operation claiming to be
+quantized in a compilation that is not.
+
 Traits: `AlwaysSpeculatableImplTrait`
 
 Interfaces: `ConditionallySpeculatable`, `DestinationStyleOpInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
@@ -397,6 +408,7 @@ Effects: `MemoryEffects::Effect{}`
 <tr><td><code>pads</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 <tr><td><code>dilations</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 <tr><td><code>group</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute</td></tr>
+<tr><td><code>weight_scales</code></td><td>::mlir::DenseF32ArrayAttr</td><td>f32 dense array attribute</td></tr>
 </table>
 
 #### Operands:
@@ -558,11 +570,29 @@ asserted directly in the frontend rather than left implicit.
 
 The optional bias is length N, the output column count.
 
+**`weight_scales` is the per output channel weight scale of Section 14**,
+one entry per output column, and it is present only in a quantized
+compilation. It exists because the QDQ form cannot carry it: `npu.quantize`
+has a single `scale` attribute, so this level expresses per tensor
+activation quantization exactly and per channel weight quantization not at
+all. `-npu-calibrate` writes it from the committed profile and the
+contraction in the lowering reads it; nothing else may set it, and an
+operation carrying it whose input is not the result of an `npu.dequantize`
+is refused, because that is an operation claiming to be quantized in a
+compilation that is not.
+
 Traits: `AlwaysSpeculatableImplTrait`
 
 Interfaces: `ConditionallySpeculatable`, `DestinationStyleOpInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>weight_scales</code></td><td>::mlir::DenseF32ArrayAttr</td><td>f32 dense array attribute</td></tr>
+</table>
 
 #### Operands:
 

@@ -578,10 +578,18 @@ struct Conv2DTilingModel
     // The tile's group count is the number of whole groups it covers, which is
     // one whenever the tile sits inside a group. That is the same case
     // distinction the folding rule above makes and it is not a second one.
+    // **The per output channel weight scales travel with the tile unchanged,
+    // and that is deliberate rather than lazy.** A tile that keeps all of its
+    // output channels carries exactly the right scales; one that splits the
+    // channel axis carries the wrong number of them and is refused by the
+    // verifier's own length rule, by name. Slicing them here would be writing
+    // the quantized tiling path before anything exercises it, and dropping
+    // them would turn a quantized convolution into an unquantized tile
+    // silently, which is the failure worth refusing loudly.
     auto tiled = Conv2DOp::create(b, loc, tiledResultType, tiledInput,
                                   tiledFilter, tiledBias, strides, tilePads,
                                   dilations, static_cast<uint64_t>(groupSize),
-                                  tiledDestination);
+                                  conv.getWeightScalesAttr(), tiledDestination);
 
     return TilingResult{{tiled.getOperation()},
                         SmallVector<Value>(tiled->getResults()), generated};
@@ -824,7 +832,8 @@ struct MatMulTilingModel
                               resultType.getEncoding());
 
     auto tiled = MatMulOp::create(b, loc, tiledResultType, tiledLhs, tiledRhs,
-                                  tiledBias, tiledDestination);
+                                  tiledBias, matmul.getWeightScalesAttr(),
+                                  tiledDestination);
 
     return TilingResult{{tiled.getOperation()},
                         SmallVector<Value>(tiled->getResults()), generated};

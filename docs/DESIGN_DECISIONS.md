@@ -48,3 +48,4 @@ parsed and frequently edited, and a generated index is none of those.
 | 0011 | [Reject adaptive rounding](adr/0011-adaptive-rounding-rejected.md) | Rejected | 2026-09-22 |
 | 0012 | [Reject empirical bias correction](adr/0012-bias-correction-rejected.md) | Rejected | 2026-09-22 |
 | 0013 | [Hold cross layer equalization in reserve](adr/0013-cross-layer-equalization-in-reserve.md) | Deferred, with the trigger stated below | 2026-09-22 |
+| 0014 | [Carry per output channel weight scales as a tensor level attribute](adr/0014-per-channel-weight-scales-as-an-attribute.md) | Accepted | 2026-09-22 |
