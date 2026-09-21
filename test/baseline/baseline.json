@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "8aed4096ccac36648cc9811171c6c38546bb12b9",
+  "git_sha": "f4f207742e2944b840322958d4374024af60667c",
   "levels": [
     0,
     1,
@@ -1206,7 +1206,7 @@
     "check-npu": {
       "failed": 0,
       "failures": [],
-      "passed": 39,
+      "passed": 42,
       "skipped": 0,
       "tests": [
         "NPU :: Dialect/NPU/invalid.mlir",
@@ -1231,6 +1231,7 @@
         "NPU :: Encoding/dram-subview.mlir",
         "NPU :: Encoding/objdump.mlir",
         "NPU :: Encoding/quantized-compute.mlir",
+        "NPU :: Encoding/quantized-per-channel.mlir",
         "NPU :: Encoding/quantized.mlir",
         "NPU :: Encoding/tiled-assembly-in-scratchpad.mlir",
         "NPU :: Encoding/tiled-result-returned.mlir",
@@ -1240,6 +1241,8 @@
         "NPU :: Simulator/npu-sim.mlir",
         "NPU :: Smoke/npu-opt-roundtrip.mlir",
         "NPU :: Transforms/assign-layout.mlir",
+        "NPU :: Transforms/calibrate-accumulator.mlir",
+        "NPU :: Transforms/calibrate.mlir",
         "NPU :: Transforms/constant-fold.mlir",
         "NPU :: Transforms/double-buffer.mlir",
         "NPU :: Transforms/fold-batchnorm.mlir",
@@ -1263,7 +1266,7 @@
     "pytest": {
       "failed": 0,
       "failures": [],
-      "passed": 1170,
+      "passed": 1176,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1299,6 +1302,7 @@
         "test.Python.test_bindings_wiring::test_bindings_import_and_build_a_module",
         "test.Python.test_bindings_wiring::test_f32_type_round_trips",
         "test.Python.test_calibration::test_a_clipping_method_never_widens_the_observed_range",
+        "test.Python.test_calibration::test_a_constant_zero_tensor_is_marked_degenerate_in_the_profile",
         "test.Python.test_calibration::test_a_degenerate_observation_falls_back_to_its_own_range",
         "test.Python.test_calibration::test_a_dynamic_extent_is_refused_by_name",
         "test.Python.test_calibration::test_a_multiplier_of_one_or_more_has_no_representation",
@@ -1311,8 +1315,12 @@
         "test.Python.test_calibration::test_a_two_sided_distribution_is_trimmed_at_both_ends",
         "test.Python.test_calibration::test_an_all_zero_weight_channel_takes_a_unit_scale",
         "test.Python.test_calibration::test_an_unknown_method_is_refused_by_name",
+        "test.Python.test_calibration::test_each_profile_is_reproducible_from_its_own_header",
         "test.Python.test_calibration::test_every_decomposition_lands_inside_the_declared_rails",
+        "test.Python.test_calibration::test_every_model_of_the_suite_has_a_committed_profile",
+        "test.Python.test_calibration::test_every_profiled_operation_is_covered_end_to_end",
         "test.Python.test_calibration::test_minmax_takes_the_observed_range_whatever_the_histogram_says",
+        "test.Python.test_calibration::test_no_committed_profile_carries_a_scale_of_zero",
         "test.Python.test_calibration::test_only_an_all_zero_tensor_is_degenerate_once_zero_is_included",
         "test.Python.test_calibration::test_only_the_quantizable_operations_are_recorded",
         "test.Python.test_calibration::test_promoting_intermediates_makes_every_produced_value_an_output",
@@ -1321,6 +1329,7 @@
         "test.Python.test_calibration::test_the_node_section_is_keyed_by_the_name_the_ir_will_carry",
         "test.Python.test_calibration::test_the_observer_is_reproducible_from_its_seed",
         "test.Python.test_calibration::test_the_observer_sees_inside_the_graph",
+        "test.Python.test_calibration::test_the_profile_carries_the_derived_pair_beside_every_range",
         "test.Python.test_calibration::test_the_rails_are_the_int8_ones",
         "test.Python.test_calibration::test_the_range_is_extended_to_include_real_zero",
         "test.Python.test_calibration::test_the_seed_is_stable_and_namespaced_away_from_the_input_classes",
