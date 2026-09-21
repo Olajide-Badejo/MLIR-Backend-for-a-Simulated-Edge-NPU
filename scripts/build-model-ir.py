@@ -37,6 +37,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = REPO_ROOT / "experiments" / "models"
+PROFILE_DIR = REPO_ROOT / "experiments" / "calibration"
 
 #: Both batch sizes of Section 17.4's matrix. The model layer would be
 #: satisfied by one, and both are written because the batched path reaches the
@@ -126,13 +127,35 @@ def main(argv: list[str] | None = None) -> int:
                     base = stem(name, batch, registry, level)
                     print(f"experiments/models/{base}.npu.mlir")
                     print(f"experiments/models/{base}.npuisa.mlir")
+            print(f"experiments/models/{name}-quantized.npu.mlir")
+            print(f"experiments/models/{name}-quantized.npuisa.mlir")
         return 0
 
     if MODELS_DIR.exists() and not arguments.keep and not arguments.model:
         shutil.rmtree(MODELS_DIR)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # **One quantized compilation per model, which is what the model layer of
+    # law 2 is missing without it.** Section 17.5's step 3 asks that every
+    # operation appear in a generated benchmark model's IR, "including one
+    # quantized compilation for the quantization operations", and `npu.quantize`
+    # and `npu.dequantize` appear in no fp32 model because the suite is fp32 by
+    # construction. So the sweep runs `-npu-calibrate` once per model against
+    # the committed profile, at the registry batch, and writes the result
+    # beside the others. It is one compilation rather than the whole cross
+    # product because the requirement is one.
     written = 0
+    for name in names:
+        profile = PROFILE_DIR / f"{name}.json"
+        if not profile.exists():
+            print(
+                f"build-model-ir: {profile} is missing, so no quantized "
+                f"compilation can be written for {name}. Run "
+                f"scripts/build-calibration-profiles.py first.",
+                file=sys.stderr,
+            )
+            return 2
+
     for name in names:
         registry = models[name].input_shape[0]
         for batch in BATCHES:
@@ -149,6 +172,23 @@ def main(argv: list[str] | None = None) -> int:
                         result.text, encoding="utf-8"
                     )
                     written += 1
+
+    for name in names:
+        registry = int(models[name].input_shape[0])
+        onnx_path = frontend.generate_model(  # type: ignore[attr-defined]
+            name, MODELS_DIR, batch=registry
+        )
+        for emit, suffix in (("npu", "npu.mlir"), ("npuisa", "npuisa.mlir")):
+            result = frontend.compile_model(  # type: ignore[attr-defined]
+                onnx_path,
+                level=0,
+                emit=emit,
+                calibrate=str(PROFILE_DIR / f"{name}.json"),
+            )
+            (MODELS_DIR / f"{name}-quantized.{suffix}").write_text(
+                result.text, encoding="utf-8"
+            )
+            written += 1
 
     print(f"build-model-ir: wrote {written} IR files to {MODELS_DIR}")
     return 0

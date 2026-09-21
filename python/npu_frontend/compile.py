@@ -339,6 +339,9 @@ def compile_model(
     halo: str | None = None,
     pass_stats_json: str | os.PathLike[str] | None = None,
     mlir_timing: bool = False,
+    calibrate: str | os.PathLike[str] | None = None,
+    calib_method: str | None = None,
+    requant_mode: str | None = None,
 ) -> CompileResult:
     """Compiles one ONNX model and stops after `emit`.
 
@@ -361,6 +364,14 @@ def compile_model(
     pass operation counts and wall clock, and `mlir_timing` turns on MLIR's own
     timing output, which comes back on `stderr` in `mlir_timing_text` and is the
     independent cross check that the two clocks agree.
+
+    `calibrate` names a calibration profile and is what makes a compilation a
+    **quantized** one. Leaving it `None` leaves `-npu-calibrate` out of the
+    pipeline entirely rather than running it with a default profile, which is
+    Section 12's rule that the pass is in quantized mode only and never in a
+    default `-O` level. `calib_method` and `requant_mode` are its two options
+    and reach the pipeline the same way, so an ablation over either measures
+    the compiler that would actually be run rather than a pass driven alone.
     """
     if emit not in EMIT_STAGES:
         raise CompileError(
@@ -460,6 +471,12 @@ def compile_model(
     # the same `stage` argument for the same reason.
     started = time.perf_counter()
     npu_options = ["stop-after=npu"]
+    if calibrate is not None:
+        npu_options.append(f"calibrate={calibrate}")
+    if calib_method is not None:
+        npu_options.append(f"calib-method={calib_method}")
+    if requant_mode is not None:
+        npu_options.append(f"requant-mode={requant_mode}")
     if budget is not None:
         npu_options.append(f"budget={budget}")
     if ablate is not None:
@@ -503,6 +520,12 @@ def compile_model(
     started = time.perf_counter()
     argument = f"--{pipeline}"
     options: list[str] = []
+    if calibrate is not None:
+        options.append(f"calibrate={calibrate}")
+    if calib_method is not None:
+        options.append(f"calib-method={calib_method}")
+    if requant_mode is not None:
+        options.append(f"requant-mode={requant_mode}")
     if budget is not None:
         options.append(f"budget={budget}")
     if ablate is not None:

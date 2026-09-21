@@ -437,3 +437,82 @@ def test_the_launcher_refuses_a_level_that_is_not_one(
         written = _launch(str(lenet), "-O", level, "-o", str(target))
         assert written.returncode == 0, written.stderr
         assert target.read_bytes()[:4] == b"NBIN"
+
+
+# ---------------------------------------------------------------------------
+# Quantized mode, which Section 12 keeps out of every default level.
+# ---------------------------------------------------------------------------
+
+
+def test_no_level_runs_the_calibration_pass() -> None:
+    """Section 12's rule, asserted against the compiler's own description.
+
+    `-npu-calibrate` is quantized mode only and never in a default `-O` level,
+    and the way that is kept is structural: the pass is not a row of any
+    level's table, so it cannot be reached by asking for a level. A conditional
+    that merely skipped it by default would be one edit away from running it,
+    and this is the assertion that says the table itself does not have it.
+
+    It also pins the arithmetic Section 2's cell count rests on: eleven
+    ablatable passes, not twelve.
+    """
+    table = describe_pipeline()
+    named = {
+        row["pass"] for level in table["levels"] for row in level.get("passes", [])
+    }
+    assert "npu-calibrate" not in named
+
+    ablatable = {
+        row["pass"]
+        for level in table["levels"]
+        for row in level.get("passes", [])
+        if row.get("ablatable")
+    }
+    assert len(ablatable) == 11
+    assert "npu-calibrate" not in ablatable
+
+
+def test_a_profile_makes_the_compilation_quantized(lenet: Path) -> None:
+    """The option is what turns an fp32 compilation into a quantized one.
+
+    Without it the tensor level IR has no quantization operation at all, which
+    is the same statement as the rule above read from the other side: the pass
+    is absent unless a caller names a profile. With it the QDQ pairs appear
+    around the operations the profile covers.
+    """
+    profile = (
+        Path(__file__).resolve().parents[2]
+        / "experiments"
+        / "calibration"
+        / "lenet.json"
+    )
+    assert profile.exists(), profile
+
+    plain = compile_model(lenet, level=0, emit="npu")
+    assert plain.text is not None
+    assert "npu.quantize" not in plain.text
+
+    quantized = compile_model(lenet, level=0, emit="npu", calibrate=str(profile))
+    assert quantized.text is not None
+    assert "npu.quantize" in quantized.text
+    assert "npu.dequantize" in quantized.text
+
+
+def test_a_quantized_compilation_reaches_the_instruction_level(lenet: Path) -> None:
+    """And it survives the lowering, which is what the model layer needs.
+
+    `npu.quantize` lowers to `npuisa.quant`, so a quantized compilation carried
+    to the instruction level is what puts that operation in a generated model's
+    IR. Both halves of law 2's model layer for the quantization pair rest on
+    this compiling at all.
+    """
+    profile = (
+        Path(__file__).resolve().parents[2]
+        / "experiments"
+        / "calibration"
+        / "lenet.json"
+    )
+    lowered = compile_model(lenet, level=0, emit="npuisa", calibrate=str(profile))
+    assert lowered.text is not None
+    assert "npuisa.quant" in lowered.text
+    assert "npuisa.dequant" in lowered.text

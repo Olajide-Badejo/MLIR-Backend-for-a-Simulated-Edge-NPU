@@ -272,6 +272,26 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
                      "caught by the pass statistics, which record what actually "
                      "ran."),
       llvm::cl::init("")};
+  Option<std::string> calibrate{
+      *this, "calibrate",
+      llvm::cl::desc("The calibration profile to quantize against. Empty, the "
+                     "default, leaves -npu-calibrate out of the pipeline "
+                     "entirely rather than running it with a default profile: "
+                     "Section 12 puts it in quantized mode only and never in a "
+                     "default -O level, and it is not a row of any level's "
+                     "table."),
+      llvm::cl::init("")};
+  Option<std::string> calibMethod{
+      *this, "calib-method",
+      llvm::cl::desc("Which of the profile's four ranges the calibration "
+                     "reads: minmax, percentile, mse or entropy."),
+      llvm::cl::init("minmax")};
+  Option<std::string> requantMode{
+      *this, "requant-mode",
+      llvm::cl::desc("'fixed' is the integer multiplier and shift the machine "
+                     "applies; 'float' exists so that a previously published "
+                     "number stays reproducible."),
+      llvm::cl::init("fixed")};
   Option<std::string> stopAfter{
       *this, "stop-after",
       llvm::cl::desc("Where to stop: 'npuisa', the whole level, or 'npu', the "
@@ -291,6 +311,9 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
     options.stopAfter = stopAfter == "npu" ? PipelineStage::Npu
                                            : PipelineStage::NpuIsa;
     options.ablatedPass = ablate;
+    options.calibrationProfile = calibrate;
+    options.calibrationMethod = calibMethod;
+    options.requantMode = requantMode;
     return options;
   }
 };
@@ -488,6 +511,29 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
         entry.argument == options.ablatedPass)
       continue;
     doubleBufferInPipeline = true;
+  }
+
+  // **Calibration, when a profile was given, and nowhere in the table.**
+  //
+  // Section 12 puts `-npu-calibrate` in quantized mode only and never in a
+  // default `-O` level. The way that rule is kept is structural rather than
+  // conditional: the pass is not a `PassEntry` of any level, so
+  // `--npu-describe-pipeline` prints the same table it always printed, the
+  // ablatable set stays at eleven, and Section 2's cell arithmetic does not
+  // move. A caller who wants a quantized compilation asks for one by naming a
+  // profile, and a caller who does not gets the pipeline that was there before
+  // this option existed.
+  //
+  // It runs **first**, before every other tensor level pass, because it
+  // rewrites the operations the rest of them match on: a convolution that
+  // `-npu-fuse-bias` had already folded into would be a different operation
+  // from the one the profile named.
+  if (!options.calibrationProfile.empty()) {
+    npu::NPUCalibrateOptions calibration;
+    calibration.profile = options.calibrationProfile;
+    calibration.calibMethod = options.calibrationMethod;
+    calibration.requantMode = options.requantMode;
+    pm.addNestedPass<func::FuncOp>(npu::createNPUCalibrate(calibration));
   }
 
   for (const PassEntry &entry : infoFor(level).passes) {

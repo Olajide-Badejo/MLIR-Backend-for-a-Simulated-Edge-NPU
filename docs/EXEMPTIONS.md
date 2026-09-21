@@ -73,32 +73,35 @@ recording history. The history lives in git.
 
 ```
 # op                layer      date         phase   reason
-npu.quantize        model      2026-09-06   P14     no compilation emits one until -npu-calibrate lands later in this phase
-npu.dequantize      model      2026-09-06   P14     the other half of the same pair, with the same producer and the same closing commit
 ```
 
-**Two entries, on one layer each, and they are the P8 shape repeating.** The
-fourteen **imported computation** operations meet four of the five layers each
-and the two **structural** ones meet the four they are held to. What
-`npu.quantize` and `npu.dequantize` do not yet meet is the **model** layer, and
-the reason is a phase boundary rather than unfinished work, exactly as it was
-for `npu.fused_op` at P8.
-
-Nothing about either operation is missing. Both are importable, from
-`QuantizeLinear` and `DequantizeLinear`; both lower, to `npuisa.quant` and
-`npuisa.dequant`; both encode, to `QUANT` and `DEQUANT`, which name them as
-their sources in the ISA description; and both have integer kernels with hand
+**The block is empty, and P14 emptied it.** `npu.quantize` and
+`npu.dequantize` held one exemption each, on the **model** layer, from
+2026-09-06 until the commit that closed them. Nothing about either operation
+was ever missing: both were importable from `QuantizeLinear` and
+`DequantizeLinear`, both lowered to `npuisa.quant` and `npuisa.dequant`, both
+encoded to `QUANT` and `DEQUANT`, and both had integer kernels with hand
 computed semantics tests and a differential comparison against an independent
-numpy implementation that agrees with them exactly. **What is missing is a
-producer.** Section 17.5's step 3 asks that each operation appear in a generated
-benchmark model's IR, "including one quantized compilation for the quantization
-operations", and a quantized compilation is what `-npu-calibrate` makes. The
-model suite is fp32 by construction and no exported model in it has a QDQ node.
+numpy implementation that agreed with them exactly. What was missing was a
+**producer**: Section 17.5's step 3 asks that each operation appear in a
+generated benchmark model's IR, "including one quantized compilation for the
+quantization operations", and the model suite is fp32 by construction, so no
+exported model in it has a QDQ node.
 
-So these entries can only be deleted by the commit that lands the calibration
-pass and sweeps a quantized compilation into `experiments/models/`, which is the
-same rule the P8 entries were closed under: deleting them a commit earlier would
-be recording a gap as closed while it was open, and the check would say so.
+**What closed them is the producer existing and being swept.** The pass is
+`-npu-calibrate`, reading a committed profile per model, and
+`scripts/build-model-ir.py` now writes one quantized compilation for each of
+the seven models beside the fp32 ones. `npu.quantize` appears in each
+`<model>-quantized.npu.mlir` and `npuisa.quant` in each
+`<model>-quantized.npuisa.mlir`, so the model layer is met by a file rather
+than by an argument.
+
+The timing was deliberate and is the same rule the P8 entries were closed
+under. The pass landed first, in its own commit, and these entries stayed in
+force through it: deleting them then would have recorded a gap as closed while
+it was open, and the check would have said so. They are deleted by the commit
+that made the sweep, which is the first commit at which they were false.
+
 **The P14 gate requires an empty block**, so a phase that ended with these here
 would not have met it.
 

@@ -172,6 +172,22 @@ struct PipelineOptions {
   /// The default is the pass's own default, so a level built without asking is
   /// the level that was there before this field existed.
   std::string tilingHalo = "recompute";
+  /// The calibration profile `-npu-calibrate` reads, or empty for no
+  /// calibration at all.
+  ///
+  /// **Empty is not a default that runs the pass with a default profile**, it
+  /// is the pass not being in the pipeline. Section 12 puts `-npu-calibrate`
+  /// in quantized mode only and never in a default `-O` level, and the way
+  /// that rule is kept here is that the pass is not a row of any level's
+  /// table: it is prepended when, and only when, a caller supplies a profile.
+  /// So `--npu-describe-pipeline` prints what it always printed, the ablatable
+  /// set stays at eleven, and Section 2's cell arithmetic does not move.
+  std::string calibrationProfile;
+  /// Which of the profile's four ranges the calibration reads.
+  std::string calibrationMethod = "minmax";
+  /// `fixed` is the integer multiplier and shift the machine applies; `float`
+  /// exists so that a previously published number stays reproducible.
+  std::string requantMode = "fixed";
   /// Where to stop. `NpuIsa` is the whole level; `Npu` is the tensor level
   /// half, which is what `npu-compile --emit npu` runs.
   PipelineStage stopAfter = PipelineStage::NpuIsa;
