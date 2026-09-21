@@ -45,3 +45,6 @@ parsed and frequently edited, and a generated index is none of those.
 | 0008 | [The per model tight scratchpad budgets, measured at P8](adr/0008-per-model-tight-scratchpad-budgets.md) | Accepted | 2026-08-31, re-measured unchanged 2026-09-01 |
 | 0009 | [The NDEBUG contract is carried by the two non MLIR binaries, and the second LLVM tree is declined](adr/0009-ndebug-coverage-without-a-second-llvm-tree.md) | Accepted | 2026-09-01 |
 | 0010 | [The tight budget is a property of a program, so it does not cross the batch axis](adr/0010-the-tight-budget-is-measured-per-program-not-per-model.md) | Accepted | 2026-09-01 |
+| 0011 | [Reject adaptive rounding](adr/0011-adaptive-rounding-rejected.md) | Rejected | 2026-09-22 |
+| 0012 | [Reject empirical bias correction](adr/0012-bias-correction-rejected.md) | Rejected | 2026-09-22 |
+| 0013 | [Hold cross layer equalization in reserve](adr/0013-cross-layer-equalization-in-reserve.md) | Deferred, with the trigger stated below | 2026-09-22 |
