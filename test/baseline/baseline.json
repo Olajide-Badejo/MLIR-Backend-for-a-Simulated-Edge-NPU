@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "f4f207742e2944b840322958d4374024af60667c",
+  "git_sha": "c50b7300f15cac75da0629e16c1fcb39e86c6be4",
   "levels": [
     0,
     1,
@@ -1266,7 +1266,7 @@
     "pytest": {
       "failed": 0,
       "failures": [],
-      "passed": 1176,
+      "passed": 1179,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1338,6 +1338,8 @@
         "test.Python.test_calibration::test_weight_scales_are_symmetric_and_per_channel",
         "test.Python.test_compile_driver::test_a_budget_too_small_is_a_refusal_with_the_numbers_in_it",
         "test.Python.test_compile_driver::test_a_level_that_is_not_a_level_lists_the_ones_that_are",
+        "test.Python.test_compile_driver::test_a_profile_makes_the_compilation_quantized",
+        "test.Python.test_compile_driver::test_a_quantized_compilation_reaches_the_instruction_level",
         "test.Python.test_compile_driver::test_an_unknown_stage_lists_the_stages",
         "test.Python.test_compile_driver::test_every_level_this_compiler_names_is_one_it_builds",
         "test.Python.test_compile_driver::test_every_stage_produces_something_and_stops_there[0]",
@@ -1345,6 +1347,7 @@
         "test.Python.test_compile_driver::test_every_stage_produces_something_and_stops_there[2]",
         "test.Python.test_compile_driver::test_import_and_npu_are_the_same_text_at_minus_o_zero",
         "test.Python.test_compile_driver::test_locations_survive_to_the_npuisa_stage",
+        "test.Python.test_compile_driver::test_no_level_runs_the_calibration_pass",
         "test.Python.test_compile_driver::test_strip_debug_produces_a_smaller_binary",
         "test.Python.test_compile_driver::test_the_ablatable_set_grows_with_the_levels",
         "test.Python.test_compile_driver::test_the_boundary_shapes_are_the_graphs_own",
