@@ -3148,6 +3148,39 @@ finding rather than a threshold to widen, and the fix remains Section 17.9's
 flake governance at P15, where the trigger for it is now a rate on a trigger
 that cannot be inspected rather than a story about a busy laptop.
 
+**The ninth observation is the same case again, on this machine, and it
+narrows the trigger rather than repeating it.** The CI shape suite reported
+`test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing`
+failed, with 1160 passed and 33 skipped, on a run started at a one minute load
+average of **5.25** immediately after the dev battery finished. That is the
+same case the eighth observation records from the nightly, which makes this the
+first time one sighting has been seen on both triggers.
+
+**What is new is what the isolated runs say.** The case was then run **alone**
+three times, at starting loads of 0.67, 2.68 and **4.62**, and passed every
+time, in 32.74, 32.68 and 32.95 seconds. So it is not simply load: a machine
+busy enough to fail the case inside the suite does not fail it when the case
+has the machine to itself. What distinguishes the failing run is **contention
+from the rest of the suite**, not a load average, and the three passes at a
+load that spans the same range as the failing start are what say so.
+
+That matters for the precondition P15 has to write. A gate of the form "the one
+minute load average is below some number" would have admitted the run at 4.62
+that passed and would not obviously have excluded the run at 5.25 that failed,
+because the two are not far apart and the quiet gate this project already uses
+sits an order of magnitude below both. The property that separates them is
+whether anything else in the same suite is running, which a load average
+measures only indirectly.
+
+**The message was not captured, and that is the sixth observation's weakness
+repeating.** The suite printed the identifier and the summary counts and the
+assertion text was lost with the run. It is recorded as an observation with
+that gap named rather than written up as though the numbers were in hand: the
+eighth observation carries the figures for this same case from the nightly, and
+nothing here adds to them.
+
+No bound was touched here either.
+
 **And it says something about where the measurements happen rather than about
 the bound.** This machine is shared and the owner uses it for other heavy work,
 so a competitor arriving mid run is a condition to expect rather than a
