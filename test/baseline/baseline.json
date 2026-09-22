@@ -898,7 +898,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "c50b7300f15cac75da0629e16c1fcb39e86c6be4",
+  "git_sha": "a8e75ef68b81251bb12d00f686bff79c51b766f2",
   "levels": [
     0,
     1,
@@ -1266,7 +1266,7 @@
     "pytest": {
       "failed": 0,
       "failures": [],
-      "passed": 1179,
+      "passed": 1181,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
@@ -1340,6 +1340,7 @@
         "test.Python.test_compile_driver::test_a_level_that_is_not_a_level_lists_the_ones_that_are",
         "test.Python.test_compile_driver::test_a_profile_makes_the_compilation_quantized",
         "test.Python.test_compile_driver::test_a_quantized_compilation_reaches_the_instruction_level",
+        "test.Python.test_compile_driver::test_an_fp32_compilation_carries_no_weight_scales",
         "test.Python.test_compile_driver::test_an_unknown_stage_lists_the_stages",
         "test.Python.test_compile_driver::test_every_level_this_compiler_names_is_one_it_builds",
         "test.Python.test_compile_driver::test_every_stage_produces_something_and_stops_there[0]",
@@ -1364,6 +1365,7 @@
         "test.Python.test_compile_driver::test_the_npuisa_stage_is_lowered_and_allocated[0]",
         "test.Python.test_compile_driver::test_the_npuisa_stage_is_lowered_and_allocated[1]",
         "test.Python.test_compile_driver::test_the_npuisa_stage_is_lowered_and_allocated[2]",
+        "test.Python.test_compile_driver::test_the_profile_reaches_the_operation_as_an_attribute",
         "test.Python.test_compile_driver::test_the_single_port_flag_reaches_the_simulator",
         "test.Python.test_compile_driver::test_the_wrong_number_of_inputs_is_a_refusal",
         "test.Python.test_compile_driver::test_verbose_timings_go_to_stderr",
