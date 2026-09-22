@@ -28,6 +28,12 @@ the fix is a change to a gate and a red at a gate is not answered by
 widening it. The entry carries the reproduction and the proposed
 precondition.
 
+**D-0066**, `test_a_rerun_reproduces_the_external_fields_too` fails inside the
+regression baseline check and nowhere else. Open as a **candidate**: it is
+intermittent, it has never been reproduced in isolation, and its assertion text
+has been lost twice to the harness's own temporary directory. It is
+deliberately **not** attributed to D-0049, and the entry says why.
+
 **D-0050**, the binary format cannot express a buffer written in pieces, so a
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
 `Program::kVersion` bump, which P14's gate forbids by name and which the
@@ -4409,3 +4415,78 @@ the one minute number alone is what three of these four reds have in common.
   message from the wrong layer. **The way each was found is the same and is the
   only way any of them could be found:** break the thing on purpose and check
   that the test breaks with it.
+
+### D-0066 `test_a_rerun_reproduces_the_external_fields_too` fails inside the baseline check and nowhere else
+
+**Status: open, and a candidate rather than a confirmed defect.** Found
+2026-09-22 while re-recording the baseline during P14. The numbers D-0064 and
+D-0065 are on `main` and arrive here with the close's merge, which is why this
+entry is D-0066.
+
+- **What happened.** `bash scripts/regression-baseline.sh --check` reported
+  `FAIL. one test suite moved`, with `suite pytest: failed 0 -> 1` and the
+  failing case named as
+  `test.Python.test_benchmarks::test_a_rerun_reproduces_the_external_fields_too`.
+  That case runs `run_benchmarks` twice over `conv_bn_relu_stack` and asserts
+  the two runs produce identical cells once timestamps and timings are
+  stripped, and that the roofline, SCALE-Sim and Accelergy fields are filled
+  rather than matching nulls.
+
+- **What is not known, and it is the important part.** **The assertion text.**
+  The harness runs pytest with `--junitxml` into a `TemporaryDirectory` it then
+  deletes, so the message is gone by the time the check prints its summary. It
+  has now been lost twice this way. So this entry cannot say which field moved,
+  by how much, or whether the failure was the reproducibility assertion or one
+  of the field assertions. That is the same gap D-0049's first sighting had and
+  the reason this is a candidate rather than a diagnosis.
+
+- **Reproduction attempts, with counts, loads and times.** Two failures and
+  five passes, and nothing reproduces on demand:
+
+  | Run | Condition | Result |
+  |---|---|---|
+  | `--check` after the dev battery | one minute load 3.7 at the start | failed |
+  | `--check` from a quiet start | load 0.24 | failed |
+  | the case alone | load 0.14 | passed in 50.7 s |
+  | the case alone | load 7.71 | passed in 50.2 s |
+  | the case alone | load 7.77 | passed in 50.3 s |
+  | the whole suite in one process | quiet start, load 0.25 | 1181 passed, 18 skipped, 0 failed |
+  | `--check` from a quiet start | load 0.26 | **no drift** |
+
+  So it survives the machine being busy when run alone, and it survives the
+  whole suite when the suite runs alone. What it does not always survive is the
+  baseline check, which builds, measures 42 cells and runs the suite in one
+  invocation.
+
+- **Why it is not recorded as D-0049.** D-0049 is a conditional `--mlir-timing`
+  bound whose condition, that the process had the processor, is not checked,
+  and it fails on a comparison of two clocks. This is a different test asserting
+  a different thing: that two runs of the benchmark harness produce the same
+  external fields. The shapes rhyme, intermittent and never reproducible alone,
+  and one of the two failures here was from a quiet start where D-0049's
+  contention reading does not obviously apply. Filing it under D-0049 would be
+  assuming the mechanism this entry exists to find.
+
+- **Whether anything in P14 can reach it, checked rather than assumed.** Every
+  change this phase made to the compilation path is off unless asked for: the
+  pipeline's `calibrate` option defaults to empty and leaves `-npu-calibrate`
+  out of the pipeline entirely, `compile_model`'s three new parameters default
+  to `None`, and `weight_scales` is absent from every operation the pass did
+  not rewrite, which the verifier enforces. The committed profiles are new
+  files that nothing in this path reads, and the quantized model IR the sweep
+  writes goes to `experiments/models/`, which this test does not read. The
+  suite at this tip measured 1181 passed and 18 skipped three times over.
+
+- **The instrument for the next sighting**, because the message is what this
+  needs. Watch for the harness's JUnit XML while the check runs and copy it out
+  before the temporary directory is removed. A first attempt polled
+  `/tmp/tmp*/pytest.xml` for twenty minutes and caught nothing, so the harness's
+  temporary directory is not there; the next attempt widens the search to the
+  process's own `TMPDIR` and to a `find` rather than a glob. Nothing about the
+  gate is modified to do this, which matters: the gate is what is under
+  observation.
+
+- **What was not done.** The baseline was **not** re-recorded around the red.
+  The harness says in its own words that a baseline is never re-recorded around
+  a red suite, and the record was taken only after a later `--check` came back
+  clean at the same tip.
