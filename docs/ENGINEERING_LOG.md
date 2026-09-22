@@ -7018,3 +7018,44 @@ asserts that pair and the numpy reference asserts the same pair, from
 implementations that share no code. The per tensor arm on the same program
 answers 50 and 50, which is not a defect of that arm but the measurement
 Section 14's ablation exists to take.
+
+### The habit that was holding up a gate, and what replaced it
+
+**D-0067 was found by CI and missed here, and the second half of that is the
+more interesting one.** The reachability check answers the model layer by
+reading `experiments/models/`, a gitignored build artefact. CI writes it in the
+same step as the check and has since P8, so CI read IR containing the defect
+and this machine read IR written before the attribute existed. Both runs were
+honest about what they did; only one of them was looking at the change.
+
+**The ordering was real and it was invisible.** Nothing in either script said
+that one had to run before the other, and nothing checked. A convention that
+lives in one workflow file and in the memory of whoever last read it is a habit,
+and the failure mode of a habit is exactly this: it holds for months and then
+does not hold once, silently, in the direction of green.
+
+**The fix is the project's own vocabulary applied one directory further.**
+Staleness here is already keyed on a content hash rather than on `HEAD`, because
+a result is committed after the code it measures. The same construction now
+keys the artefact: `scripts/build-model-ir.py` writes a sha256 of the sources
+that decide what it writes, and `scripts/check-reachability.py` recomputes it
+and refuses the model layer when the two disagree. The input set is not the
+result hash's, and the difference is the argument for writing a second one: the
+cost model constants charge a compiled program and change no line of IR, while
+the calibration profiles and the sweep script change what the directory holds.
+
+**Three choices inside it are worth the sentences they took.** The refusal does
+not answer the layer it refuses, because a missing artefact is already reported
+as a layer this run did not check and a stale one would answer with the wrong
+build's operations. A partial rebuild deletes the stamp rather than writing one,
+because a stamp certifies a directory and `--model lenet` leaves every other
+model as it was. And it is a content hash rather than an mtime comparison,
+because `git checkout` rewrites mtimes on files it did not change, which would
+make the gate cry stale at every branch switch, and a file edited back to its
+original bytes is not a change however recent it looks.
+
+**What it could not close.** The stamp says the artefact was built from these
+sources; it does not say the compiler binary those sources were compiled into
+was current when the sweep ran. That is a stale build rather than a stale
+artefact, it is caught by building before sweeping, and it is written down here
+as not covered rather than implied to be.

@@ -107,6 +107,16 @@ The measurement is in `docs/PHASE_STATE.md` beside the claim.
   because the fixture's int8 graph output was refused by the boundary type check
   first and both messages ended in the same four words. Three tests are in its
   place, one per claim it was conflating.
+- **A gate that reads a build artefact now checks that the artefact is
+  current.** `check-reachability.py` answers the model layer out of
+  `experiments/models/`, which is gitignored, and CI's ordering kept it fresh
+  by convention rather than by any property of the tools: that is how D-0067
+  reached CI past a green local run of the same check. The sweep now stamps the
+  directory with a sha256 over the sources that decide its contents, and the
+  check refuses the model layer when the stamp is missing, is from another
+  version, or is over a different fingerprint, naming both fingerprints and the
+  command that fixes it. A partial rebuild deletes the stamp rather than
+  writing one. Both reds were rehearsed before the gate was switched on.
 - **Two reachability exemptions, on the model layer alone**, dated and with the
   commit that closes them named: no compilation emits a quantization operation
   until `-npu-calibrate` lands later in this phase, which is the P8 shape

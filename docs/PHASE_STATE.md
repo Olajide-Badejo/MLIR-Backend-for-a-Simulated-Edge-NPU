@@ -1451,6 +1451,57 @@ and the timing object**, which is the same distinction made executable.
 
 ## Activation proofs and rehearsal recipes
 
+### What P14 adds here: a gate over a build artefact, rehearsed red twice
+
+**The model layer of law 2 is answered from `experiments/models/`, which is
+gitignored.** CI has run `build-model-ir.py` and then `check-reachability.py` in
+one step since P8, which keeps the artefact current in CI and nowhere else.
+D-0067 is what that costs: a green local run of the same check, against an
+artefact written before the change, past a defect CI then found. An ordering
+that lives in one workflow file is a habit, and a habit is not a gate.
+
+**So the sweep stamps what it built from, and the check refuses to read an
+artefact it cannot place.** `experiments/models/provenance.json` holds a sha256
+over the sources that decide the artefact: `lib`, `include` and
+`python/npu_frontend` at the suffixes the result hash counts, plus the
+calibration profiles the quantized compilation reads and the sweep script
+itself, which chooses the models and the levels. `scripts/model_ir_provenance.py`
+is that one construction, imported by both scripts and written against the
+standard library alone, because the lint job runs the check with no MLIR
+bindings.
+
+*Predicted:* a full sweep leaves the check passing with a note naming the
+fingerprint it read; a source edited after the sweep turns the model layer from
+answered into refused, with an error naming both fingerprints, and exit 1; a
+`--model` rebuild deletes the stamp and the next check refuses for the other
+reason, which is that there is no stamp at all; a full sweep restores the pass
+in both cases.
+
+*Result:* exactly that, in this order, on 2026-09-22.
+
+| Step | Result |
+|---|---|
+| `build-model-ir.py` | 98 IR files, stamp at fingerprint `84b546a31c72` over 92 source files |
+| `check-reachability.py` | pass, five layers, the fingerprint named in a note |
+| one line appended to `python/npu_frontend/calibration.py` | FAIL, exit 1, `84b546a31c72` against `af1b3dc2a748`, the model layer reported as not checked |
+| the file restored, the check again | pass, five layers |
+| `build-model-ir.py --model lenet` | 14 IR files and the stamp removed, which the script says in words |
+| `check-reachability.py` | FAIL, exit 1, no readable `provenance.json` |
+| `build-model-ir.py` then the check | pass, back to `84b546a31c72` |
+
+**The refusal does not answer the layer it refuses.** A stale artefact is worse
+than a missing one, because a missing one is already reported as a layer this
+run did not check while a stale one answers. So the check reports the model
+layer as unchecked and prints the error, rather than listing operations it read
+out of the wrong build.
+
+**It is a content hash and not a timestamp.** `git checkout` rewrites mtimes on
+files whose content it did not change, which would call a current artefact
+stale, and a file edited back to its original bytes is not a change. The
+question a gate over an artefact has to answer is whether that artefact was
+built from the sources in the tree now, and that is the question a content hash
+answers.
+
 ### What P13 activates, which is one CI step, and the trigger that still has not fired
 
 **This branch activates one CI step and no CI job.** The step is

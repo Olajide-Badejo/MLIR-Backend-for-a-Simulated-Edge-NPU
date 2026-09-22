@@ -35,6 +35,13 @@ import shutil
 import sys
 from pathlib import Path
 
+# This script and check-reachability.py both live in scripts/, which is the
+# directory Python puts on sys.path when either is run, so the shared module
+# needs no path handling. Its docstring holds why the freshness of this
+# artifact is a content hash written here rather than an ordering convention in
+# the CI workflow.
+import model_ir_provenance
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = REPO_ROOT / "experiments" / "models"
 PROFILE_DIR = REPO_ROOT / "experiments" / "calibration"
@@ -129,6 +136,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"experiments/models/{base}.npuisa.mlir")
             print(f"experiments/models/{name}-quantized.npu.mlir")
             print(f"experiments/models/{name}-quantized.npuisa.mlir")
+        if arguments.model:
+            print(
+                f"experiments/models/{model_ir_provenance.STAMP_NAME} would be "
+                "removed, because one model is not the sweep the stamp claims"
+            )
+        else:
+            print(f"experiments/models/{model_ir_provenance.STAMP_NAME}")
         return 0
 
     if MODELS_DIR.exists() and not arguments.keep and not arguments.model:
@@ -191,6 +205,28 @@ def main(argv: list[str] | None = None) -> int:
             written += 1
 
     print(f"build-model-ir: wrote {written} IR files to {MODELS_DIR}")
+
+    # **The freshness stamp, and why one model removes it rather than writing
+    # one.** The stamp says that everything in this directory was built from
+    # the sources hashed into it, and after `--model lenet` that is false of
+    # every other model there. Removing it makes the next reachability check
+    # refuse, which is the honest answer: the directory is part current and
+    # part whatever it held before, and no fingerprint describes that.
+    if arguments.model:
+        model_ir_provenance.clear_stamp(MODELS_DIR)
+        print(
+            "build-model-ir: this was one model rather than the suite, so "
+            f"{model_ir_provenance.STAMP_NAME} was removed and "
+            "check-reachability will refuse until the whole sweep runs."
+        )
+    else:
+        model_ir_provenance.write_stamp(MODELS_DIR, REPO_ROOT)
+        stamp = model_ir_provenance.read_stamp(MODELS_DIR) or {}
+        print(
+            f"build-model-ir: wrote {model_ir_provenance.STAMP_NAME} at "
+            f"fingerprint {str(stamp.get('fingerprint'))[:12]} over "
+            f"{stamp.get('files_covered')} source files."
+        )
     return 0
 
 

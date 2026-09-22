@@ -4533,9 +4533,10 @@ CI run 35778203120 at `da0c461`, in the `check-reachability full` step of
   gate that reads a build artefact is only as fresh as the artefact**, which is
   the same shape as D-0040, where a slow marker count was satisfied by tests
   nobody had marked, and D-0063, where a refusal test passed on a different
-  refusal. The standing fix is to run the pair CI runs, in CI's order:
+  refusal. The standing fix was to run the pair CI runs, in CI's order:
   `build-model-ir.py` and then `check-reachability.py`, before calling a
-  boundary green.
+  boundary green. **That was a habit, and the last bullet of this entry is the
+  gate that replaced it.**
 
 - **The fix.** `output_channel_axis` decides per operator and says in its own
   documentation where each of the three lives. The profiles were regenerated
@@ -4549,3 +4550,24 @@ CI run 35778203120 at `da0c461`, in the `check-reachability full` step of
   program rather than compiling it. That is the argument for having written
   the rule down: the wrong scales never reached an instruction, never reached
   the machine, and never reached a number anybody would have published.
+
+- **The second finding is a gate now rather than a habit, 2026-09-22.**
+  `scripts/build-model-ir.py` writes `experiments/models/provenance.json`, a
+  sha256 over the sources that decide what it writes: `lib`, `include` and
+  `python/npu_frontend` at the suffixes `npu_frontend.results.content_hash`
+  counts, plus the calibration profiles the quantized compilation reads and the
+  sweep script itself, which chooses the models and the levels.
+  `scripts/check-reachability.py` recomputes it and **refuses the model layer**
+  when the stamp is absent, is from another stamp version, or is over a
+  different fingerprint. The error names both fingerprints and the command that
+  fixes it, and the layer is reported as not checked rather than answered out
+  of the wrong build, because a stale artefact answering is worse than a
+  missing one not answering. A partial rebuild, `--model`, deletes the stamp
+  instead of writing one: one model is not the sweep a stamp claims. It is a
+  content hash and not an mtime comparison, because `git checkout` rewrites
+  mtimes on files it did not change and a file edited back to its original
+  bytes is not a change. Both reds were rehearsed before the gate was switched
+  on and the rehearsal is in `docs/PHASE_STATE.md` with its output;
+  `test/Python/test_model_ir_provenance.py` holds 23 cases, including the one
+  that runs the lint job's `--skip-models` shape as a subprocess, because that
+  is the mode this change could have broken.

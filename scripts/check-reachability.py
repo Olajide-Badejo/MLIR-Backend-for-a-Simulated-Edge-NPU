@@ -28,6 +28,18 @@
 # It is not a weaker check of the same thing: it is the same check with the one
 # layer that needs artifacts left out, and it says so in its own output rather
 # than reporting a pass that covered less than the reader thinks.
+#
+# THE MODEL LAYER IS ANSWERED FROM AN ARTIFACT, SO ITS FRESHNESS IS CHECKED
+#
+# experiments/models/ is gitignored and is written by scripts/build-model-ir.py.
+# CI runs the two in one step, which made the order a habit of one workflow file
+# rather than a property of these tools: running this check alone after changing
+# the frontend answers from the previous build, silently and green, and that is
+# how D-0067 reached CI. So the sweep now stamps the directory with a content
+# hash of the sources it built from, and the model layer of this check refuses
+# to be answered when the stamp is absent or does not match the tree. The
+# refusal is an error and the layer is reported as not checked, rather than
+# answered from an artifact nobody showed to be current.
 
 from __future__ import annotations
 
@@ -38,10 +50,20 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# This script and build-model-ir.py both live in scripts/, which is the
+# directory Python puts on sys.path when either is run. The module is the
+# standard library alone on purpose, because this script runs in the lint job,
+# where npu_frontend is not importable.
+import model_ir_provenance
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 OPS_TD = REPO_ROOT / "include" / "NPU" / "Dialect" / "NPU" / "IR" / "NPUOps.td"
 EXEMPTIONS = REPO_ROOT / "docs" / "EXEMPTIONS.md"
+
+# The model layer's artifact, written by scripts/build-model-ir.py. It is
+# gitignored, and the freshness stamp inside it is what makes reading it safe.
+MODELS_DIR = REPO_ROOT / "experiments" / "models"
 
 # The generated opcode list of Section 9.4. It is written by
 # `ninja -C build npu-isa-doc` from include/NPU/Encoding/NPUISADescription.td
@@ -213,7 +235,10 @@ LAYER_HOMES: dict[str, tuple[Path, ...]] = {
     # every model at both batch sizes, and the IR is what step 3 of Section 17.5
     # asks about: an .onnx file holds ONNX operator names, so searching one for
     # `npu.batch_norm` would find nothing whatever the truth was.
-    "model": (REPO_ROOT / "experiments" / "models",),
+    #
+    # *Changed at P14.* The artifact now carries a freshness stamp and this
+    # check refuses to read it without one. See `model_layer_staleness`.
+    "model": (MODELS_DIR,),
 }
 
 
@@ -333,7 +358,14 @@ def layer_present(operation: Operation, layer: str) -> bool | None:
         needle = operation.mnemonic
     for home in LAYER_HOMES[layer]:
         if home.is_dir():
-            sources = sorted(p for p in home.rglob("*") if p.is_file())
+            # The freshness stamp is not evidence of anything: it is this
+            # check's own bookkeeping, and a field added to it one day must not
+            # be able to satisfy a layer by containing an operation's name.
+            sources = sorted(
+                p
+                for p in home.rglob("*")
+                if p.is_file() and p.name != model_ir_provenance.STAMP_NAME
+            )
         else:
             sources = [home]
         for source in sources:
@@ -343,6 +375,19 @@ def layer_present(operation: Operation, layer: str) -> bool | None:
             except OSError:
                 continue
     return False
+
+
+def model_layer_staleness(skip_models: bool) -> str | None:
+    """Why the model layer must not be answered from the artifact, or None.
+
+    There is nothing to say when the layer is not being checked, and nothing to
+    say when the artifact does not exist at all: that is the layer being
+    undecidable, which the notes already report as a layer this run did not
+    check. A stale artifact is the different and worse case, because it answers.
+    """
+    if skip_models or not layer_decidable("model"):
+        return None
+    return model_ir_provenance.staleness(MODELS_DIR, REPO_ROOT)
 
 
 def check(skip_models: bool) -> Findings:
@@ -427,10 +472,22 @@ def check(skip_models: bool) -> Findings:
                     "a permanent and intended property. Delete the entry."
                 )
 
-    # ---- Step 3. The layers themselves. ------------------------------------
+    # ---- Step 3. The model layer's artifact, before a word is read from it. -
+    #
+    # A stale artifact is worse than a missing one, because a missing one is
+    # reported as a layer this run did not check and a stale one answers. So
+    # the refusal comes before the reading: the error says what is wrong and
+    # the layer is left unchecked, rather than being answered out of a build
+    # that predates the change under test.
+    stale = model_layer_staleness(skip_models)
+    if stale is not None:
+        findings.errors.append(stale)
+    skip_model_layer = skip_models or stale is not None
+
+    # ---- Step 4. The layers themselves. ------------------------------------
     for operation in operations:
         for layer in operation.required_layers:
-            if layer == "model" and skip_models:
+            if layer == "model" and skip_model_layer:
                 continue
             present = layer_present(operation, layer)
             if present is False and (operation.name, layer) not in exempt_pairs:
@@ -452,7 +509,21 @@ def check(skip_models: bool) -> Findings:
             "--skip-models: the model layer was not checked. This mode runs in "
             "the lint job, before any model is built."
         )
-    considered = [layer for layer in LAYERS if layer != "model" or not skip_models]
+    elif stale is not None:
+        findings.notes.append(
+            "the model layer was not checked, because the artifact it is "
+            "answered from could not be shown to have been built from this "
+            "tree. The error below says what to run."
+        )
+    elif layer_decidable("model"):
+        stamp = model_ir_provenance.read_stamp(MODELS_DIR) or {}
+        findings.notes.append(
+            "the model layer's artifact was built from this tree: fingerprint "
+            f"{str(stamp.get('fingerprint'))[:12]} over "
+            f"{stamp.get('files_covered')} source files, written "
+            f"{stamp.get('written_utc')}."
+        )
+    considered = [layer for layer in LAYERS if layer != "model" or not skip_model_layer]
     decidable = [layer for layer in considered if layer_decidable(layer)]
     undecidable = [layer for layer in considered if not layer_decidable(layer)]
 
