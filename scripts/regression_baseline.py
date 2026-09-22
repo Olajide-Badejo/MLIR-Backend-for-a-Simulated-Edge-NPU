@@ -61,6 +61,7 @@ import tempfile
 import xml.etree.ElementTree as ElementTree
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -278,6 +279,16 @@ class SuiteResult:
     skipped: int = 0
     tests: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: The failure text, by identifier, for the run that just happened.
+    #:
+    #: **Deliberately not in `as_json`**, and the reason is what this field is
+    #: for. A recorded baseline is only ever taken when every suite is green,
+    #: so a `messages` key in the committed file would always be empty and
+    #: would still be a schema change. This is evidence about a run rather than
+    #: part of the record, so it lives on the object and is printed, not
+    #: serialised. D-0066 is the entry that asked for it: a red suite used to
+    #: destroy its own failure text, twice.
+    messages: dict[str, str] = field(default_factory=dict)
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -315,7 +326,9 @@ def run_lit_suite(work: Path) -> SuiteResult:
             result.skipped += 1
         else:
             result.failed += 1
-            result.failures.append(f"{test['name']} ({code})")
+            identifier = f"{test['name']} ({code})"
+            result.failures.append(identifier)
+            result.messages[identifier] = str(test.get("output", "")).strip()
     return result
 
 
@@ -345,6 +358,10 @@ def run_gtest_binary(name: str, work: Path) -> SuiteResult | None:
             elif test.get("failures"):
                 result.failed += 1
                 result.failures.append(full)
+                result.messages[full] = "\n".join(
+                    str(entry.get("failure", "")).strip()
+                    for entry in test.get("failures", [])
+                )
             else:
                 result.passed += 1
     return result
@@ -389,7 +406,17 @@ def run_pytest(work: Path) -> SuiteResult:
                 result.skipped += 1
             elif kinds & {"failure", "error"}:
                 result.failed += 1
-                result.failures.append(f"{case.get('classname')}::{case.get('name')}")
+                identifier = f"{case.get('classname')}::{case.get('name')}"
+                result.failures.append(identifier)
+                parts: list[str] = []
+                for child in case:
+                    if child.tag not in ("failure", "error"):
+                        continue
+                    parts.append(str(child.get("message", "")).strip())
+                    parts.append(str(child.text or "").strip())
+                result.messages[identifier] = "\n".join(
+                    piece for piece in parts if piece
+                )
             else:
                 result.passed += 1
     return result
@@ -442,6 +469,62 @@ def run_dash_lint() -> SuiteResult:
     return result
 
 
+#: How much of one failure message is printed. Long enough for an assertion
+#: and its values, short enough that ten of them do not bury the summary.
+MESSAGE_LIMIT = 2000
+
+
+def preserve_evidence(work: Path, suites: dict[str, SuiteResult]) -> Path | None:
+    """Keeps a red suite's own report files, and prints what they say.
+
+    **D-0066 is why this exists.** Every runner above writes its report into a
+    `TemporaryDirectory` this script deletes on the way out, so a red suite
+    destroyed its own failure text: the summary named which test failed and
+    nothing anywhere said why. That happened twice to the same case, and the
+    second time cost a diagnosis that could only report what was *not* known.
+
+    The report files are copied out whenever any suite is red, to a path under
+    the build directory, which is a build artefact and is not committed. The
+    path is printed, and so is each failing identifier with its message, so the
+    common case needs no second run of anything.
+
+    Nothing is preserved when every suite is green, because there is nothing to
+    explain and a directory that filled up on every clean run would be a
+    different kind of nuisance.
+    """
+    if not any(result.failed for result in suites.values()):
+        return None
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    destination = build_directory() / "regression-baseline-evidence" / stamp
+    destination.mkdir(parents=True, exist_ok=True)
+    for item in sorted(work.iterdir()):
+        if item.is_file():
+            shutil.copy2(item, destination / item.name)
+
+    print("regression-baseline: a suite was red, so its reports are kept at")
+    print(f"regression-baseline:   {destination}")
+    for name, result in sorted(suites.items()):
+        if not result.failed:
+            continue
+        print(f"regression-baseline: {name} failed {result.failed}:")
+        for identifier in result.failures:
+            print(f"regression-baseline:   {identifier}")
+            message = result.messages.get(identifier, "").strip()
+            if not message:
+                print("regression-baseline:     (the runner recorded no message)")
+                continue
+            clipped = message[:MESSAGE_LIMIT]
+            for line in clipped.splitlines():
+                print(f"regression-baseline:     {line}")
+            if len(message) > MESSAGE_LIMIT:
+                print(
+                    f"regression-baseline:     ... truncated, the whole message "
+                    f"is in {destination}"
+                )
+    return destination
+
+
 def collect_suites(work: Path) -> dict[str, dict[str, Any]]:
     suites: dict[str, SuiteResult] = {"check-npu": run_lit_suite(work)}
     for name in GTEST_BINARIES:
@@ -450,6 +533,7 @@ def collect_suites(work: Path) -> dict[str, dict[str, Any]]:
             suites[name] = found
     suites["pytest"] = run_pytest(work)
     suites["dash-lint"] = run_dash_lint()
+    preserve_evidence(work, suites)
     return {name: result.as_json() for name, result in suites.items()}
 
 
