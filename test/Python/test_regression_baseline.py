@@ -648,3 +648,139 @@ def test_every_committed_golden_has_a_cell() -> None:
         model, _, rest = name.partition("-O")
         assert model in models
         assert int(rest.split("-")[0]) in levels
+
+
+# ---------------------------------------------------------------------------
+# The preservation path, which is the instrument every sighting of D-0066 and
+# anything like it depends on.
+#
+# It was proven once by a rehearsal, driving a deliberate failing test through
+# the whole collector. A rehearsal shows a thing worked; these keep it working,
+# and they are hermetic: a temporary build directory, a synthetic result, no
+# real build and no real suite, so they cost the battery nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def fake_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A build directory that satisfies `build_directory` and nothing more."""
+    directory = tmp_path / "build"
+    directory.mkdir()
+    (directory / "CMakeCache.txt").write_text("", encoding="utf-8")
+    monkeypatch.setenv("NPU_BUILD_DIR", str(directory))
+    return directory
+
+
+def test_a_red_suite_keeps_its_report_and_says_where(
+    tmp_path: Path, fake_build: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The failure D-0066 could not diagnose, and why this exists.
+
+    A red suite used to destroy its own failure text, because every runner
+    wrote its report into a directory the script deleted on the way out. The
+    summary named which test failed and nothing anywhere said why, twice to the
+    same case. So a red run now keeps the reports, prints where they are, and
+    prints each failing identifier with its message.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "pytest.xml").write_text("<testsuites/>", encoding="utf-8")
+    (work / "lit.json").write_text("{}", encoding="utf-8")
+
+    suites = {
+        "pytest": baseline.SuiteResult(
+            passed=7,
+            failed=1,
+            failures=["test.Python.test_thing::test_a_value_moved"],
+            messages={
+                "test.Python.test_thing::test_a_value_moved": (
+                    "AssertionError: the external fields did not reproduce\n"
+                    "{'scalesim_cycles': 4321} != {'scalesim_cycles': 1234}"
+                )
+            },
+        ),
+        "check-npu": baseline.SuiteResult(passed=42),
+    }
+
+    destination = baseline.preserve_evidence(work, suites)
+    assert destination is not None
+
+    # The reports are where the summary says they are, which is the whole
+    # point: a reader needs no second run of anything.
+    assert (destination / "pytest.xml").is_file()
+    assert (destination / "lit.json").is_file()
+    assert destination.is_relative_to(fake_build)
+
+    printed = capsys.readouterr().out
+    assert str(destination) in printed
+    assert "test.Python.test_thing::test_a_value_moved" in printed
+    assert "the external fields did not reproduce" in printed
+    assert "{'scalesim_cycles': 4321} != {'scalesim_cycles': 1234}" in printed
+    # The green suite is not listed, because it has nothing to explain.
+    assert "check-npu" not in printed
+
+
+def test_a_green_run_preserves_nothing(
+    tmp_path: Path, fake_build: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A directory that filled up on every clean run would be a different kind
+    of nuisance, so nothing is kept when there is nothing to explain."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "pytest.xml").write_text("<testsuites/>", encoding="utf-8")
+
+    suites = {
+        "pytest": baseline.SuiteResult(passed=1181, skipped=18),
+        "check-npu": baseline.SuiteResult(passed=42),
+    }
+
+    assert baseline.preserve_evidence(work, suites) is None
+    assert not list((fake_build / "regression-baseline-evidence").glob("*"))
+    assert capsys.readouterr().out == ""
+
+
+def test_a_failure_with_no_message_says_so_rather_than_printing_nothing(
+    tmp_path: Path, fake_build: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A runner that recorded no text is a different thing from a runner whose
+    text was empty, and a reader should be told which they are looking at."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "lit.json").write_text("{}", encoding="utf-8")
+
+    suites = {
+        "check-npu": baseline.SuiteResult(
+            passed=41, failed=1, failures=["NPU :: Dialect/NPU/ops.mlir (FAIL)"]
+        )
+    }
+
+    assert baseline.preserve_evidence(work, suites) is not None
+    printed = capsys.readouterr().out
+    assert "NPU :: Dialect/NPU/ops.mlir (FAIL)" in printed
+    assert "recorded no message" in printed
+
+
+def test_a_long_message_is_clipped_and_points_at_the_file(
+    tmp_path: Path, fake_build: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ten long failures should not bury the summary, and the whole text is
+    still on disk, so the clip says where to find the rest."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "pytest.xml").write_text("<testsuites/>", encoding="utf-8")
+
+    long_message = "x" * (baseline.MESSAGE_LIMIT + 500)
+    suites = {
+        "pytest": baseline.SuiteResult(
+            passed=0,
+            failed=1,
+            failures=["test.Python.test_thing::test_long"],
+            messages={"test.Python.test_thing::test_long": long_message},
+        )
+    }
+
+    destination = baseline.preserve_evidence(work, suites)
+    printed = capsys.readouterr().out
+    assert "truncated" in printed
+    assert str(destination) in printed
+    assert long_message not in printed

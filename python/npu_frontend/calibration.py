@@ -325,13 +325,45 @@ def observe(
     }
 
 
+def output_channel_axis(node: Any) -> int:
+    """Which axis of this operator's weight holds its output channels.
+
+    **Three operators and three answers, which is why this is a function.**
+    Getting it wrong is silent: the count comes out as some other dimension and
+    the scales are a set for a different operation, which the instruction level
+    then refuses by name. That is how it was found, on a `MatMul` whose K was 8
+    and whose N was 4.
+
+    - **`Conv`: axis 0.** ONNX lays the filter out as
+      `(M, C/group, kH, kW)`, and that holds for the depthwise case too, where
+      it is `(C, 1, kH, kW)`. Section 14 says "axis 3 for depthwise", which is
+      the reference specification's own layout, `[1, kH, kW, C]`; this project
+      imports ONNX and reads the axis from the layout in front of it.
+    - **`MatMul`: axis 1.** `B` is `(K, N)`, so the output channels are the
+      columns.
+    - **`Gemm`: axis 0 when `transB` is set, axis 1 otherwise.** `B` is
+      `(K, N)` unless transposed, which makes it `(N, K)`. PyTorch's `Linear`
+      exports with `transB` set, which is why LeNet's fully connected layers
+      were right while a plain `MatMul` in the same suite was not: one layout
+      agreed with the convolution's answer and the other did not.
+    """
+    if node.op_type == "Conv":
+        return 0
+    if node.op_type == "MatMul":
+        return 1
+    transposed = 0
+    for attribute in node.attribute:
+        if attribute.name == "transB":
+            transposed = int(attribute.i)
+    return 0 if transposed else 1
+
+
 def observe_weights(model_path: str | Path) -> dict[str, ChannelObservation]:
     """The per output channel absolute maxima of every weight initializer.
 
     Read from the initializers rather than from a run, because a weight is a
-    constant: its range is exact and needs no observation at all. The axis is 0,
-    which is where ONNX puts the output channel for both the regular and the
-    depthwise case.
+    constant: its range is exact and needs no observation at all. Which axis
+    the channels are on is `output_channel_axis`, and it differs by operator.
     """
     model = onnx.load(str(model_path))
     initializers = {entry.name: entry for entry in model.graph.initializer}
@@ -347,9 +379,15 @@ def observe_weights(model_path: str | Path) -> dict[str, ChannelObservation]:
         array = numpy_helper.to_array(initializers[name])
         if array.ndim == 0:
             continue
-        flattened = array.reshape(array.shape[0], -1)
+        axis = output_channel_axis(node)
+        if axis >= array.ndim:
+            continue
+        # Every axis except the channel one is collapsed, so the maximum is
+        # taken over the whole slice that shares a channel.
+        moved = np.moveaxis(array, axis, 0)
+        flattened = moved.reshape(moved.shape[0], -1)
         weights[name] = ChannelObservation(
-            axis=0,
+            axis=axis,
             absolute_maxima=[float(np.abs(row).max()) for row in flattened],
         )
     return weights

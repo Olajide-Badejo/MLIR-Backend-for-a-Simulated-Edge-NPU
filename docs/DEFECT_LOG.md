@@ -4490,3 +4490,62 @@ entry is D-0066.
   The harness says in its own words that a baseline is never re-recorded around
   a red suite, and the record was taken only after a later `--check` came back
   clean at the same tip.
+
+### D-0067 the calibrator read every weight's channels from axis 0, which is right for a convolution and wrong for a matrix multiplication
+
+**Status: fixed in the commit that follows this entry.** Found 2026-09-22 by
+CI run 35778203120 at `da0c461`, in the `check-reachability full` step of
+`build-and-test`. Every other job was green.
+
+- **The failure.** `'npu.matmul' op carries 8 weight scales and has 4 output
+  channels on the right operand's axis 1. Section 14 gives one symmetric scale
+  per output channel, so the two are the same number.` The verifier added two
+  commits earlier is what caught it, which is the first thing worth recording:
+  the rule was written down and then enforced the same week.
+
+- **The reproduction.** `conv_bn_relu_stack` ends in a `MatMul` whose weight
+  `head.weight` is `(8, 4)`: K is 8 and N is 4. `observe_weights` took the
+  channel count from axis 0 of every initializer, so it produced eight scales
+  for an operation with four output channels. Regenerating the model IR and
+  running `python scripts/check-reachability.py` after
+  `python scripts/build-model-ir.py` reproduces it exactly.
+
+- **What was wrong.** One axis for three operators. ONNX lays a convolution
+  filter out as `(M, C/group, kH, kW)`, so axis 0 is right, and that holds for
+  the depthwise case too, which is `(C, 1, kH, kW)`. A `MatMul`'s `B` is
+  `(K, N)`, so its output channels are axis **1**. A `Gemm`'s `B` is `(K, N)`
+  unless `transB` is set, which makes it `(N, K)` and axis **0**.
+
+- **Why it hid, and this is the part worth keeping.** PyTorch's `Linear`
+  exports as a `Gemm` with `transB` set, so LeNet's three fully connected
+  layers have `B` as `(N, K)` and axis 0 was right for them. Five of the
+  suite's six matrix multiplications therefore agreed with the convolution's
+  answer, and the sixth was the only one that could show the fault. A single
+  wrong constant that is right in most of the places it is used is worse than
+  one that is wrong everywhere, because it survives the obvious checks.
+
+- **Why my own run was green when CI's was not, which is a second finding.**
+  The reachability check reads `experiments/models/`, and that directory is a
+  **build artefact**: it is regenerated from a seed and is in `.gitignore`. CI
+  builds it in the same step as the check, by design since P8. Mine was written
+  before the attribute existed, so the check read IR that could not contain the
+  defect and passed for a reason that had nothing to do with correctness. **A
+  gate that reads a build artefact is only as fresh as the artefact**, which is
+  the same shape as D-0040, where a slow marker count was satisfied by tests
+  nobody had marked, and D-0063, where a refusal test passed on a different
+  refusal. The standing fix is to run the pair CI runs, in CI's order:
+  `build-model-ir.py` and then `check-reachability.py`, before calling a
+  boundary green.
+
+- **The fix.** `output_channel_axis` decides per operator and says in its own
+  documentation where each of the three lives. The profiles were regenerated
+  and only one entry moved: `conv_bn_relu_stack`'s `head.weight`, from axis 0
+  with eight scales to axis 1 with four. Four regression cases pin it: a
+  `MatMul` with K and N deliberately different so a wrong axis cannot pass by
+  luck, a `Gemm` in both layouts, a depthwise convolution, and a sweep over
+  every committed profile checking each entry against the operator's own axis.
+
+- **What it cost.** Nothing downstream, because the verifier refused the
+  program rather than compiling it. That is the argument for having written
+  the rule down: the wrong scales never reached an instruction, never reached
+  the machine, and never reached a number anybody would have published.

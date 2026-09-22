@@ -675,3 +675,173 @@ def test_every_profiled_operation_is_covered_end_to_end() -> None:
             for tensor in (record["inputs"][0], record["outputs"][0]):
                 assert tensor in scales, f"{name}:{node}:{tensor}"
                 assert set(scales[tensor]) == set(CALIB_METHODS)
+
+
+# ---------------------------------------------------------------------------
+# Which axis the output channels are on, which is not the same answer three
+# times. Found by CI on a MatMul whose K was 8 and whose N was 4: the count
+# came out as K and the instruction level refused it by name.
+# ---------------------------------------------------------------------------
+
+
+def _matmul_model(directory: Path, *, k: int, n: int) -> Path:
+    """A MatMul with K and N deliberately different, so a wrong axis shows."""
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    weight = numpy_helper.from_array(
+        np.arange(k * n, dtype=np.float32).reshape(k, n) / 100.0, name="w"
+    )
+    graph = helper.make_graph(
+        [helper.make_node("MatMul", ["x", "w"], ["y"])],
+        "matmul_only",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, k])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, n])],
+        initializer=[weight],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    path = directory / f"matmul_{k}x{n}.onnx"
+    onnx.save(model, str(path))
+    return path
+
+
+def _gemm_model(directory: Path, *, k: int, n: int, transposed: bool) -> Path:
+    """A Gemm either way round, because `transB` is what decides its axis."""
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    shape = (n, k) if transposed else (k, n)
+    weight = numpy_helper.from_array(
+        np.arange(k * n, dtype=np.float32).reshape(shape) / 100.0, name="w"
+    )
+    node = helper.make_node("Gemm", ["x", "w"], ["y"], transB=1 if transposed else 0)
+    graph = helper.make_graph(
+        [node],
+        "gemm_only",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, k])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, n])],
+        initializer=[weight],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    path = directory / f"gemm_{k}x{n}_{int(transposed)}.onnx"
+    onnx.save(model, str(path))
+    return path
+
+
+def test_a_matmul_takes_its_channels_from_the_column_axis(tmp_path: Path) -> None:
+    """The defect CI caught, with K and N different so it cannot pass by luck.
+
+    `B` is (K, N), so there are N output channels and N scales. Reading axis 0
+    gives K of them, which is a scale set for a different operation and which
+    the instruction level refuses by name: "carries 8 weight scales and has 4
+    output channels on the right operand's axis 1".
+    """
+    from npu_frontend.calibration import observe_weights
+
+    weights = observe_weights(_matmul_model(tmp_path, k=8, n=4))
+    assert set(weights) == {"w"}
+    assert weights["w"].axis == 1
+    assert len(weights["w"].absolute_maxima) == 4
+
+
+def test_a_gemm_takes_its_axis_from_transb(tmp_path: Path) -> None:
+    """Both layouts, because one of them agrees with the convolution's answer
+    and that is exactly what hid this.
+
+    PyTorch's Linear exports with `transB` set, so `B` is (N, K) and axis 0 is
+    right. A Gemm written the other way round has `B` as (K, N) and axis 1 is
+    right. LeNet's fully connected layers are the first kind, which is why they
+    were correct while a plain MatMul in the same suite was not.
+    """
+    from npu_frontend.calibration import observe_weights
+
+    transposed = observe_weights(_gemm_model(tmp_path, k=8, n=4, transposed=True))
+    assert transposed["w"].axis == 0
+    assert len(transposed["w"].absolute_maxima) == 4
+
+    plain = observe_weights(_gemm_model(tmp_path, k=8, n=4, transposed=False))
+    assert plain["w"].axis == 1
+    assert len(plain["w"].absolute_maxima) == 4
+
+
+def test_a_convolution_keeps_axis_zero_including_depthwise(tmp_path: Path) -> None:
+    """Section 14 says axis 0 for regular and axis 3 for depthwise, and that
+    axis 3 is the reference specification's layout rather than ONNX's.
+
+    In ONNX a depthwise filter is (C, 1, kH, kW), so the output channels are on
+    axis 0 exactly as they are for a dense convolution. The rule implemented is
+    the one that section means, one scale per output channel.
+    """
+    import numpy as np
+    import onnx
+    from npu_frontend.calibration import observe_weights
+    from onnx import TensorProto, helper, numpy_helper
+
+    weight = numpy_helper.from_array(np.ones((3, 1, 3, 3), dtype=np.float32), name="w")
+    graph = helper.make_graph(
+        [
+            helper.make_node(
+                "Conv",
+                ["x", "w"],
+                ["y"],
+                pads=[1, 1, 1, 1],
+                strides=[1, 1],
+                dilations=[1, 1],
+                group=3,
+            )
+        ],
+        "depthwise",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3, 4, 4])],
+        initializer=[weight],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 20)], ir_version=10
+    )
+    path = tmp_path / "depthwise.onnx"
+    onnx.save(model, str(path))
+
+    weights = observe_weights(path)
+    assert weights["w"].axis == 0
+    assert len(weights["w"].absolute_maxima) == 3
+
+
+def test_every_committed_profile_counts_its_channels_correctly() -> None:
+    """The suite's own models, which is where this was found.
+
+    conv_bn_relu_stack's head is a MatMul with an (8, 4) weight, so it must
+    carry four scales and not eight. Checked against the profile rather than
+    against a recomputation, because the profile is what the compiler reads.
+    """
+    import tempfile
+
+    import onnx
+    from npu_frontend.calibration import output_channel_axis
+    from npu_frontend.model_generator import MODELS, generate_model
+
+    for name in sorted(MODELS):
+        profile = read_profile(COMMITTED_PROFILES / f"{name}.json")
+        with tempfile.TemporaryDirectory() as directory:
+            model = onnx.load(
+                str(generate_model(name, directory, batch=int(profile["batch"])))
+            )
+        initializers = {entry.name for entry in model.graph.initializer}
+        shapes = {entry.name: tuple(entry.dims) for entry in model.graph.initializer}
+        for node in model.graph.node:
+            if len(node.input) < 2 or node.input[1] not in initializers:
+                continue
+            weight = node.input[1]
+            if weight not in profile["weights"]:
+                continue
+            axis = output_channel_axis(node)
+            assert profile["weights"][weight]["axis"] == axis, (name, weight)
+            assert len(profile["weights"][weight]["scales"]) == shapes[weight][axis], (
+                name,
+                weight,
+            )
