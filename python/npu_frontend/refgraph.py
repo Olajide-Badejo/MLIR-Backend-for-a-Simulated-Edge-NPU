@@ -37,6 +37,19 @@ returns the real `DenseI64ArrayAttr` or `IntegerAttr`. Nothing here parses text.
 That is `refexec.execute`'s rule and it is this file's for the same reason: an
 operation added to the dialect and not to these tables raises by name instead of
 being executed as whatever the default was.
+
+**A quantized compilation is executed the way the lowering compiles it.** *Added
+at P14, with the QDQ contraction.* The quantize and dequantize pair run
+elementwise through `refexec`, and a calibrated convolution or matrix
+multiplication that the lowering would contract into one integer instruction is
+executed as that instruction: `refexec.contracted_conv2d` and
+`contracted_matmul`, which subtract the input zero point inside the multiply
+accumulate rather than folding it, from the same scales the IR carries. The
+quantize after it then yields that integer result unchanged, because the
+instruction's own rescale is that quantize. An operation the lowering would
+leave in the QDQ form is executed in f32 between its dequantize and its
+quantize, exactly as it is compiled. This is the numpy integer reference from
+the same profile that Section 14's first end to end bound is measured against.
 """
 
 from __future__ import annotations
@@ -54,6 +67,7 @@ from . import refexec
 from .builder import find_tool
 
 Tensor = NDArray[np.float32]
+QuantTensor = NDArray[np.int8]
 
 __all__ = ["ExecutionError", "execute_module", "generic_form"]
 
@@ -77,6 +91,44 @@ class _Destination:
     shape: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class _Contracted:
+    """The integer result of an operation the lowering contracts.
+
+    Its one reader is the quantize the calibrator put after it, which yields
+    this array unchanged. It is a distinct type so that anything else reading
+    it is an error with a name: that would mean this file's decision about
+    what contracts and the IR had drifted apart.
+    """
+
+    values: QuantTensor
+
+
+@dataclass
+class _Scope:
+    """What executing one block needs beyond the values themselves.
+
+    The readers of every value, because whether an operation contracts depends
+    on what reads its result; the values a dequantize produced, with the
+    integers and the pair it was applied with, because a contraction reads
+    those rather than the f32 values; and the values that are constants,
+    because a contraction quantizes its weights at compile time and needs them
+    to be known there.
+    """
+
+    users: dict[ir.Value, list[ir.Operation]]
+    dequantized: dict[ir.Value, tuple[QuantTensor, float, int]]
+    constants: set[ir.Value]
+
+
+def _scope_of(block: ir.Block) -> _Scope:
+    users: dict[ir.Value, list[ir.Operation]] = {}
+    for op in block.operations:
+        for operand in op.operation.operands:
+            users.setdefault(operand, []).append(op.operation)
+    return _Scope(users=users, dequantized={}, constants=set())
+
+
 #: How many trailing operands of each operation are destinations.
 #:
 #: Read off `NPUOps.td`'s `arguments` lists. The compute operations of Section
@@ -96,6 +148,8 @@ _DESTINATION_OPERANDS: Final[dict[str, int]] = {
     "transpose": 1,
     "concat": 1,
     "batch_norm": 1,
+    "quantize": 0,
+    "dequantize": 0,
 }
 
 #: Why an operation of the dialect is not in the table above.
@@ -114,8 +168,6 @@ _NOT_EXECUTABLE: Final[dict[str, str]] = {
         "npu.yield is the terminator of an npu.fused_op region and is executed "
         "with the region rather than on its own"
     ),
-    "quantize": "the quantization pair arrives with the integer path at P14",
-    "dequantize": "the quantization pair arrives with the integer path at P14",
 }
 
 
@@ -172,6 +224,8 @@ _ATTRIBUTES: Final[
     "transpose": (("permutation", _i64_array, None),),
     "concat": (("axis", _integer, None),),
     "batch_norm": (("epsilon", _real, 1e-5),),
+    "quantize": (("scale", _real, None), ("zero_point", _integer, None)),
+    "dequantize": (("scale", _real, None), ("zero_point", _integer, None)),
 }
 
 
@@ -223,7 +277,79 @@ def _read_attributes(
     return attributes
 
 
-def _execute_one(op: ir.OpView, values: dict[ir.Value, Any]) -> None:
+def _contract(
+    op: ir.OpView,
+    mnemonic: str,
+    values: dict[ir.Value, Any],
+    scope: _Scope,
+    result_shape: tuple[int, ...],
+) -> bool:
+    """Executes a calibrated operation as the integer instruction the lowering
+    contracts it into, and says whether it did.
+
+    **The conditions are the lowering's, one for one**, because a reference
+    that contracted where the compiler did not, or the other way round, would
+    compare an integer answer with an f32 one and blame the arithmetic: the
+    operation carries `weight_scales`, its data operand is a dequantize, its one
+    reader is a quantize, its weights and any bias are constants, and its
+    destination is a `tensor.empty`. Anything else returns False and is executed
+    in f32 like any other operation, which is the partial coverage rule.
+    """
+    operation = op.operation
+    try:
+        raw_scales = operation.attributes["weight_scales"]
+    except KeyError:
+        return False
+
+    operands = list(operation.operands)
+    data, weights, destination = operands[0], operands[1], operands[-1]
+    bias = operands[2] if len(operands) == 4 else None
+    readers = scope.users.get(op.results[0], [])
+    if (
+        data not in scope.dequantized
+        or len(readers) != 1
+        or readers[0].name != "npu.quantize"
+        or weights not in scope.constants
+        or (bias is not None and bias not in scope.constants)
+        or not isinstance(values[destination], _Destination)
+    ):
+        return False
+
+    q_x, scale_x, zero_point_x = scope.dequantized[data]
+    sink = readers[0]
+    common: dict[str, Any] = {
+        "scale_x": scale_x,
+        "zero_point_x": zero_point_x,
+        "weight_scales": [float(scale) for scale in ir.DenseF32ArrayAttr(raw_scales)],
+        "scale_y": _real(sink.attributes["scale"]),
+        "zero_point_y": _integer(sink.attributes["zero_point"]),
+    }
+    bias_values = values[bias] if bias is not None else None
+    try:
+        if mnemonic == "conv2d":
+            window = _read_attributes(operation, mnemonic, result_shape)
+            produced = refexec.contracted_conv2d(
+                q_x, values[weights], bias_values, **common, **window
+            )
+        else:
+            produced = refexec.contracted_matmul(
+                q_x, values[weights], bias_values, **common
+            )
+    except (KeyError, ValueError) as failure:
+        raise ExecutionError(
+            f"{operation.name}: the reference refused its contraction: {failure}"
+        ) from failure
+
+    if tuple(produced.shape) != result_shape:
+        raise ExecutionError(
+            f"{operation.name}: the contraction produced {tuple(produced.shape)} "
+            f"and the operation declares {result_shape}"
+        )
+    values[op.results[0]] = _Contracted(produced)
+    return True
+
+
+def _execute_one(op: ir.OpView, values: dict[ir.Value, Any], scope: _Scope) -> None:
     """Executes one operation and records its result in `values`.
 
     Split out of `execute_module` at P9, when `npu.fused_op` gave the walk a
@@ -269,7 +395,21 @@ def _execute_one(op: ir.OpView, values: dict[ir.Value, Any]) -> None:
     if mnemonic == "constant":
         dense = ir.DenseElementsAttr(operation.attributes["value"])
         values[op.results[0]] = np.array(dense).astype(np.float32)
+        scope.constants.add(op.results[0])
         return
+
+    if mnemonic in ("conv2d", "matmul") and _contract(
+        op, mnemonic, values, scope, result_shape
+    ):
+        return
+
+    # The quantize after a contracted operation is the instruction's own
+    # rescale, so it yields the integer result the contraction produced.
+    if mnemonic == "quantize":
+        source = values[operation.operands[0]]
+        if isinstance(source, _Contracted):
+            values[op.results[0]] = source.values
+            return
 
     operands = list(operation.operands)
     destinations = _DESTINATION_OPERANDS[mnemonic]
@@ -291,13 +431,20 @@ def _execute_one(op: ir.OpView, values: dict[ir.Value, Any]) -> None:
                 )
         operands = operands[: len(operands) - destinations]
 
-    arrays: list[Tensor] = []
+    # f32 for every operation but the dequantize, whose operand is int8.
+    arrays: list[NDArray[Any]] = []
     for operand in operands:
         value = values[operand]
         if isinstance(value, _Destination):
             raise ExecutionError(
                 f"{name} reads a tensor.empty destination as a value operand, "
                 "which has no contents to read"
+            )
+        if isinstance(value, _Contracted):
+            raise ExecutionError(
+                f"{name} reads the result of a contracted operation, which only "
+                "the quantize after it may read. This file's decision about what "
+                "contracts and the IR have drifted apart."
             )
         arrays.append(value)
 
@@ -315,6 +462,12 @@ def _execute_one(op: ir.OpView, values: dict[ir.Value, Any]) -> None:
             f"operation declares {result_shape}"
         )
     values[op.results[0]] = produced
+    if mnemonic == "dequantize":
+        scope.dequantized[op.results[0]] = (
+            arrays[0],
+            float(attributes["scale"]),
+            int(attributes["zero_point"]),
+        )
 
 
 def _execute_fused(
@@ -337,6 +490,7 @@ def _execute_fused(
     inner: dict[ir.Value, Any] = {}
     for operand, argument in zip(op.operation.operands, body.arguments, strict=True):
         inner[argument] = values[operand]
+    scope = _scope_of(body)
 
     for inner_op in body.operations:
         if inner_op.operation.name == "npu.yield":
@@ -352,7 +506,7 @@ def _execute_fused(
                     f"result of {result_shape}"
                 )
             return yielded
-        _execute_one(inner_op, inner)
+        _execute_one(inner_op, inner, scope)
 
     raise ExecutionError(
         "npu.fused_op's region has no npu.yield, so there is nothing to return "
@@ -366,10 +520,12 @@ def execute_module(
     inputs: Sequence[np.ndarray],
     *,
     function_name: str = "main",
-) -> list[Tensor]:
+) -> list[NDArray[Any]]:
     """Runs one `npu` module over `inputs` and returns its results.
 
     `module_text` is the IR `npu-compile --emit npu` prints, in its custom form.
+    An argument or a result of element type i8 is an int8 array, which only a
+    hand written module has: an imported model's boundary is always f32.
     """
     generic = generic_form(module_text)
 
@@ -412,20 +568,25 @@ def execute_module(
                     f"{function_name} argument {argument.arg_number} has shape "
                     f"{expected} and the array supplied has {supplied}"
                 )
-            values[argument] = np.asarray(array, dtype=np.float32)
+            element = str(ir.RankedTensorType(argument.type).element_type)
+            values[argument] = np.asarray(
+                array, dtype=np.int8 if element == "i8" else np.float32
+            )
 
-        results: list[Tensor] = []
+        scope = _scope_of(block)
+        results: list[NDArray[Any]] = []
         for op in block.operations:
             if op.operation.name == "func.return":
                 for operand in op.operation.operands:
                     value = values[operand]
-                    if isinstance(value, _Destination):
+                    if isinstance(value, (_Destination, _Contracted)):
                         raise ExecutionError(
                             "the function returns a tensor.empty destination "
-                            "that no operation wrote to"
+                            "that no operation wrote to, or the result of a "
+                            "contracted operation that no quantize read"
                         )
                     results.append(value)
                 continue
-            _execute_one(op, values)
+            _execute_one(op, values, scope)
 
     return results

@@ -70,6 +70,8 @@ __all__ = [
     "batch_norm",
     "concat",
     "constant",
+    "contracted_conv2d",
+    "contracted_matmul",
     "conv2d",
     "dequantize",
     "execute",
@@ -77,10 +79,13 @@ __all__ = [
     "max_pool2d",
     "mul",
     "quantize",
+    "quantize_bias",
+    "quantize_weights",
     "quantized_conv2d",
     "quantized_matmul",
     "relu",
     "requantize",
+    "rescale_pairs",
     "reshape",
     "transpose",
     "windowed_extent",
@@ -650,6 +655,67 @@ def requantize_per_channel(
     return out
 
 
+def _accumulate_conv2d(
+    x: NDArray[np.int64],
+    weight: NDArray[np.int64],
+    *,
+    pad_value: int,
+    strides: tuple[int, int] | list[int],
+    pads: tuple[int, int, int, int] | list[int],
+    dilations: tuple[int, int] | list[int],
+    group: int,
+) -> NDArray[np.int64]:
+    """The integer convolution's accumulation, before any bias or rescale.
+
+    Shared by the machine's folded form, which pads with the input zero point,
+    and the contraction's unfolded reference, which subtracts the zero point
+    from every tap first and so pads with zero. Everything is int64, which
+    holds every product and every partial sum of an int8 by int8 reduction
+    without the question of overflow arising here; the int32 question is asked
+    of the result by the caller, the way the machine asks it.
+    """
+    batch, channels, height, width = x.shape
+    filters, channels_per_group, kernel_h, kernel_w = weight.shape
+    stride_h, stride_w = int(strides[0]), int(strides[1])
+    pad_top, pad_left, pad_bottom, pad_right = (int(value) for value in pads)
+    dilation_h, dilation_w = int(dilations[0]), int(dilations[1])
+
+    out_h = windowed_extent(height, kernel_h, stride_h, pad_top, pad_bottom, dilation_h)
+    out_w = windowed_extent(width, kernel_w, stride_w, pad_left, pad_right, dilation_w)
+
+    padded = np.pad(
+        x,
+        ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+        mode="constant",
+        constant_values=int(pad_value),
+    )
+
+    out = np.zeros((batch, filters, out_h, out_w), dtype=np.int64)
+    filters_per_group = filters // group
+
+    for index in range(group):
+        channel_slice = slice(
+            index * channels_per_group, (index + 1) * channels_per_group
+        )
+        filter_slice = slice(index * filters_per_group, (index + 1) * filters_per_group)
+        for kh in range(kernel_h):
+            row_start = kh * dilation_h
+            rows = slice(row_start, row_start + (out_h - 1) * stride_h + 1, stride_h)
+            for kw in range(kernel_w):
+                column_start = kw * dilation_w
+                columns = slice(
+                    column_start,
+                    column_start + (out_w - 1) * stride_w + 1,
+                    stride_w,
+                )
+                window = padded[:, channel_slice, rows, columns]
+                taps = weight[filter_slice, :, kh, kw]
+                out[:, filter_slice] += np.einsum(
+                    "nchw,fc->nfhw", window, taps, optimize=False
+                )
+    return out
+
+
 def _check_int32_accumulator(accumulator: np.ndarray, name: str) -> None:
     """Section 14's static guard, checked rather than assumed.
 
@@ -703,46 +769,15 @@ def quantized_conv2d(
     what makes the comparison worth something: any difference at all is a
     defect.
     """
-    batch, channels, height, width = x.shape
-    filters, channels_per_group, kernel_h, kernel_w = weight.shape
-    stride_h, stride_w = int(strides[0]), int(strides[1])
-    pad_top, pad_left, pad_bottom, pad_right = (int(value) for value in pads)
-    dilation_h, dilation_w = int(dilations[0]), int(dilations[1])
-
-    out_h = windowed_extent(height, kernel_h, stride_h, pad_top, pad_bottom, dilation_h)
-    out_w = windowed_extent(width, kernel_w, stride_w, pad_left, pad_right, dilation_w)
-
-    padded = np.pad(
+    out = _accumulate_conv2d(
         x.astype(np.int64),
-        ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
-        mode="constant",
-        constant_values=int(zero_point),
+        weight.astype(np.int64),
+        pad_value=int(zero_point),
+        strides=strides,
+        pads=pads,
+        dilations=dilations,
+        group=group,
     )
-
-    out = np.zeros((batch, filters, out_h, out_w), dtype=np.int64)
-    filters_per_group = filters // group
-    weights = weight.astype(np.int64)
-
-    for index in range(group):
-        channel_slice = slice(
-            index * channels_per_group, (index + 1) * channels_per_group
-        )
-        filter_slice = slice(index * filters_per_group, (index + 1) * filters_per_group)
-        for kh in range(kernel_h):
-            row_start = kh * dilation_h
-            rows = slice(row_start, row_start + (out_h - 1) * stride_h + 1, stride_h)
-            for kw in range(kernel_w):
-                column_start = kw * dilation_w
-                columns = slice(
-                    column_start,
-                    column_start + (out_w - 1) * stride_w + 1,
-                    stride_w,
-                )
-                window = padded[:, channel_slice, rows, columns]
-                taps = weights[filter_slice, :, kh, kw]
-                out[:, filter_slice] += np.einsum(
-                    "nchw,fc->nfhw", window, taps, optimize=False
-                )
 
     if bias is not None:
         out = out + np.asarray(bias, dtype=np.int64).reshape(1, -1, 1, 1)
@@ -789,6 +824,143 @@ def quantized_matmul(
     ) + np.int64(output_zero_point)
     if relu:
         rescaled = np.maximum(rescaled, np.int64(output_zero_point))
+    return np.clip(rescaled, -128, 127).astype(np.int8)
+
+
+# ---------------------------------------------------------------------------
+# The QDQ contraction, unfolded.
+#
+# What `-npu-lower-to-npuisa` builds out of a calibrated operation, computed
+# here from Section 14's words rather than from the lowering. The lowering folds
+# the input zero point into the bias and the machine pads with it; this
+# subtracts it from every tap inside the multiply accumulate, which is the form
+# Section 14 derives the fold from and the one it says must agree with the fold
+# bit for bit. Every scale is taken as the f32 value the IR carries, because
+# that is what the lowering reads.
+# ---------------------------------------------------------------------------
+
+
+def quantize_weights(
+    weights: Tensor, scales: Sequence[float], *, axis: int
+) -> QuantTensor:
+    """Symmetric per output channel: ``clamp(rint(w / scale_c), -128, 127)``.
+
+    The pinned quantize rule with the zero point at zero, one scale per index
+    of ``axis``: 0 for a filter, 1 for a matrix multiplication's right operand.
+    The division is float64 over f32 values, as ``quantize`` does it.
+    """
+    values = np.asarray(weights, dtype=np.float32).astype(np.float64)
+    shape = [1] * values.ndim
+    shape[axis] = -1
+    divisors = np.asarray(scales, dtype=np.float32).astype(np.float64).reshape(shape)
+    scaled = values / divisors
+    rounded = np.rint(np.nan_to_num(scaled, nan=0.0, posinf=1e30, neginf=-1e30))
+    return np.clip(rounded, -128.0, 127.0).astype(np.int8)
+
+
+def quantize_bias(
+    bias: Tensor | None, scale_x: float, scales: Sequence[float]
+) -> NDArray[np.int64]:
+    """``round(b / (scale_x * scale_c))`` per output channel, and nothing else.
+
+    No zero point term: this is the unfolded bias. It is int64 rather than int32
+    so that a value outside int32 shows as itself rather than wrapped, which is
+    how the caller can tell the refusal the lowering makes from an answer.
+    """
+    divisors = float(np.float32(scale_x)) * np.asarray(scales, dtype=np.float32).astype(
+        np.float64
+    )
+    if bias is None:
+        return np.zeros(len(divisors), dtype=np.int64)
+    values = np.asarray(bias, dtype=np.float32).astype(np.float64)
+    return np.rint(values / divisors).astype(np.int64)
+
+
+def rescale_pairs(
+    scale_x: float, scales: Sequence[float], scale_y: float
+) -> tuple[list[int], list[int]]:
+    """Each output channel's ``(M0, shift)``, from the Python half of the pinned
+    arithmetic.
+
+    ``npu_frontend.calibration`` holds that half, and it is imported here rather
+    than at the top of the module because it brings onnxruntime with it, which
+    nothing else in this reference needs.
+    """
+    from .calibration import decompose_multiplier, requantization_multiplier
+
+    pairs = [
+        decompose_multiplier(requantization_multiplier(scale_x, scale, scale_y))
+        for scale in scales
+    ]
+    return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
+
+
+def contracted_conv2d(
+    x: QuantTensor,
+    weights: Tensor,
+    bias: Tensor | None,
+    *,
+    scale_x: float,
+    zero_point_x: int,
+    weight_scales: Sequence[float],
+    scale_y: float,
+    zero_point_y: int,
+    strides: tuple[int, int] | list[int] = (1, 1),
+    pads: tuple[int, int, int, int] | list[int] = (0, 0, 0, 0),
+    dilations: tuple[int, int] | list[int] = (1, 1),
+    group: int = 1,
+) -> QuantTensor:
+    """A calibrated convolution as the integer instruction computes it, unfolded.
+
+    ``sum_k (q_x[k] - zp_x) * q_w[k] + round(b / (scale_x * scale_w))``, then
+    the per channel rescale, then the output zero point and the rails. A tap
+    outside the input is ``zp_x - zp_x``, which is zero, so the centred input is
+    padded with zero; that is the same statement as the machine's rule that
+    padding contributes the zero point, seen from the other side of the fold.
+    """
+    q_w = quantize_weights(weights, weight_scales, axis=0)
+    centred = x.astype(np.int64) - np.int64(zero_point_x)
+    out = _accumulate_conv2d(
+        centred,
+        q_w.astype(np.int64),
+        pad_value=0,
+        strides=strides,
+        pads=pads,
+        dilations=dilations,
+        group=group,
+    )
+    out = out + quantize_bias(bias, scale_x, weight_scales).reshape(1, -1, 1, 1)
+    _check_int32_accumulator(out, "contracted_conv2d")
+
+    multipliers, shifts = rescale_pairs(scale_x, weight_scales, scale_y)
+    rescaled = requantize_per_channel(out, multipliers, shifts, axis=1) + np.int64(
+        zero_point_y
+    )
+    return np.clip(rescaled, -128, 127).astype(np.int8)
+
+
+def contracted_matmul(
+    x: QuantTensor,
+    weights: Tensor,
+    bias: Tensor | None,
+    *,
+    scale_x: float,
+    zero_point_x: int,
+    weight_scales: Sequence[float],
+    scale_y: float,
+    zero_point_y: int,
+) -> QuantTensor:
+    """A calibrated matrix multiplication, unfolded, one channel per column."""
+    q_w = quantize_weights(weights, weight_scales, axis=1)
+    centred = x.astype(np.int64) - np.int64(zero_point_x)
+    out = np.matmul(centred, q_w.astype(np.int64))
+    out = out + quantize_bias(bias, scale_x, weight_scales).reshape(1, -1)
+    _check_int32_accumulator(out, "contracted_matmul")
+
+    multipliers, shifts = rescale_pairs(scale_x, weight_scales, scale_y)
+    rescaled = requantize_per_channel(out, multipliers, shifts, axis=1) + np.int64(
+        zero_point_y
+    )
     return np.clip(rescaled, -128, 127).astype(np.int8)
 
 
