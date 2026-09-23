@@ -301,12 +301,18 @@ int32_t saturatingRoundingDoublingHighMul(int32_t a, int32_t b) {
 /// shift rather than as a division: a division would round toward zero and the
 /// correction term below is written for a shift that rounds toward negative
 /// infinity.
+///
+/// **The mask is 64 bits wide, and that is D-0068.** The shift is legal up to
+/// 31, and at 31 the mask `2^31 - 1` is one more than an int32 subtraction can
+/// produce from `1 << 31`: the 32 bit form was a signed overflow, undefined
+/// behaviour that happened to give the right bits on this compiler. gemmlowp
+/// builds the mask from a 64 bit one for the same reason.
 int32_t roundingDivideByPOT(int32_t value, int32_t exponent) {
   if (exponent <= 0)
     return value;
-  const int32_t mask = (int32_t{1} << exponent) - 1;
-  const int32_t remainder = value & mask;
-  const int32_t threshold = (mask >> 1) + (value < 0 ? 1 : 0);
+  const int64_t mask = (int64_t{1} << exponent) - 1;
+  const int64_t remainder = static_cast<int64_t>(value) & mask;
+  const int64_t threshold = (mask >> 1) + (value < 0 ? 1 : 0);
   return (value >> exponent) + (remainder > threshold ? 1 : 0);
 }
 

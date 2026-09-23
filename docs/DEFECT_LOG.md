@@ -4571,3 +4571,54 @@ CI run 35778203120 at `da0c461`, in the `check-reachability full` step of
   `test/Python/test_model_ir_provenance.py` holds 23 cases, including the one
   that runs the lint job's `--skip-models` shape as a subprocess, because that
   is the mode this change could have broken.
+
+### D-0068 the machine's rounding divide overflowed at the one legal shift nothing executed
+
+**Status: fixed in the commit that adds this entry.** Found 2026-09-24 while
+reading the requantization the QDQ contraction was about to start reaching,
+before any test had driven the value.
+
+- **What it was.** `roundingDivideByPOT` in `lib/Simulator/Kernels.cpp` built
+  its mask as `(int32_t{1} << exponent) - 1`. The shift is legal in `[0, 31]`:
+  the format's check accepts 31, the per channel table's trap accepts 31, and
+  Section 14's decomposition produces 31 for every multiplier in
+  `[2^-32, 2^-31)`. At 31, `int32_t{1} << 31` is `INT32_MIN` under C++20's
+  shift rule, and subtracting one from it is a signed overflow, which is
+  undefined behaviour.
+
+- **Reproduce, at any commit before the fix.** Build `NPUSimulatorTests` with
+  `-fsanitize=undefined -fno-sanitize-recover=undefined` and run the case this
+  commit adds:
+
+  ```
+  NPUSimulatorTests --gtest_filter='Quantization.AShiftOf31*'
+  Kernels.cpp:307:51: runtime error: signed integer overflow:
+      -2147483648 - 1 cannot be represented in type 'int'
+  ```
+
+  At the fix the whole binary passes under the same flags, 79 tests. Both runs
+  were made in a throwaway build directory outside the repository, with the
+  parent's `Kernels.cpp` checked out for the first and the fixed one for the
+  second.
+
+- **Why nothing caught it.** Nothing executed a shift of 31. The format's tests
+  drive 32 and -1, the two values just outside the range, and
+  `EncodingTest.cpp` round trips 31 through the bytes without running it; every
+  hand computed semantics case uses a shift between 0 and 7, and until the
+  contraction nothing the compiler emitted carried a shift at all. The
+  sanitizer job runs this binary under UBSan with `halt_on_error`, which is
+  exactly the net for this, and it had nothing to catch because no case reached
+  the line with that value. GCC here wraps the subtraction to `INT32_MAX`,
+  which is the right mask, so the answer was correct and the program was not:
+  the kind of defect a correct output hides.
+
+- **The fix.** The mask, the remainder and the threshold are 64 bits wide, which
+  is how gemmlowp builds the same mask. No value moves at shifts 0 to 30, and at
+  31 the result is the one the wrapped mask happened to give. The new case holds
+  both columns at the int32 extremes and answers 1 and -1, which the numpy
+  reference, computing in 64 bits throughout, answers too.
+
+- **The shape.** A boundary tested from outside and not from inside: the range
+  check was proven on the values it refuses and never on the last value it
+  accepts. That is the edge where a mask, a count or a loop bound is computed
+  from the value itself.

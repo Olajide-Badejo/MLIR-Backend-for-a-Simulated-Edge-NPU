@@ -1334,6 +1334,35 @@ TEST(Quantization, MatMulRequantizesAndHasNoZeroPoint) {
   EXPECT_EQ(outcome.values, (std::vector<int32_t>{7, -2, 10, 1}));
 }
 
+TEST(Quantization, AShiftOf31RoundsWithoutOverflowingItsMask) {
+  // D-0068. A shift of 31 is legal, the format's check says so and Section 14's
+  // decomposition emits one for any multiplier in [2^-32, 2^-31), and it is the
+  // one shift at which the rounding divide's mask, `2^31 - 1`, does not come
+  // out of an int32 subtraction. The sanitizer job runs this binary under UBSan
+  // with halt_on_error, so this case is what keeps that shift defined.
+  //
+  // Two columns at the int32 extremes, multiplier `2^31 - 1`:
+  //
+  //   accumulator  2147483646   = 1 * 1 + 2147483645
+  //                -2147483648  = 1 * -1 - 2147483647
+  //   high multiply: 2147483645 and -2147483647, each the accumulator times
+  //   (2^31 - 1) / 2^31 rounded with the nudge
+  //   divide by 2^31: 2147483645 leaves a remainder above half, so 0 + 1 = 1;
+  //   -2147483647 shifts to -1 with a remainder of 1, not above half, so -1
+  //
+  // The numpy reference answers the same pair, computing in 64 bits
+  // throughout.
+  const IntegerOutcome outcome = computeInteger(
+      {{{1, 1}, {1}}, {{1, 2}, {1, -1}}}, {2147483645, -2147483647}, {2},
+      {1, 2}, Opcode::MATMUL, [](Instruction &instruction) {
+        instruction.requantMultiplier = 2147483647;
+        instruction.requantShift = 31;
+      });
+
+  ASSERT_TRUE(outcome.result.ok()) << outcome.result.error.value_or("");
+  EXPECT_EQ(outcome.values, (std::vector<int32_t>{1, -1}));
+}
+
 TEST(Quantization, TheAccumulatorHoldsItsExtreme) {
   // The largest value an int32 accumulator can hold, reached and not exceeded.
   // One tap of `1 * 1` and a bias of `2^31 - 2`, which is 2147483646, sums to
