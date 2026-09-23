@@ -1045,12 +1045,16 @@ yields a scale of 1 and a zero point of 0 and is marked degenerate, because a
 zero scale must never escape the calibrator: the verifier refuses one and that
 refusal must not be how a user finds out.
 
-**The output channel axis is 0 here and Section 14 says 0 or 3.** That section
-takes its axis from the reference specification, whose depthwise weights are
-laid out `[1, kH, kW, C]`. This project imports ONNX, where a convolution
-weight is `(M, C/group, kH, kW)` in both the regular and the depthwise case, so
-the rule implemented is the one Section 14 means, one scale per output channel,
-with the axis read from the layout in front of it.
+**The output channel axis is read per operator, and Section 14 says 0 or 3.**
+That section takes its axis from the reference specification, whose depthwise
+weights are laid out `[1, kH, kW, C]`. This project imports ONNX, so the rule
+implemented is the one Section 14 means, one scale per output channel, with the
+axis read from the layout in front of it: a `Conv` weight is
+`(M, C/group, kH, kW)` in both the regular and the depthwise case, so axis 0; a
+`MatMul`'s is `(K, N)`, so axis 1; a `Gemm`'s is `(K, N)` or, with `transB`,
+`(N, K)`, so axis 1 or 0. D-0067 is what reading axis 0 for all three cost, and
+`output_channel_axis` in `python/npu_frontend/calibration.py` is where each of
+the three is decided.
 
 **The four methods are computed by the observer and selected by the pass.**
 `minmax` takes the observed range. `percentile`, `mse` and `entropy` each trim
@@ -1273,6 +1277,9 @@ The operator map, which is the pass's contract:
 | `batch_norm` | a multiply and an add over per channel constants computed at rewrite time |
 | `fused_op` | no instruction: the region is flattened into its parent |
 | `yield` | erased with the region it terminated |
+| `quantize` | `npuisa.quant`, with an i8 destination the pass allocates |
+| `dequantize` | `npuisa.dequant`, with an f32 destination the pass allocates |
+| `dequantize`, `conv2d` or `matmul` carrying `weight_scales`, `quantize` | one integer `npuisa.conv2d` or `npuisa.matmul`: the QDQ contraction, below |
 
 Three rules govern the memory, and together they are Section 8's boundary
 invariant:
@@ -1521,6 +1528,87 @@ and the layout leaves no trace below the tensor level, which is exactly the
 outcome Section 5.5 says would make `-npu-assign-layout` a pass whose delta is
 structurally zero.
 
+### The QDQ contraction
+
+*Added at P14.* `-npu-calibrate` leaves a covered convolution or matrix
+multiplication in the standard QDQ form, still f32, with its per output channel
+weight scales in `weight_scales`. This pass is where that becomes integer
+arithmetic: the dequantize in front, the operation and the quantize after it
+contract into one integer `npuisa.conv2d` or `npuisa.matmul`.
+
+```mlir
+%dx = npu.dequantize %qx {scale = 5.000000e-01 : f32, zero_point = 3 : i32}
+%y  = npu.conv2d ins(%dx, %w, %b ...) {... weight_scales = array<f32: 0.375, 0.15625>}
+%qy = npu.quantize %y {scale = 2.500000e-01 : f32, zero_point = 5 : i32}
+```
+
+becomes, with the constants brought on chip the way every constant is:
+
+```mlir
+npuisa.conv2d ins(%x, %w8, %bias, %table : memref<2x1x1x2xi8, ...>,
+                  memref<2x1x1x2xi8, ...>, memref<2xi32, ...>, memref<2x2xi32, ...>)
+              outs(%y8 : memref<2x2x1x3xi8, ...>)
+              {zero_point = 3 : i32, output_zero_point = 5 : i32,
+               requant_multiplier = 1610612736 : i32, requant_shift = 0 : i32, ...}
+```
+
+**The arithmetic is Section 14's, pinned once on each side of the language
+boundary.** `include/NPU/Dialect/NPUISA/Transforms/QuantizedContraction.h` holds
+the C++ half and `npu_frontend.calibration` the Python half:
+
+- **Weights**, symmetric per output channel: `clamp(rint(w / scale_c), -128,
+  127)`, with the tie to even written out rather than taken from `std::rint`.
+  The channel is axis 0 of a filter, depthwise included, and axis 1 of a matrix
+  multiplication's right operand, which is D-0067's lesson.
+- **Bias**, int32 per output channel: `round(b / (scale_x * scale_c)) - zp_x *
+  sum_k q_w[c][k]`, the input zero point folded over the **whole** window, which
+  is why the machine's padding contributes `zp_x`. With no bias the folded term
+  alone is the bias. A value outside int32 is refused by name, never wrapped.
+- **Rescale**, per output channel: `M_c = (scale_x * scale_c) / scale_y` from
+  the f32 values the IR carries, product before quotient, decomposed into `M0`
+  in `[2^30, 2^31)` and a right shift in `[0, 31]` by the same steps as
+  `calibration.decompose_multiplier`. A multiplier at or above one, including
+  one that only rounds to one, has no right shift and is refused; so is one
+  below `2^-32`, whose shift would pass 31. Neither is clamped.
+- **Zero points**: the input's goes in `zero_point`, because a tap outside the
+  input contributes it; the output's goes in the `scale` word as
+  `output_zero_point`, the owner's decision of 2026-09-07.
+
+**The table is the fourth operand exactly when the scalar pair cannot say it.**
+When the channels' pairs differ, the (2, C) table of multipliers and shifts is
+the fourth operand and the scalar fields carry channel 0's pair. When every
+channel's pair is the same, which is `weight-granularity=per-tensor` and also a
+per channel calibration whose channels happen to agree, the instruction carries
+three operands and the scalar pair is the whole rescale. The machine computes
+the same integers either way, which is its own contract for an instruction
+without the operand.
+
+**What the contraction removes and what it keeps.** The quantize in front is
+kept, because it is the `QUANT` that turns an activation into integers and the
+instruction reads its buffer; so is any i8 value the dequantize read, an i8
+argument or another contraction's result. The dequantize, the f32 weight and
+bias constants and the f32 destination are consumed, but **only when every
+reader of each one contracts**: a dequantize that also feeds an f32 operation
+keeps its `DEQUANT`, and a weight constant an f32 operation shares keeps its f32
+copy beside the contraction's i8 one. The quantize after the operation is
+replaced by the instruction's own i8 result.
+
+**The mechanism, and the one way it can go wrong.** The plan is made on tensors
+in a stage of its own, 2b, after the expansions and before any rewriting, so a
+refusal names the operation and the channel rather than competing with the
+conversion's own messages. The compute patterns then look the plan up. A
+consumed dequantize is converted by its own pattern into nothing, replaced by
+the i8 buffer it read; it is not held legal, because an operation the
+conversion leaves alone keeps reading its operand as a tensor after that
+operand became a buffer, and the conversion refuses to finish with such a value
+live. The first attempt at this held it legal and failed that way on the first
+real program it was given. The consumed constants and destinations have no
+operand, so they are held legal and erased afterwards.
+
+**It cannot fire on an fp32 compilation.** A plan needs `weight_scales`, which
+only `-npu-calibrate` writes and the `npu` verifier refuses on any operation
+whose data operand is not a dequantize.
+
 ### What it refuses, by name
 
 Every refusal is emitted from a validation stage that runs before any operation
@@ -1546,6 +1634,18 @@ at all. They become reachable when `-npu-assign-layout` lands, and they are
 diagnosed now so that pass arrives at a stated rule rather than at a verifier
 failure from inside a pass.
 
+The QDQ contraction adds three, emitted from stage 2b, which also runs before
+any operation has been rewritten, and covered by
+`test/Dialect/NPUISA/lowering-quantized-diagnostics.mlir`. Each is an operation
+with the calibrator's whole shape whose arithmetic has no integer form, and
+compiling it in f32 instead would put an f32 number under an INT8 label:
+
+| Refused | Because |
+|---|---|
+| a channel whose multiplier is one or more, or rounds to one | the shift is a right shift, so the pair cannot express a gain |
+| a channel whose multiplier is below `2^-32` | its shift would pass the 31 the binary format accepts, and the diagnostic names the shift it would need |
+| a channel whose folded int32 bias leaves int32 | the machine adds the bias to an int32 accumulator, so wrapping it would make the channel silently wrong everywhere |
+
 ### Where it does not fire
 
 Section 12's negative test rule: a pass with only positive tests is not
@@ -1560,6 +1660,15 @@ all. Three cases in `test/Dialect/NPUISA/lowering.mlir`:
   broadcast.** No `memref.reinterpret_cast` appears.
 - **An argument nothing reads is not loaded.**
 
+**The contraction does not fire on a partially covered operation, and does not
+refuse one either.** An operation without `weight_scales`, with weights or a
+bias that are not constants, with a result read in f32 as well as quantized, or
+with no quantize after it stays in the QDQ form and lowers to `QUANT`, f32
+compute and `DEQUANT` exactly as before the contraction existed. That is Section
+14's rule that a partially covered operation is never half rewritten.
+`test/Dialect/NPUISA/lowering-quantized.mlir` carries one case for each, and
+another for an input something outside the contraction also reads.
+
 ### Tests
 
 | File | What it pins |
@@ -1567,6 +1676,10 @@ all. Three cases in `test/Dialect/NPUISA/lowering.mlir`:
 | `test/Dialect/NPUISA/lowering.mlir` | one case per pattern, plus the three negative cases |
 | `test/Dialect/NPUISA/dma-boundaries.mlir` | Section 8's scoped invariant, immediately after this pass |
 | `test/Dialect/NPUISA/lowering-diagnostics.mlir` | every refusal above, by the substring it emits |
+| `test/Dialect/NPUISA/lowering-quantized.mlir` | the QDQ contraction: a convolution and a matrix multiplication worked by hand, the per tensor arm, the calibrator's whole shape, a shared input, and the partial coverage cases |
+| `test/Dialect/NPUISA/lowering-quantized-diagnostics.mlir` | the contraction's three refusals |
+| `unittests/Dialect/NPUISA/QuantizedContractionTest.cpp` | the contraction's arithmetic at its edges: ties, `FE_TOWARDZERO`, the order of `M`, the renormalisation at `2^31`, both refusals and the int32 extremes of the fold |
+| `test/Python/test_quantized_contraction.py` | the contraction run on the machine: the hand cases, folded against unfolded bit for bit over random int8 tensors, every model's table against the Python decomposition, and LeNet against the numpy integer reference |
 
 An end to end test is the other half of the 17.1 row for a lowering pattern,
 "plus an e2e test if it is reachable from ONNX". Every pattern in the table above

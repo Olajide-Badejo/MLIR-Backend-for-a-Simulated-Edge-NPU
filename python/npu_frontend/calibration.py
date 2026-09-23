@@ -45,14 +45,16 @@ error for `mse`, and the divergence from the observed distribution for
 convolution before its activation is two sided, and a search that clipped only
 the top would spend the int8 range defending a tail it had already kept.
 
-**The output channel axis is 0 here, and Section 14 says 0 or 3.** Section 14
-takes its axis from the reference specification, whose depthwise weights are
-laid out `[1, kH, kW, C]`, so the output channel axis is 3 for that layout. This
-project imports ONNX, where a convolution weight is `(M, C/group, kH, kW)` for
-both the regular and the depthwise case, so the output channel axis is 0 in
-both. The rule implemented is the one Section 14 means, "one scale per output
-channel", and the axis is read from the layout in front of it rather than copied
-from a document about a different one.
+**The output channel axis is read per operator, and Section 14 says 0 or 3.**
+Section 14 takes its axis from the reference specification, whose depthwise
+weights are laid out `[1, kH, kW, C]`, so the output channel axis is 3 for that
+layout. This project imports ONNX, where a convolution weight is
+`(M, C/group, kH, kW)` for both the regular and the depthwise case, so axis 0,
+and a matrix multiplication's is `(K, N)`, so axis 1; `output_channel_axis`
+decides each, and D-0067 is what reading axis 0 for all of them cost. The rule
+implemented is the one Section 14 means, "one scale per output channel", and
+the axis is read from the layout in front of it rather than copied from a
+document about a different one.
 """
 
 from __future__ import annotations

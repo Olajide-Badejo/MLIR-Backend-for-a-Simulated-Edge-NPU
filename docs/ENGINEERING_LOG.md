@@ -7059,3 +7059,159 @@ sources; it does not say the compiler binary those sources were compiled into
 was current when the sweep ran. That is a stale build rather than a stale
 artefact, it is caught by building before sweeping, and it is written down here
 as not covered rather than implied to be.
+
+## 2026-09-24 Phase P14, checkpoint B: the QDQ contraction, and a draft that failed on its first program
+
+**What this was for.** Everything before it made a quantized compilation
+possible and none of it made one run in integers. `-npu-calibrate` wrapped the
+covered operations in the QDQ form, the kernels could execute an integer
+instruction, and nothing in between turned the one into the other: a quantized
+LeNet lowered to `QUANT`, `DEQUANT`, an f32 convolution and `QUANT` again. The
+contraction in `-npu-lower-to-npuisa` is the piece that was missing. Five
+commits: `96992ca` for D-0068, `08c9d06` for the arithmetic, `4c152fa` for the
+lowering, `a3a0251` for the per tensor arm, `ccd146b` for the end to end tests.
+
+### The draft was reviewed rather than committed, and the first program decided it
+
+A draft of the contraction was on disk when this session began, written quickly
+and never run. The build directory already held it, so it compiled; the
+question was whether it worked, and the fastest honest answer was to give it
+the one real program there was. It failed on the first operation of quantized
+LeNet:
+
+```
+error: failed to legalize unresolved materialization from
+    ('memref<1x1x28x28xi8, #npu.scratchpad>') to ('tensor<1x1x28x28xi8>')
+    that remained live after conversion
+note: see existing live user here: %1 = npu.dequantize %0 ...
+```
+
+**The mechanism is worth writing down because it looks right.** The draft held
+the operations the contraction consumes **legal** for the conversion, so that
+nothing would lower them into instructions nobody reads, and erased them
+afterwards. That is fine for a constant or a destination, which have no
+operand. It is not fine for the dequantize, which has one: a legal operation is
+never converted, so it goes on reading its operand as a tensor after the
+quantize that produced it has become a buffer, and the driver will not finish a
+conversion with that value live. So the dequantize is converted after all, by
+its own pattern, into nothing: it is replaced by the i8 buffer it read, which is
+exactly what every one of its readers is about to read directly.
+
+**What was kept and what was not.** The shape survived: the arithmetic apart
+from IR, where it can be unit tested, and the plan made on tensors before any
+rewriting, so a refusal names the operation rather than competing with the
+conversion's own messages. Five things changed besides the mechanism. The
+rounding stays in double until a range check has passed, because the draft
+converted doubles to int64 that a large bias or a tiny scale could overflow.
+The weight rails are the pinned rule's `[-128, 127]` rather than `[-127, 127]`,
+so the project has one quantize rule and not two. The input no longer has to be
+a quantize: any i8 value the dequantize reads will do, which is what lets a hand
+written integer program be tested without an f32 boundary. The table is left
+out when every channel's pair is the same. And an operation missing part of the
+calibrator's shape is no longer refused, which is the next section.
+
+### Refusing and leaving alone are different answers to different questions
+
+The draft refused every calibrated operation it could not contract, on the
+argument that a program quietly compiled in f32 after calibration would be
+reported as quantized. The argument is right about the risk and wrong about
+the rule. Section 14's partial coverage rule is that a partially covered
+operation is skipped and **never half rewritten**, and `-npu-calibrate` already
+lives by it one level up: an operation whose output has no calibrated range is
+counted and left in f32.
+
+So there are two classes and they get two answers. **An operation missing part
+of the calibrator's shape**, no weight scales, weights or a bias that are not
+constants, a result also read in f32, no quantize after it, is outside what the
+contraction was asked to do, and it stays in the QDQ form and lowers exactly as
+it did before. **An operation with the whole shape and no integer form**, a
+multiplier at or above one or below `2^-32`, a folded bias outside int32, is a
+calibration the machine cannot execute, and that is refused by name. The risk
+the draft was guarding against is answered differently, and better: a test
+compiles all seven models and asserts that every operation the profile covers
+does contract, so a silent fall back on a real model is a red. It is not a
+hypothetical guard; on this tree all 22 covered operations contract and none
+falls back.
+
+### The arithmetic, and the test that is the only one that can see it
+
+**The order `M` is evaluated in is part of the rule.** `(scale_x * scale_w) /
+scale_y` and `scale_x * (scale_w / scale_y)` can differ in the last bit of a
+double, and the case that pins it is small enough to read: with the f32 values
+of 0.7, 0.1 and 0.7, product first gives the f32 value of 0.1 exactly and the
+other association one unit in the last place below. Both halves, C++ and
+Python, evaluate product first from the f32 values the IR carries, and each has
+the case.
+
+**Broken on purpose, the tests divided in a way worth recording.** With the
+fold removed from the bias, everything that computes an output went red: both
+hand cases, all three folded against unfolded cases, both LeNet cases and the
+lit file. With `M0` truncated instead of rounded half to even, **every output
+test stayed green**, because moving `M0` by one unit moves `acc * M` by less
+than one part in `2^30` and almost never changes an int8 result; the only test
+that went red was the one comparing the table the compiler wrote against the
+one Python computes, and it went red on all seven models. That is Section 14's
+opening warning measured rather than quoted: a disagreement in the pinned
+arithmetic is an accuracy bug nobody can localize, because nothing downstream
+of it shows it. The table comparison is the test that localizes it, over 556
+channels.
+
+### Measured, and what the numbers say
+
+Every convolution and matrix multiplication in the seven models' quantized
+compilations contracts: 22 integer instructions over 556 channels, every one
+with a table, because every calibrated layer's channels have scales of their
+own. The quantized files hold half the `QUANT` and `DEQUANT` they did, one of
+each per integer instruction, because the pair between the dequantize and the
+quantize is what the contraction absorbs; the model layer of law 2 still finds
+`npu.quantize` and `npuisa.quant` in every file, and reachability passes with no
+exemptions.
+
+Quantized LeNet on the machine against the numpy integer reference from the
+same profile: Section 14's bound is one count of the output scale and that is
+what the test asserts. **Measured, the two agree exactly on every output**, for
+all five input classes. The reference is `refgraph`, which now executes the
+quantization pair and runs a calibrated operation the way the lowering compiles
+it, through `refexec`'s unfolded arithmetic, which subtracts the input zero
+point inside the multiply accumulate rather than folding it. That is the form
+Section 14 derives the fold from, and the two agreeing is its bit identity
+claim held over a whole model rather than one operation.
+
+### D-0068, found by reading
+
+Reading the machine's requantization, which the contraction was about to start
+feeding with real shifts, turned up a signed overflow in the rounding divide's
+mask at a shift of 31, a shift the format accepts and the decomposition emits
+for any multiplier in `[2^-32, 2^-31)`. GCC wraps it to the right value, so no
+answer was ever wrong and the program was undefined. It was proven both ways in
+a throwaway UBSan build before the fix went in, and the entry has the
+reproduction. The shape is a boundary tested from outside: the format's tests
+drive 32 and -1, and nothing executed 31.
+
+### Two things said plainly rather than left to be found
+
+**`requant-mode` is accepted and inert.** The option has existed since the
+calibrator landed, is validated by name, and changes nothing: `float` compiles
+to exactly what `fixed` does. Building the float arm is not this item's, and
+`docs/PASSES.md` now says so beside the option, so that nobody reads a `float`
+compilation as one.
+
+**Section 14's static guard bounds the products, and the fold rides on top of
+them.** `K * 128 * 127 < 2^31` holds the sum of `q_x * q_w` inside int32 at
+every partial sum. The folded bias adds `- zp_x * sum_k q_w[k]`, which is up to
+another `128 * 127 * K`, so an operation near the guard's limit with a large
+input zero point could pass the guard and still overflow when the bias is
+added. Nothing wraps: the contraction refuses a bias outside int32 by name, and
+the machine checks the sum after the bias is added and traps. The suite is far
+inside it, its deepest reduction is LeNet's 400 against the guard's 132104, so
+nothing is changed; it is recorded as an open question rather than implied to
+be covered.
+
+### What was deliberately not done
+
+The seven model sweep with both of Section 14's bounds, the quantized goldens,
+`quant_boundary_crossings` and `int8_macs` in the schema, and the cost model's
+INT8 terms are the items after this one. So is absorbing a dequantize and
+quantize pair between two contracted operations when the two pairs carry the
+same scale, which would be exact and would save a `DEQUANT` and a `QUANT`, and
+which no model at `-O0` has.

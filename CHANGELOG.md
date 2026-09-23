@@ -8,16 +8,46 @@ Semantic Versioning once a release is tagged.
 
 ### Phase P14: INT8 quantization
 
-**In progress. Checkpoint A is complete: the integer path exists and is exact.**
-The dialect's operator set is complete for the first time, the integer kernels
-have hand computed semantics and an independent numpy implementation that agrees
-with them **to the bit**, and `Program::kVersion` has not moved.
+**In progress. Checkpoint A is complete, and Checkpoint B has landed
+calibration and the QDQ contraction**: a calibrated model now compiles to
+integer instructions and runs on the machine. The seven model end to end bounds,
+the quantized goldens and the cost model's INT8 terms remain. The dialect's
+operator set is complete for the first time, the integer kernels have hand
+computed semantics and an independent numpy implementation that agrees with them
+**to the bit**, and `Program::kVersion` has not moved.
 
-**No recorded number has moved and none was expected to.** Nothing in an `-O`
-level emits an integer instruction yet, so no cell of the 217 can reach one, and
-a declaration of a movement measured to be zero would be a false declaration.
-The measurement is in `docs/PHASE_STATE.md` beside the claim.
+**No recorded number has moved and none was expected to.** Quantized mode is in
+no `-O` level, so no cell of the 217 can reach an integer instruction, and a
+declaration of a movement measured to be zero would be a false declaration. The
+measurement is in `docs/PHASE_STATE.md` beside the claim.
 
+- **A quantized compilation now executes in integers.** `-npu-lower-to-npuisa`
+  contracts the QDQ form `-npu-calibrate` leaves, a dequantize, a convolution or
+  matrix multiplication carrying `weight_scales`, and a quantize, into one
+  integer `npuisa.conv2d` or `npuisa.matmul`: i8 weights quantized per output
+  channel, an int32 bias with the input zero point folded over the whole window,
+  and the per channel rescale as the fourth operand. Every convolution and
+  matrix multiplication in the seven models' quantized compilations contracts,
+  22 instructions over 556 channels. An operation missing part of the
+  calibrator's shape stays in the QDQ form and lowers as before; arithmetic with
+  no integer form, a multiplier at or above one or below `2^-32` and a folded
+  bias outside int32, is refused by name.
+- **The pinned arithmetic is held equal on both sides.** Every requantization
+  table the compiler writes for the seven models equals the one Python computes
+  from the same profile, bit for bit; the folded form the machine runs equals an
+  unfolded numpy reference bit for bit over random int8 tensors; and quantized
+  LeNet on the machine agrees with the numpy integer reference from the same
+  profile within Section 14's bound of one count, measured at zero counts on
+  every output.
+- **`weight-granularity` selects Section 14's per tensor arm**, on
+  `-npu-calibrate`, the pipeline and `compile_model`. `per-tensor` gives every
+  channel the tensor's one scale, chosen from the profile rather than computed,
+  and the instruction then carries the scalar pair and no table. `requant-mode`
+  is documented as what it is today: accepted, validated, and inert.
+- **D-0068: the machine's rounding divide overflowed at a shift of 31**, a legal
+  shift nothing had executed. The mask is 64 bits now, as gemmlowp builds it; no
+  value moves at any shift, and the case that drives 31 runs under UBSan in the
+  sanitizer job.
 - **An integer compute instruction carries its output zero point in the `scale`
   word**, which the owner settled on 2026-09-07 after checkpoint A found one
   `zeroPoint` field and two zero points that wanted it. Activations stay affine
