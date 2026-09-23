@@ -292,6 +292,13 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
                      "applies; 'float' exists so that a previously published "
                      "number stays reproducible."),
       llvm::cl::init("fixed")};
+  Option<std::string> weightGranularity{
+      *this, "weight-granularity",
+      llvm::cl::desc("'per-channel', Section 14's default, or 'per-tensor', "
+                     "the other arm of its granularity ablation: whether each "
+                     "output channel's weights take their own scale or the "
+                     "tensor's one."),
+      llvm::cl::init("per-channel")};
   Option<std::string> stopAfter{
       *this, "stop-after",
       llvm::cl::desc("Where to stop: 'npuisa', the whole level, or 'npu', the "
@@ -314,6 +321,7 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
     options.calibrationProfile = calibrate;
     options.calibrationMethod = calibMethod;
     options.requantMode = requantMode;
+    options.weightGranularity = weightGranularity;
     return options;
   }
 };
@@ -533,6 +541,7 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
     calibration.profile = options.calibrationProfile;
     calibration.calibMethod = options.calibrationMethod;
     calibration.requantMode = options.requantMode;
+    calibration.weightGranularity = options.weightGranularity;
     pm.addNestedPass<func::FuncOp>(npu::createNPUCalibrate(calibration));
   }
 

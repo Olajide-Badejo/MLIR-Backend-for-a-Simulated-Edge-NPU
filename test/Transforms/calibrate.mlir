@@ -22,6 +22,21 @@
 // RUN:   2>&1 | FileCheck %s --check-prefix=UNCOVERED
 // RUN: npu-opt %s --npu-calibrate=profile=%S/Inputs/calibrate-partial.json \
 // RUN:   2>&1 | FileCheck %s --check-prefix=PARTIAL
+// RUN: npu-opt %s \
+// RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-profile.json weight-granularity=per-tensor" \
+// RUN:   | FileCheck %s --check-prefix=PERTENSOR
+// RUN: npu-opt %s \
+// RUN:   --npu-calibrate=profile=%S/Inputs/calibrate-degenerate-channel.json \
+// RUN:   | FileCheck %s --check-prefix=DEGENERATE
+// RUN: npu-opt %s \
+// RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-degenerate-channel.json weight-granularity=per-tensor" \
+// RUN:   | FileCheck %s --check-prefix=PERTENSOR
+// RUN: not npu-opt %s \
+// RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-profile.json weight-granularity=per-layer" \
+// RUN:   2>&1 | FileCheck %s --check-prefix=BADGRANULARITY
+// RUN: not npu-opt %s \
+// RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-no-maxima.json weight-granularity=per-tensor" \
+// RUN:   2>&1 | FileCheck %s --check-prefix=NOMAXIMA
 
 // -----------------------------------------------------------------------------
 // Positive: the activations are wrapped and the graph stays f32.
@@ -67,6 +82,30 @@
 // count. The two are reported separately because the fixes differ: one tensor
 // was never observed, the other is missing from the file.
 // PARTIAL: remark: -npu-calibrate rewrote nothing in 'calibrated': of its 1 quantizable operations the profile does not name 0 and names 1 without a full set of ranges
+
+// -----------------------------------------------------------------------------
+// The per tensor arm of Section 14's granularity ablation.
+//
+// Every channel takes the tensor's one symmetric scale, its largest magnitude
+// over 127. The profile's channels have largest magnitudes 1.27 and 2.54, so
+// that is 2.54 / 127 = 0.02, which is channel 1's own scale: the pass chooses
+// it from the profile rather than dividing again.
+//
+// The second profile's channel 0 is all zeros, so its scale is the degenerate
+// 1 and its largest magnitude is 0. Per channel it keeps the 1. Per tensor it
+// is excluded, because a degenerate 1 is not a magnitude, and the answer is
+// 0.02 again; taking the largest scale without asking would have answered 1
+// and quantized channel 1 to almost nothing.
+// -----------------------------------------------------------------------------
+
+// PERTENSOR: weight_scales = array<f32: 2.000000e-02, 2.000000e-02>
+// DEGENERATE: weight_scales = array<f32: 1.000000e+00, 2.000000e-02>
+
+// The option is refused by name like the other two, and a profile without the
+// absolute maxima cannot tell a channel of zeros from a real one, so per tensor
+// is refused on it rather than guessed at.
+// BADGRANULARITY: error: 'per-layer' is not a weight granularity. The two are per-channel, the default, and per-tensor
+// NOMAXIMA: error: loc("Conv_0"): per-tensor weight granularity needs the profile's absolute maxima for 'w', one per channel, to tell a channel of zeros from a real one, and the profile has 0 for 2 scales
 
 func.func @calibrated(%x: tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32> {
   %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>

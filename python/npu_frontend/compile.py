@@ -342,6 +342,7 @@ def compile_model(
     calibrate: str | os.PathLike[str] | None = None,
     calib_method: str | None = None,
     requant_mode: str | None = None,
+    weight_granularity: str | None = None,
 ) -> CompileResult:
     """Compiles one ONNX model and stops after `emit`.
 
@@ -369,9 +370,12 @@ def compile_model(
     **quantized** one. Leaving it `None` leaves `-npu-calibrate` out of the
     pipeline entirely rather than running it with a default profile, which is
     Section 12's rule that the pass is in quantized mode only and never in a
-    default `-O` level. `calib_method` and `requant_mode` are its two options
-    and reach the pipeline the same way, so an ablation over either measures
-    the compiler that would actually be run rather than a pass driven alone.
+    default `-O` level. `calib_method`, `requant_mode` and
+    `weight_granularity` are its options and reach the pipeline the same way,
+    so an ablation over any of them measures the compiler that would actually
+    be run rather than a pass driven alone. `weight_granularity` is
+    `per-channel`, the default, or `per-tensor`, the two arms of Section 14's
+    granularity ablation.
     """
     if emit not in EMIT_STAGES:
         raise CompileError(
@@ -477,6 +481,8 @@ def compile_model(
         npu_options.append(f"calib-method={calib_method}")
     if requant_mode is not None:
         npu_options.append(f"requant-mode={requant_mode}")
+    if weight_granularity is not None:
+        npu_options.append(f"weight-granularity={weight_granularity}")
     if budget is not None:
         npu_options.append(f"budget={budget}")
     if ablate is not None:
@@ -526,6 +532,8 @@ def compile_model(
         options.append(f"calib-method={calib_method}")
     if requant_mode is not None:
         options.append(f"requant-mode={requant_mode}")
+    if weight_granularity is not None:
+        options.append(f"weight-granularity={weight_granularity}")
     if budget is not None:
         options.append(f"budget={budget}")
     if ablate is not None:

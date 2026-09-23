@@ -75,6 +75,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -100,6 +101,10 @@ constexpr llvm::StringLiteral kMethods[] = {"minmax", "percentile", "mse",
 /// `float` exists so that a previously published number stays reproducible.
 constexpr llvm::StringLiteral kRequantModes[] = {"fixed", "float"};
 
+/// The two weight granularities Section 14's ablation compares, the default
+/// first.
+constexpr llvm::StringLiteral kGranularities[] = {"per-channel", "per-tensor"};
+
 /// One tensor's affine pair, as the profile records it.
 struct ActivationScale {
   double scale = 1.0;
@@ -120,6 +125,10 @@ struct Profile {
   llvm::StringMap<ActivationScale> activations;
   /// Keyed by initializer name: one symmetric scale per output channel.
   llvm::StringMap<llvm::SmallVector<float>> weightScales;
+  /// Keyed the same way: each channel's largest weight magnitude, which is
+  /// what tells a channel of zeros, whose scale is the degenerate 1, from one
+  /// whose largest magnitude is 127.
+  llvm::StringMap<llvm::SmallVector<double>> weightMaxima;
   bool empty() const { return nodes.empty(); }
 };
 
@@ -209,6 +218,14 @@ llvm::Expected<Profile> readProfile(llvm::StringRef path,
         if (std::optional<double> number = scale.getAsNumber())
           values.push_back(static_cast<float>(*number));
       profile.weightScales[entry.first.str()] = std::move(values);
+
+      if (const llvm::json::Array *maxima = record->getArray("absolute_maxima")) {
+        llvm::SmallVector<double> magnitudes;
+        for (const llvm::json::Value &maximum : *maxima)
+          if (std::optional<double> number = maximum.getAsNumber())
+            magnitudes.push_back(*number);
+        profile.weightMaxima[entry.first.str()] = std::move(magnitudes);
+      }
     }
   }
 
@@ -294,6 +311,14 @@ public:
       function.emitError()
           << "'" << requantMode
           << "' is not a requantization mode. The two are fixed and float.";
+      return signalPassFailure();
+    }
+    if (!llvm::is_contained(kGranularities,
+                            llvm::StringRef(weightGranularity))) {
+      function.emitError()
+          << "'" << weightGranularity
+          << "' is not a weight granularity. The two are per-channel, the "
+             "default, and per-tensor.";
       return signalPassFailure();
     }
 
@@ -408,10 +433,16 @@ private:
     // what the verifier's rule that the operand must come from a dequantize
     // enforces at the other end.
     if (node->second.inputs.size() >= 2) {
-      auto weights = loaded.weightScales.find(node->second.inputs[1]);
-      if (weights != loaded.weightScales.end() && !weights->second.empty())
+      const std::string &initializer = node->second.inputs[1];
+      auto weights = loaded.weightScales.find(initializer);
+      if (weights != loaded.weightScales.end() && !weights->second.empty()) {
+        llvm::SmallVector<float> scales = weights->second;
+        if (llvm::StringRef(weightGranularity) == "per-tensor" &&
+            failed(perTensor(op, loaded, initializer, scales)))
+          return failure();
         op->setAttr("weight_scales",
-                    DenseF32ArrayAttr::get(op->getContext(), weights->second));
+                    DenseF32ArrayAttr::get(op->getContext(), scales));
+      }
     }
 
     ++rewritten;
@@ -420,6 +451,45 @@ private:
           << "a tensor of this operation calibrated to a degenerate range, so "
              "the profile substituted a scale of 1 and a zero point of 0. The "
              "quantization is legal and it is not meaningful.";
+    return success();
+  }
+
+  /// Section 14's other granularity arm: every channel takes the tensor's one
+  /// symmetric scale.
+  ///
+  /// **The scale is chosen from the profile rather than computed here.** The
+  /// symmetric rule over the whole tensor is its largest magnitude over 127,
+  /// and the largest magnitude is some channel's, so the per tensor scale is
+  /// that channel's own scale, which the profile already holds, exactly: the
+  /// division by 127 is monotone, so the largest quotient is the quotient of
+  /// the largest. Computing it again here would be the weight rule written a
+  /// second time with nothing comparing the two.
+  ///
+  /// A channel of zeros is excluded, because its scale is the degenerate 1
+  /// and is not a magnitude; that is what the absolute maxima are read for,
+  /// and a profile without them cannot tell the two apart, so it is refused
+  /// rather than guessed at. Every channel of zeros leaves the degenerate 1.
+  LogicalResult perTensor(Operation *op, const Profile &loaded,
+                          const std::string &initializer,
+                          llvm::SmallVector<float> &scales) {
+    auto maxima = loaded.weightMaxima.find(initializer);
+    if (maxima == loaded.weightMaxima.end() ||
+        maxima->second.size() != scales.size())
+      return op->emitError()
+             << "per-tensor weight granularity needs the profile's absolute "
+                "maxima for '"
+             << initializer
+             << "', one per channel, to tell a channel of zeros from a real "
+                "one, and the profile has "
+             << (maxima == loaded.weightMaxima.end() ? 0
+                                                     : maxima->second.size())
+             << " for " << scales.size() << " scales";
+
+    std::optional<float> tensorScale;
+    for (auto [scale, maximum] : llvm::zip_equal(scales, maxima->second))
+      if (maximum > 0.0)
+        tensorScale = tensorScale ? std::max(*tensorScale, scale) : scale;
+    scales.assign(scales.size(), tensorScale.value_or(1.0f));
     return success();
   }
 };

@@ -562,6 +562,44 @@ def test_the_profile_reaches_the_operation_as_an_attribute(lenet: Path) -> None:
     )
 
 
+def test_the_weight_granularity_reaches_the_instructions(lenet: Path) -> None:
+    """Section 14's two granularity arms, selected through the driver.
+
+    Per channel, every LeNet layer's channels have scales of their own, so each
+    of its five integer instructions carries the per channel table as a fourth
+    operand. Per tensor, every channel of a layer shares the tensor's one scale,
+    so every channel's rescale is the same pair and no instruction carries the
+    table: the two scalar fields say all of it. Both compile the same five
+    operations to integer instructions, which is what makes them two arms of
+    one ablation rather than two different programs.
+    """
+    import re
+
+    profile = (
+        Path(__file__).resolve().parents[2]
+        / "experiments"
+        / "calibration"
+        / "lenet.json"
+    )
+    four = re.compile(r"npuisa\.(?:conv2d|matmul) ins\((?:%[\w]+, ){3}%[\w]+ :")
+    integer = re.compile(r"npuisa\.(?:conv2d|matmul) ins\([^)]*xi8,")
+
+    per_channel = compile_model(lenet, level=0, emit="npuisa", calibrate=str(profile))
+    per_tensor = compile_model(
+        lenet,
+        level=0,
+        emit="npuisa",
+        calibrate=str(profile),
+        weight_granularity="per-tensor",
+    )
+    assert per_channel.text is not None and per_tensor.text is not None
+
+    assert len(integer.findall(per_channel.text)) == 5
+    assert len(integer.findall(per_tensor.text)) == 5
+    assert len(four.findall(per_channel.text)) == 5
+    assert len(four.findall(per_tensor.text)) == 0
+
+
 def test_an_fp32_compilation_carries_no_weight_scales(lenet: Path) -> None:
     """The attribute is absent wherever the pass did not run, which the
     verifier also enforces from the other end: an operation carrying it whose

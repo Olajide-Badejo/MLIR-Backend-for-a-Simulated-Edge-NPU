@@ -1083,6 +1083,33 @@ quantization not at all. The per channel scales travel in the profile to the
 instruction, whose fourth operand holds one multiplier and one shift per output
 channel.
 
+### The two options that are not the profile
+
+**`weight-granularity`, the two arms of Section 14's ablation.** `per-channel`
+is the default and is Section 14's own granularity: each output channel's
+weights take the channel's symmetric scale from the profile. `per-tensor` gives
+every channel the tensor's one scale, which is the arm the section's per channel
+against per tensor ablation compares against. It reaches the pipeline as
+`weight-granularity=` and `compile_model` as `weight_granularity`, the way
+`calib-method` does.
+
+The per tensor scale is **chosen from the profile rather than computed**. The
+symmetric rule over the whole tensor is its largest magnitude over 127, the
+largest magnitude is some channel's, and division by 127 is monotone, so the per
+tensor scale is exactly that channel's own scale. A channel of zeros is left out
+of the choice, because its scale is the degenerate 1 and is not a magnitude;
+that needs the profile's `absolute_maxima`, and a profile without them is
+refused under `per-tensor` rather than guessed at. Every channel then carries
+the same scale in `weight_scales`, so the contraction in the lowering computes
+the same requantization pair for every channel and emits the instruction with
+the scalar pair alone and no fourth operand.
+
+**`requant-mode` is accepted, validated by name, and inert.** `fixed` is the
+integer multiplier and shift the machine applies, and it is the only arithmetic
+the contraction emits. `float` compiles today to exactly what `fixed` compiles
+to: the float arm of Section 14's requantization row is not built yet, and this
+sentence is here so that nobody reads a `float` compilation as one.
+
 ### The three diagnostics, each saying something different
 
 | Case | What happens | Why |

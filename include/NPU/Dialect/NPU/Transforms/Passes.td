@@ -479,6 +479,12 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
            "'fixed' is the integer multiplier and shift the machine applies; "
            "'float' exists so that a previously published number stays "
            "reproducible. An unknown value is a diagnostic naming it.">,
+    Option<"weightGranularity", "weight-granularity", "std::string",
+           "\"per-channel\"",
+           "'per-channel', Section 14's default, gives each output channel "
+           "its own symmetric weight scale; 'per-tensor' gives every channel "
+           "the tensor's one scale, which is the other arm of Section 14's "
+           "granularity ablation. An unknown value is a diagnostic naming it.">,
   ];
 
   let statistics = [

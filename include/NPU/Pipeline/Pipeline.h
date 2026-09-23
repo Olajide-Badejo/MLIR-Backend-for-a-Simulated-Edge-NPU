@@ -188,6 +188,10 @@ struct PipelineOptions {
   /// `fixed` is the integer multiplier and shift the machine applies; `float`
   /// exists so that a previously published number stays reproducible.
   std::string requantMode = "fixed";
+  /// `per-channel`, Section 14's default, or `per-tensor`, the other arm of
+  /// its granularity ablation: whether each output channel's weights take
+  /// their own scale or the tensor's one.
+  std::string weightGranularity = "per-channel";
   /// Where to stop. `NpuIsa` is the whole level; `Npu` is the tensor level
   /// half, which is what `npu-compile --emit npu` runs.
   PipelineStage stopAfter = PipelineStage::NpuIsa;
