@@ -626,6 +626,25 @@ def weight_scales(absolute_maxima: Sequence[float]) -> list[float]:
     ]
 
 
+def requantization_multiplier(scale_x: float, scale_w: float, scale_y: float) -> float:
+    """`M = (scale_x * scale_w) / scale_y`, from the f32 values the IR carries.
+
+    **This is the Python half of an arithmetic pinned on both sides.**
+    `-npu-calibrate` writes every scale into the IR as an f32 attribute, and the
+    contraction in the lowering reads those and never the profile, so the
+    multiplier the machine applies starts from each scale rounded to f32. After
+    that the arithmetic is double, product before quotient, which is the order
+    `requantizationMultiplier` in `QuantizedContraction.h` evaluates in. The
+    other association can differ in the last bit, and a last bit can move `M0`,
+    so the order is part of the rule rather than a detail of it. A test holds
+    the two halves equal over every channel of every committed profile.
+    """
+    x = float(np.float32(scale_x))
+    w = float(np.float32(scale_w))
+    y = float(np.float32(scale_y))
+    return (x * w) / y
+
+
 def decompose_multiplier(multiplier: float) -> tuple[int, int]:
     """`M` as `M0 * 2^-(31 + shift)` with `M0` in `[2^30, 2^31)`.
 

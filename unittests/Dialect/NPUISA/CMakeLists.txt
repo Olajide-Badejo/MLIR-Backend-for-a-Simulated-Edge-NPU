@@ -63,10 +63,19 @@ target_link_libraries(NPUInterfaceTests
 # and no parser: the whole point of keeping the allocator's arithmetic free of
 # IR is that a thousand interval sets can be generated as integers rather than
 # as modules.
+#
+# **Since P14 it also holds the QDQ contraction's arithmetic**, which is the
+# same kind of thing from the same library: integers and doubles in and integers
+# out, kept free of IR in QuantizedContraction.h for exactly this reason. A
+# binary of its own would need its own row in Section 19.0's activation table,
+# its own CI guard and its own suite in the regression baseline, which is
+# machinery for a file of hand computed cases; this binary's guard already runs
+# everything the transforms side can test without a module.
 
 add_llvm_executable(NPUAllocatorTests
         PARTIAL_SOURCES_INTENDED
         AllocatorTest.cpp
+        QuantizedContractionTest.cpp
         )
 
 llvm_update_compile_flags(NPUAllocatorTests)

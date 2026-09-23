@@ -34,6 +34,7 @@ from npu_frontend.calibration import (
     max_reduction,
     method_range,
     read_profile,
+    requantization_multiplier,
     weight_scales,
     write_profile,
 )
@@ -161,6 +162,56 @@ def test_a_multiplier_of_one_or_more_has_no_representation() -> None:
     """The shift is a right shift, so the pair cannot express a gain."""
     with pytest.raises(CalibrationError, match="right shift"):
         decompose_multiplier(1.5)
+
+
+def test_the_multiplier_starts_from_the_f32_scales_the_ir_carries() -> None:
+    """The lowering reads f32 attributes, so M is computed from f32 values.
+
+    0.1 is not an f32. Its f32 value is 0.100000001490116..., and that is the
+    number the calibrator writes and the contraction reads, so it is the number
+    M is computed from. Computing from the profile's double would be computing
+    a multiplier for a scale no instruction carries.
+    """
+    assert requantization_multiplier(0.1, 1.0, 1.0) == float(np.float32(0.1))
+    assert requantization_multiplier(0.1, 1.0, 1.0) != 0.1
+    # Exact in binary throughout: (0.5 * 0.375) / 0.25 = 0.75.
+    assert requantization_multiplier(0.5, 0.375, 0.25) == 0.75
+
+
+def test_the_multiplier_takes_the_product_before_the_quotient() -> None:
+    """The same case the C++ half pins, so the two are pinned to one order.
+
+    With the f32 values of 0.7, 0.1 and 0.7, product first returns the f32
+    value of 0.1 exactly and quotient first returns one unit in the last place
+    below it.
+    """
+    seven = float(np.float32(0.7))
+    tenth = float(np.float32(0.1))
+    assert requantization_multiplier(0.7, 0.1, 0.7) == tenth
+    assert seven * (tenth / seven) != tenth
+
+
+def test_the_lit_cases_multipliers_decompose_as_worked_by_hand() -> None:
+    """The four channels `test/Dialect/NPUISA/lowering-quantized.mlir` carries.
+
+    The convolution's scale_x is 0.5 and scale_y 0.25, with weight scales
+    0.375 and 0.15625: M is 0.75, which is 3 * 2^29 at no shift, and 0.3125,
+    which doubles once to 0.625, 5 * 2^28. The matrix multiplication's scale_x
+    and scale_y are both 0.25, with weight scales 0.75 and 0.21875: 0.75 again,
+    and 0.21875, which doubles twice to 0.875, 7 * 2^28.
+    """
+    assert decompose_multiplier(requantization_multiplier(0.5, 0.375, 0.25)) == (
+        1610612736,
+        0,
+    )
+    assert decompose_multiplier(requantization_multiplier(0.5, 0.15625, 0.25)) == (
+        1342177280,
+        1,
+    )
+    assert decompose_multiplier(requantization_multiplier(0.25, 0.21875, 0.25)) == (
+        1879048192,
+        2,
+    )
 
 
 def test_the_accumulator_guard_is_exact_at_its_boundary() -> None:

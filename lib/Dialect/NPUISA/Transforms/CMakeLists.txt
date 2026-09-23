@@ -14,6 +14,7 @@ add_mlir_dialect_library(MLIRNPUISATransforms
         AllocateScratchpad.cpp
         DoubleBuffer.cpp
         LowerNPUToNPUISA.cpp
+        QuantizedContraction.cpp
         ScratchpadAllocation.cpp
         ScratchpadLiveness.cpp
 
