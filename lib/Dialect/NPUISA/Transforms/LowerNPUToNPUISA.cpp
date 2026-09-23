@@ -18,6 +18,11 @@
 //                    on chip. One load however many instructions read it.
 //   npu.conv2d       npuisa.conv2d, attributes carried across unchanged.
 //   npu.matmul       npuisa.matmul.
+//                    Either one, when `-npu-calibrate` left it whole between a
+//                    dequantize and a quantize, contracts with them into one
+//                    integer instruction: i8 operands, an int32 bias with the
+//                    input zero point folded in, and the per output channel
+//                    rescale as a fourth operand. QuantizedContraction.h.
 //   npu.add          npuisa.add. A rank 1 right hand operand first becomes a
 //                    stride 0 broadcast view, per ADR 0005.
 //   npu.mul          npuisa.mul, the same way.
@@ -53,6 +58,11 @@
 //      memrefs each would have to allocate its own intermediate and thread its
 //      own destination, which is work stage 3 already does once.
 //
+//      2b. Plan the QDQ contraction, also on tensors: which calibrated
+//      operations contract and every number their instructions carry, with
+//      the calibrations that have no integer form refused by name before
+//      anything is rewritten, for stage 1's reason.
+//
 //   3. Convert. ConversionTarget, TypeConverter, applyPartialConversion, which
 //      is what this phase's roadmap entry asks for by name.
 //
@@ -77,6 +87,7 @@
 #include "NPU/Dialect/NPU/IR/NPUShapeUtils.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISADialect.h"
 #include "NPU/Dialect/NPUISA/IR/NPUISAOps.h"
+#include "NPU/Dialect/NPUISA/Transforms/QuantizedContraction.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -672,6 +683,21 @@ LogicalResult expand(ModuleOp module) {
 struct LoweringState {
   DenseMap<Value, Value> argumentBuffers;
 
+  /// The contractions stage 2b planned. A compute pattern that finds its
+  /// operation here emits the integer instruction and the three constants it
+  /// reads; one that does not emits the f32 instruction it always did. See
+  /// `QuantizedContraction.h`.
+  npuisa::ContractionPlans contractions;
+
+  const npuisa::QuantizedPlan *planFor(Operation *op) const {
+    auto found = contractions.plans.find(op);
+    return found == contractions.plans.end() ? nullptr : &found->second;
+  }
+
+  bool isConsumed(Operation *op) const {
+    return contractions.consumed.contains(op);
+  }
+
   void recordArgumentBuffer(Value dram, Value scratchpad) {
     argumentBuffers.try_emplace(dram, scratchpad);
   }
@@ -783,6 +809,86 @@ protected:
     npuisa::DmaLoadOp::create(rewriter, loc, resolved, copy);
     state.recordArgumentBuffer(resolved, copy);
     return copy;
+  }
+
+  /// A constant this pattern materialises rather than converts: the DRAM
+  /// buffer, the one `dma_load` that brings it on chip, and the scratchpad copy
+  /// an instruction reads.
+  ///
+  /// `ConstantOpLowering` does this for a constant the tensor level carried,
+  /// and the shape here is deliberately the same. The contraction's constants
+  /// were never at the tensor level: the i8 weights, the int32 bias and the
+  /// rescale table are computed during this pass out of an f32 constant and
+  /// the scales the calibrator wrote, and `i32` is a type the tensor level
+  /// cannot hold at all.
+  Value residentConstant(Location loc, DenseElementsAttr value,
+                         ConversionPatternRewriter &rewriter) const {
+    auto shaped = cast<RankedTensorType>(value.getType());
+    MLIRContext *context = rewriter.getContext();
+    auto inSpace = [&](Attribute space) {
+      return MemRefType::get(shaped.getShape(), shaped.getElementType(),
+                             MemRefLayoutAttrInterface(), space);
+    };
+    Value constant = npuisa::ConstOp::create(
+        rewriter, loc, inSpace(npu::DramAttr::get(context)), value);
+    Value copy = memref::AllocOp::create(
+        rewriter, loc, inSpace(npu::ScratchpadAttr::get(context)));
+    npuisa::DmaLoadOp::create(rewriter, loc, constant, copy);
+    return copy;
+  }
+
+  /// What a contracted instruction reads and writes, in operand order.
+  struct Contracted {
+    Value input;
+    Value weights;
+    Value bias;
+    /// Null for the per tensor arm, which carries three operands.
+    Value rescale;
+    Value destination;
+  };
+
+  /// The buffers of one contraction, materialised just above the instruction,
+  /// which is where the f32 path's constants sit too.
+  ///
+  /// **The input is the i8 value the leading dequantize read**, whatever made
+  /// it: a quantize that is lowered to the `QUANT` turning an activation into
+  /// integers, an i8 argument, or another contraction's result. The
+  /// destination is new, because the one the tensor level carried has the f32
+  /// result's element type and this instruction writes i8.
+  Contracted contractedOperands(Operation *op,
+                                const npuisa::QuantizedPlan &plan,
+                                ConversionPatternRewriter &rewriter) const {
+    Location loc = op->getLoc();
+    Contracted operands;
+    operands.input =
+        resident(rewriter.getRemappedValue(plan.quantizedInput), loc, rewriter);
+    operands.weights = residentConstant(loc, plan.weights, rewriter);
+    operands.bias = residentConstant(loc, plan.bias, rewriter);
+    if (plan.rescale)
+      operands.rescale = residentConstant(loc, plan.rescale, rewriter);
+
+    auto result = cast<RankedTensorType>(op->getResult(0).getType());
+    operands.destination = memref::AllocOp::create(
+        rewriter, loc,
+        MemRefType::get(result.getShape(),
+                        IntegerType::get(rewriter.getContext(), 8),
+                        MemRefLayoutAttrInterface(),
+                        npu::ScratchpadAttr::get(rewriter.getContext())));
+    return operands;
+  }
+
+  /// Retires a contracted operation and the quantize after it.
+  ///
+  /// **The trailing quantize is replaced by the instruction's own i8 result
+  /// rather than lowered**, and that is the contraction: an integer
+  /// convolution already is a convolution and a requantization, so a `QUANT`
+  /// after it would rescale a result that had been rescaled. The operation's
+  /// own f32 result has one reader, that quantize, so nothing is left reading
+  /// it.
+  void retire(Operation *op, const npuisa::QuantizedPlan &plan,
+              Value destination, ConversionPatternRewriter &rewriter) const {
+    rewriter.replaceOp(plan.sink, destination);
+    rewriter.replaceOp(op, destination);
   }
 
   LoweringState &state;
@@ -1249,6 +1355,9 @@ public:
   matchAndRewrite(npu::Conv2DOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    if (const npuisa::QuantizedPlan *plan = state.planFor(op))
+      return contract(op, *plan, rewriter);
+
     Value destination = buffer(adaptor.getDestination());
     // The four quantization attributes are absent, spelled out here rather than
     // defaulted so that the operand order stays readable. This pattern matches
@@ -1268,6 +1377,29 @@ public:
     rewriter.replaceOp(op, destination);
     return success();
   }
+
+private:
+  /// The contracted form: one integer convolution in place of the dequantize,
+  /// convolve, quantize cluster the calibrator left.
+  ///
+  /// It carries **two** zero points and both are Section 14's. The input's
+  /// goes in `zeroPoint`, because a tap outside the input contributes it; the
+  /// output's goes in the `scale` word, by the owner's decision of 2026-09-07,
+  /// declared as `outputZeroPoint` in the opcode's integer profile.
+  LogicalResult contract(npu::Conv2DOp op, const npuisa::QuantizedPlan &plan,
+                         ConversionPatternRewriter &rewriter) const {
+    Contracted operands = contractedOperands(op, plan, rewriter);
+    npuisa::Conv2DOp::create(
+        rewriter, op.getLoc(), operands.input, operands.weights, operands.bias,
+        operands.rescale, op.getStridesAttr(), op.getPadsAttr(),
+        op.getDilationsAttr(), op.getGroupAttr(),
+        rewriter.getI32IntegerAttr(plan.inputZeroPoint),
+        rewriter.getI32IntegerAttr(plan.outputZeroPoint),
+        rewriter.getI32IntegerAttr(plan.scalar.multiplier),
+        rewriter.getI32IntegerAttr(plan.scalar.shift), operands.destination);
+    retire(op, plan, operands.destination, rewriter);
+    return success();
+  }
 };
 
 class MatMulOpLowering : public NPULowering<npu::MatMulOp> {
@@ -1278,6 +1410,9 @@ public:
   matchAndRewrite(npu::MatMulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    if (const npuisa::QuantizedPlan *plan = state.planFor(op))
+      return contract(op, *plan, rewriter);
+
     Value destination = buffer(adaptor.getDestination());
     npuisa::MatMulOp::create(
         rewriter, loc, resident(adaptor.getLhs(), loc, rewriter),
@@ -1288,6 +1423,25 @@ public:
         /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
         destination);
     rewriter.replaceOp(op, destination);
+    return success();
+  }
+
+private:
+  /// The contracted form. **There is no input zero point here and that is not
+  /// an omission**: `MATMUL` gives no meaning to that field, because the field
+  /// exists for the taps a convolution reads outside its input and a matrix
+  /// multiplication has no padding. Every tap of this reduction is a real
+  /// activation, so the whole of the zero point term is the constant the bias
+  /// carries.
+  LogicalResult contract(npu::MatMulOp op, const npuisa::QuantizedPlan &plan,
+                         ConversionPatternRewriter &rewriter) const {
+    Contracted operands = contractedOperands(op, plan, rewriter);
+    npuisa::MatMulOp::create(
+        rewriter, op.getLoc(), operands.input, operands.weights, operands.bias,
+        operands.rescale, rewriter.getI32IntegerAttr(plan.outputZeroPoint),
+        rewriter.getI32IntegerAttr(plan.scalar.multiplier),
+        rewriter.getI32IntegerAttr(plan.scalar.shift), operands.destination);
+    retire(op, plan, operands.destination, rewriter);
     return success();
   }
 };
@@ -1406,6 +1560,19 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // **A dequantize every reader of which contracted emits nothing.** Its
+    // readers read the i8 value it would have dequantized, so a `DEQUANT` here
+    // would be an instruction and a buffer nobody reads. It is replaced by that
+    // i8 buffer rather than left in place: an operation the conversion leaves
+    // alone would keep reading the quantize's converted result as a tensor, and
+    // the driver refuses a conversion that ends with such a value still live.
+    // That refusal is what the first attempt at this contraction met on the
+    // first real program it was given.
+    if (this->state.isConsumed(op)) {
+      rewriter.replaceOp(op, adaptor.getInput());
+      return success();
+    }
+
     Location loc = op.getLoc();
     Value destination =
         memref::AllocOp::create(rewriter, loc, scratchpadTypeOf(op.getType()));
@@ -1469,6 +1636,19 @@ struct NPULowerToNPUISAPass
     if (failed(validate(module)) || failed(expand(module)))
       return signalPassFailure();
 
+    // ---- Stage 2b. The QDQ contraction, planned before anything is built. ---
+    //
+    // The numbers an integer instruction reads are worked out here, on tensors,
+    // for the reason stage 1 validates here: a contraction that cannot be
+    // expressed is a diagnostic naming the operation, and it is worth more
+    // before the rewriting starts than in the middle of it. The patterns below
+    // look the plan up and build what it says. **Nothing here can fire on an
+    // fp32 compilation**: a plan needs `weight_scales`, which only
+    // `-npu-calibrate` writes and the verifier refuses anywhere else.
+    LoweringState state;
+    if (failed(npuisa::planQuantizedContractions(module, state.contractions)))
+      return signalPassFailure();
+
     TypeConverter converter;
     converter.addConversion([](Type type) { return type; });
     converter.addConversion(
@@ -1500,8 +1680,19 @@ struct NPULowerToNPUISAPass
     });
     target.addDynamicallyLegalOp<func::ReturnOp>(
         [](func::ReturnOp op) { return op.getNumOperands() == 0; });
+    // **The constants and destinations a contraction consumed are legal here,
+    // which means they are not converted at all.** They are the f32 weights and
+    // bias the contraction quantized at compile time and the f32 destination an
+    // i8 result cannot be written into; converting them would emit a DMA of f32
+    // weights nothing reads and a buffer nothing writes, which is traffic and
+    // scratchpad in a program whose point is to have less of both. Neither has
+    // an operand, so leaving one unconverted leaves nothing live behind it, and
+    // they are erased below once the conversion has taken their readers away.
+    // The consumed dequantize is not in this list and is handled by its
+    // pattern, because it does have an operand.
+    auto wasConsumed = [&state](Operation *op) { return state.isConsumed(op); };
+    target.addDynamicallyLegalOp<npu::ConstantOp, tensor::EmptyOp>(wasConsumed);
 
-    LoweringState state;
     RewritePatternSet patterns(context);
     patterns.add<FuncOpLowering, ReturnOpLowering, ConstantOpLowering,
                  EmptyOpLowering, Conv2DOpLowering, MatMulOpLowering,
@@ -1520,6 +1711,28 @@ struct NPULowerToNPUISAPass
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       return signalPassFailure();
+
+    // ---- The contraction's leftovers, erased rather than left behind. ------
+    //
+    // The consumed constants and destinations, which the conversion left alone
+    // and whose every reader it has now replaced. Each was consumed only
+    // because all of its readers contracted, so each is dead here by
+    // construction; the check says so rather than assuming it, because a
+    // tensor typed operation surviving below this level would be the encoder's
+    // problem three tools away.
+    SmallVector<Operation *> leftovers;
+    module.walk([&](Operation *op) {
+      if (isa<npu::ConstantOp, tensor::EmptyOp>(op) && state.isConsumed(op))
+        leftovers.push_back(op);
+    });
+    for (Operation *op : leftovers) {
+      if (!op->use_empty()) {
+        op->emitError() << "was consumed by a quantized contraction and is "
+                           "still read after the conversion";
+        return signalPassFailure();
+      }
+      op->erase();
+    }
   }
 };
 
