@@ -610,6 +610,44 @@ def null(field: str, cause: str | None = None) -> dict[str, Any]:
     return {field: None, f"{field}_null_reason": NULL_REASONS[key]}
 
 
+#: The two instructions that cross between the integer and the f32 domain.
+QUANTIZATION_BOUNDARY_OPS: Final[tuple[str, ...]] = ("npuisa.quant", "npuisa.dequant")
+
+
+def quant_boundary_crossings(
+    *, quantized: bool, npuisa_op_counts: dict[str, int]
+) -> dict[str, Any]:
+    """Section 14's boundary counter, for one cell, as the key or keys it writes.
+
+    *Added at P14, with the QDQ contraction.* **A crossing is one instruction
+    that moves a value between the integer and the f32 domain**, a `QUANT` or a
+    `DEQUANT`, counted in the compiled program. Section 14 rejects i8 operands
+    on `ADD`, `MUL`, `POOL_AVG`, `RELU` and `POOL_MAX` and asks for the cost of
+    that scope decision to be measured rather than asserted; this is the count
+    the DRAM and energy it costs are read beside. Every integer instruction at
+    `-O0` sits between its own pair, so a quantized cell there counts two per
+    integer instruction, and a level that shares a quantize between two readers
+    counts fewer.
+
+    **An fp32 cell keeps the null it has always carried**, with the reason it
+    has always given: a count of crossings in a program that has no boundary
+    would be a zero meaning something different from a quantized cell's zero.
+    Keeping it also keeps every committed fp32 file byte identical, which is
+    what the cost model's and the quantized cells' changes compare against
+    field by field.
+
+    `int8_macs` needs no such function: it is the simulator's own count and has
+    been recorded on every cell since P10, zero on every fp32 one.
+    """
+    if not quantized:
+        return null("quant_boundary_crossings")
+    return {
+        "quant_boundary_crossings": sum(
+            int(npuisa_op_counts.get(name, 0)) for name in QUANTIZATION_BOUNDARY_OPS
+        )
+    }
+
+
 # ---------------------------------------------------------------------------
 # The staleness key.
 # ---------------------------------------------------------------------------

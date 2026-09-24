@@ -50,6 +50,7 @@ from npu_frontend.results import (
     field_at,
     load_result,
     null,
+    quant_boundary_crossings,
     timing_object,
     validate_result,
     values_of,
@@ -101,6 +102,77 @@ def test_every_group_carries_every_key(results: list[dict[str, Any]]) -> None:
                 f"{result['cell']['name']} is missing "
                 f"{sorted(set(keys) - set(result[group]))} from {group!r}"
             )
+
+
+def test_an_fp32_cell_records_no_integer_arithmetic(
+    results: list[dict[str, Any]],
+) -> None:
+    """The two fields Section 14 gives meaning to, on every committed cell.
+
+    Every committed cell is fp32, and says so twice: `int8_macs` is the
+    simulator's count and is zero, and `quant_boundary_crossings` is a null with
+    the reason it has carried since P10, because a crossing count in a program
+    with no boundary would be a zero meaning something other than a quantized
+    cell's zero.
+    """
+    for result in results:
+        name = result["cell"]["name"]
+        assert result["cell"]["quantized"] is False, name
+        simulation = result["simulation"]
+        assert simulation["int8_macs"] == 0, name
+        assert simulation["quant_boundary_crossings"] is None, name
+        assert (
+            simulation["quant_boundary_crossings_null_reason"]
+            == NULL_REASONS["quant_boundary_crossings"]
+        ), name
+
+
+def test_the_fp32_form_is_byte_for_byte_what_the_committed_files_carry(
+    results: list[dict[str, Any]],
+) -> None:
+    """The writer's fp32 answer, compared with the files it would rewrite.
+
+    `quant_boundary_crossings` is now computed rather than written as a fixed
+    null, and the fp32 half of that computation must produce exactly the two
+    keys every committed cell holds, or the next re-record would move 217 files
+    for a reason that is not a measurement.
+    """
+    written = quant_boundary_crossings(
+        quantized=False, npuisa_op_counts={"npuisa.quant": 3, "npuisa.dequant": 3}
+    )
+    for result in results:
+        carried = {
+            key: result["simulation"][key]
+            for key in (
+                "quant_boundary_crossings",
+                "quant_boundary_crossings_null_reason",
+            )
+        }
+        assert carried == written, result["cell"]["name"]
+
+
+def test_a_quantized_cell_counts_each_quant_and_dequant_as_one_crossing() -> None:
+    """The definition, driven directly.
+
+    A crossing is one instruction moving a value between the integer and the f32
+    domain. Every other opcode, including the integer compute instructions
+    themselves, stays on its own side and is not counted; a program with no
+    quantization instruction at all counts zero rather than null, because a
+    quantized cell whose boundary vanished is a measurement, not a gap.
+    """
+    counts = {
+        "npuisa.quant": 5,
+        "npuisa.dequant": 5,
+        "npuisa.conv2d": 2,
+        "npuisa.matmul": 3,
+        "npuisa.dma_load": 16,
+    }
+    assert quant_boundary_crossings(quantized=True, npuisa_op_counts=counts) == {
+        "quant_boundary_crossings": 10
+    }
+    assert quant_boundary_crossings(
+        quantized=True, npuisa_op_counts={"npuisa.conv2d": 1}
+    ) == {"quant_boundary_crossings": 0}
 
 
 def test_the_groups_are_the_ones_section_16_1_names() -> None:

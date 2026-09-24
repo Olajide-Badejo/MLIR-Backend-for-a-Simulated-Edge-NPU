@@ -41,6 +41,7 @@ import pytest
 from npu_frontend import compile_model, generate_model, refgraph, run_program
 from npu_frontend.input_classes import INPUT_CLASSES, make_inputs
 from npu_frontend.model_generator import MODELS
+from npu_frontend.results import quant_boundary_crossings
 from npu_frontend.tolerances import (
     QUANTIZED_ACCURACY_BUDGETS,
     QUANTIZED_BUDGET_CLASS,
@@ -113,6 +114,7 @@ class Quantized:
     batch: int
     binary: bytes
     npu_text: str
+    npuisa_text: str
     input_shapes: Any
     output_shapes: Any
     count: float
@@ -140,6 +142,7 @@ def quantized(
             batch=int(MODELS[name].input_shape[0]),
             binary=program.binary,
             npu_text=program.stages["npu"],
+            npuisa_text=program.stages["npuisa"],
             input_shapes=program.input_shapes,
             output_shapes=program.output_shapes,
             count=output_count(program.stages["npu"]),
@@ -230,3 +233,40 @@ def test_the_model_is_within_its_accuracy_budget(
         f"{name}: the largest error is {worst / model.count:.3f} counts of "
         f"{model.count}, above its bound of {largest_counts}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The two result fields Section 14 gives meaning to, on the real programs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(MODELS))
+def test_the_integer_fields_a_quantized_cell_records(
+    name: str, quantized: dict[str, Quantized]
+) -> None:
+    """`int8_macs` from the machine and `quant_boundary_crossings` from the program.
+
+    **Every multiply accumulate of a quantized model is an int8 one**, because
+    every convolution and matrix multiplication in the seven contracts, so the
+    machine's `int8_macs` equals its `macs` and is not zero. **The crossings are
+    two per integer instruction at `-O0`**: each contracted operation reads the
+    `QUANT` of its own input and is read by its own `DEQUANT`, and nothing
+    between two of them is shared. That is the cost Section 14 asks to be
+    measured rather than asserted, and a level that shares a quantize between
+    readers would count fewer.
+    """
+    model = quantized[name]
+    inputs = make_inputs(
+        QUANTIZED_BUDGET_CLASS, model.input_shapes, model=name, batch=model.batch
+    )
+    statistics = run_program(model.binary, inputs, model.output_shapes).stats
+    assert statistics["int8_macs"] == statistics["macs"] > 0
+
+    opcodes = re.findall(r"(npuisa\.[a-z_0-9]+) ins\(", model.npuisa_text)
+    counts = {opcode: opcodes.count(opcode) for opcode in set(opcodes)}
+    integer = len(
+        re.findall(r"npuisa\.(?:conv2d|matmul) ins\([^)]*xi8,", model.npuisa_text)
+    )
+    crossings = quant_boundary_crossings(quantized=True, npuisa_op_counts=counts)
+    assert crossings == {"quant_boundary_crossings": 2 * integer}
+    assert integer > 0

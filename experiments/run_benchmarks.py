@@ -187,6 +187,7 @@ from npu_frontend.results import (  # noqa: E402
     host_manifest,
     load_result,
     null,
+    quant_boundary_crossings,
     timing_object,
     write_result,
 )
@@ -752,7 +753,13 @@ class Runner:
             "overlap_fraction": float(statistics["overlap_fraction"]),
         }
         simulation.update(null("tiling_choices"))
-        simulation.update(null("quant_boundary_crossings"))
+        # A null with its reason on every fp32 cell, as it always was, and the
+        # count of QUANT and DEQUANT instructions on a quantized one.
+        simulation.update(
+            quant_boundary_crossings(
+                quantized=key.quantized, npuisa_op_counts=npuisa_counts
+            )
+        )
 
         roofline: dict[str, Any] = {}
         for field in (
