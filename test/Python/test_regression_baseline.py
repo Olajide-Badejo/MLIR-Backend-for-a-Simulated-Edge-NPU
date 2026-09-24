@@ -534,6 +534,74 @@ def test_a_golden_that_is_no_longer_produced_is_drift(empty_goldens: Path) -> No
     assert any("no longer produced" in line for line in drift)
 
 
+def test_a_quantized_golden_is_its_own_tensor_and_never_the_fp32_one(
+    empty_goldens: Path,
+) -> None:
+    """Same model, same level, same stem, two arithmetics, two tensors.
+
+    The quantized golden lives under its own directory and is compared under
+    its own name, so swapping the two answers is two drift lines and not zero:
+    a comparison that matched on the stem alone would read either tensor as the
+    other and call a quantized answer an fp32 one.
+    """
+    fp32 = np.array([1.0, 2.0], dtype=np.float32)
+    int8 = np.array([1.0078125, 1.9921875], dtype=np.float32)
+    np.save(empty_goldens / "lenet-O0-out0.npy", fp32)
+    (empty_goldens / baseline.QUANTIZED_GOLDENS).mkdir()
+    np.save(empty_goldens / baseline.QUANTIZED_GOLDENS / "lenet-O0-out0.npy", int8)
+    quantized = f"{baseline.QUANTIZED_GOLDENS}/lenet-O0-out0"
+
+    same = {"lenet-O0-out0": fp32, quantized: int8}
+    assert baseline.compare(minimal(), minimal(), same) == []
+
+    swapped = {"lenet-O0-out0": int8, quantized: fp32}
+    drift = baseline.compare(minimal(), minimal(), swapped)
+    assert any(line.startswith("golden lenet-O0-out0:") for line in drift)
+    assert any(line.startswith(f"golden {quantized}:") for line in drift)
+
+
+def test_a_quantized_golden_not_yet_recorded_says_so(empty_goldens: Path) -> None:
+    """What the first check after quantized goldens arrive prints, and only that."""
+    drift = baseline.compare(
+        minimal(),
+        minimal(),
+        {f"{baseline.QUANTIZED_GOLDENS}/lenet-O0-out0": np.zeros(2, np.float32)},
+    )
+    assert drift == ["golden int8/lenet-O0-out0: produced and not recorded"]
+
+
+def test_a_record_removes_only_what_it_no_longer_produces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both directories are the golden set, and nothing a previous run left.
+
+    A stale tensor in either place is removed and every produced one is written
+    where its name says, so an fp32 tensor never lands in the quantized
+    directory or the other way round.
+    """
+    golden = tmp_path / "baseline" / "golden"
+    monkeypatch.setattr(baseline, "BASELINE_DIR", tmp_path / "baseline")
+    monkeypatch.setattr(baseline, "BASELINE_PATH", tmp_path / "baseline" / "b.json")
+    monkeypatch.setattr(baseline, "GOLDEN_DIR", golden)
+    (golden / baseline.QUANTIZED_GOLDENS).mkdir(parents=True)
+    np.save(golden / "gone-O0-out0.npy", np.zeros(1, np.float32))
+    np.save(golden / baseline.QUANTIZED_GOLDENS / "gone-O0-out0.npy", np.zeros(1))
+
+    baseline.write(
+        minimal(),
+        {
+            "lenet-O0-out0": np.ones(2, np.float32),
+            f"{baseline.QUANTIZED_GOLDENS}/lenet-O0-out0": np.full(2, 2, np.float32),
+        },
+    )
+    assert set(baseline.recorded_golden_paths()) == {
+        "lenet-O0-out0",
+        "int8/lenet-O0-out0",
+    }
+    assert np.load(golden / "lenet-O0-out0.npy").tolist() == [1.0, 1.0]
+    assert np.load(golden / "int8" / "lenet-O0-out0.npy").tolist() == [2.0, 2.0]
+
+
 # ---------------------------------------------------------------------------
 # The committed baseline's shape.
 # ---------------------------------------------------------------------------
@@ -648,6 +716,22 @@ def test_every_committed_golden_has_a_cell() -> None:
         model, _, rest = name.partition("-O")
         assert model in models
         assert int(rest.split("-")[0]) in levels
+
+
+def test_every_model_has_one_committed_quantized_golden_at_o0() -> None:
+    """Section 14's quantized goldens, one per model, added rather than substituted.
+
+    Skipped only until the first record that carries them, which is the commit
+    after the one that taught the harness to write them.
+    """
+    from npu_frontend import MODELS
+
+    directory = baseline.GOLDEN_DIR / baseline.QUANTIZED_GOLDENS
+    if not directory.is_dir():
+        pytest.skip("no quantized goldens have been recorded yet")
+    assert {path.stem for path in directory.glob("*.npy")} == {
+        f"{name}-O0-out0" for name in MODELS
+    }
 
 
 # ---------------------------------------------------------------------------

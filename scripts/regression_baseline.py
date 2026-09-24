@@ -70,6 +70,18 @@ BASELINE_DIR = REPO_ROOT / "test" / "baseline"
 BASELINE_PATH = BASELINE_DIR / "baseline.json"
 GOLDEN_DIR = BASELINE_DIR / "golden"
 
+#: The subdirectory of `GOLDEN_DIR` the quantized output tensors live in, and
+#: the prefix their names carry here.
+#:
+#: *Added at P14.* Section 17.6 holds the fp32 tensors of every model at every
+#: level "and separately the quantized ones", and the separation is a directory
+#: rather than a suffix for two reasons. No fp32 name moves, so the 21 files
+#: that are never edited are not renamed either; and a tensor's arithmetic is
+#: read off its path, `int8/lenet-O0-out0`, with the fp32 naming inside it
+#: unchanged. One per model, at `-O0`, the level the quantized compilation is
+#: swept at.
+QUANTIZED_GOLDENS: Final[str] = "int8"
+
 #: Bumped whenever the recorded shape changes. `--check` refuses a version it
 #: does not know rather than guessing what a missing field meant.
 #:
@@ -716,7 +728,45 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                     for index, produced in enumerate(answer.outputs):
                         goldens[f"{name}-O{level}-out{index}"] = produced
 
+        # **The quantized goldens, one per model, added rather than
+        # substituted.** *Added at P14.* The model calibrated from its
+        # committed profile and compiled at `-O0` through the QDQ contraction,
+        # run on the same input as the fp32 cells. Nothing here touches an
+        # fp32 tensor: the compilation is a separate one, and its tensors go
+        # under their own directory.
+        profile = REPO_ROOT / "experiments" / "calibration" / f"{name}.json"
+        if not profile.is_file():
+            raise BaselineError(
+                f"{profile} is missing, so {name} has no quantized golden. The "
+                f"profiles are committed per model; scripts/"
+                f"build-calibration-profiles.py writes them."
+            )
+        quantized = frontend.compile_model(
+            onnx_path, level=0, emit="nbin", calibrate=str(profile)
+        )
+        arrays = make_inputs("normal", quantized.input_shapes, model=name, batch=batch)
+        answer = frontend.run_program(quantized.binary, arrays, quantized.output_shapes)
+        for index, produced in enumerate(answer.outputs):
+            goldens[f"{QUANTIZED_GOLDENS}/{name}-O0-out{index}"] = produced
+
     return cells, goldens
+
+
+def recorded_golden_paths() -> dict[str, Path]:
+    """Every golden tensor on disk, by the name `collect_cells` gives it.
+
+    A bare stem for an fp32 tensor and `int8/<stem>` for a quantized one, so
+    that recording, removing and comparing all speak the same names and a
+    quantized tensor can never be read as the fp32 one with the same stem.
+    """
+    found = {path.stem: path for path in GOLDEN_DIR.glob("*.npy")}
+    found.update(
+        {
+            f"{QUANTIZED_GOLDENS}/{path.stem}": path
+            for path in (GOLDEN_DIR / QUANTIZED_GOLDENS).glob("*.npy")
+        }
+    )
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -903,12 +953,13 @@ def write(baseline: dict[str, Any], goldens: dict[str, Any]) -> None:
 
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    (GOLDEN_DIR / QUANTIZED_GOLDENS).mkdir(parents=True, exist_ok=True)
 
     # Every `.npy` that is no longer produced is removed, so the directory is
     # the golden set rather than the golden set plus whatever a previous shape
     # of the suite left behind.
-    for stale in GOLDEN_DIR.glob("*.npy"):
-        if stale.stem not in goldens:
+    for name, stale in recorded_golden_paths().items():
+        if name not in goldens:
             stale.unlink()
     for name, array in goldens.items():
         np.save(GOLDEN_DIR / f"{name}.npy", array)
@@ -1273,7 +1324,7 @@ def compare(
                 )
 
     # ---- goldens ---------------------------------------------------------
-    on_disk = {path.stem for path in GOLDEN_DIR.glob("*.npy")}
+    on_disk = set(recorded_golden_paths())
     for name in sorted(on_disk | set(goldens)):
         if name not in goldens:
             drift.append(f"golden {name}: recorded and no longer produced")
