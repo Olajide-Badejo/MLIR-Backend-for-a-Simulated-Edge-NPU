@@ -14,25 +14,26 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-24, at P14 checkpoint B, the QDQ contraction's
-boundary.
+**Last updated:** 2026-09-24, at P14 checkpoint B, the boundary of item 3 at
+`-O0`: all seven models end to end.
 
 ## Current phase
 
 **P14, INT8 quantization, in progress. Checkpoint A is complete, and Checkpoint
-B has landed everything up to and including the QDQ contraction: a calibrated
-model now compiles to integer instructions and runs on the machine.** Branch
-`phase/p14-int8`, cut from `main` at `e72f610`, the P13 merge. `main` has moved
-on to `e1a94d3` with P13b, PR 23, and the owner's README edit; it is merged into
-this branch only at Checkpoint C's start, with a merge commit and never a
-rebase, because shas are cited throughout these files.
+B has landed calibration, the QDQ contraction and all seven models end to end
+at `-O0`: a calibrated model compiles to integer instructions, runs on the
+machine, and meets both of Section 14's bounds.** Branch `phase/p14-int8`, cut
+from `main` at `e72f610`, the P13 merge. `main` has moved on to `e1a94d3` with
+P13b, PR 23, and the owner's README edit; it is merged into this branch only at
+Checkpoint C's start, with a merge commit and never a rebase, because shas are
+cited throughout these files.
 
 **This section replaces the checkpoint A account that was here.** That account
-stopped being current on 2026-09-16 and the file was not brought forward until
-now; the engineering log carries all of it, and the entries are listed below.
-The rest of this file, from the P13 handoff down to the "Next command" section
-at the end, is still checkpoint A's and is left for the closing rewrite; where
-it disagrees with this section, this section is the current one.
+stopped being current on 2026-09-16; the engineering log carries all of it, and
+the entries are listed below. The rest of this file, from the P13 handoff down
+to the "Next command" section at the end, is still checkpoint A's and is left
+for the closing rewrite; where it disagrees with this section, this section is
+the current one.
 
 ### What has landed, with the commits
 
@@ -51,47 +52,54 @@ it disagrees with this section, this section is the current one.
 | A red suite keeps its failure text; the channel axis per operator, D-0067 | `da0c461`, `4c49af5` |
 | The model IR artefact stamps what it was built from | `b0241b3` |
 | D-0068: the machine's rounding divide overflowed at a shift of 31 | `96992ca` |
-| **The QDQ contraction**: the arithmetic pinned on both sides, the lowering, the per tensor arm, and the end to end tests | `08c9d06`, `4c152fa`, `a3a0251`, `ccd146b` |
+| The QDQ contraction: the arithmetic pinned on both sides, the lowering, the per tensor arm, and the end to end tests | `08c9d06`, `4c152fa`, `a3a0251`, `ccd146b`, docs `728eb5d`, record `d7c066b` |
+| **Item 3 at `-O0`**: the accuracy prediction, both bounds on all seven models with the budgets, the two result fields, the quantized goldens, the ISA sentence on the scalar pair, and this docs commit | `8595e0b`, `a051b55`, `e5a965a`, `1d51f99`, `8c687f0`, and the commit carrying this file |
 
 The baseline was re-recorded at `dab3e76`, `c9c1961`, `d2c431c`, `96bef52`,
-`832aef0`, `ccb4c07` and `4f6c663`, each time with only test counts and names
-moving, and is re-recorded again by the commit after this one.
+`832aef0`, `ccb4c07`, `4f6c663` and `d7c066b`, each time with only test counts
+and names moving, and is re-recorded again by the commit after this one, which
+also adds the seven quantized goldens.
 
-### What the contraction is, in four sentences
+### What item 3 measured, in four sentences
 
-`-npu-lower-to-npuisa` turns the QDQ form `-npu-calibrate` leaves, a dequantize,
-a convolution or matrix multiplication carrying `weight_scales`, and a quantize,
-into one integer `npuisa.conv2d` or `npuisa.matmul` with i8 weights, an int32
-bias with the input zero point folded over the whole window, and the per channel
-rescale as the fourth operand. Every convolution and matrix multiplication in
-the seven models' quantized compilations contracts, 22 instructions over 556
-channels, and every table the compiler writes equals the one Python computes
-from the same profile, bit for bit. An operation missing part of the
-calibrator's shape stays in the QDQ form and lowers as before; arithmetic with
-no integer form is refused by name. `weight-granularity=per-tensor` selects the
-other arm of Section 14's ablation, and `docs/PASSES.md` has all of it.
+Against the numpy integer reference from the same profile, the machine is at
+**zero counts** on every output of all seven models on all five input classes,
+35 of 35 against Section 14's bound of one count. Against onnxruntime on the
+`normal` class, per output channel, `minmax`, 32 calibration inputs, the seven
+models sit between **33.80 and 46.17 dB** with the largest error between 0.14
+and 2.24 counts, and each is held to its own budget in
+`npu_frontend.tolerances`, a floor 1 dB under the observation and a count half
+a count over it. The prediction committed first, `experiments/predictions/
+p14-quantized-accuracy.md`, was right on the band and the integer reference and
+wrong on LeNet, the ordering and `depthwise_separable`'s largest error, and the
+engineering log says why: the calibrated range is the extreme of the draws, and
+a tensor with more elements shows more of its tail. No number from the per
+tensor arm is published.
 
 ### The gate, clause by clause
 
 | Clause | Status |
 |---|---|
-| accuracy degradation measured and reported per model | **pending**, item 3 and Checkpoint C. At this boundary quantized LeNet on the machine agrees with the numpy integer reference from the same profile exactly, which is the first of Section 14's two bounds on one model; no accuracy number is published from it |
+| accuracy degradation measured and reported per model | **measured at `-O0`**, per model, both bounds, the budgets recorded beside the measurement. Checkpoint C's tables, the calibration count and the three ablations, are still to come, and the levels above `-O0` are an open question below |
 | cycles and energy win, the int8 throughput share separated from the DMA share | **pending**, item 4 and Checkpoint C |
 | calibration methodology documented in one place | **met**, `docs/PASSES.md` |
 | `Program::kVersion` unmoved, `test_binary_stability` green | **met**, 2, asserted by `Validation.TheQuantizationPhaseDidNotMoveTheFormatVersion` |
 | fp32 goldens byte identical | **met at this boundary**, see the verification below |
-| quantized goldens added rather than substituted | **pending**, item 3 |
-| reachability green with zero quantization exemptions | **met**, no exemptions in force, `npu.quantize` and `npuisa.quant` in every quantized file |
+| quantized goldens added rather than substituted | **met**, seven, one per model at `-O0`, under `test/baseline/golden/int8/` with the fp32 naming inside; no fp32 golden renamed or rewritten |
+| reachability green with zero quantization exemptions | **met**, no exemptions in force |
 
 ### What remains, in order
 
-1. **Item 3, the seven model end to end with both bounds**: the numpy integer
-   reference within one count of the output scale, which the LeNet test here
-   already asserts and the census says all seven can meet; onnxruntime within a
-   per model budget recorded in the results; quantized goldens under new names
-   with no fp32 golden touched; `quant_boundary_crossings` and `int8_macs` in
-   the schema with the schema test. No accuracy number from the interim per
-   tensor execution is published.
+1. **Quantized compilation above `-O0`.** Investigated at this boundary and
+   reported with a proposal, nothing built. The calibration runs first at every
+   level: `-O1`'s quantized program is `-O0`'s bit for bit, `-O2`'s at the
+   default budget is `-O0`'s plus one CSE merge, because the QDQ form turns off
+   the bias fusion, the batch norm fold and the operation fusion on every
+   calibrated operation, and `-O2` at the tight budget fails verification on
+   all seven models, because a tile of a calibrated operation reads a slice
+   rather than a dequantize. The engineering log entry has the measurements.
+   Nothing is built until it is ruled on, and the owner rules wherever it
+   moves a documented methodology.
 2. **Item 4, the cost model's INT8 terms**: declared in
    `docs/BREAKING_CHANGES.md` before the causing commit, `FrozenConstants`
    extended, the fp32 charges asserted unchanged over the committed 217 cells
@@ -99,22 +107,22 @@ other arm of Section 14's ablation, and `docs/PASSES.md` has all of it.
    recorded fp32.
 3. **Item 5, the quantized cells**: the count derived from the driver, every
    hardcoded count site moved in one commit, and the re-derived Section 2
-   paragraph written here for the owner.
+   paragraph written here for the owner. Which levels a quantized cell exists
+   at waits on the first item.
 4. **Checkpoint C**, starting with the merge of `main`, then its predictions and
    measurements per the phase brief; then the close.
 
 ### Open at this boundary
 
-- **`requant-mode` is accepted, validated and inert.** `float` compiles to
-  exactly what `fixed` does. Section 14 asks for both, with the float row as a
-  free ablation; building it is not the contraction's, and `docs/PASSES.md` says
-  so beside the option.
+- **`requant-mode` is accepted, validated and inert**, and is with the owner.
+  `float` compiles to exactly what `fixed` does; Section 14 asks for both, with
+  the float row as a free ablation. Unchanged, as ruled.
 - **Section 14's static guard bounds the products and not the folded bias on
-  top of them.** An operation near the guard's limit with a large input zero
-  point could pass it and still overflow when the bias is added; nothing wraps,
-  because the contraction refuses a bias outside int32 and the machine traps,
-  and the suite's deepest reduction is 400 against the guard's 132104. Recorded,
-  not changed.
+  top of them.** Recorded at the contraction's boundary, not changed.
+- **The scalar pair beside a table** is now described in the ISA text: with a
+  fourth operand the machine rescales every channel from the table, and the
+  pair is bounded on decode and not used. Verified at the source in `rescaleFor`
+  and `checkQuantization` before the sentence was written.
 - D-0049 open, its fix is P15's; D-0065 on `main`, deferred to P15; D-0066 open
   as a candidate. **The next free defect number is D-0069.**
 - The Section 2 and Section 5.5 edits to the specification are still the
@@ -123,54 +131,53 @@ other arm of Section 14's ablation, and `docs/PASSES.md` has all of it.
 ### Where the detail is
 
 `docs/ENGINEERING_LOG.md`: "2026-09-06 Phase P14, checkpoint A", "2026-09-16
-Phase P14, checkpoint B" with its subsections on the output zero point, the
-representation, the granularity and the freshness gate, and "2026-09-24 Phase
-P14, checkpoint B: the QDQ contraction". `docs/DEFECT_LOG.md`: D-0063, D-0066,
-D-0067, D-0068. `docs/BREAKING_CHANGES.md`: the two P14 declarations, 2026-09-16
-and 2026-09-20. The contraction moves no counted field and declares nothing:
-quantized mode is in no `-O` level, and the baseline check below is the
-measurement that says so.
+Phase P14, checkpoint B" with its subsections, "2026-09-24 Phase P14,
+checkpoint B: the QDQ contraction", and "2026-09-24 Phase P14, checkpoint B:
+all seven models end to end, and a prediction that was half wrong".
+`docs/DEFECT_LOG.md`: D-0063, D-0066, D-0067, D-0068. `docs/BREAKING_CHANGES.md`:
+the two P14 declarations, 2026-09-16 and 2026-09-20. Item 3 moves no counted
+field and declares nothing: `quant_boundary_crossings` stays the null it was on
+every committed file, which a test compares byte for byte, and the baseline
+check below is the measurement that says no fp32 cell moved.
 
-### Verification at the contraction's tip
+### Verification at item 3's tip
 
 Every row was predicted before it was run, and the predictions are in the
-boundary's report with the arithmetic behind them: 20 pytest cases, two lit
-files, eighteen allocator binary cases and one simulator case added, none needing
-an external tool.
+boundary's report with the arithmetic behind them: 57 pytest cases added, 50
+end to end, three schema and four baseline, one of which skips until the record
+that follows this commit, and nothing added to lit or to the C++ units. None
+needs an external tool.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6`, `ninja -C build-ndebug -j6` | clean, no warnings |
-| `ninja -C build check-npu` | **44 of 44**, from 42: `lowering-quantized.mlir` and `lowering-quantized-diagnostics.mlir` |
-| `NPUInterfaceTests`, `NPUTilingTests` | 23, 20, both trees |
-| `NPUAllocatorTests` | **47**, from 29: the eighteen `QuantizedArithmetic` cases, both trees |
-| `NPUEncodingTests` | 95 passed, 2 skipped, both trees |
-| `NPUSimulatorTests` | **79** passed, 1 skipped, from 78: D-0068's case, both trees |
-| `pytest test/Python -m 'slow or not slow'`, dev | **1232 passed, 18 skipped**, 226.21 s. **Predicted 1232 and 18**: 1212 at `4f6c663` plus the twenty this item added |
-| the same, CI shape | **1217 passed, 33 skipped**, 165.97 s. **Predicted 1217 and 33.** The shape difference stays at 15, because none of the twenty needs an external tool. It is also the first CI shape measurement since `4f6c663`'s figure was predicted and not measured |
+| `ninja -C build check-npu` | **44 of 44**, as at the contraction |
+| `NPUInterfaceTests`, `NPUTilingTests`, `NPUAllocatorTests` | 23, 20, 47, both trees |
+| `NPUEncodingTests`, `NPUSimulatorTests` | 95 passed and 2 skipped, 79 passed and 1 skipped, both trees |
+| `pytest test/Python -m 'slow or not slow'`, dev | **1288 passed, 19 skipped**, 232.25 s. **Predicted 1288 and 19**: 1232 at the contraction plus 56 passing, and the one quantized golden case skipping until the record |
+| the same, CI shape | **1273 passed, 34 skipped**, 171.61 s. **Predicted 1273 and 34.** The shape difference stays at 15 |
 | `mypy`, both shapes | no issues in 29 source files |
-| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **670 of 670**, the eight files this item added |
-| `build-model-ir.py`, then `check-reachability.py` | pass, all five layers, **no exemptions**; every quantized file holds `npu.quantize` and `npuisa.quant`, one `QUANT` and one `DEQUANT` per integer instruction and no f32 compute |
-| `check-isa-staleness.sh build`, `gen-design-decisions.py --check`, `results_to_tex.py --check`, `patch-scalesim.py --check` | up to date, up to date, up to date, every edit in place: this item changed no declared interface |
-| `coverage.sh 85 93 16 58` | **C++ 87.1 PASS** against 85, 6998 lines of 8037, branches 76.2 over 4522, with the new `QuantizedContraction.cpp` at 237 of its 240 lines. Per tree **93.51 / 39.56 / 71.51 PASS** against 93 / 16 / 58, exit 0. **No threshold moved.** Predicted within 0.3 of the last measurement, `d2c431c`'s 86.5 and 93.60 / 18.61 / 71.51, and **the C++ and `scripts` rows missed**: the prediction took `d2c431c`'s figures for the parent's, and six commits with code and tests landed after that measurement without another, among them the freshness gate's 23 cases, which are what moved `scripts` |
-| `regression-baseline.sh --check`, from a quiet start at 0.24 | **red on the suites only, as predicted**: 45 differences, every one a test count or an added test name, 18 allocator cases, 1 simulator case, 2 lit files and 20 pytest cases. **Not one cell line and not one golden line**: 42 cells, 21 golden tensors, largest movement against `-O0` **4.470e-08**, P13's figure. No counted field of any fp32 cell moved, which is the proof that the contraction does not fire in an fp32 compilation. The record that follows this commit answers it, from a quiet start |
+| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **672 of 672**, the prediction and the end to end test file |
+| `build-model-ir.py`, then `check-reachability.py` | pass, all five layers, **no exemptions** |
+| `check-isa-staleness.sh build` | **clean on `8c687f0`**, the ISA commit before this one, which carries the regenerated manual; run on the working tree before that commit it reported the manual as differing from `HEAD`, which is what the gate is for, and the prediction had not allowed for it |
+| `gen-design-decisions.py --check`, `results_to_tex.py --check`, `patch-scalesim.py --check` | up to date, up to date, every edit in place |
+| `coverage.sh 85 93 16 58` | **C++ 87.0 PASS** against 85, 6995 lines of 8037, branches 76.1 over 4522, `QuantizedContraction.cpp` at 237 of 240. Per tree **93.56 / 40.65 / 71.51 PASS** against 93 / 16 / 58, exit 0. **No threshold moved.** Predicted C++ at 87.1 within 0.2, met: no C++ source changed and three fewer lines ran. Predicted the trees at 93.5, 39.4 to 39.6 and 71.5 within 0.3, **met on two and missed on `scripts`**, which rose by 1.09 where I expected a dip: the four baseline cases exercise the int8 listing in `write` and `compare`, and I counted only the quantized loop in `collect_cells` that no case runs |
+| `regression-baseline.sh --check`, from a quiet start at 0.24 | **red on the suites and the arrivals only, as predicted**: 66 differences, the pytest counts, 57 added test names, and seven lines `golden int8/<model>-O0-out0: produced and not recorded`. **Not one cell line and not one fp32 golden line**: 42 cells, 21 fp32 tensors, largest movement against `-O0` **4.470e-08**, P13's figure. The record that follows this commit answers it, from a quiet start |
 | `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches** |
 
 ### Next command
 
-The orchestrator verifies this boundary, pushes and watches CI. When told to
-continue, item 3 starts from the test that already asserts the first bound on
-one model:
+This boundary is verified, pushed and watched in CI, and quantized
+compilation above `-O0` is ruled on, before item 4 starts. Item 3's state is
+one command:
 
 ```
 PYTHONPATH=$HOME/llvm-project/build/tools/mlir/python_packages/mlir_core:$PWD/python \
-  python -m pytest test/Python/test_quantized_contraction.py -q \
-  -k lenet_quantized_agrees_with_the_integer_reference
+  python -m pytest test/Python/test_quantized_end_to_end.py -q
 ```
 
-It passes at zero counts on LeNet. Parametrizing it over the seven models is
-the first half of item 3; the onnxruntime bound with a per model budget recorded
-in the results is the second.
+It passes 50 of 50. Item 4 starts with its declaration in
+`docs/BREAKING_CHANGES.md`, written before the commit that adds the INT8 terms.
 
 ## P13, merged at `e72f610`
 
@@ -2539,7 +2546,7 @@ became.**
 
 ## Next command
 
-**Checkpoint A is complete and the orchestrator verifies, pushes and watches CI
+**Checkpoint A is complete, and it is verified, pushed and watched in CI
 before checkpoint B starts.** Nothing here is this session's to push.
 
 **The exact next command**, which is the one that shows what checkpoint A

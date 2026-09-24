@@ -9,9 +9,10 @@ Semantic Versioning once a release is tagged.
 ### Phase P14: INT8 quantization
 
 **In progress. Checkpoint A is complete, and Checkpoint B has landed
-calibration and the QDQ contraction**: a calibrated model now compiles to
-integer instructions and runs on the machine. The seven model end to end bounds,
-the quantized goldens and the cost model's INT8 terms remain. The dialect's
+calibration, the QDQ contraction and all seven models end to end at `-O0`**: a
+calibrated model now compiles to integer instructions, runs on the machine, and
+meets both of Section 14's bounds. The cost model's INT8 terms, the quantized
+cells and quantized compilation above `-O0` remain. The dialect's
 operator set is complete for the first time, the integer kernels have hand
 computed semantics and an independent numpy implementation that agrees with them
 **to the bit**, and `Program::kVersion` has not moved.
@@ -39,6 +40,24 @@ measurement is in `docs/PHASE_STATE.md` beside the claim.
   LeNet on the machine agrees with the numpy integer reference from the same
   profile within Section 14's bound of one count, measured at zero counts on
   every output.
+- **All seven models meet both of Section 14's bounds at `-O0`.** Against the
+  numpy integer reference from the same profile, zero counts on every output of
+  every model on all five input classes, 35 of 35 against a bound of one count.
+  Against onnxruntime, on the `normal` class, 33.8 to 46.2 dB with the largest
+  error between 0.14 and 2.24 counts, each model held to its own budget in
+  `npu_frontend.tolerances` beside the measurement. The prediction committed
+  before the measurement was half wrong, and the entry in
+  `docs/ENGINEERING_LOG.md` says which half and why.
+- **Quantized goldens, one per model, under `test/baseline/golden/int8/`**, with
+  the fp32 naming inside. No fp32 golden is renamed or rewritten.
+- **`quant_boundary_crossings` is recorded on a quantized cell**, the count of
+  its `QUANT` and `DEQUANT` instructions. An fp32 cell keeps the null and the
+  reason it always carried, and a test holds the writer's fp32 form byte for
+  byte equal to all 217 committed files.
+- **The ISA description says what the scalar pair holds beside a table**: the
+  machine rescales every channel from the table, the pair is bounded on decode
+  and takes no part in the arithmetic, and the compiler fills it with channel
+  0's pair. The manual is regenerated.
 - **`weight-granularity` selects Section 14's per tensor arm**, on
   `-npu-calibrate`, the pipeline and `compile_model`. `per-tensor` gives every
   channel the tensor's one scale, chosen from the profile rather than computed,

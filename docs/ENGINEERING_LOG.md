@@ -7215,3 +7215,192 @@ INT8 terms are the items after this one. So is absorbing a dequantize and
 quantize pair between two contracted operations when the two pairs carry the
 same scale, which would be exact and would save a `DEQUANT` and a `QUANT`, and
 which no model at `-O0` has.
+
+## 2026-09-24 Phase P14, checkpoint B: all seven models end to end, and a prediction that was half wrong
+
+**What this was for.** Section 14 asks two things of a quantized model end to
+end: agreement with an integer reference computed in numpy from the same
+profile, to within one count of the output scale, and agreement with
+onnxruntime within a per model accuracy budget. The contraction had one model
+through the first. This takes all seven through both, adds the quantized
+goldens, and fills the two result fields Section 14 gives meaning to. Six
+commits: `8595e0b` for the prediction, `a051b55` for the end to end test and
+the budgets, `e5a965a` for the fields, `1d51f99` for the goldens, `8c687f0`
+for the ISA sentence below, and the docs commit that carries this entry.
+
+### A budget is set close to what is observed, so the observation needed a prediction first
+
+The budget against onnxruntime is how much quantization error each model is
+allowed, and Section 17.4's rule is that a bound is set close to what is
+observed. That puts a measurement before the budget, and this project's rule
+puts a prediction before any measurement. So
+`experiments/predictions/p14-quantized-accuracy.md` was committed before any
+quantized model had been compared with onnxruntime at any granularity, and the
+budgets were written after the measurement it predicts.
+
+The prediction counted the roundings along each model's quantized path, gave
+each one a size from its kind, a two sided activation near -40 dB, a one sided
+one near -43 dB, a weight near -48 dB, and added them.
+
+### The measurement, and the adjudication, clause by clause
+
+On the `normal` class, at `-O0`, per output channel weights, `minmax`, 32
+calibration inputs, against onnxruntime:
+
+| Model | SQNR | Largest error | Predicted SQNR |
+|---|---|---|---|
+| `conv_bn_relu_stack` | 33.80 dB | 2.24 counts | about 32 |
+| `dilated_stack` | 34.40 dB | 1.10 counts | about 34 |
+| `inception_block` | 36.29 dB | 1.05 counts | about 36 |
+| `lenet_batched` | 42.97 dB | 1.34 counts | about 30 |
+| `lenet` | 43.89 dB | 1.07 counts | about 30 |
+| `resnet_block` | 46.14 dB | 2.17 counts | about 40 |
+| `depthwise_separable` | 46.17 dB | 0.14 counts | about 34 |
+
+- **Every model between 22 and 50 dB: met.** 33.80 to 46.17.
+- **`lenet` between 25 and 35 dB: falsified.** 43.89.
+- **`lenet` and `lenet_batched` within 1.5 dB: met.** 0.93 apart.
+- **The two LeNets the lowest pair: falsified.** They are third and fourth
+  from the top.
+- **`resnet_block` and `inception_block` the two highest: falsified.**
+  `resnet_block` is second, level with `depthwise_separable`, and
+  `inception_block` is fifth from the top.
+- **The largest error between 1 and 10 counts on every model: falsified on
+  one.** `depthwise_separable` is at 0.14; the other six are between 1.05 and
+  2.24.
+- **Against the integer reference, 0 counts on six models and at most 1 on
+  `conv_bn_relu_stack`, on all five classes: met, and more exactly than
+  predicted.** Zero on all seven, all five classes, 35 of 35.
+
+**What the model got wrong is the range, not the count.** It sized every
+activation's step as if the calibrated range spanned the same number of
+standard deviations, and it does not: the range is the extreme of the draws
+the calibration saw, and a tensor with more elements shows more of its tail.
+LeNet's fully connected outputs are 10 and 84 and 120 values per input, so over
+32 inputs their extremes sit near three standard deviations and the step is
+fine; the convolution stacks' activations are thousands of values per input and
+their extremes sit much further out, which spends the int8 levels on a tail
+almost nothing occupies. The count of roundings was a smaller effect than the
+width of each one. Two further mechanisms the entry missed: an average pool at
+the output averages many independent roundings, which is why
+`depthwise_separable` lands at a seventh of a count, and `resnet_block`'s f32
+residual path was right in direction and too timid in size.
+
+This is also the first number this project has that says something about
+`minmax` on this suite, and it is not quite the one Section 14 expected to be
+measured: the calibration input count and the method are Checkpoint C's
+ablations, and what this says is that the step size is set by how much of the
+tail the calibration draw exposes, which is exactly what those two ablations
+vary.
+
+### The budgets
+
+In `npu_frontend.tolerances`, beside the measurement: an SQNR floor at the
+observed ratio less 1 dB, rounded down, and a largest error at the smallest
+whole count half a count above the observed one, asserted separately in the
+way Section 17.4 asserts the fp32 bands. **The margin is not for the host.**
+The program's answer is bit identical across hosts, which the goldens pin, and
+onnxruntime's per host movement moves these ratios by millionths of a dB. One
+dB is a quarter more noise power, so a calibration or arithmetic change that
+costs that much goes red. Only the `normal` class is budgeted: the constant
+classes sit far outside the calibrated range and measure saturation, and
+`zeros` and `relu_knee` use a few levels of a range sized for normal inputs,
+which is a property of the input rather than of the compiler. Their numbers,
+measured the same day: `zeros` 16.6 to 44.0 dB, `relu_knee` 16.8 to 44.0,
+`large_pos` 0.4 to 25.1, and `large_neg` 0.3 to 10.7 where the output is not
+identically zero.
+
+**One test was written and then withdrawn, and the reason is worth a
+sentence.** It claimed a budget could not be met by an answer off by a whole
+count everywhere, and on paper it fails for `conv_bn_relu_stack`, whose output
+spans about 63 counts, so a one count shift is 36 dB against a 32 dB floor. A
+synthetic perturbation tuned until it went red would have proved the tuning.
+The budgets were instead broken the project's way: with the input zero point
+dropped from the folded bias, 41 of 43 cases went red, all seven budgets and 34
+of the 35 reference cases, the one survivor being `resnet_block` on
+`large_neg`, whose output is zero everywhere after its last ReLU.
+
+### One count, defined once
+
+Several models end in f32 after their last dequantize, an average pool, a
+transpose, a concat of three branches, so "the output scale" needed a
+definition. The test reads it out of the program: the scale of the dequantize
+whose values reach the output without passing another quantize, the largest of
+them when there are several.
+
+### The two result fields
+
+`int8_macs` has been the simulator's count on every cell since P10 and zero on
+all of them. `quant_boundary_crossings` is now the number of `QUANT` and
+`DEQUANT` instructions in a quantized cell's program, decided in one place,
+`results.quant_boundary_crossings`. **An fp32 cell keeps exactly the null and
+the reason it always carried**, and a test compares the writer's fp32 answer
+with all 217 committed files, because the cost model's INT8 terms and the
+quantized cells will compare those files field by field and a writer change
+that moved them would be a movement nobody measured. On the seven real
+programs every multiply accumulate is an int8 one, `int8_macs` equals `macs`,
+and the crossings are two per integer instruction.
+
+### The quantized goldens
+
+One per model at `-O0`, under `test/baseline/golden/int8/`, with the fp32
+naming inside: Section 17.6 keeps them separately, no fp32 file is renamed or
+rewritten, and a tensor's arithmetic is read off its path. They are goldens and
+not baseline cells for now, because a quantized cell's energy needs the int8
+terms and its accuracy field its own band, and both are the next items.
+
+### The scalar pair beside a table, verified rather than assumed
+
+The ISA description said what `requantMultiplier` and `requantShift` do when
+the fourth operand is absent and nothing about when it is present. Read at the
+source: `rescaleFor` in the kernels returns the table's entries whenever there
+is a fourth operand and reads the scalar pair only when there is not, and
+`checkQuantization` on decode bounds the pair on every instruction whatever
+its operands. So with a table the pair is range checked and printed and takes
+no part in the arithmetic, and the description now says so in one sentence,
+with the manual regenerated. It is not a second source of truth, which was the
+condition under which this would have stopped.
+
+### Quantized compilation above `-O0`, measured and not built
+
+Everything above is `-O0`. Before anything is built for the other two levels,
+this is what a calibrated compilation does at them today, with no code
+changed, measured on all seven models.
+
+- **`-npu-calibrate` runs first at every level**, ahead of every row of the
+  level's table, so every later pass sees the QDQ form.
+- **At `-O1` the quantized program is the `-O0` one.** The constant folder
+  evaluates only additions, multiplications, relus and reshapes over
+  constants, and `npu.quantize` and `npu.dequantize` have no folder and no
+  canonicalization, so the output is bit identical to `-O0`'s on all seven.
+- **At `-O2` and the default budget it is the `-O0` one plus CSE.** The QDQ
+  pair between a convolution and its reader turns off all three rewrites that
+  make `-O2` different: the bias fusion declines on `dilated_stack`, the batch
+  norm fold declines on both of `conv_bn_relu_stack`'s batch norms, which then
+  lower as f32 multiplies and adds between a `DEQUANT` and a `QUANT`, and the
+  operation fusion forms none of the fifteen regions it forms in fp32. The only
+  pass with work to do is `-cse`, which merges `inception_block`'s three
+  identical input quantizes into one. The output is bit identical to `-O0`'s on
+  all seven at batch 1, and all seven compile at batch 4.
+- **At `-O2` and the tight budget it does not compile, on any of the seven.**
+  With fusion off, the tiling pass sees every calibrated operation, and a tile
+  reads a slice rather than a dequantize, so the verifier refuses the tile's
+  `weight_scales` by name. The tiling interface carries the attribute unsliced
+  on purpose, so that a quantized tile is refused loudly rather than silently
+  dequantized, and it is: the refusal is the design working. What is wrong is
+  its sentence, "this is not a quantized compilation", which is false here.
+- **The profile's weight entries describe the unfolded filter.** The fold
+  multiplies each output channel by `gamma / sqrt(variance + epsilon)`, and on
+  `conv_bn_relu_stack` that factor runs from 0.56 to 2.23, so the profile's
+  scales unchanged would clamp 32 of the 792 folded weights at the rails.
+  After the fold the spread of channel scales doubles, from about 1.5 to about
+  3.2, which is Section 14's own argument for per channel weights and is only
+  measurable if the weights are quantized after the fold.
+- **No identical dequantize and quantize pair appears at any level today**,
+  because a relu, a pool, a batch norm, an add or a concat always sits between
+  two calibrated operations in the graph the calibrator sees.
+
+A proposal for where the calibration should sit, where its weight scales should
+come from and what the other passes need to learn went for review with this
+boundary's report, and nothing is built until it is ruled on. The quantized
+cells of item 5 wait on the same ruling.
