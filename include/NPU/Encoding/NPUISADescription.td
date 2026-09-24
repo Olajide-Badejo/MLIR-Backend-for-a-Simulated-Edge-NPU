@@ -296,7 +296,11 @@ def MATMUL : ISAOpcode<4, "A rank 2 by rank 2 matrix multiplication with an opti
                   "positional and a rescale without a bias would sit in the "
                   "bias's slot. Absent, the scalar requantMultiplier and "
                   "requantShift rescale every channel alike, which is the per "
-                  "tensor arm Section 14's ablation compares against.";
+                  "tensor arm Section 14's ablation compares against. Present, "
+                  "the machine rescales every channel, channel 0 included, "
+                  "from the table and does not use the scalar pair, which is "
+                  "still bounded on decode like every instruction's and which "
+                  "the compiler fills with channel 0's pair.";
   let sources = ["matmul"];
 }
 
@@ -331,7 +335,11 @@ def CONV2D : ISAOpcode<5, "A two dimensional grouped convolution with an optiona
                   "bias, because the operand list is positional and a rescale "
                   "without a bias would sit in the bias's slot. Absent, the "
                   "scalar pair rescales every channel alike, which is the per "
-                  "tensor arm Section 14's ablation compares against.";
+                  "tensor arm Section 14's ablation compares against. Present, "
+                  "the machine rescales every channel, channel 0 included, "
+                  "from the table and does not use the scalar pair, which is "
+                  "still bounded on decode like every instruction's and which "
+                  "the compiler fills with channel 0's pair.";
   let sources = ["conv2d"];
 }
 
