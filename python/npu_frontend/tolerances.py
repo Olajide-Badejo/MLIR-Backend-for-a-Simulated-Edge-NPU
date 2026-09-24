@@ -97,3 +97,64 @@ RELATIVE_TOLERANCE: Final[float] = 5e-6
 #: run on a cell below its bound. If a cell ever needs this widened to pass,
 #: that is the finding, and widening it would be deleting the finding.
 ROOFLINE_RELATIVE_SLACK: Final[float] = 1e-9
+
+# ---------------------------------------------------------------------------
+# The quantized end to end budgets of Section 14, added at P14.
+#
+# A third quantity, kept apart from both above for this module's own reason.
+# The fp32 bands bound a summation order difference, parts in a million. These
+# bound **quantization error**, the distance between an eight bit program and
+# the f32 graph it approximates, which is a percent or so and is the thing the
+# phase is measuring rather than noise around it.
+# ---------------------------------------------------------------------------
+
+#: The input class the budgets are measured and asserted on.
+#:
+#: **The one the calibration draws come from**, seeded standard normal, from a
+#: different seed namespace so a model is not measured on what it was calibrated
+#: against. The two constant classes sit far outside the calibrated range and
+#: the input quantize saturates on them by design, so a number there measures
+#: saturation; `zeros` and `relu_knee` use a few levels of a range sized for the
+#: normal class. All four are measured and recorded beside the budgets in the
+#: engineering log and are not budgeted, because a budget on them would be a
+#: bound on a property of the input rather than of the compiler.
+QUANTIZED_BUDGET_CLASS: Final[str] = "normal"
+
+#: Per model: the signal to quantization noise ratio against onnxruntime must
+#: be at least the first number, in dB, and the largest absolute error at most
+#: the second, in counts of the output's own scale. Asserted separately, as
+#: Section 17.4 asks of the fp32 bands, because an aggregate ratio can hide one
+#: element that is badly wrong and a largest error cannot see a broad shift.
+#:
+#: **Set from a measurement taken after a committed prediction, and close to
+#: it.** `experiments/predictions/p14-quantized-accuracy.md` was committed
+#: before any model was compared with onnxruntime; measured on 2026-09-24 at
+#: `-O0`, per output channel weights, `minmax`, 32 calibration inputs:
+#:
+#:     model                 SQNR dB   largest error, counts
+#:     conv_bn_relu_stack      33.80   2.24
+#:     depthwise_separable     46.17   0.14
+#:     dilated_stack           34.40   1.10
+#:     inception_block         36.29   1.05
+#:     lenet                   43.89   1.07
+#:     lenet_batched           42.97   1.34
+#:     resnet_block            46.14   2.17
+#:
+#: Each floor is the observed ratio less 1 dB, rounded down to a whole dB, and
+#: each count is the smallest whole count at least half a count above the
+#: observed one. **The margin is not for the host**: the program's answer is bit
+#: identical across hosts, which the golden tensors pin, and onnxruntime's per
+#: host movement of parts in ten million moves these ratios by millionths of a
+#: dB. It is so that a change to calibration or arithmetic that costs a quarter
+#: of the noise budget or more goes red here, while one that costs nothing does
+#: not. Never loosened to make a model pass: a model that needs a wider budget
+#: is a finding.
+QUANTIZED_ACCURACY_BUDGETS: Final[dict[str, tuple[float, int]]] = {
+    "conv_bn_relu_stack": (32.0, 3),
+    "depthwise_separable": (45.0, 1),
+    "dilated_stack": (33.0, 2),
+    "inception_block": (35.0, 2),
+    "lenet": (42.0, 2),
+    "lenet_batched": (41.0, 2),
+    "resnet_block": (45.0, 3),
+}
