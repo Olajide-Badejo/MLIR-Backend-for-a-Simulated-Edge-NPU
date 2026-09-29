@@ -42,6 +42,74 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-29, Phase P14: a relu that reads a calibrated operation is fused into its integer instruction, and an identical dequantize and quantize pair is removed
+
+**Written before the commits that cause it.** Two commits follow this one and
+cause the movement between them, the pair fold first and the fusion second; each
+is named here once it exists.
+
+**What changes.** Four things, the last of them only a guard:
+
+- **`-npu-calibrate` quantizes a relu's output rather than the operation's**
+  where a calibrated convolution or matrix multiplication has a relu as its only
+  reader: the output quantize and dequantize go after the relu, with the scale
+  and zero point the profile holds for the relu's output tensor. Which tensor
+  that is comes from a new `graph` section in the profile, every node of the
+  ONNX graph with its type, inputs and outputs, and the seven committed profiles
+  are regenerated with it. No other byte of any profile moves.
+- **The contraction takes dequantize, operation, relu, quantize** and emits one
+  integer instruction carrying `relu`, which encodes to the `activation` field
+  `CONV2D` and `MATMUL` have had since version 1. The machine clamps at the
+  output zero point, the value that represents real zero. The standalone `RELU`
+  keeps refusing i8, as Section 14 lists.
+- **`npu.quantize` folds `quantize(dequantize(x))` to `x`** when the two scales
+  are bitwise equal, the two zero points are equal, and 255 times the scale is a
+  finite f32, which are the conditions under which the pair returns every one of
+  the 256 values unchanged. `-npu-calibrate` applies it to the pairs it forms, so
+  it holds at every level, and `-canonicalize` applies it wherever it runs.
+- **`-npu-fuse-ops` leaves a calibrated operation's relu alone**, because the
+  contraction now fuses it into the instruction itself and a region around a
+  calibrated operation is one its verifier refuses.
+
+**Why the movement is worth taking.** Without the fusion an integer program
+dequantizes to f32 between every layer, because the relu sits there in f32.
+The gate's DMA traffic reduction would then be measured on a program no INT8
+NPU runs, and `quant_boundary_crossings` would count an artefact of this
+lowering rather than the I8 rejection boundary Section 14 draws around `ADD`,
+`MUL`, `RELU` and the pools. The accuracy moves in the right direction for the
+same reason: one rounding at the relu output's scale replaces two, the first of
+them at a scale about twice as coarse.
+
+**Which baseline fields move.**
+
+- **No fp32 field and no fp32 golden, by construction and by measurement.** The
+  fusion needs `weight_scales`, which only `-npu-calibrate` writes; the fold
+  needs a quantize, which no fp32 compilation contains; the fusion pass's guard
+  needs `weight_scales` too. The baseline check before the record is the
+  measurement: 42 cells and 21 fp32 goldens identical.
+- **The quantized goldens of `depthwise_separable`, `lenet`, `lenet_batched`
+  and `resnet_block` at `-O0`**, re-recorded in a `record:` commit of their own.
+  The other three models have no relu reading a calibrated operation and their
+  goldens do not move by a byte.
+- **Not baseline fields, and declared here anyway because they are recorded
+  numbers**: the `-O0` accuracy table of item 3, re-measured with the old one
+  kept beside it, and the budgets in `npu_frontend.tolerances`, which may
+  tighten from the new observations and may not loosen; and
+  `quant_boundary_crossings` on a quantized compilation, 44 to 32 over the
+  seven by the prediction, which no committed cell carries yet because the
+  quantized cells are item 5.
+- **Test counts and names**, which only ever grow.
+
+**`Program::kVersion` does not move.** The `activation` field is in the record
+from version 1 and its check has always admitted `relu` on `CONV2D` and
+`MATMUL`. No byte of any existing program moves, because nothing set the field
+before.
+
+**The prediction** is `experiments/predictions/p14-fused-relu-and-pair-fold.md`,
+committed before either change existed.
+
+**The commits that cause it:** named here once they exist.
+
 ### 2026-09-20, Phase P14: a quantized compute instruction gains a fourth operand, the per output channel rescale
 
 **Written before the commit that causes it.** The commit that adds the operand
