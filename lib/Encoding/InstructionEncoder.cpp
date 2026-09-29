@@ -633,6 +633,11 @@ LogicalResult FunctionEncoder::encodeBody() {
           static_cast<float>(matmul.getOutputZeroPoint().value_or(0));
       instruction.requantMultiplier = matmul.getRequantMultiplier().value_or(1);
       instruction.requantShift = matmul.getRequantShift().value_or(0);
+      // The fused activation, which nothing set before the QDQ contraction
+      // fused a relu into an integer instruction, so every program written
+      // before it encodes to the bytes it always did.
+      instruction.activation =
+          matmul.getRelu() ? Activation::Relu : Activation::None;
       if (failed(setResult(instruction, matmul.getDestination(), &op)))
         return failure();
     } else if (auto conv = dyn_cast<npuisa::Conv2DOp>(&op)) {
@@ -666,6 +671,8 @@ LogicalResult FunctionEncoder::encodeBody() {
           static_cast<float>(conv.getOutputZeroPoint().value_or(0));
       instruction.requantMultiplier = conv.getRequantMultiplier().value_or(1);
       instruction.requantShift = conv.getRequantShift().value_or(0);
+      instruction.activation =
+          conv.getRelu() ? Activation::Relu : Activation::None;
       if (failed(setResult(instruction, conv.getDestination(), &op)))
         return failure();
     } else if (auto add = dyn_cast<npuisa::AddOp>(&op)) {

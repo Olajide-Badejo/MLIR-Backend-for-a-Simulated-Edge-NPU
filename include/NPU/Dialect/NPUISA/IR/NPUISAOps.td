@@ -360,6 +360,15 @@ def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul", [AttrSizedOperandSegments]> {
     All four attributes are refused at an `f32` result. They describe an
     arithmetic that result does not perform, and an instruction carrying them
     there would be one whose extra numbers nothing reads.
+
+    **`relu` is the fused activation**, the `activation` field `MATMUL` and
+    `CONV2D` have carried since version 1 of the binary format. The machine
+    applies it after the rescale and the output zero point and before the rails,
+    and at an `i8` result it clamps at the **output zero point**, the value that
+    represents real zero, rather than at zero. It exists here because a relu
+    after a quantized operation is fused into the instruction by the QDQ
+    contraction: the standalone `npuisa.relu` reads f32 only, which is Section
+    14's own boundary.
   }];
 
   let arguments = (ins
@@ -371,6 +380,7 @@ def NPUISA_MatMulOp : NPUISA_ComputeOp<"matmul", [AttrSizedOperandSegments]> {
       OptionalAttr<NPU_SignedI32Attr>:$output_zero_point,
       OptionalAttr<NPU_SignedI32Attr>:$requant_multiplier,
       OptionalAttr<NPU_SignedI32Attr>:$requant_shift,
+      UnitAttr:$relu,
       Arg<NPUISA_ScratchpadAny, "", [MemWrite<DefaultResource>]>:$destination
   );
 
@@ -425,6 +435,15 @@ def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d", [AttrSizedOperandSegments]> {
     second.
 
     All of them are refused at an `f32` result.
+
+    **`relu` is the fused activation**, the `activation` field `MATMUL` and
+    `CONV2D` have carried since version 1 of the binary format. The machine
+    applies it after the rescale and the output zero point and before the rails,
+    and at an `i8` result it clamps at the **output zero point**, the value that
+    represents real zero, rather than at zero. It exists here because a relu
+    after a quantized operation is fused into the instruction by the QDQ
+    contraction: the standalone `npuisa.relu` reads f32 only, which is Section
+    14's own boundary.
   }];
 
   let arguments = (ins
@@ -441,6 +460,7 @@ def NPUISA_Conv2DOp : NPUISA_ComputeOp<"conv2d", [AttrSizedOperandSegments]> {
       OptionalAttr<NPU_SignedI32Attr>:$output_zero_point,
       OptionalAttr<NPU_SignedI32Attr>:$requant_multiplier,
       OptionalAttr<NPU_SignedI32Attr>:$requant_shift,
+      UnitAttr:$relu,
       Arg<NPUISA_ScratchpadAny, "", [MemWrite<DefaultResource>]>:$destination
   );
 

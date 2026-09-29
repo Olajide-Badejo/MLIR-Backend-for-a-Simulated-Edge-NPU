@@ -1373,7 +1373,7 @@ public:
         op.getGroupAttr(), /*zero_point=*/IntegerAttr(),
         /*output_zero_point=*/IntegerAttr(),
         /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
-        destination);
+        /*relu=*/UnitAttr(), destination);
     rewriter.replaceOp(op, destination);
     return success();
   }
@@ -1396,7 +1396,8 @@ private:
         rewriter.getI32IntegerAttr(plan.inputZeroPoint),
         rewriter.getI32IntegerAttr(plan.outputZeroPoint),
         rewriter.getI32IntegerAttr(plan.scalar.multiplier),
-        rewriter.getI32IntegerAttr(plan.scalar.shift), operands.destination);
+        rewriter.getI32IntegerAttr(plan.scalar.shift), /*relu=*/UnitAttr(),
+        operands.destination);
     retire(op, plan, operands.destination, rewriter);
     return success();
   }
@@ -1421,7 +1422,7 @@ public:
                           : Value(),
         /*rescale=*/Value(), /*output_zero_point=*/IntegerAttr(),
         /*requant_multiplier=*/IntegerAttr(), /*requant_shift=*/IntegerAttr(),
-        destination);
+        /*relu=*/UnitAttr(), destination);
     rewriter.replaceOp(op, destination);
     return success();
   }
@@ -1440,7 +1441,8 @@ private:
         rewriter, op.getLoc(), operands.input, operands.weights, operands.bias,
         operands.rescale, rewriter.getI32IntegerAttr(plan.outputZeroPoint),
         rewriter.getI32IntegerAttr(plan.scalar.multiplier),
-        rewriter.getI32IntegerAttr(plan.scalar.shift), operands.destination);
+        rewriter.getI32IntegerAttr(plan.scalar.shift), /*relu=*/UnitAttr(),
+        operands.destination);
     retire(op, plan, operands.destination, rewriter);
     return success();
   }
