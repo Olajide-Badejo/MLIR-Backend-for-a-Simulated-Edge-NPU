@@ -185,8 +185,8 @@ struct PipelineOptions {
   std::string calibrationProfile;
   /// Which of the profile's four ranges the calibration reads.
   std::string calibrationMethod = "minmax";
-  /// `fixed` is the integer multiplier and shift the machine applies; `float`
-  /// exists so that a previously published number stays reproducible.
+  /// `fixed`, the integer multiplier and shift the machine applies, is the
+  /// one mode; `-npu-calibrate` refuses `float` by name.
   std::string requantMode = "fixed";
   /// `per-channel`, Section 14's default, or `per-tensor`, the other arm of
   /// its granularity ablation: whether each output channel's weights take

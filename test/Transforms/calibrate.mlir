@@ -18,6 +18,9 @@
 // RUN: not npu-opt %s \
 // RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-profile.json requant-mode=double" \
 // RUN:   2>&1 | FileCheck %s --check-prefix=BADMODE
+// RUN: not npu-opt %s \
+// RUN:   --npu-calibrate="profile=%S/Inputs/calibrate-profile.json requant-mode=float" \
+// RUN:   2>&1 | FileCheck %s --check-prefix=FLOAT
 // RUN: npu-opt %s --npu-calibrate=profile=%S/Inputs/calibrate-other-model.json \
 // RUN:   2>&1 | FileCheck %s --check-prefix=UNCOVERED
 // RUN: npu-opt %s --npu-calibrate=profile=%S/Inputs/calibrate-partial.json \
@@ -72,7 +75,14 @@
 
 // The two options are refused by name, with the accepted values listed.
 // BADMETHOD: error: 'kl' is not a calibration method. The four are minmax, percentile, mse and entropy
-// BADMODE: error: 'double' is not a requantization mode. The two are fixed and float
+// BADMODE: error: 'double' is not a requantization mode. The one mode is fixed, and float is refused by name
+
+// `float` is refused by name and with its reason, which is the owner's ruling
+// of 2026-09-29: it compiled to exactly what `fixed` compiled to, so it was an
+// option that measured nothing, and the reasons it should not be built are in
+// `docs/PASSES.md` beside it.
+// FLOAT: error: requant-mode=float is refused. No number was ever published under it
+// FLOAT-SAME: The one mode is fixed
 
 // A profile that names nothing here is one remark with the counts, because it
 // is a real configuration: the profile of another model.

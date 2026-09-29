@@ -288,9 +288,8 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       llvm::cl::init("minmax")};
   Option<std::string> requantMode{
       *this, "requant-mode",
-      llvm::cl::desc("'fixed' is the integer multiplier and shift the machine "
-                     "applies; 'float' exists so that a previously published "
-                     "number stays reproducible."),
+      llvm::cl::desc("'fixed', the integer multiplier and shift the machine "
+                     "applies, is the one mode; 'float' is refused by name."),
       llvm::cl::init("fixed")};
   Option<std::string> weightGranularity{
       *this, "weight-granularity",

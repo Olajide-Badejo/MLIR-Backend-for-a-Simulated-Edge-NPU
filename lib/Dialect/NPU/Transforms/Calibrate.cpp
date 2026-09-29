@@ -97,9 +97,11 @@ constexpr int kProfileVersion = 1;
 constexpr llvm::StringLiteral kMethods[] = {"minmax", "percentile", "mse",
                                             "entropy"};
 
-/// The two requantization modes. `fixed` is the machine's own arithmetic and
-/// `float` exists so that a previously published number stays reproducible.
-constexpr llvm::StringLiteral kRequantModes[] = {"fixed", "float"};
+/// The requantization mode this compiler has: `fixed`, the integer multiplier
+/// and shift the machine applies. `float` is refused by name, which is the
+/// owner's ruling of 2026-09-29, and the reason is in `docs/PASSES.md` beside
+/// the option.
+constexpr llvm::StringLiteral kRequantModes[] = {"fixed"};
 
 /// The two weight granularities Section 14's ablation compares, the default
 /// first.
@@ -319,10 +321,30 @@ public:
              "mse and entropy, and minmax is the default.";
       return signalPassFailure();
     }
+    // **`float` is refused by name rather than accepted and ignored.** It
+    // compiled to exactly what `fixed` compiles to, so a row labelled with it
+    // would have measured `fixed` twice. Section 14 kept it so that a number
+    // published under it would stay reproducible, and none ever was; the scale
+    // word it would need carries the output zero point, by the owner's
+    // decision of 2026-09-07; and a float multiplier per output element is
+    // hardware Section 14 itself says the modelled machine does not have. The
+    // fixed against float comparison is a reference level measurement in the
+    // numpy reference at Checkpoint C instead.
+    if (llvm::StringRef(requantMode) == "float") {
+      function.emitError()
+          << "requant-mode=float is refused. No number was ever published "
+             "under it, the scale word it would need carries the output zero "
+             "point, and Section 14 says a float multiplier is hardware the "
+             "modelled machine does not have; the fixed against float "
+             "comparison is measured in the numpy reference instead. The one "
+             "mode is fixed.";
+      return signalPassFailure();
+    }
     if (!llvm::is_contained(kRequantModes, llvm::StringRef(requantMode))) {
       function.emitError()
           << "'" << requantMode
-          << "' is not a requantization mode. The two are fixed and float.";
+          << "' is not a requantization mode. The one mode is fixed, and float "
+             "is refused by name.";
       return signalPassFailure();
     }
     if (!llvm::is_contained(kGranularities,

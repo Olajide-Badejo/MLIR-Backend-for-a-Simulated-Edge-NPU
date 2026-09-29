@@ -373,7 +373,8 @@ def compile_model(
     default `-O` level. `calib_method`, `requant_mode` and
     `weight_granularity` are its options and reach the pipeline the same way,
     so an ablation over any of them measures the compiler that would actually
-    be run rather than a pass driven alone. `weight_granularity` is
+    be run rather than a pass driven alone. `requant_mode` has one value,
+    `fixed`, and the pass refuses `float` by name. `weight_granularity` is
     `per-channel`, the default, or `per-tensor`, the two arms of Section 14's
     granularity ablation.
     """

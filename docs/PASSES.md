@@ -1165,11 +1165,26 @@ the same scale in `weight_scales`, so the contraction in the lowering computes
 the same requantization pair for every channel and emits the instruction with
 the scalar pair alone and no fourth operand.
 
-**`requant-mode` is accepted, validated by name, and inert.** `fixed` is the
-integer multiplier and shift the machine applies, and it is the only arithmetic
-the contraction emits. `float` compiles today to exactly what `fixed` compiles
-to: the float arm of Section 14's requantization row is not built yet, and this
-sentence is here so that nobody reads a `float` compilation as one.
+**`requant-mode` has one mode, `fixed`, and `float` is refused by name**, the
+owner's ruling of 2026-09-29. `fixed` is the integer multiplier and shift the
+machine applies and the only arithmetic the contraction emits. `float` used to
+be accepted and to compile to exactly what `fixed` compiled to, which made it an
+option that measured nothing. It is refused rather than built, for three
+reasons given once here:
+
+- **No number was ever published under it.** Section 14 kept the option so that
+  a previously published number would stay reproducible, and there is none.
+- **The field it would need is taken.** A float rescale needs the instruction's
+  f32 `scale` word, and on an integer compute instruction that word carries the
+  output zero point, by the owner's decision of 2026-09-07.
+- **Section 14 says the hardware is not there.** A float multiply per output
+  element implies an FP32 multiplier in the output stage that the modelled
+  machine does not have, which would make the energy numbers describe a
+  different machine.
+
+The fixed against float comparison Section 14 calls a free ablation row is
+measured at Checkpoint C in the numpy reference, as a reference level
+measurement, where it costs no hardware the machine lacks.
 
 ### The three diagnostics, each saying something different
 

@@ -492,9 +492,9 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
            "default and asks for the other three to be measured rather than "
            "asserted. An unknown value is a diagnostic naming it.">,
     Option<"requantMode", "requant-mode", "std::string", "\"fixed\"",
-           "'fixed' is the integer multiplier and shift the machine applies; "
-           "'float' exists so that a previously published number stays "
-           "reproducible. An unknown value is a diagnostic naming it.">,
+           "'fixed', the integer multiplier and shift the machine applies, is "
+           "the one mode. 'float' is refused by name, with the reason, and an "
+           "unknown value is a diagnostic naming it.">,
     Option<"weightGranularity", "weight-granularity", "std::string",
            "\"per-channel\"",
            "'per-channel', Section 14's default, gives each output channel "
