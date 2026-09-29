@@ -10,11 +10,11 @@
 //
 // The tables below are the whole of Section 12 that exists at Phase P9. `-O0`
 // is "import and verify" plus the two passes the table marks as running at
-// every level, and that pairing is the part worth stating: **verification is not
-// a pass here**. MLIR verifies every operation when it is parsed and again after
-// every pass, so `-O0` gets its verification from the pass manager rather than
-// from a row in this file, and adding a row that ran a verifier would be adding
-// a second, weaker one beside the one that already runs.
+// every level, and that pairing is the part worth stating: **verification is
+// not a pass here**. MLIR verifies every operation when it is parsed and again
+// after every pass, so `-O0` gets its verification from the pass manager rather
+// than from a row in this file, and adding a row that ran a verifier would be
+// adding a second, weaker one beside the one that already runs.
 //
 // **`-O1` and `-O2` arrived here at P9** with the four `npu` level passes and
 // the four upstream ones Section 12's table names, and **P13 completes the
@@ -40,12 +40,12 @@
 // are exactly two deviations. Both were measured rather than chosen.**
 //
 // *First*, Section 5.1 lists canonicalization ahead of constant folding;
-// `-npu-constant-fold` runs before it here, because the folder is what *creates*
-// the dead operand constants and a canonicalization that ran before it would
-// have nothing to clean up. At `-O2` there are two canonicalizations and the
-// question would be academic; at `-O1` there is one, and if it ran first every
-// folded operand would survive as an `npuisa.const` and a `dma_load` in the
-// instruction stream.
+// `-npu-constant-fold` runs before it here, because the folder is what
+// *creates* the dead operand constants and a canonicalization that ran before
+// it would have nothing to clean up. At `-O2` there are two canonicalizations
+// and the question would be academic; at `-O1` there is one, and if it ran
+// first every folded operand would survive as an `npuisa.const` and a
+// `dma_load` in the instruction stream.
 //
 // *Second*, Section 5.1 lists the batch norm fold ahead of the bias fusion, and
 // they are the other way round here. `-npu-fold-batchnorm` matches on a
@@ -82,6 +82,7 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
 
 #include <cassert>
@@ -151,10 +152,11 @@ const PassEntry kO2[] = {
               "before the batch norm fold, because a separate bias add sits "
               "between a convolution and its batch norm until this has run; "
               "exact"),
-    PassEntry(PassKind::NPUFoldBatchNorm, "npu-fold-batchnorm",
-              /*ablatable=*/true, /*eliminatesDeadCode=*/false,
-              "before op fusion, so the convolution it rewrites still has no "
-              "fused activation; the one pass at this phase that moves numbers"),
+    PassEntry(
+        PassKind::NPUFoldBatchNorm, "npu-fold-batchnorm",
+        /*ablatable=*/true, /*eliminatesDeadCode=*/false,
+        "before op fusion, so the convolution it rewrites still has no "
+        "fused activation; the one pass at this phase that moves numbers"),
     PassEntry(PassKind::NPUFuseOps, "npu-fuse-ops", /*ablatable=*/true,
               /*eliminatesDeadCode=*/false,
               "forms npu.fused_op regions; numerically inert, because the "
@@ -234,8 +236,8 @@ const OptLevel kAllLevels[] = {OptLevel::O0, OptLevel::O1, OptLevel::O2};
 /// The command line form of `PipelineOptions`.
 ///
 /// It is a separate type from `PipelineOptions` on purpose. This one exists to
-/// be parsed out of a string by MLIR's option machinery; the other one exists to
-/// be passed around in C++ and is what the tests and the driver construct
+/// be parsed out of a string by MLIR's option machinery; the other one exists
+/// to be passed around in C++ and is what the tests and the driver construct
 /// directly. Collapsing them would put an `llvm::cl` dependency into every
 /// caller that only wanted to build a pipeline.
 struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
@@ -254,11 +256,12 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       llvm::cl::init("longest-range")};
   Option<std::string> halo{
       *this, "halo",
-      llvm::cl::desc("Which halo answer the tiling search may take: "
-                     "'recompute' lets it split the output spatial axes and pay "
-                     "for the overlapping rows per tile, 'cache' refuses to "
-                     "split them so that no halo is created. Section 13.3's "
-                     "third arm."),
+      llvm::cl::desc(
+          "Which halo answer the tiling search may take: "
+          "'recompute' lets it split the output spatial axes and pay "
+          "for the overlapping rows per tile, 'cache' refuses to "
+          "split them so that no halo is created. Section 13.3's "
+          "third arm."),
       llvm::cl::init("recompute")};
   Option<int64_t> alignment{
       *this, "alignment",
@@ -266,11 +269,12 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
       llvm::cl::init(64)};
   Option<std::string> ablate{
       *this, "ablate",
-      llvm::cl::desc("Leave this pass out, by its argument, for Section 16.2's "
-                     "leave one out ablation. Only a pass the table marks "
-                     "ablatable is removed; naming another is ignored here and "
-                     "caught by the pass statistics, which record what actually "
-                     "ran."),
+      llvm::cl::desc(
+          "Leave this pass out, by its argument, for Section 16.2's "
+          "leave one out ablation. Only a pass the table marks "
+          "ablatable is removed; naming another is ignored here and "
+          "caught by the pass statistics, which record what actually "
+          "ran."),
       llvm::cl::init("")};
   Option<std::string> calibrate{
       *this, "calibrate",
@@ -314,8 +318,8 @@ struct PipelineCLOptions : public PassPipelineOptions<PipelineCLOptions> {
     options.allocationStrategy = strategy;
     options.spillHeuristic = spillHeuristic;
     options.allocationAlignment = alignment;
-    options.stopAfter = stopAfter == "npu" ? PipelineStage::Npu
-                                           : PipelineStage::NpuIsa;
+    options.stopAfter =
+        stopAfter == "npu" ? PipelineStage::Npu : PipelineStage::NpuIsa;
     options.ablatedPass = ablate;
     options.calibrationProfile = calibrate;
     options.calibrationMethod = calibMethod;
@@ -467,7 +471,8 @@ llvm::StringRef mlir::npu::pipeline::optLevelPipelineName(OptLevel level) {
   return infoFor(level).pipelineName;
 }
 
-std::optional<OptLevel> mlir::npu::pipeline::optLevelFromNumber(int64_t number) {
+std::optional<OptLevel>
+mlir::npu::pipeline::optLevelFromNumber(int64_t number) {
   for (const LevelInfo &info : kLevels)
     if (static_cast<int64_t>(info.level) == number)
       return info.level;
@@ -530,32 +535,58 @@ void mlir::npu::pipeline::build(OpPassManager &pm, OptLevel level,
   // move. A caller who wants a quantized compilation asks for one by naming a
   // profile, and a caller who does not gets the pipeline that was there before
   // this option existed.
-  //
-  // It runs **first**, before every other tensor level pass, because it
-  // rewrites the operations the rest of them match on: a convolution that
-  // `-npu-fuse-bias` had already folded into would be a different operation
-  // from the one the profile named.
-  if (!options.calibrationProfile.empty()) {
+  auto addCalibration = [&] {
+    if (options.calibrationProfile.empty())
+      return;
     npu::NPUCalibrateOptions calibration;
     calibration.profile = options.calibrationProfile;
     calibration.calibMethod = options.calibrationMethod;
     calibration.requantMode = options.requantMode;
     calibration.weightGranularity = options.weightGranularity;
     pm.addNestedPass<func::FuncOp>(npu::createNPUCalibrate(calibration));
-  }
+  };
+
+  // **Where it runs: first, except after the folds and the fusion at `-O2`.**
+  // The owner's ruling of 2026-09-29. `-npu-fuse-bias` and
+  // `-npu-fold-batchnorm` change what a convolution computes, its weights and
+  // the tensor its result is, and a calibration before them would quantize the
+  // weights and the result they replace: the fold multiplies each output
+  // channel by its own factor, which is the spread Section 14's argument for
+  // per channel weights is about, and a QDQ pair in the way stops both passes
+  // from firing at all. So at a level that has them the pass runs after
+  // `-npu-fuse-ops`, the last of them, and before the second canonicalization,
+  // CSE and the tiling, which then see the quantized program: CSE merges the
+  // quantize of an input three convolutions share, and tiling declines a
+  // calibrated operation rather than splitting it. The weight scales come from
+  // the folded constant and the result's range from the last node the fold
+  // absorbed, which the two passes record in the convolution's location. At a
+  // level without them there is nothing to wait for and it runs first, which
+  // is where it has always run.
+  //
+  // The position is the fusion's in the table, not the fusion's presence in
+  // this pipeline, so the ablation row of `-npu-fuse-ops` calibrates at the
+  // same point as the level it ablates.
+  const bool calibrateAfterFusion =
+      llvm::any_of(infoFor(level).passes, [](const PassEntry &entry) {
+        return entry.kind == PassKind::NPUFuseOps;
+      });
+  if (!calibrateAfterFusion)
+    addCalibration();
 
   for (const PassEntry &entry : infoFor(level).passes) {
-    if (options.stopAfter == PipelineStage::Npu && !isTensorLevel(entry.kind))
-      continue;
+    const bool beyondStage =
+        options.stopAfter == PipelineStage::Npu && !isTensorLevel(entry.kind);
     // Section 16.2's leave one out ablation. `-canonicalize` has two entries at
     // `-O2` and this removes **both**, which is the right reading and not an
     // accident of matching on the argument: an ablation removes the pass, and a
     // row that removed one of two positions would be measuring an ordering
     // change rather than the absence of canonicalization.
-    if (entry.ablatable && !options.ablatedPass.empty() &&
-        entry.argument == options.ablatedPass)
-      continue;
-    addPass(pm, entry, options, doubleBufferInPipeline);
+    const bool ablated = entry.ablatable && !options.ablatedPass.empty() &&
+                         entry.argument == options.ablatedPass;
+    if (!beyondStage && !ablated)
+      addPass(pm, entry, options, doubleBufferInPipeline);
+    if (calibrateAfterFusion && entry.kind == PassKind::NPUFuseOps)
+      addCalibration();
   }
 }
 

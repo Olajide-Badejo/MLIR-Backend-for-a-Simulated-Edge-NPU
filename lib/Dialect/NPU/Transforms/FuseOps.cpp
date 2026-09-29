@@ -94,7 +94,10 @@ bool fuse(ReluOp relu) {
   // contraction, and its `weight_scales` would be read inside a region whose
   // data operand is a block argument rather than a dequantize, which the
   // verifier refuses by name. Only `-npu-calibrate` writes the attribute, so
-  // no fp32 compilation reaches this guard.
+  // no fp32 compilation reaches this guard, and the driver runs the
+  // calibration after this pass at `-O2`, so no quantized one does either: it
+  // is what keeps a hand written pipeline that calibrates first from building
+  // the region.
   if (producer->hasAttr("weight_scales"))
     return false;
 

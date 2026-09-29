@@ -35,6 +35,7 @@ from npu_frontend.compile import (
     EMIT_STAGES,
     SimulationError,
 )
+from npu_frontend.pass_stats import expected_passes, load_pass_stats
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = REPO_ROOT / "scripts" / "npu-compile"
@@ -472,6 +473,71 @@ def test_no_level_runs_the_calibration_pass() -> None:
     assert "npu-calibrate" not in ablatable
 
 
+@pytest.mark.parametrize(
+    ("level", "ablate"),
+    [
+        (0, None),
+        (1, None),
+        (2, None),
+        (2, "npu-fuse-ops"),
+        (2, "canonicalize"),
+    ],
+)
+def test_the_calibration_runs_where_the_level_puts_it(
+    lenet: Path, tmp_path: Path, level: int, ablate: str | None
+) -> None:
+    """Where `-npu-calibrate` runs, read from the pass manager that ran it.
+
+    First at `-O0` and `-O1`, which have nothing it should wait for. At `-O2`
+    after `-npu-fuse-bias`, `-npu-fold-batchnorm` and `-npu-fuse-ops`, so the
+    weights it scales are the folded ones and the result it quantizes is the
+    one the folds made, and before the second canonicalization, CSE and the
+    tiling, which see the quantized program. Taken out, what is left is the
+    level's own table in its own order, which is the statement that the pass
+    is inserted into the table and is not a row of it.
+
+    The ablation rows keep the level's position, `-npu-fuse-ops`'s own
+    included, and `canonicalize` is the row that removes two entries, one on
+    each side of the pass. At `-O2` the pass also dissolves the fused regions
+    around LeNet's calibrated operations, so it finds `npu.fused_op` and leaves
+    none: the contraction fuses those relus instead.
+    """
+    profile = REPO_ROOT / "experiments" / "calibration" / "lenet.json"
+    stats = tmp_path / "stats.json"
+    compile_model(
+        lenet,
+        level=level,
+        emit="nbin",
+        calibrate=str(profile),
+        pass_stats_json=stats,
+        ablate=ablate,
+    )
+    records = load_pass_stats(stats)
+    names = [record.name for record in records]
+
+    assert names.count("npu-calibrate") == 1
+    at = names.index("npu-calibrate")
+    assert names[:at] + names[at + 1 :] == expected_passes(level, ablated=ablate)
+
+    if level < 2:
+        assert at == 0
+        return
+
+    level_table = expected_passes(level)
+    cut = level_table.index("npu-fuse-ops") + 1
+    assert names[:at] == [name for name in level_table[:cut] if name != ablate]
+    after = names[at + 1 :]
+    for later in ("canonicalize", "cse", "npu-tile-to-scratchpad"):
+        if later != ablate:
+            assert later in after, later
+
+    calibration = records[at]
+    if ablate != "npu-fuse-ops":
+        assert calibration.ops_before.get("npu.fused_op", 0) > 0
+    assert calibration.ops_after.get("npu.fused_op", 0) == 0
+    assert calibration.ops_after.get("npu.quantize", 0) > 0
+
+
 def test_a_profile_makes_the_compilation_quantized(lenet: Path) -> None:
     """The option is what turns an fp32 compilation into a quantized one.
 
@@ -523,10 +589,12 @@ def test_the_profile_reaches_the_operation_as_an_attribute(lenet: Path) -> None:
 
     The per output channel weight scales cannot ride in the QDQ form, because
     `npu.quantize` carries a single scale, so they ride as an attribute that
-    `-npu-calibrate` writes from the profile. The profile stays the single
-    source of truth, and this is the assertion that says so: every attribute
-    in the compiled IR is one of the profile's own scale lists, and every
-    quantizable operation the profile names has one.
+    `-npu-calibrate` computes from the weight constant the operation holds. At
+    `-O0` that constant is the model's own initializer, which is what the
+    profile's weight entries were measured from, so the profile is the oracle
+    here and this is the assertion that the two agree: every attribute in the
+    compiled IR is one of the profile's own scale lists, and every quantizable
+    operation the profile names has one.
 
     On LeNet that is five operations with 6, 16, 120, 84 and 10 channels, the
     two convolutions and the three fully connected layers.

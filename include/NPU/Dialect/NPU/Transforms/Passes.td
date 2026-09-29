@@ -425,6 +425,16 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     Section 12's `-npu-calibrate`, **quantized mode only and never in a default
     `-O` level**, which is why the ablatable set is eleven rather than twelve.
 
+    **Where the driver puts it.** First at `-O0` and `-O1`. At `-O2` after
+    `-npu-fuse-bias`, `-npu-fold-batchnorm` and `-npu-fuse-ops` and before the
+    second canonicalization, CSE and the tiling, so the weights it scales are
+    the folded ones and the result it quantizes is the one the folds made. An
+    `npu.fused_op` around an operation the profile names is put back into the
+    block first, counted in `dissolved-regions`, because the pairs formed
+    inside a region could neither fold with a neighbour's nor be merged by
+    CSE, and the contraction in the lowering fuses the pair into one
+    instruction anyway.
+
     A covered operation has its activations wrapped in a quantize and a
     dequantize pair, so the graph stays f32 and the integer values are
     interior:
@@ -517,6 +527,9 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     Statistic<"foldedPairs", "folded-pairs",
               "Dequantize then quantize pairs removed because they return "
               "every value unchanged">,
+    Statistic<"dissolvedRegions", "dissolved-regions",
+              "npu.fused_op regions around a named operation put back into "
+              "the block before calibrating it">,
   ];
 
   let dependentDialects = [

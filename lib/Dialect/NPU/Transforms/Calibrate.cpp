@@ -79,6 +79,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -449,6 +450,42 @@ public:
     if (!loaded) {
       function.emitError() << llvm::toString(loaded.takeError());
       return signalPassFailure();
+    }
+
+    // **A fused region around an operation the profile names is dissolved
+    // first.** At `-O2` this pass runs after `-npu-fuse-ops`, which has put
+    // each convolution or matrix multiplication and its relu into an
+    // `npu.fused_op`. Inside it the operation reads a block argument and the
+    // region yields its result, so the pairs this pass forms would be sealed
+    // in on both sides: a dequantize then quantize between two regions could
+    // not be folded, because the quantize would read a block argument rather
+    // than the dequantize, and CSE cannot merge the quantize of an input two
+    // regions share across their isolation. The region is numerically inert
+    // and the lowering flattens it anyway, and the contraction fuses the pair
+    // more strongly than the region does, into one integer instruction, so
+    // the pair goes back into the block and is calibrated the way it is at
+    // `-O0`. A region whose operation the profile does not name is left alone.
+    llvm::SmallVector<FusedOp> regions;
+    function.walk([&](FusedOp fused) {
+      bool named = false;
+      fused.getBody().walk([&](Operation *inner) {
+        if (isa<Conv2DOp, MatMulOp>(inner) &&
+            loaded->nodes.contains(nameFromLocation(inner->getLoc())))
+          named = true;
+      });
+      if (named)
+        regions.push_back(fused);
+    });
+    IRRewriter rewriter(function.getContext());
+    for (FusedOp fused : regions) {
+      Block &body = fused.getBody().front();
+      auto yield = cast<YieldOp>(body.getTerminator());
+      Value yielded = yield.getValue();
+      rewriter.inlineBlockBefore(&body, fused.getOperation(),
+                                 fused.getInputs());
+      rewriter.eraseOp(yield);
+      rewriter.replaceOp(fused, yielded);
+      ++dissolvedRegions;
     }
 
     llvm::SmallVector<Operation *> candidates;

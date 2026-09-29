@@ -1015,6 +1015,55 @@ the standard QDQ form, reading its numbers from a committed profile.
 npu-opt model.mlir --npu-calibrate="profile=experiments/calibration/lenet.json"
 ```
 
+### Where the driver runs it
+
+*The owner's ruling of 2026-09-29.* The pass is in no level's table, so a
+level's description and its ablatable set are the same with a profile and
+without one, and `build()` in `lib/Pipeline/Pipeline.cpp` inserts it when a
+profile is given:
+
+| Level | Position |
+|---|---|
+| `-O0`, `-O1` | first, before every pass in the table |
+| `-O2` | after `-npu-fuse-bias`, `-npu-fold-batchnorm` and `-npu-fuse-ops`, before the second `-canonicalize`, `-cse` and `-npu-tile-to-scratchpad` |
+
+**Why after the folds.** `-npu-fuse-bias` and `-npu-fold-batchnorm` change what
+a convolution computes: the fold multiplies each output channel's filter by
+that channel's own factor, and the convolution's result becomes what the add
+or the batch norm wrote. A calibration before them scales the weights the fold
+then replaces and quantizes a result that no longer exists, and a quantize and
+dequantize pair between the convolution and the batch norm stops the fold from
+matching at all. After them, the weight scales come from the folded constant,
+which is what the per channel argument in the methodology below is about, and
+the result's range comes from the last node the fold absorbed, which the two
+passes record in the convolution's fused location.
+
+**Why before the rest.** The second canonicalization and CSE then see the
+quantize and dequantize operations, and CSE merges the quantize of an input
+several convolutions share. The tiling sees a calibrated operation and declines
+to split it, which is the other half of the D-0069 fix.
+
+**The fused regions.** `-npu-fuse-ops` has by then put each convolution or
+matrix multiplication and its relu into an `npu.fused_op`. Inside the region the
+operation reads a block argument and the region yields its result, so pairs
+formed inside it would be sealed in on both sides: the dequantize then quantize
+between two regions could not be folded, because the quantize would read a
+block argument rather than the dequantize, and CSE cannot merge the quantize of
+a shared input across the regions' isolation. The region is numerically inert
+and the lowering flattens it anyway, so the pass puts a region around an
+operation the profile names back into the block before calibrating, and counts
+it in `dissolved-regions`. The relu is then fused by the contraction, into the
+instruction's activation field, which is a stronger fusion than the region's.
+A region around an operation the profile does not name is left as it is.
+
+The ablation row of a pass before it keeps this position, and so does the row
+of `-npu-fuse-ops` itself: the position is the fusion's in the level's table.
+`test_the_calibration_runs_where_the_level_puts_it` in
+`test/Python/test_compile_driver.py` reads the order from the pass manager
+that ran it, at each level and on two ablation rows, and
+`test/Transforms/calibrate-fused-region.mlir` has the region dissolved and a
+region the profile does not name left alone.
+
 ### The calibration methodology, in one place
 
 *Section 14 asks for this to be written once and cited rather than restated,
