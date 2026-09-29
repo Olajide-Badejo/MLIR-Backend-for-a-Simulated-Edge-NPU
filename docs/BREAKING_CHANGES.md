@@ -110,6 +110,33 @@ committed before either change existed.
 
 **The commits that cause it:** named here once they exist.
 
+**Measured, after the commits that cause it.** *Added at the record that
+answers this entry; everything above is the declaration as committed in
+`d7369cd`, unchanged.*
+
+- **The commits.** Four followed this entry, not the two it said, and the
+  correction is here rather than above: the fusion needed the instruction's
+  attribute and the profile's graph section first. `4c2c56f` is the pair fold,
+  with no pair yet to fold; `8e37021` the attribute, which nothing set yet;
+  `e718c72` the graph section, which nothing read yet. Each was measured to move
+  nothing, all 98 model IR files byte identical across the first two, and the
+  third changed no C++. The fusion is `69d7651`.
+- **What moved is what this entry names and nothing else.** Of the 98 model IR
+  files, the quantized `npu` and `npuisa` files of `depthwise_separable`,
+  `lenet`, `lenet_batched` and `resnet_block` changed, and no other. The
+  baseline check before the record found those four quantized goldens moved,
+  each by about one count of its output scale, and not one cell line or fp32
+  golden line: 42 cells and 21 fp32 tensors identical, the largest movement
+  against `-O0` 4.470e-08 as before.
+- **The accuracy table**, on the `normal` class at `-O0`, went to 52.68, 45.24,
+  46.76 and 47.83 dB on the four from 46.17, 43.89, 42.97 and 46.14, and the
+  other three are bit identical; the four budgets tightened and none loosened.
+  The prediction's adjudication is in `docs/ENGINEERING_LOG.md` under
+  2026-09-29.
+- **`quant_boundary_crossings`** on a quantized compilation went from 44 to 32
+  over the seven, 6, 2, 4, 6, 6, 6 and 2 per model.
+- **`Program::kVersion`** is 2, unmoved.
+
 ### 2026-09-20, Phase P14: a quantized compute instruction gains a fourth operand, the per output channel rescale
 
 **Written before the commit that causes it.** The commit that adds the operand

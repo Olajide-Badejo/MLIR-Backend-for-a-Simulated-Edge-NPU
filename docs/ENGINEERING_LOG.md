@@ -7404,3 +7404,165 @@ A proposal for where the calibration should sit, where its weight scales should
 come from and what the other passes need to learn went for review with this
 boundary's report, and nothing is built until it is ruled on. The quantized
 cells of item 5 wait on the same ruling.
+
+## 2026-09-29 Phase P14, checkpoint B: the relu inside the instruction, and the pair that computes nothing
+
+**What this was for.** At item 3's boundary an integer program still went back
+to f32 between every pair of layers, because the relu after a convolution or a
+matrix multiplication sat there in f32: the operation's result was rounded to
+its own scale, dequantized, clamped, and rounded again at the next layer's
+input. The gate's DMA traffic reduction would then have been measured on a
+program no INT8 NPU runs, and `quant_boundary_crossings` would have counted an
+artefact of this lowering rather than the I8 boundary Section 14 draws around
+`ADD`, `MUL`, `RELU` and the pools. Two changes were decided to close that, at
+every level: the relu fused into the integer instruction, and an identical
+dequantize and quantize pair folded away.
+
+The commits, in the order the rules want them: the prediction `42aa8b6`, the
+declaration `d7369cd`, the pair fold `4c2c56f`, the instruction's relu
+attribute `8e37021`, the profile's graph section `e718c72`, the fusion
+`69d7651`, the docs commit that carries this entry, and the record after it.
+The fold and the attribute were each measured to move nothing, all 98 model IR
+files byte identical across each; the graph section changed no C++ and nothing
+read it until the fusion.
+
+### Three pieces, and why the calibrator is one of them
+
+The machine had the arithmetic already. `CONV2D` and `MATMUL` have carried an
+`activation` field since version 1 of the format, and checkpoint A made the
+integer kernels clamp it at the output zero point, the value that represents
+real zero. Nothing could ask for it.
+
+**The instruction** gained a `relu` attribute and the encoder writes it into
+that field. **The contraction** learned to take dequantize, operation, relu,
+quantize. And **the calibrator** had to move the output quantize past the relu,
+which is the piece that is not obvious: fusing the relu into an instruction
+whose output is still quantized at the operation's own scale would save an
+instruction and nothing else, because the requantization target would still be
+the coarse, two sided range. The target has to be the relu output's range,
+`[0, max]`, which the committed profiles put at 0.44 to 0.55 of the operation's
+own scale on all eleven relus that follow a calibrated operation.
+
+The pass standing on the `npu.relu` knows the relu's node name from its location
+and nothing else, and the profile recorded only the quantizable nodes, so it
+could not say which tensor the relu writes. The profile gained a `graph`
+section, every node with its inputs and outputs, and the seven committed
+profiles were rebuilt: the observer ran again from the same seeds and every
+number came back the same, so each file differs from its parent by the section
+and by nothing else. The section records the graph and decides nothing, so the
+batch norm and bias add that `-O2` folds into a convolution will read the same
+section.
+
+**The pair fold** is then the fused relu's consequence. Where the relu's output
+is the next calibrated operation's input, the first operation's output pair and
+the second's input pair meet on one tensor with the same scale and zero point.
+A dequantize then quantize like that returns every one of the 256 values
+unchanged: `n = q - zp` is at most 255 in magnitude, the machine rounds
+`n * scale` to f32 once, and the quotient by the same scale lands within
+`255 * 2^-24` of `n`. `npu.quantize` gained the folder, and `-npu-calibrate`
+applies it too, because `-O0` runs no canonicalization. The machine agreed over
+all 256 values at six scales from the smallest subnormal to the largest the
+folder admits, and the numpy reference at all 380 pairs the profiles carry.
+
+`-npu-fuse-ops` needed one guard: a calibrated producer's relu is now the
+contraction's, and a region around the pair would have hidden the producer from
+it and failed the `weight_scales` verifier.
+
+### The measurement, and the adjudication, clause by clause
+
+On the `normal` class at `-O0`, against onnxruntime, before and after. The
+before column is the same compiler given each profile with its graph section
+removed, which is item 3's program exactly: it reproduces every item 3 figure to
+the last digit.
+
+| Model | Before | After | Change | Predicted |
+|---|---|---|---|---|
+| `conv_bn_relu_stack` | 33.80 dB, 2.24 counts | 33.80 dB, 2.24 counts | none, every class bit identical | bit identical |
+| `depthwise_separable` | 46.17 dB, 0.14 counts | **52.68 dB**, 0.11 counts | **+6.52 dB** | +1 to +6 dB |
+| `dilated_stack` | 34.40 dB, 1.10 counts | 34.40 dB, 1.10 counts | none, bit identical | bit identical |
+| `inception_block` | 36.29 dB, 1.05 counts | 36.29 dB, 1.05 counts | none, bit identical | bit identical |
+| `lenet` | 43.89 dB, 1.07 counts | 45.24 dB, 0.93 counts | +1.35 dB | +0.5 to +5 dB |
+| `lenet_batched` | 42.97 dB, 1.34 counts | 46.76 dB, 0.92 counts | +3.79 dB | +0.5 to +5 dB |
+| `resnet_block` | 46.14 dB, 2.17 counts | 47.83 dB, 1.64 counts | +1.69 dB | 0 to +3 dB |
+
+`depthwise_separable`'s counts are of its new output scale, the relu output's
+0.00531 where it was the convolution output's 0.00977, because that is now the
+dequantize its output comes from; in absolute terms its largest error fell from
+0.00135 to 0.00059.
+
+- **Three models bit identical: met**, on all five classes.
+- **`depthwise_separable` up 1 to 6 dB: falsified, high by half a dB.**
+- **`lenet` up 0.5 to 5 dB: met**, at 1.35.
+- **`lenet_batched` up 0.5 to 5 dB: met**, at 3.79.
+- **`lenet` and `lenet_batched` within 1.5 dB of each other: falsified by
+  0.014 dB.** They are 1.51 apart, `lenet_batched` now the higher.
+- **`resnet_block` up 0 to 3 dB: met**, at 1.69.
+- **Crossings 44 to 32, per model 6, 2, 4, 6, 6, 6, 2: met exactly**, and the
+  eleven f32 `RELU` instructions gone.
+- **The largest error within each budget: met.**
+- **The integer reference at zero counts on all 35: met.**
+- **The fused convolution against the unfused one within the derived bound, and
+  1 or 2 counts observed: met.** The bound came out at 1 count on every channel,
+  because the test's own ranges put the two scales 1.47 apart rather than near
+  2; 97 of the 640 elements differ by exactly 1 and none by more.
+- **The pair fold exact and never firing on a mismatch: met.**
+- **No fp32 byte moving: met** by the 98 IR files, and measured again by the
+  baseline check before the record.
+
+**What the model got wrong, both times, is the share.** The prediction sized the
+gain by the one noise term the fusion removes, the coarse rounding before each
+relu, and could not say what share of each model's noise that term was. On
+`depthwise_separable` it was nearly all of it: its output is an average pool
+over the second convolution's relu, so its last rounding was at the
+convolution's own scale and is now at a scale 1.84 times finer, and the first
+convolution's double rounding went entirely. The LeNet pair was held together
+by nothing but item 3's measurement. `lenet_batched` calibrates over four
+samples a draw where `lenet` has one, so its ranges show more of the tail and
+its coarse roundings were coarser, and the fusion removed more; that is the
+mechanism item 3 found, pointing the other way, and it is recorded as a
+reading rather than a measurement of it.
+
+**The other four classes, measured and not budgeted.** On `zeros` and
+`relu_knee` every moved model went up, by 0.2 to 9.0 dB. On the two constant
+classes, which sit far outside the calibrated range and measure saturation,
+the moves are hundredths of a dB in either direction, the largest a fall of
+0.061 dB on `lenet_batched` with `large_neg`, where the largest error goes from
+58.63 to 59.63 counts: one count at the rail, on an output already hundreds of
+counts from onnxruntime, because the rounding now happens at a different scale
+on values the input quantize has already clipped. No budgeted number fell.
+
+### The budgets
+
+The four that could tighten did, by item 3's rule, the observation less 1 dB
+rounded down: `depthwise_separable` 45 to 51 dB, `lenet` 42 to 44,
+`lenet_batched` 41 to 45 and `resnet_block` 45 to 46. The counts stay at 1, 2,
+2 and 3. The old table is kept beside the new in `npu_frontend.tolerances`.
+None loosened.
+
+### Above `-O0`, and what is next
+
+With the fusion, `-O1` and `-O2` at the default budget still compile all seven
+and still compile them to `-O0`'s program bit for bit, with the relus fused at
+every level. `-O2` at a tight budget still fails verification on all seven,
+which is D-0069, logged with its reproduction on the same day. The owner's
+ruling of 2026-09-29 is that quantized cells exist at all three levels, so
+D-0069's fix is the first of the next items: tiling declines a calibrated
+operation with a counted remark and the verifier's sentence is corrected. Then
+the calibrator moves after the `-O2` folds and fusions, the weight scales come
+from the constant the operation holds, which revises the rule of 2026-09-22
+that the profile alone describes the weights, and the folds record what they
+absorbed. The reason for the second is Section 14's own: the spread the batch
+norm fold creates across channels is its argument for per channel weights, and
+only scales taken from the folded constant describe what the machine
+quantizes. The profile stays the oracle at `-O0`, bit for bit. And
+`requant-mode=float` is refused by name, because no number was ever published
+under it and a float multiplier is hardware the modelled machine does not have.
+
+### Three smaller things from the same day
+
+D-0049 has a tenth observation, the ninth's shape: the rerun determinism case
+red once in a CI shape suite started straight after the baseline check, green
+alone and on the rerun. Its message was lost to a tail, a third time, and the
+batteries now keep the whole of `pytest -rfE --tb=short` and print every red
+case's assertion. D-0069 is logged. And two sentences from `main` that named the
+decision maker in a way this repository does not are reworded in my own voice.

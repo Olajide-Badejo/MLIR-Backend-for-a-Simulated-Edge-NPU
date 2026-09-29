@@ -502,6 +502,12 @@ Moves a `npu.relu` and the `npu.conv2d` or `npu.matmul` that produced its input
 into one `npu.fused_op` region. Implemented in
 `lib/Dialect/NPU/Transforms/FuseOps.cpp`.
 
+*A guard added with the fused relu:* a relu whose producer carries
+`weight_scales` is left alone, because the QDQ contraction fuses it into the
+integer instruction and a region would hide the producer from that contraction.
+Only `-npu-calibrate` writes the attribute, so no fp32 compilation reaches it;
+`test/Transforms/fuse-ops.mlir` has the case.
+
 **Ablatable: yes.** **Ablation delta, measured at P10: zero instructions and
 zero cycles on all seven models, at both budgets.**
 `experiments/results/*-ablate-npu-fuse-ops.json`.
@@ -1072,6 +1078,15 @@ Deriving the pair in the compiler would put one rule in two implementations
 with nothing comparing them, which is the observer against kernel disagreement
 Section 14 opens by warning about.
 
+**The profile records the graph as well as the ranges.** Its `nodes` section is
+the quantizable nodes, the join between an operation's location and the tensors
+on each side of it; its `graph` section is every node, with its type, inputs
+and outputs, under the name the importer gives it. The second exists because a
+relu after a calibrated operation is quantized at the relu output's range, and
+the pass standing on the `npu.relu` knows the relu's node name and nothing
+else. It records the graph and decides nothing: which readers the compiler can
+absorb is the compiler's question.
+
 ### What the rewrite does, and what it deliberately does not
 
 A covered operation has its activations wrapped in a quantize and a dequantize
@@ -1086,6 +1101,48 @@ express per tensor activation quantization exactly and per channel weight
 quantization not at all. The per channel scales travel in the profile to the
 instruction, whose fourth operand holds one multiplier and one shift per output
 channel.
+
+### A relu that is the operation's only reader is quantized after
+
+*Added with the fused relu, declared in `docs/BREAKING_CHANGES.md` on
+2026-09-29.* Where a calibrated operation's only reader is a relu, the output
+pair goes on the relu's result rather than the operation's, with the range the
+profile holds for the relu's output tensor. The contraction in the lowering
+fuses that relu into the integer instruction as its activation, clamping at the
+output zero point, so the instruction's result is the relu's and the relu's
+range is the one to requantize into. Quantizing the operation's result instead
+rounds it at its own scale, about twice as coarse as the relu's, dequantizes it,
+runs the relu in f32 and rounds it again.
+
+Four conditions, each a reason the relu could not be the instruction's, and a
+relu that fails one leaves the pair where it always was:
+
+| Condition | Why |
+|---|---|
+| the operation's result has exactly one reader, the relu | a second reader needs the value before the relu |
+| the relu's location names a `Relu` in the profile's graph | the range comes from there |
+| that node reads this operation's own output tensor | the relu the IR holds is the one the observer saw after this operation |
+| its output tensor has a range for the method asked for | there is nothing to quantize with otherwise |
+
+A profile written before the `graph` section fails the second and compiles as
+it did. `test/Transforms/calibrate-relu.mlir` has the placement and a negative
+for each.
+
+### The pairs it forms that compute nothing are removed
+
+Where one calibrated operation's output is the next one's input, which the
+fused relu makes common, the first operation's output pair and the second's
+input pair meet on one tensor as a dequantize then a quantize with the same
+scale and zero point. That returns every one of the 256 values unchanged, so
+the pass applies `npu.quantize`'s folder to it, because `-O0` runs no
+canonicalization, and the two integer instructions meet with no crossing
+between them. The folder's condition is bitwise equal scales, equal zero points
+and a scale whose 255 multiple is a finite f32, and the argument is in the
+operation's description in `docs/DIALECT_REFERENCE.md`. `NPUSimulatorTests`
+runs the pair over all 256 values at the boundary scales, and
+`test_quantized_contraction.py` in the numpy reference at all 380 scale and zero
+point pairs the committed profiles carry. The count is the `folded-pairs`
+statistic.
 
 ### The two options that are not the profile
 
@@ -1142,7 +1199,9 @@ of ranges, and on every operation that is not a convolution or a matrix
 multiplication. That last boundary is Section 14's own: `ADD`, `MUL`,
 `POOL_AVG`, `RELU` and `POOL_MAX` reject i8 operands by name one level down,
 and the cost of the boundary is measured rather than asserted, through the
-`quant_boundary_crossings` counter in the result schema.
+`quant_boundary_crossings` counter in the result schema. A relu that is a
+calibrated operation's only reader is not a standalone `RELU`: it is the
+integer instruction's activation, and the boundary falls after it.
 
 ## The four upstream passes the levels run
 
@@ -1574,6 +1633,20 @@ the C++ half and `npu_frontend.calibration` the Python half:
   input contributes it; the output's goes in the `scale` word as
   `output_zero_point`, the owner's decision of 2026-09-07.
 
+**A relu between the operation and the quantize is the instruction's
+activation.** Where `-npu-calibrate` quantized after a relu that is the
+operation's only reader, the contraction takes dequantize, operation, relu,
+quantize and sets `relu` on the instruction, which encodes to the `activation`
+field `MATMUL` and `CONV2D` have carried since version 1 of the format. The
+machine applies it after the rescale and the output zero point and before the
+rails, clamping at the output zero point, the value that represents real zero.
+The relu's result must have the quantize as its one reader, for the same reason
+the operation's must; the relu's destination is consumed with the operation's,
+and its i8 result is the instruction's. `test_quantized_contraction.py` runs it
+by hand at output zero points of 5, -128 and -100, and against the unfused
+program over random draws within the bound the unfused program's extra rounding
+allows, which that test derives.
+
 **The table is the fourth operand exactly when the scalar pair cannot say it.**
 When the channels' pairs differ, the (2, C) table of multipliers and shifts is
 the fourth operand and the scalar fields carry channel 0's pair. When every
@@ -1662,9 +1735,10 @@ all. Three cases in `test/Dialect/NPUISA/lowering.mlir`:
 
 **The contraction does not fire on a partially covered operation, and does not
 refuse one either.** An operation without `weight_scales`, with weights or a
-bias that are not constants, with a result read in f32 as well as quantized, or
-with no quantize after it stays in the QDQ form and lowers to `QUANT`, f32
-compute and `DEQUANT` exactly as before the contraction existed. That is Section
+bias that are not constants, with a result read in f32 as well as quantized, with
+a relu whose result is read in f32 as well, or with no quantize after it stays
+in the QDQ form and lowers to `QUANT`, f32 compute and `DEQUANT` exactly as
+before the contraction existed. That is Section
 14's rule that a partially covered operation is never half rewritten.
 `test/Dialect/NPUISA/lowering-quantized.mlir` carries one case for each, and
 another for an input something outside the contraction also reads.

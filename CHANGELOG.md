@@ -9,18 +9,22 @@ Semantic Versioning once a release is tagged.
 ### Phase P14: INT8 quantization
 
 **In progress. Checkpoint A is complete, and Checkpoint B has landed
-calibration, the QDQ contraction and all seven models end to end at `-O0`**: a
-calibrated model now compiles to integer instructions, runs on the machine, and
-meets both of Section 14's bounds. The cost model's INT8 terms, the quantized
-cells and quantized compilation above `-O0` remain. The dialect's
+calibration, the QDQ contraction, all seven models end to end at `-O0`, and the
+relu fused into the integer instruction**: a calibrated model now compiles to
+integer instructions that meet each other without going back to f32 where
+nothing between them needs it, runs on the machine, and meets both of Section
+14's bounds. Quantized compilation above `-O0`, the cost model's INT8 terms and
+the quantized cells remain. The dialect's
 operator set is complete for the first time, the integer kernels have hand
 computed semantics and an independent numpy implementation that agrees with them
 **to the bit**, and `Program::kVersion` has not moved.
 
-**No recorded number has moved and none was expected to.** Quantized mode is in
-no `-O` level, so no cell of the 217 can reach an integer instruction, and a
-declaration of a movement measured to be zero would be a false declaration. The
-measurement is in `docs/PHASE_STATE.md` beside the claim.
+**No fp32 number has moved and none was expected to.** Quantized mode is in no
+`-O` level, so no cell of the 217 can reach an integer instruction. The one
+recorded quantized thing that has moved, four of the seven quantized goldens
+when the relu was fused, was declared in `docs/BREAKING_CHANGES.md` before the
+commit that moved it and re-recorded in a commit of its own. The measurements
+are in `docs/PHASE_STATE.md` beside the claims.
 
 - **A quantized compilation now executes in integers.** `-npu-lower-to-npuisa`
   contracts the QDQ form `-npu-calibrate` leaves, a dequantize, a convolution or
@@ -40,6 +44,27 @@ measurement is in `docs/PHASE_STATE.md` beside the claim.
   LeNet on the machine agrees with the numpy integer reference from the same
   profile within Section 14's bound of one count, measured at zero counts on
   every output.
+- **A relu that is a calibrated operation's only reader is fused into its
+  integer instruction.** `-npu-calibrate` quantizes after the relu with the relu
+  output's range, the contraction sets `relu` on the instruction, which is the
+  `activation` field `CONV2D` and `MATMUL` have carried since version 1, and the
+  machine clamps at the output zero point. Declared in
+  `docs/BREAKING_CHANGES.md` and predicted before it existed. Four models move
+  and three do not by a bit; on the `normal` class the four go to 52.68, 45.24,
+  46.76 and 47.83 dB from 46.17, 43.89, 42.97 and 46.14, their budgets tighten
+  to match, and the integer reference still agrees at zero counts on all 35.
+  The boundary crossings go from 44 to 32 over the seven, with eleven f32 `RELU`
+  instructions gone. No fp32 byte moves.
+- **A dequantize then quantize with the same scale and zero point folds away**,
+  in `npu.quantize`'s folder and in `-npu-calibrate`, because the pair returns
+  all 256 values unchanged: proved on the machine at the boundary scales and in
+  the numpy reference at every pair the committed profiles carry.
+- **The calibration profile records the whole graph**, every node with its type,
+  inputs and outputs, so the pass can find the tensor a relu writes. The seven
+  committed profiles are rebuilt and differ from their parents by that section
+  and nothing else.
+- **D-0069 is logged**: quantized `-O2` at a tight budget fails verification on
+  all seven models with a sentence that is false for the input. Its fix is next.
 - **All seven models meet both of Section 14's bounds at `-O0`.** Against the
   numpy integer reference from the same profile, zero counts on every output of
   every model on all five input classes, 35 of 35 against a bound of one count.
