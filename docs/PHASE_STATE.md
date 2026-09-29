@@ -14,21 +14,22 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-09-29, at P14 checkpoint B, the boundary of the fused
-relu and the pair fold.
+**Last updated:** 2026-09-30, at P14 checkpoint B, the boundary of the
+calibration after the `-O2` folds and the quantized models at every level.
 
 ## Current phase
 
 **P14, INT8 quantization, in progress. Checkpoint A is complete, and Checkpoint
-B has landed calibration, the QDQ contraction, all seven models end to end at
-`-O0`, and the relu fused into the integer instruction with the identical pair
-folded away: a calibrated model compiles to integer instructions that meet each
-other without going back to f32 where nothing between them needs it, runs on
-the machine, and meets both of Section 14's bounds.** Branch `phase/p14-int8`,
-cut from `main` at `e72f610`, the P13 merge. `main` has moved on to `e1a94d3`
-with P13b, PR 23, and the owner's README edit; it is merged into this branch
-only at Checkpoint C's start, with a merge commit and never a rebase, because
-shas are cited throughout these files.
+B has landed calibration, the QDQ contraction, the relu fused into the integer
+instruction with the identical pair folded away, and the calibration after the
+`-O2` folds and fusion: a calibrated model compiles at every level to integer
+instructions that meet each other without going back to f32 where nothing
+between them needs it, runs on the machine, and meets both of Section 14's
+bounds at `-O0`, `-O1` and `-O2`.** Branch `phase/p14-int8`, cut from `main` at
+`e72f610`, the P13 merge. `main` has moved on to `e1a94d3` with P13b, PR 23,
+and the owner's README edit; it is merged into this branch only at Checkpoint
+C's start, with a merge commit and never a rebase, because shas are cited
+throughout these files.
 
 **This section replaces the checkpoint A account that was here.** That account
 stopped being current on 2026-09-16; the engineering log carries all of it, and
@@ -57,88 +58,81 @@ the current one.
 | The QDQ contraction: the arithmetic pinned on both sides, the lowering, the per tensor arm, and the end to end tests | `08c9d06`, `4c152fa`, `a3a0251`, `ccd146b`, docs `728eb5d`, record `d7c066b` |
 | Item 3 at `-O0`: both bounds on all seven models with the budgets, the two result fields, the quantized goldens, the ISA sentence on the scalar pair | `8595e0b`, `a051b55`, `e5a965a`, `1d51f99`, `8c687f0`, docs `dacc3f2`, record `f8f6940` |
 | D-0049's tenth observation and D-0069 logged; two sentences from `main` reworded | `b18f71a`, `853ab79` |
-| **The fused relu and the pair fold**: the prediction, the declaration, the fold, the instruction's `relu`, the profile's graph section, the fusion, and this docs commit | `42aa8b6`, `d7369cd` (declaration), `4c2c56f`, `8e37021`, `e718c72`, `69d7651`, and the commit carrying this file |
+| The fused relu and the pair fold | `42aa8b6` (prediction), `d7369cd` (declaration), `4c2c56f`, `8e37021`, `e718c72`, `69d7651`, docs `2a701ba`, record `a298ad0` |
+| **P6, D-0069's fix**: tiling declines a calibrated operation, the verifier's sentence corrected; and `requant-mode=float` refused by name | `9f55abd`, `94b7c90` |
+| **P2**: weight scales from the constant the operation holds, the profile the `-O0` oracle | `cf6c93c` |
+| **P3**: the bias fusion and the batch norm fold record what they absorbed, fp32 measured unmoved first | `ff36b1f` |
+| **P1**: at `-O2` the calibration runs after the folds and the fusion | `7e313eb` |
+| **The quantized models at `-O1` and `-O2`**: the prediction, the declaration, both bounds at three levels, a quantized golden per level, and this docs commit | `b8e661d` (prediction), `222f70d` (declaration), `acd142c`, `a6d80b8`, and the commit carrying this file |
 
 The baseline was re-recorded at `dab3e76`, `c9c1961`, `d2c431c`, `96bef52`,
-`832aef0`, `ccb4c07`, `4f6c663`, `d7c066b` and `f8f6940`, and is re-recorded
-again by the commit after this one, which moves four of the seven quantized
-goldens as the declaration says.
+`832aef0`, `ccb4c07`, `4f6c663`, `d7c066b`, `f8f6940` and `a298ad0`, and is
+re-recorded again by the commit after this one, which adds the fourteen
+quantized goldens the declaration names.
 
-### What the fused relu and the pair fold measured, in four sentences
+### What the calibration after the folds measured, in four sentences
 
-A relu that is a calibrated operation's only reader is now the integer
-instruction's activation, clamping at the output zero point, and its output is
-quantized once at the relu output's scale, where it used to be rounded twice;
-where that output is the next calibrated operation's input, the pair between
-them folds away. Three models have no such relu and compile to the same program
-bit for bit; the other four, on the `normal` class at `-O0`, go to **52.68,
-45.24, 46.76 and 47.83 dB** from 46.17, 43.89, 42.97 and 46.14, their budgets
-tighten to 51, 44, 45 and 46 dB, and the integer reference still agrees at zero
-counts on all 35. The crossings go from **44 to 32** over the seven, per model as
-the graphs predicted, with eleven f32 `RELU` instructions gone. The prediction
-was right on the structure, the direction and three of four brackets, and wrong
-on `depthwise_separable`'s size, high by half a dB, and on the LeNet pair
-staying within 1.5 dB, which they missed by 0.014.
+At `-O2` the calibration now runs after `-npu-fuse-bias`, `-npu-fold-batchnorm`
+and `-npu-fuse-ops`, puts back the fused regions around the operations it
+calibrates, and scales each weight from the constant the operation holds, so
+`conv_bn_relu_stack`'s folded filters are quantized with their own scales and
+its relus fuse, and `dilated_stack`'s bias add is inside its second convolution
+and the relu after it fuses. Those two models go to **34.75 and 36.52 dB** at
+`-O2` from 33.80 and 34.40 at `-O0`, their `-O2` floors tighten to 33 and 35 dB
+with no count bound loosened, and the other five compile to the `-O0` program
+bit for bit, as does every model at `-O1`. The crossings are **28 at `-O2`**
+over the seven where `-O0` and `-O1` have 32, and the integer reference agrees
+at zero counts on all 105 model, class and level combinations. The fold doubles
+the spread of channel weight scales, **1.567 to 3.141 and 1.483 to 3.254**,
+which is Section 14's argument for per channel weights measured, and every
+clause of the prediction held.
 
 ### The gate, clause by clause
 
 | Clause | Status |
 |---|---|
-| accuracy degradation measured and reported per model | **measured at `-O0`**, per model, both bounds, the budgets recorded beside the measurement and tightened with the fused relu. `-O1` and `-O2`, the calibration count and the three ablations are still to come |
+| accuracy degradation measured and reported per model | **measured at all three levels**, per model, both bounds, the budgets recorded beside the measurement in a per level table, tightened at `-O2` for the two models that move and loosened nowhere. The calibration count and the three ablations are still to come |
 | cycles and energy win, the int8 throughput share separated from the DMA share | **pending**, item 4 and Checkpoint C |
-| calibration methodology documented in one place | **met**, `docs/PASSES.md`, and the weight scale line changes with P2 below |
-| `Program::kVersion` unmoved, `test_binary_stability` green | **met**, 2; the fused relu uses the `activation` field version 1 already carried |
-| fp32 goldens byte identical | **met at this boundary**, see the verification below |
-| quantized goldens added rather than substituted | **met at `-O0`**, seven; four re-recorded under their own declaration; `-O1` and `-O2` to come |
+| calibration methodology documented in one place | **met**, `docs/PASSES.md`, with the weight scale line changed by P2 and where the calibration runs added by P1 |
+| `Program::kVersion` unmoved, `test_binary_stability` green | **met**, 2 |
+| fp32 goldens byte identical | **met at this boundary**, and all 217 planned fp32 cells byte identical across P3 and P1, see the verification below |
+| quantized goldens added rather than substituted | **met at every level**, 21 with the record after this commit; none of the seven `-O0` ones moves |
 | reachability green with zero quantization exemptions | **met**, no exemptions in force |
 
 ### What remains, in order
 
-The owner ruled on 2026-09-29 that quantized cells mirror the fp32 benchmark
-grid at all three levels, 84 more, with ablation cells fp32 only, and that
-`requant-mode=float` is refused by name. The order that follows from both:
+P6 with the float refusal, P1, P2, P3 and the `-O1` and `-O2` end to end have
+landed, above. What is left:
 
-1. **P6, D-0069's fix**: tiling declines a calibrated operation with a counted
-   remark, the verifier's sentence is corrected, and a lit case red at the
-   parent and green at the fix. **With it, `requant-mode=float` refused by
-   name**, with a negative lit test and the reason in `docs/PASSES.md`.
-2. **P1**: at `-O2`, `-npu-calibrate` runs after `-npu-fuse-bias`,
-   `-npu-fold-batchnorm` and `-npu-fuse-ops` and before the second
-   canonicalization, CSE and tiling; `-O0` and `-O1` unchanged; the placement
-   asserted in the pipeline test beside the existing assertion that calibration
-   is in no default level.
-3. **P2**: weight scales computed by `-npu-calibrate` from the constant the
-   operation holds, still written to `weight_scales`, with the profile the
-   `-O0` oracle at bit equality over 22 operations and 556 channels, and the
-   methodology line in `docs/PASSES.md` changed in the same commit. This
-   revises the rule of 2026-09-22 that the profile alone describes the weights,
-   and the reason is Section 14's own: the spread the batch norm fold creates
-   across channels is its argument for per channel weights, and only scales
-   taken from the folded constant describe what the machine quantizes.
-4. **P3**: the batch norm fold and the bias fusion record what they absorbed as
-   a fused location with the convolution's name first, and the calibrator reads
-   the absorbed node's output from the profile's graph section. It touches fp32
-   passes, so zero counted movement over the 217 cells and byte identical fp32
-   binaries and goldens are proved first, and any fp32 byte moving stops the
-   work.
-5. **The `-O2` end to end** with both bounds on all seven, predictions first,
-   with `conv_bn_relu_stack`'s channel scale spread before and after the fold as
-   a measured table, and the `-O1` and `-O2` quantized goldens.
-6. **Item 4, the cost model's INT8 terms**, declared first, over the int8
+1. **Item 4, the cost model's INT8 terms**, declared first in
+   `docs/BREAKING_CHANGES.md`: `FrozenConstants` extended, fp32 charges
+   asserted unchanged over the 217 cells field by field, the int8 energy
+   coefficients recorded the way P11 recorded fp32, measured over the int8
    program shape that will be reported.
-7. **Item 5, the quantized cells**: the count from the driver, 217 plus 84 is
-   301 if nothing else moves, every hardcoded count site in one commit, and the
-   Section 2 paragraph for the owner.
-8. **Checkpoint C**, starting with the merge of `main`; then the close.
+2. **Item 5, the quantized cells**: the count derived from the driver, every
+   hardcoded count site moved in one commit, and the Section 2 paragraph for
+   the owner. **The count needs a ruling first**, below.
+3. **Checkpoint C**, starting with the merge of `main`; then the close.
 
 ### Open at this boundary
 
-- **D-0069 is open**, its fix first in the queue above.
+- **Item 5's count.** Ruling A's 84 is three levels, two budgets, two batches
+  and seven models. The driver's fp32 benchmark grid is not that: the tight
+  budget runs at each model's declared batch only, per ADR 0010, so it is 63
+  benchmark cells, three levels by three budget and batch combinations by
+  seven, and 217 is those 63 plus 154 ablation cells. Mirroring it gives 63
+  quantized cells and 280 in all, not 301. Measured at this tip, a quantized
+  model at its declared batch compiles and runs at the tight budget at every
+  level, the answer bit identical to the default budget's; at batch 4, five of
+  the seven do not fit the tight budget, as in fp32. Which count is meant is
+  the owner's.
+- **D-0066 has a third sighting, the first with its message**, and the message
+  is D-0049's gap bound, reached through the benchmark harness the case drives.
+  Whether it closes into D-0049 is left for a ruling; neither bound moved.
 - **Section 14's static guard bounds the products and not the folded bias on
   top of them.** Recorded at the contraction's boundary, not changed.
-- D-0049 open, now with a tenth observation, its fix P15's; D-0065 on `main`,
-  deferred to P15; D-0066 open as a candidate. **The next free defect number is
-  D-0070.**
+- D-0049 open, its fix P15's; D-0065 on `main`, deferred to P15; D-0066 open as
+  a candidate. D-0069 is fixed. **The next free defect number is D-0070.**
 - The Section 2 and Section 5.5 edits to the specification are still the
   owner's, from P10 to P13, and item 5 adds the quantized arithmetic to the
   Section 2 paragraph.
@@ -148,48 +142,54 @@ grid at all three levels, 84 more, with ablation cells fp32 only, and that
 `docs/ENGINEERING_LOG.md`: "2026-09-06 Phase P14, checkpoint A", "2026-09-16
 Phase P14, checkpoint B" with its subsections, "2026-09-24 Phase P14,
 checkpoint B: the QDQ contraction", "2026-09-24 Phase P14, checkpoint B: all
-seven models end to end, and a prediction that was half wrong", and "2026-09-29
+seven models end to end, and a prediction that was half wrong", "2026-09-29
 Phase P14, checkpoint B: the relu inside the instruction, and the pair that
-computes nothing". `docs/DEFECT_LOG.md`: D-0049's tenth observation, D-0063,
-D-0066, D-0067, D-0068, D-0069. `docs/BREAKING_CHANGES.md`: the three P14
-declarations, 2026-09-16, 2026-09-20 and 2026-09-29.
+computes nothing", and "2026-09-29 Phase P14, checkpoint B: the calibration
+after the folds, and the quantized models at every level".
+`docs/DEFECT_LOG.md`: D-0049, D-0063, D-0066 with its third sighting, D-0067,
+D-0068, D-0069. `docs/BREAKING_CHANGES.md`: the four P14 declarations,
+2026-09-16, 2026-09-20 and the two of 2026-09-29.
+`experiments/predictions/p14-quantized-o1-o2.md` for the prediction this
+boundary answers.
 
-### Verification at the fusion's tip
+### Verification at this boundary's tip
 
-Every row was predicted before it was run, with the arithmetic behind it: eight
-pytest cases, four lit files and one simulator case added since `f8f6940`, none
-needing an external tool, and ten files added under licence.
+Every row was predicted before it was run, at `a6d80b8`, with the arithmetic
+behind it: four lit files, 148 pytest cases and five licensed files net since
+`a298ad0`, none needing an external tool.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6`, `ninja -C build-ndebug -j6` | clean, no warnings |
-| `ninja -C build check-npu` | **48 of 48**, from 44: `quantize-fold.mlir`, `calibrate-fold.mlir`, `quantized-fused-relu.mlir`, `calibrate-relu.mlir`. **Predicted 48** |
+| `ninja -C build check-npu` | **52 of 52**, from 48: `tile-to-scratchpad-calibrated.mlir`, `calibrate-weight-scales.mlir`, `fused-locations.mlir`, `calibrate-fused-region.mlir`. **Predicted 52** |
 | `NPUInterfaceTests`, `NPUTilingTests`, `NPUAllocatorTests` | 23, 20, 47, both trees |
-| `NPUEncodingTests`, `NPUSimulatorTests` | 95 passed and 2 skipped, **80** passed and 1 skipped, both trees: the pair returning all 256 values. **Predicted** |
-| `pytest test/Python -m 'slow or not slow'`, dev | **1297 passed, 18 skipped**, 245.12 s. **Predicted 1297 and 18**: 1289 at `f8f6940` plus eight |
-| the same, CI shape, from a quiet start at 0.24 | **1282 passed, 33 skipped**, 174.58 s. **Predicted 1282 and 33.** The shape difference stays at 15. Started quiet by D-0049's practice, because its tenth observation was this suite started under load |
+| `NPUEncodingTests`, `NPUSimulatorTests` | 95 passed and 2 skipped, 80 passed and 1 skipped, both trees. **Predicted** |
+| `pytest test/Python -m 'slow or not slow'`, dev | **1445 passed, 18 skipped**, 237.19 s. **Predicted 1445 and 18**: 1297 at `a298ad0` plus 148 |
+| the same, CI shape, from a quiet start at 0.24 | **1430 passed, 33 skipped**, 179.56 s. **Predicted 1430 and 33.** The shape difference stays at 15 |
 | `mypy`, both shapes | no issues in 29 source files |
-| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **689 of 689**, predicted |
-| `build-model-ir.py`, then `check-reachability.py` | pass, all five layers, **no exemptions** |
+| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **694 of 694**, predicted; 708 with the record's fourteen tensors |
+| `build-model-ir.py`, then `check-reachability.py` | 98 files, pass, all five layers, **no exemptions** |
 | `check-isa-staleness.sh build`, the dialect reference regenerated and diffed | up to date, up to date |
 | `gen-design-decisions.py --check`, `results_to_tex.py --check`, `patch-scalesim.py --check` | up to date, up to date, every edit in place |
-| `coverage.sh 85 93 16 58` | **C++ 87.1 PASS** against 85, 7082 lines of 8128, branches 76.3 over 4602, `QuantizedContraction.cpp` at 252 of 256. Per tree **93.59 / 40.65 / 71.51 PASS** against 93 / 16 / 58, exit 0. **No threshold moved. Predicted** 87.0 within 0.3 and the trees within 0.3 of 93.56 / 40.65 / 71.51, all met |
-| `regression-baseline.sh --check`, from a quiet start at 0.23 | **red exactly as predicted and as declared**: 20 differences, the three suites' counts and the thirteen added test names, and **four quantized goldens moved**, `depthwise_separable`, `lenet`, `lenet_batched` and `resnet_block`, each by about one count of its output scale. **Not one cell line, not one fp32 golden line, and the other three quantized goldens identical**: 42 cells, 21 fp32 tensors, largest movement against `-O0` **4.470e-08**. The record that follows this commit answers it |
-| the 98 model IR files against their state before the pair fold | **8 changed**, the quantized `npu` and `npuisa` files of the four declared models; every fp32 file at every level and the other three quantized models byte identical |
-| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches**; the whole tree grepped for four more words, **0 matches** |
+| `coverage.sh 85 93 16 58` | **C++ 87.2 PASS** against 85, 7130 lines of 8177, branches 76.5 over 4616. Per tree **93.60 / 40.61 / 71.51 PASS** against 93 / 16 / 58, exit 0. **No threshold moved. Predicted** 87.1 within 0.3 and the trees within 0.3 of 93.59 / 40.65 / 71.51, all met |
+| `regression-baseline.sh --check`, from a quiet start at 0.24 | **red exactly as predicted and as declared**: the two suites' counts, check-npu 48 to 52 and pytest 1297 to 1445, the end to end test's 49 old parametrized identifiers gone and 197 pytest and 4 lit identifiers added, and **fourteen quantized goldens produced and not recorded**, seven at `-O1` and seven at `-O2`. **Not one cell line, not one fp32 golden line, and none of the seven `-O0` quantized goldens**: 42 cells, 28 recorded tensors identical, largest movement against `-O0` **4.470e-08** |
+| the same, a second time, from a quiet start at 0.23 | the same lines, and **one pytest case red**, D-0066's, with its message kept for the first time: D-0049's gap bound on `NPUConstantFold`, 0.6000 ms against 0.1615 ms. Recorded under D-0066, not re-recorded around |
+| all 217 planned fp32 cells, compiled and hashed at `ff36b1f`'s parent, at `ff36b1f` and at `7e313eb` | **byte identical**, with the debug section and stripped |
+| quantized, all seven, every level, the tight budget at the declared batch | compiles and runs, the answer bit identical to the default budget's |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches**, the pattern's three hits being "regenerated with" in prose; every commit on the branch authored and committed by me alone; the whole tree grepped for four more words, **0 matches** |
 
 ### Next command
 
-This boundary is verified, pushed and watched in CI before P6 starts. Its state
-is one command:
+This boundary is recorded by the commit after this one and then verified,
+pushed and watched in CI before item 4 starts. Its state is one command:
 
 ```
 PYTHONPATH=$HOME/llvm-project/build/tools/mlir/python_packages/mlir_core:$PWD/python \
-  python -m pytest test/Python/test_quantized_end_to_end.py test/Python/test_quantized_contraction.py -q
+  python -m pytest test/Python/test_quantized_end_to_end.py test/Python/test_compile_driver.py -q
 ```
 
-P6 starts with the lit case that reproduces D-0069, written and run red at its
-parent before the fix exists.
+Item 4 starts with its declaration in `docs/BREAKING_CHANGES.md`, written before
+the cost model's first INT8 term exists.
 
 ## P13, merged at `e72f610`
 

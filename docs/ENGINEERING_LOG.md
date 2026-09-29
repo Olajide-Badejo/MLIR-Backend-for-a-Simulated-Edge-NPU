@@ -7566,3 +7566,200 @@ alone and on the rerun. Its message was lost to a tail, a third time, and the
 batteries now keep the whole of `pytest -rfE --tb=short` and print every red
 case's assertion. D-0069 is logged. And two sentences from `main` that named the
 decision maker in a way this repository does not are reworded in my own voice.
+
+## 2026-09-29 Phase P14, checkpoint B: the calibration after the folds, and the quantized models at every level
+
+**What this was for.** The owner ruled on 2026-09-29 that quantized cells mirror
+the fp32 benchmark grid at all three levels. At the previous boundary a
+quantized `-O2` compilation at a tight budget failed verification on all seven
+models, D-0069, and at the default budget it compiled to `-O0`'s program bit
+for bit, because the calibration ran first and put quantize and dequantize
+pairs between each convolution and the batch norm or bias add that `-O2` would
+have folded into it. So `-O2` was not an optimization level for an integer
+program at all. Four changes were ruled on in order, P6, P1, P2 and P3, with
+`requant-mode=float` refused by name beside the first, and then the end to end
+test at every level.
+
+The commits: the D-0069 fix `9f55abd`, the refusal `94b7c90`, the weight scales
+from the constant `cf6c93c`, the folds' fused locations `ff36b1f`, the
+calibration's new position `7e313eb`, the prediction `b8e661d`, the declaration
+`222f70d`, the end to end test at three levels `acd142c`, the harness writing a
+quantized golden per level `a6d80b8`, the docs commit that carries this entry,
+and the record after it.
+
+### P6: tiling declines what it cannot split
+
+A tile reads a slice rather than a dequantize, so a tiled calibrated convolution
+failed the `weight_scales` verifier, whose sentence said the compilation was not
+a quantized one. `-npu-tile-to-scratchpad` now declines an operation carrying
+`weight_scales` when it is over the budget, with a remark and a count in its
+`declined` statistic, and the operation runs whole; the verifier's sentence says
+what is actually wrong. `test/Transforms/tile-to-scratchpad-calibrated.mlir` was
+run red at the parent and green at the fix. All seven quantized models compile
+at `-O2` at the tight budget. D-0069 is fixed.
+
+### The refusal
+
+`requant-mode=float` is refused by name, with the reason: no number was ever
+published under it, and a float multiplier is hardware the modelled machine
+does not have. `fixed` is the one mode.
+
+### P2 and P3: what the weights are, and what the result is
+
+**P2.** `-npu-calibrate` computes each output channel's weight scale from the
+constant the operation holds, `max |w_c| / 127` in f32 through a double
+quotient, 1 for a channel of zeros, the tensor's largest channel for the per
+tensor arm. At `-O0` that constant is the model's initializer, which is what the
+profile's weight entries were measured from, so the profile is the oracle there:
+equal bit for bit on all 22 operations and 556 channels, asserted in
+`test_quantized_contraction.py`. After the fold, the profile's entries describe
+weights the machine no longer has. This revises the rule of 2026-09-22 that the
+profile alone describes the weights; ADR 0014 carries the revision.
+
+**P3.** `-npu-fuse-bias` and `-npu-fold-batchnorm` now leave the convolution a
+fused location, its own name first and each absorbed node's after it. The
+calibration reads the last name and takes that node's output from the profile's
+graph section as the tensor the convolution now writes; a profile that cannot
+say leaves the operation skipped and counted. P3 touched two fp32 passes, so it
+was measured against its parent before it was committed: all 217 planned cells
+byte identical, with the debug section and stripped, because the debug section
+takes a location's first name; the baseline check with no cell line and all 28
+goldens identical; eight model IR files differing in location text only.
+
+### P1: where the calibration runs
+
+At `-O2` it runs after `-npu-fuse-bias`, `-npu-fold-batchnorm` and
+`-npu-fuse-ops`, and before the second canonicalization, CSE and the tiling; at
+`-O0` and `-O1`, which have none of the three, first as before. The position is
+the fusion's in the level's table, so the ablation rows keep it. By then
+`-npu-fuse-ops` has put each convolution or matrix multiplication and its relu
+in an `npu.fused_op`, and a pair formed inside one would be sealed in: a
+neighbour's dequantize could not fold with it, and CSE could not merge a shared
+input's quantize across the region's isolation. So the pass puts back every
+region around an operation its profile names, counted in `dissolved-regions`,
+and the contraction fuses the relu into the instruction as it does at `-O0`.
+The order is asserted from the pass manager's own record at each level and on
+two ablation rows. Nothing without a profile moved: the 217 cells were hashed
+again, byte identical.
+
+The commit also carries a whole file clang-format reflow of
+`lib/Pipeline/Pipeline.cpp`, four comment paragraphs and three option
+descriptions outside `build()`, that was not intended. It is whitespace only,
+checked by comparing the file with every whitespace character and comment
+marker removed, identical before and after outside `build()`, and it is left
+rather than rewritten out of history.
+
+### The measurement, and the adjudication, clause by clause
+
+`experiments/predictions/p14-quantized-o1-o2.md` was committed after the move
+and before any quantized program was compiled at `-O1`, or at `-O2` with the
+calibration in its new position. On the `normal` class, against onnxruntime:
+
+| Model | `-O0` and `-O1` | `-O2` | Crossings, f32 relus: `-O0` and `-O1`, `-O2` |
+|---|---|---|---|
+| `conv_bn_relu_stack` | 33.80 dB, 2.24 counts | **34.75 dB, 1.58 counts** | 6, 2 and **4, 0** |
+| `depthwise_separable` | 52.68 dB, 0.11 counts | the same, bit identical | 2, 0 and 2, 0 |
+| `dilated_stack` | 34.40 dB, 1.10 counts | **36.52 dB, 1.71 counts** | 4, 2 and **4, 1** |
+| `inception_block` | 36.29 dB, 1.05 counts | the same, bit identical | 6, 1 and **4, 1** |
+| `lenet` | 45.24 dB, 0.93 counts | the same, bit identical | 6, 0 and 6, 0 |
+| `lenet_batched` | 46.76 dB, 0.92 counts | the same, bit identical | 6, 0 and 6, 0 |
+| `resnet_block` | 47.83 dB, 1.64 counts | the same, bit identical | 2, 1 and 2, 1 |
+
+- **`-O1` bit identical to `-O0` on all seven and all five classes: met.**
+- **`-O2` bit identical to `-O0` on the five named: met**, on all five classes;
+  `conv_bn_relu_stack` and `dilated_stack` differ on every class.
+- **`conv_bn_relu_stack` up 0.5 to 6 dB: met**, at 0.95. **At most 2.24 counts,
+  1.2 to 2.2 predicted: met**, at 1.58.
+- **`dilated_stack` up 0.3 to 5 dB: met**, at 2.12. **The largest error 0.030
+  to 0.045 absolute and 1.6 to 2.4 counts of the new unit: met**, at 0.0329 and
+  1.71. The count bound named as the one at risk held, 0.29 of a count under
+  the `-O0` budget of 2.
+- **Crossings 32 to 28 and f32 relus 6 to 3, per model as the table: met
+  exactly.** No `npu.fused_op` survives and no contraction stays in f32.
+- **The integer reference at zero counts on all 35 pairs at `-O1` and at
+  `-O2`: met**, 105 of 105 across the three levels.
+- **The `-O2` weight scales equal the numpy fold's bit for bit, and the spread
+  grows: met**, below.
+- **No `-O0` quantized golden, fp32 golden or fp32 cell field moving: met**, by
+  the 217 cell hashes at `7e313eb` and by the baseline check before the record.
+
+**What the model got right is the structure.** Every clause was derived from the
+committed fp32 `-O2` programs and the profiles' graph sections without compiling
+a quantized program, and all of them held. `conv_bn_relu_stack` sits low in its
+bracket: the global average pool attenuates the convolution layers' noise before
+the head sees it, so the rounding the fold removes was a small share of what
+reaches the output, which is the reason the bracket was wide at the bottom.
+
+### The channel scale spread, before and after the fold
+
+The `weight_scales` of `conv_bn_relu_stack`'s two convolutions, read out of the
+compiled programs: at `-O0` from the unfolded filter, equal to the profile's
+entries on all 16 channels, and at `-O2` from the folded one, equal to
+`max |w'_c| / 127` of a numpy reproduction of the fold's f32 arithmetic on all
+16. The spread is the largest channel scale over the smallest.
+
+| Convolution | Channels | Fold factor | Spread before | Spread after | Per tensor levels left to the smallest channel, before and after |
+|---|---|---|---|---|---|
+| `conv0` | 8 | 0.572 to 1.445 | 1.567 | **3.141** | 81.0 and **40.4** |
+| `conv1` | 8 | 0.561 to 2.229 | 1.483 | **3.254** | 85.6 and **39.0** |
+
+The fold doubles the spread on one convolution and more than doubles it on the
+other, so a per tensor scale would give the smallest channel about 40 of its
+127 levels where it had over 80. That is Section 14's argument for per channel
+weights, measured. Per channel weights lose nothing to it: every factor is
+positive and the integer filters at `-O2` equal the `-O0` ones on all 792
+elements, so the program's answer moves only by where each layer's output is
+rounded.
+
+### The budgets
+
+A per level table joins `npu_frontend.tolerances`. `-O1` is the `-O0` table.
+At `-O2`, by item 3's rule, `conv_bn_relu_stack`'s floor tightens from 32 to
+33 dB and `dilated_stack`'s from 33 to 35 dB. **`dilated_stack`'s count bound
+stays at 2 where the rule would give 3**, because no bound loosens: its count
+at `-O2` is of the fused relu output's scale, 0.0192, where at `-O0` it is the
+convolution output's, 0.0419, so the same error is 2.18 times as many counts,
+and its absolute largest error fell from 0.0461 to 0.0329. The margin under
+that bound is 0.29 of a count rather than half of one, recorded rather than
+widened. A test holds every level's bounds to the `-O0` ones or tighter.
+
+### At the tight budgets
+
+With the calibration in its new position, every model compiles and runs
+quantized at its tight budget at its declared batch, at every level, and the
+answer is bit identical to the default budget's: a spill is a DMA round trip
+and the arithmetic does not move. At batch 4 the batch 1 tight budgets do not
+fit five of the seven quantized programs, as they do not fit the fp32 ones,
+which is why ADR 0010 puts the tight budget at the declared batch only. `-O2`
+is the cheaper program where the folds change it: `conv_bn_relu_stack` runs in
+876 cycles where `-O0` takes 1156, and `dilated_stack` in 931.7 where `-O0`
+takes 950.9. The cost model's INT8 terms, item 4, are what makes those numbers
+mean something.
+
+### What item 5's count has to answer
+
+Ruling A's 84 quantized cells are three levels, two budgets, two batches and
+seven models. The driver's fp32 benchmark grid is not that shape: the default
+budget runs at both batches and the tight budget at each model's declared
+batch only, so it is 63 benchmark cells, and 217 is those 63 plus 154 ablation
+cells. A quantized grid that mirrors it is 63 cells and 280 in all; 84 would
+need a tight cell at batch 4, which five models cannot compile at the batch 1
+budget. Nothing is built for item 5 until the owner says which is meant.
+
+### D-0066, a third sighting with its message
+
+The first baseline check at this tip was green in its suites. A second, from a
+quiet start at 0.23, had one red case, D-0066's
+`test_a_rerun_reproduces_the_external_fields_too`, and the harness kept its
+reports, so for the first time the assertion is known: D-0049's upper gap
+bound, `--mlir-timing reports NPUConstantFold at 0.6000 ms and this project's
+instrumentation at 0.1615 ms, a gap of 0.4385 ms against a bound of 0.3500 ms`,
+raised from the benchmark harness on the case's second run. The entry has the
+sighting. Whether D-0066 closes into D-0049 is left for a ruling; neither bound
+moved, and the baseline was not re-recorded around the red.
+
+### What is next
+
+The record, which writes the fourteen new quantized goldens. Then item 4, the
+cost model's INT8 terms, declared first and measured over this program shape,
+and item 5, the quantized cells.

@@ -32,7 +32,9 @@ precondition.
 regression baseline check and nowhere else. Open as a **candidate**: it is
 intermittent, it has never been reproduced in isolation, and its assertion text
 has been lost twice to the harness's own temporary directory. It is
-deliberately **not** attributed to D-0049, and the entry says why.
+deliberately **not** attributed to D-0049, and the entry says why. **A third
+sighting on 2026-09-30 kept its message, and the message is D-0049's gap
+bound**; whether the entry closes into D-0049 is left for a ruling.
 
 **D-0050**, the binary format cannot express a buffer written in pieces, so a
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
@@ -4522,6 +4524,31 @@ entry is D-0066.
   The harness says in its own words that a baseline is never re-recorded around
   a red suite, and the record was taken only after a later `--check` came back
   clean at the same tip.
+
+- **A third sighting, 2026-09-30, and the first with its message.** At
+  `a6d80b8`, two baseline checks from quiet starts, at 0.24 and 0.23, twenty
+  minutes apart and nothing else running. The first had every suite green. The
+  second had this case red, and the harness, which now keeps a red suite's
+  reports, kept its JUnit XML under
+  `build/regression-baseline-evidence/20260929T222345Z`:
+
+  ```
+  npu_frontend.pass_stats.PassStatisticsError: --mlir-timing reports
+  NPUConstantFold at 0.6000 ms and this project's instrumentation at 0.1615 ms,
+  a gap of 0.4385 ms against a bound of 0.3500 ms, which is 0.0500 ms of display
+  rounding plus 50% of MLIR's figure.
+  ```
+
+  raised from `run_benchmarks.main` on the case's second run, at
+  `test/Python/test_benchmarks.py:378`, the case taking 27.5 s. **That is
+  D-0049's upper gap bound**, reached through the benchmark harness this case
+  drives, and not a field of the two runs differing. So for this sighting the
+  question the entry was opened on, which assertion fails, has an answer: the
+  timing cross-check, on a pass whose whole MLIR figure is 0.6 ms. Whether the
+  first two sightings were the same is not known, because their messages were
+  lost. Whether this entry closes into D-0049 is left for a ruling rather than
+  decided here, and neither bound was touched. The baseline was not re-recorded
+  around it.
 
 ### D-0067 the calibrator read every weight's channels from axis 0, which is right for a convolution and wrong for a matrix multiplication
 

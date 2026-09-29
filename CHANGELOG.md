@@ -9,11 +9,11 @@ Semantic Versioning once a release is tagged.
 ### Phase P14: INT8 quantization
 
 **In progress. Checkpoint A is complete, and Checkpoint B has landed
-calibration, the QDQ contraction, all seven models end to end at `-O0`, and the
-relu fused into the integer instruction**: a calibrated model now compiles to
-integer instructions that meet each other without going back to f32 where
-nothing between them needs it, runs on the machine, and meets both of Section
-14's bounds. Quantized compilation above `-O0`, the cost model's INT8 terms and
+calibration, the QDQ contraction, the relu fused into the integer instruction,
+and the calibration after the `-O2` folds**: a calibrated model now compiles at
+every level to integer instructions that meet each other without going back to
+f32 where nothing between them needs it, runs on the machine, and meets both of
+Section 14's bounds at `-O0`, `-O1` and `-O2`. The cost model's INT8 terms and
 the quantized cells remain. The dialect's
 operator set is complete for the first time, the integer kernels have hand
 computed semantics and an independent numpy implementation that agrees with them
@@ -23,9 +23,38 @@ computed semantics and an independent numpy implementation that agrees with them
 `-O` level, so no cell of the 217 can reach an integer instruction. The one
 recorded quantized thing that has moved, four of the seven quantized goldens
 when the relu was fused, was declared in `docs/BREAKING_CHANGES.md` before the
-commit that moved it and re-recorded in a commit of its own. The measurements
+commit that moved it and re-recorded in a commit of its own, and so are the
+fourteen quantized goldens that arrive with `-O1` and `-O2`. The measurements
 are in `docs/PHASE_STATE.md` beside the claims.
 
+- **At `-O2` the calibration runs after `-npu-fuse-bias`, `-npu-fold-batchnorm`
+  and `-npu-fuse-ops`**, and before the second canonicalization, CSE and the
+  tiling; at `-O0` and `-O1` it still runs first. It puts back the fused regions
+  around the operations it calibrates, counted in `dissolved-regions`, so the
+  contraction fuses those relus into the instruction. No fp32 cell moves: all
+  217 compile to byte identical binaries.
+- **Quantized compilation meets both of Section 14's bounds at every level.**
+  The integer reference agrees at zero counts on all 105 model, class and level
+  combinations. `-O1` is `-O0`'s program on all seven, and `-O2` is on five; on
+  `conv_bn_relu_stack` and `dilated_stack` it goes to 34.75 and 36.52 dB from
+  33.80 and 34.40, and the per level budgets in `npu_frontend.tolerances`
+  tighten there and loosen nowhere. The crossings are 28 at `-O2` where the
+  other levels have 32. A quantized golden per model and level, 21 in all.
+- **Weight scales come from the constant the operation holds**, so the batch
+  norm fold's filters are quantized with their own scales. The profile's entries
+  are the `-O0` oracle, bit for bit over 22 operations and 556 channels. The fold
+  doubles the spread of channel scales, 1.567 to 3.141 and 1.483 to 3.254, which
+  is Section 14's argument for per channel weights, measured.
+- **The bias fusion and the batch norm fold record what they absorbed** as a
+  fused location, the convolution's name first, which is how the calibration
+  finds the tensor the convolution now writes. The debug section takes the first
+  name, so no fp32 byte moves, debug section included.
+- **D-0069 is fixed**: tiling declines a calibrated operation over the budget
+  with a counted remark rather than splitting it, and the verifier's sentence
+  says what is wrong. All seven quantized models compile at their tight budget,
+  at their declared batch, at every level.
+- **`requant-mode=float` is refused by name**, with the reason: no number was
+  published under it, and the modelled machine has no float multiplier.
 - **A quantized compilation now executes in integers.** `-npu-lower-to-npuisa`
   contracts the QDQ form `-npu-calibrate` leaves, a dequantize, a convolution or
   matrix multiplication carrying `weight_scales`, and a quantize, into one

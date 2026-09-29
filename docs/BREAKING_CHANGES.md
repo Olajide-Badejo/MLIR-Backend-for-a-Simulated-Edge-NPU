@@ -101,6 +101,34 @@ committed in b8e661d before any quantized program was compiled at `-O1`, or at
 
 **The commits that cause it:** named here once they exist.
 
+**Measured, after the commits that cause it.** *Added in the docs commit before
+the record that answers this entry; everything above is the declaration as
+committed in `222f70d`, unchanged.*
+
+- **The commits.** The end to end test at three levels is `acd142c` and moved
+  no recorded field; the harness change is `a6d80b8`; the tensors are written by
+  the `record:` commit after the one carrying this paragraph.
+- **The check before the record found what this entry names and nothing
+  else**, from a quiet start at `a6d80b8`: the fourteen quantized goldens
+  produced and not recorded, seven at `-O1` and seven at `-O2`, and not one
+  cell line, fp32 golden line or `-O0` quantized golden line. 42 cells and the
+  28 recorded tensors identical, the largest movement against `-O0` 4.470e-08.
+- **The tensors are what the declaration said.** All seven `-O1` answers and the
+  five named `-O2` answers are bit identical to the `-O0` quantized ones, which
+  `test_quantized_end_to_end.py` asserts on all five input classes, and
+  `conv_bn_relu_stack` and `dilated_stack` are new at `-O2`.
+- **Test names moved more than the declaration said**, and the correction is
+  here rather than above. Beside the growth and the one rename, the end to end
+  test's parametrized cases gained a level in their identifiers, so the check
+  reports 49 old identifiers gone and 197 pytest identifiers added, 1297 to 1445
+  passed, and four lit files added. The renamed golden test lands with the
+  record, because it asserts the tensors the record writes.
+- **The numbers that are not baseline fields.** At `-O2`, `conv_bn_relu_stack`
+  is 34.75 dB and 1.58 counts and `dilated_stack` 36.52 dB and 1.71 counts on
+  the `normal` class; their `-O2` floors tightened to 33 and 35 dB and no count
+  bound moved. `quant_boundary_crossings` is 28 at `-O2` over the seven, per
+  model 4, 2, 4, 4, 6, 6 and 2.
+
 ### 2026-09-29, Phase P14: a relu that reads a calibrated operation is fused into its integer instruction, and an identical dequantize and quantize pair is removed
 
 **Written before the commits that cause it.** Two commits follow this one and

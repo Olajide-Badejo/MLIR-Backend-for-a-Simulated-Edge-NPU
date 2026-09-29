@@ -1064,6 +1064,24 @@ that ran it, at each level and on two ablation rows, and
 `test/Transforms/calibrate-fused-region.mlir` has the region dissolved and a
 region the profile does not name left alone.
 
+**What it changes, measured on 2026-09-29.** On the seven models, `-O1`
+computes what `-O0` computes bit for bit, and so does `-O2` on the five whose
+calibrated program the folds do not change. On `conv_bn_relu_stack` both relus
+fuse and the pair between the layers folds, and on `dilated_stack` the relu
+after the fused bias fuses, which moves them to 34.75 and 36.52 dB from 33.80
+and 34.40 at `-O0`. The fold's effect on the weights is the table below, read
+out of the compiled programs; the `-O2` scales equal a numpy reproduction of
+the fold bit for bit, and `test_quantized_end_to_end.py` asserts both.
+
+| Convolution | Fold factor | Channel scale spread before the fold | After |
+|---|---|---|---|
+| `conv0` of `conv_bn_relu_stack` | 0.572 to 1.445 | 1.567 | 3.141 |
+| `conv1` of `conv_bn_relu_stack` | 0.561 to 2.229 | 1.483 | 3.254 |
+
+Per channel scales absorb that spread: the integer filters are the `-O0` ones on
+all 792 elements. A per tensor scale would leave the smallest channel about 40
+of 127 levels where it had over 80.
+
 ### The calibration methodology, in one place
 
 *Section 14 asks for this to be written once and cited rather than restated,
