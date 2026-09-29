@@ -205,6 +205,16 @@ bool fold(BatchNormOp op, OpBuilder &builder) {
   // three operands to four is all that adding a bias requires.
   conv->setOperands({conv.getInput(), newFilter, newBias, conv.getDestination()});
 
+  // **The convolution now computes what the batch norm's result was, and its
+  // location says so**, as a fused location with the convolution's name first
+  // and the batch norm's appended, after any the bias fusion already appended.
+  // The encoder's debug section and the calibrator's join to the profile's
+  // node read the first name and see what they always saw; the calibrator
+  // reads the last to find the tensor the fused operation writes. The two new
+  // constants were created above with the location as it stood before this
+  // line, whose first name is the convolution's either way.
+  conv->setLoc(FusedLoc::get(conv->getContext(), {conv.getLoc(), op.getLoc()}));
+
   op.getResult().replaceAllUsesWith(conv.getResult());
   op.erase();
   return true;

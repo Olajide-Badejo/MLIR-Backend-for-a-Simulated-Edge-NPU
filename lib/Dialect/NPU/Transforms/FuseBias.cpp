@@ -138,6 +138,17 @@ bool fuse(AddOp add) {
       {conv.getInput(), conv.getFilter(), constant.getResult(),
        conv.getDestination()});
 
+  // **The convolution now computes what the add's result was, and its
+  // location says so**, as a fused location with the convolution's own name
+  // first. Every reader that takes the first name, the encoder's debug section
+  // and the calibrator's join to the profile's node, sees what it always saw;
+  // the calibrator reads the last name to find which tensor the fused
+  // operation writes, whose range is the one its result has. Without it a
+  // calibration after this pass would quantize the biased result with the
+  // unbiased one's range.
+  conv->setLoc(
+      FusedLoc::get(conv->getContext(), {conv.getLoc(), add.getLoc()}));
+
   // The add's own destination is left with no user, and `-canonicalize`
   // removes it. That is the canonicalization Section 12 puts after fusion,
   // doing the work it is there for.

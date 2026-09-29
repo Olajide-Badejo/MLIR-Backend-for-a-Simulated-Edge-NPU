@@ -1,0 +1,28 @@
+{
+  "activation_scales": {
+    "b": {"minmax": {"degenerate": false, "scale": 0.018, "zero_point": -7}},
+    "c": {"minmax": {"degenerate": false, "scale": 0.016, "zero_point": -9}},
+    "r": {"minmax": {"degenerate": false, "scale": 0.012, "zero_point": -128}},
+    "x": {"minmax": {"degenerate": false, "scale": 0.025, "zero_point": -3}},
+    "y": {"minmax": {"degenerate": false, "scale": 0.02, "zero_point": -20}}
+  },
+  "batch": 1,
+  "graph": {
+    "Add_1": {"inputs": ["c", "bias"], "op_type": "Add", "outputs": ["b"]},
+    "BatchNormalization_2": {
+      "inputs": ["b", "gamma", "beta", "mean", "variance"],
+      "op_type": "BatchNormalization",
+      "outputs": ["y"]
+    },
+    "Conv_0": {"inputs": ["x", "w"], "op_type": "Conv", "outputs": ["c"]},
+    "Relu_3": {"inputs": ["y"], "op_type": "Relu", "outputs": ["r"]}
+  },
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "inputs": 8,
+  "model": "calibrate-fused-location-lit",
+  "nodes": {
+    "Conv_0": {"inputs": ["x", "w"], "op_type": "Conv", "outputs": ["c"]}
+  },
+  "schema_version": 1,
+  "seed": 1
+}

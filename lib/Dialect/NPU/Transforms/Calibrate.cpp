@@ -161,6 +161,23 @@ llvm::StringRef nameFromLocation(Location loc) {
   return {};
 }
 
+/// Every node name a location carries, in order.
+///
+/// A convolution that `-npu-fuse-bias` or `-npu-fold-batchnorm` absorbed a
+/// node into carries a fused location: its own name first and each absorbed
+/// node's after it. The first is the node the profile's `nodes` section
+/// joins; the last is the node whose output the operation's result now is.
+void namesFromLocation(Location loc,
+                       llvm::SmallVectorImpl<llvm::StringRef> &names) {
+  if (auto named = dyn_cast<NameLoc>(loc)) {
+    names.push_back(named.getName().strref());
+    return;
+  }
+  if (auto fused = dyn_cast<FusedLoc>(loc))
+    for (Location nested : fused.getLocations())
+      namesFromLocation(nested, names);
+}
+
 /// Reads the profile, or says what is wrong with it.
 ///
 /// Every failure returns a message rather than a partially filled profile,
@@ -506,7 +523,7 @@ private:
   /// the node's output has a range for the method asked for. A profile without
   /// the graph section fails the second, and compiles as it always did.
   std::optional<std::pair<ReluOp, ActivationScale>>
-  fusibleRelu(Operation *op, const NodeRecord &record, const Profile &loaded) {
+  fusibleRelu(Operation *op, llvm::StringRef writes, const Profile &loaded) {
     Value result = op->getResult(0);
     if (!result.hasOneUse())
       return std::nullopt;
@@ -517,7 +534,7 @@ private:
     auto found = loaded.graph.find(nameFromLocation(relu.getLoc()));
     if (found == loaded.graph.end() || found->second.opType != "Relu" ||
         found->second.inputs.empty() || found->second.outputs.empty() ||
-        found->second.inputs.front() != record.outputs.front())
+        found->second.inputs.front() != writes)
       return std::nullopt;
 
     auto range = loaded.activations.find(found->second.outputs.front());
@@ -539,8 +556,27 @@ private:
       return success();
     }
 
+    // **The tensor this operation's result is.** Its own node's output,
+    // unless a fold absorbed a node into it, in which case the last absorbed
+    // node's output, which the profile's graph names: after the batch norm
+    // fold the convolution's result is the batch norm's, and its range is the
+    // batch norm output's. A profile that does not say what the absorbed node
+    // writes leaves the operation without a range for its result, and that is
+    // the partial coverage below, skipped and counted.
+    llvm::SmallVector<llvm::StringRef> names;
+    namesFromLocation(op->getLoc(), names);
+    llvm::StringRef writes = node->second.outputs.front();
+    if (names.size() > 1) {
+      auto absorbed = loaded.graph.find(names.back());
+      writes =
+          absorbed == loaded.graph.end() || absorbed->second.outputs.empty()
+              ? llvm::StringRef()
+              : llvm::StringRef(absorbed->second.outputs.front());
+    }
+
     auto input = loaded.activations.find(node->second.inputs.front());
-    auto output = loaded.activations.find(node->second.outputs.front());
+    auto output = writes.empty() ? loaded.activations.end()
+                                 : loaded.activations.find(writes);
     if (input == loaded.activations.end() ||
         output == loaded.activations.end()) {
       // **Skipped and counted, never half rewritten.** An operation whose
@@ -583,7 +619,7 @@ private:
     Value quantized = op->getResult(0);
     Location outputLoc = loc;
     ActivationScale outputScale = output->second;
-    if (auto fused = fusibleRelu(op, node->second, loaded)) {
+    if (auto fused = fusibleRelu(op, writes, loaded)) {
       quantized = fused->first.getResult();
       outputLoc = fused->first.getLoc();
       outputScale = fused->second;
