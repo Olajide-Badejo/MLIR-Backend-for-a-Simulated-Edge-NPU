@@ -405,8 +405,9 @@ def NPUTileToScratchpad
     Statistic<"alreadyFitting", "already-fitting",
               "Operations whose working set was already inside the budget">,
     Statistic<"declinedOps", "declined",
-              "Operations over budget that no permitted tiling fits, left for "
-              "the allocator to spill">,
+              "Operations over budget left whole for the allocator to spill: "
+              "no permitted tiling fits, the result cannot be assembled, or "
+              "the operation is calibrated">,
   ];
 
   let dependentDialects = [

@@ -34,12 +34,6 @@ intermittent, it has never been reproduced in isolation, and its assertion text
 has been lost twice to the harness's own temporary directory. It is
 deliberately **not** attributed to D-0049, and the entry says why.
 
-**D-0069**, quantized compilation at `-O2` and a tight budget fails
-verification on all seven models, with a message that says the input is not a
-quantized compilation when it is one. Open: the refusal itself is right, and
-which of two fixes lands waits on whether quantized compilation exists above
-`-O0` in P14.
-
 **D-0050**, the binary format cannot express a buffer written in pieces, so a
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
 `Program::kVersion` bump, which P14's gate forbids by name and which the
@@ -4663,11 +4657,12 @@ before any test had driven the value.
 
 ### D-0069 quantized `-O2` at a tight budget fails verification on all seven models, with a message that is false for the input
 
-**Status: open, and its fix waits on a scope decision**: whether quantized
-compilation exists above `-O0` in P14. The entry records both fixes that
-decision chooses between. Found 2026-09-24 at `f8f6940`, by the investigation
-of quantized compilation above `-O0` that ran before anything was built for
-those levels.
+**Status: fixed in the commit that updates this line**, by the first of the two
+fixes below, after the owner ruled on 2026-09-29 that quantized cells exist at
+all three levels. `test/Transforms/tile-to-scratchpad-calibrated.mlir` was
+written first and run red at the parent, with the old sentence as its output.
+Found 2026-09-24 at `f8f6940`, by the investigation of quantized compilation
+above `-O0` that ran before anything was built for those levels.
 
 - **Reproduce.** At any commit from `a8e75ef`, where `weight_scales`, its
   verifier rule and the tiling interface's copy of it arrived together, with the

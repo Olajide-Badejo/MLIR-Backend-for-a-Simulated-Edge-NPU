@@ -391,13 +391,22 @@ LogicalResult verifyWeightScales(Operation *op, Value data,
   if (!scales)
     return success();
 
+  // **The sentence says what is wrong, not where the operation came from.**
+  // Until D-0069 it said "so this is not a quantized compilation", which was
+  // written for an attribute put on by hand and was false for the route that
+  // actually reached it: a pass that moved a calibrated operation away from
+  // its dequantize, a tile reading a slice of it, in what was exactly a
+  // quantized compilation.
   if (!data.getDefiningOp<DequantizeOp>())
     return op->emitOpError()
            << "carries weight_scales and its data operand is not the result "
-              "of an npu.dequantize, so this is not a quantized compilation. "
-              "The attribute is written by -npu-calibrate from a profile and "
-              "read by the contraction in the lowering, and it means nothing "
-              "anywhere else";
+              "of an npu.dequantize. The attribute is written by "
+              "-npu-calibrate on an operation whose input it has just "
+              "dequantized, and the contraction in the lowering reads it only "
+              "there; an operation that reads its input through anything "
+              "else, a slice, a region's argument or an fp32 value, cannot "
+              "carry it, whether the attribute was written by hand or a pass "
+              "moved the operation away from its dequantize";
 
   if (static_cast<int64_t>(scales->size()) != channels)
     return op->emitOpError()

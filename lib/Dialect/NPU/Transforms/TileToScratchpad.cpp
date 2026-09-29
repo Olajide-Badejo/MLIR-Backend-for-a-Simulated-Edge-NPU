@@ -890,6 +890,33 @@ struct TileToScratchpadPass
         continue;
       }
 
+      // **Over budget and calibrated, which is D-0069.** A tile of an
+      // operation carrying `weight_scales` reads a slice of the dequantized
+      // input rather than the dequantize, so the QDQ contraction in the
+      // lowering cannot find the shape it turns into an integer instruction,
+      // and the tile's copy of the whole operation's scales is the wrong count
+      // once the output channel axis is split. Tiling it anyway produced a
+      // tile the verifier refused, which made quantized compilation at a tight
+      // budget fail on every model. So the operation is left whole and
+      // counted, the way a fused region over the budget is, and the
+      // allocator's spilling is the fallback. Tiling an integer operation is
+      // Checkpoint C's, with reduction tiling under INT8, which is also where
+      // the working set is sized in the integer instruction's bytes rather
+      // than the f32 ones this level carries.
+      if (op->hasAttr("weight_scales")) {
+        ++declinedOps;
+        op->emitRemark()
+            << "working set of " << working << " bytes exceeds the "
+            << budgetBytes
+            << " byte budget, and this operation is calibrated: a tile would "
+               "read a slice of its dequantized input, which the QDQ "
+               "contraction cannot turn into an integer instruction. It is "
+               "left whole and the allocator's spilling is the fallback; "
+               "tiling an integer operation is Checkpoint C's, with reduction "
+               "tiling under INT8.";
+        continue;
+      }
+
       // Over budget, and the assembled result would be both returned and read.
       // The declared ISA cannot express that, so the tiling is declined here
       // rather than emitted for the encoder to refuse. See

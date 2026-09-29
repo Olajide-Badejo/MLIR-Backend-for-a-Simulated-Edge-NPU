@@ -955,12 +955,15 @@ func.func @quantize_the_wrong_way_round(%q: tensor<4xi8>) -> tensor<4xf32> {
 
 // The attribute may appear only where the operation is actually quantized,
 // which at this level means its data operand is the result of a dequantize.
-// An attribute in an fp32 compilation would be a number nothing reads.
+// An attribute in an fp32 compilation would be a number nothing reads. The
+// sentence names the rule rather than guessing the route: D-0069 was the same
+// refusal reached by a tile of a calibrated operation, where "this is not a
+// quantized compilation", the sentence it used to say, was false.
 func.func @weight_scales_without_a_quantized_input(%x: tensor<1x2x4x4xf32>)
     -> tensor<1x2x4x4xf32> {
   %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
   %d0 = tensor.empty() : tensor<1x2x4x4xf32>
-  // expected-error @+1 {{carries weight_scales and its data operand is not the result of an npu.dequantize, so this is not a quantized compilation}}
+  // expected-error @+1 {{carries weight_scales and its data operand is not the result of an npu.dequantize. The attribute is written by -npu-calibrate on an operation whose input it has just dequantized}}
   %c = npu.conv2d ins(%x, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
                   outs(%d0 : tensor<1x2x4x4xf32>)
                   {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
