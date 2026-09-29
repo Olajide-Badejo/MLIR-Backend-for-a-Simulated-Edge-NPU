@@ -78,8 +78,9 @@ GOLDEN_DIR = BASELINE_DIR / "golden"
 #: rather than a suffix for two reasons. No fp32 name moves, so the 21 files
 #: that are never edited are not renamed either; and a tensor's arithmetic is
 #: read off its path, `int8/lenet-O0-out0`, with the fp32 naming inside it
-#: unchanged. One per model, at `-O0`, the level the quantized compilation is
-#: swept at.
+#: unchanged. One per model and level, as the fp32 ones are: *at `-O0` only
+#: until 2026-09-29*, when the calibration moved after the `-O2` folds and made
+#: `-O2` a different integer program from `-O0` on the models with a fold.
 QUANTIZED_GOLDENS: Final[str] = "int8"
 
 #: Bumped whenever the recorded shape changes. `--check` refuses a version it
@@ -728,12 +729,16 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                     for index, produced in enumerate(answer.outputs):
                         goldens[f"{name}-O{level}-out{index}"] = produced
 
-        # **The quantized goldens, one per model, added rather than
-        # substituted.** *Added at P14.* The model calibrated from its
-        # committed profile and compiled at `-O0` through the QDQ contraction,
-        # run on the same input as the fp32 cells. Nothing here touches an
-        # fp32 tensor: the compilation is a separate one, and its tensors go
-        # under their own directory.
+        # **The quantized goldens, one per model and level, added rather
+        # than substituted.** *Added at P14, at every level since 2026-09-29.*
+        # The model calibrated from its committed profile and compiled through
+        # the QDQ contraction, run on the same input as the fp32 cells. Nothing
+        # here touches an fp32 tensor: the compilation is a separate one, and
+        # its tensors go under their own directory. `-O1` computes what `-O0`
+        # computes on every model and `-O2` does on five, which
+        # `test_quantized_end_to_end.py` asserts; they are recorded all the
+        # same, so that a change that separated two levels shows as a moved
+        # tensor rather than a missing one.
         profile = REPO_ROOT / "experiments" / "calibration" / f"{name}.json"
         if not profile.is_file():
             raise BaselineError(
@@ -741,13 +746,18 @@ def collect_cells(work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 f"profiles are committed per model; scripts/"
                 f"build-calibration-profiles.py writes them."
             )
-        quantized = frontend.compile_model(
-            onnx_path, level=0, emit="nbin", calibrate=str(profile)
-        )
-        arrays = make_inputs("normal", quantized.input_shapes, model=name, batch=batch)
-        answer = frontend.run_program(quantized.binary, arrays, quantized.output_shapes)
-        for index, produced in enumerate(answer.outputs):
-            goldens[f"{QUANTIZED_GOLDENS}/{name}-O0-out{index}"] = produced
+        for level in levels:
+            quantized = frontend.compile_model(
+                onnx_path, level=level, emit="nbin", calibrate=str(profile)
+            )
+            arrays = make_inputs(
+                "normal", quantized.input_shapes, model=name, batch=batch
+            )
+            answer = frontend.run_program(
+                quantized.binary, arrays, quantized.output_shapes
+            )
+            for index, produced in enumerate(answer.outputs):
+                goldens[f"{QUANTIZED_GOLDENS}/{name}-O{level}-out{index}"] = produced
 
     return cells, goldens
 
