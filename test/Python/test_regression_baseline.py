@@ -718,19 +718,19 @@ def test_every_committed_golden_has_a_cell() -> None:
         assert int(rest.split("-")[0]) in levels
 
 
-def test_every_model_has_one_committed_quantized_golden_at_o0() -> None:
-    """Section 14's quantized goldens, one per model, added rather than substituted.
+def test_every_model_has_a_committed_quantized_golden_at_every_level() -> None:
+    """Section 14's quantized goldens, one per model and level, added rather
+    than substituted.
 
-    Skipped only until the first record that carries them, which is the commit
-    after the one that taught the harness to write them.
+    At `-O0` only until 2026-09-29, when the calibration moved after the `-O2`
+    folds. The levels are the compiler's own, as the fp32 goldens' are.
     """
-    from npu_frontend import MODELS
+    from npu_frontend import MODELS, implemented_levels
 
     directory = baseline.GOLDEN_DIR / baseline.QUANTIZED_GOLDENS
-    if not directory.is_dir():
-        pytest.skip("no quantized goldens have been recorded yet")
+    assert directory.is_dir()
     assert {path.stem for path in directory.glob("*.npy")} == {
-        f"{name}-O0-out0" for name in MODELS
+        f"{name}-O{level}-out0" for name in MODELS for level in implemented_levels()
     }
 
 
