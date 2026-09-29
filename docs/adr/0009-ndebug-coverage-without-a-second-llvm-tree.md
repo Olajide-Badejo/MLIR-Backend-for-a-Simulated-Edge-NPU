@@ -33,7 +33,7 @@ code runs. D-0031 named the real fix and left it: **a second LLVM tree, built
 with `-DLLVM_ENABLE_ASSERTIONS=OFF`.**
 
 Two things were left open together, and this record closes both. The P7 handoff
-left "the NDEBUG third CI build" as an orchestrator decision, and D-0031 left the
+left "the NDEBUG third CI build" as a decision for later, and D-0031 left the
 second LLVM tree as a cost nobody had agreed to pay.
 
 **A third fact arrived while this was being decided, and it changes the

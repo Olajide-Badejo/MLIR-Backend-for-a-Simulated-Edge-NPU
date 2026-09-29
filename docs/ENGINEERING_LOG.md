@@ -3030,7 +3030,7 @@ The consequence is smaller than it looks. Section 10.3's determinism assertion,
 that one thread and the maximum produce bitwise equal buffers, runs at full
 strength wherever OpenMP is found, which is the coverage job and every
 developer machine. The fix is one package in `docker/Dockerfile.llvm` and an
-image republish, which costs an hour and is the orchestrator's call.
+image republish, which costs an hour and is my call.
 
 ### A rehearsal that disagreed with its prediction, again
 
