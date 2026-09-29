@@ -176,3 +176,36 @@ QUANTIZED_ACCURACY_BUDGETS: Final[dict[str, tuple[float, int]]] = {
     "lenet_batched": (45.0, 2),
     "resnet_block": (46.0, 3),
 }
+
+#: The same two bounds at each optimization level.
+#:
+#: *Added on 2026-09-29, when the calibration moved after the `-O2` folds and
+#: fusion.* `-O1` runs no fold and no fusion, so the calibration runs first
+#: there as it does at `-O0`, and every model's output is bit identical to its
+#: `-O0` output on every input class: the `-O0` table holds unchanged. At `-O2`
+#: five models compile to the `-O0` integer program, bit for bit, and keep its
+#: bounds. The two whose program the folds change were measured after
+#: `experiments/predictions/p14-quantized-o1-o2.md` was committed, on the same
+#: class and by the same rule as the table above:
+#:
+#:     model                 SQNR dB   largest error, counts   at -O0
+#:     conv_bn_relu_stack      34.75   1.58                    33.80, 2.24
+#:     dilated_stack           36.52   1.71                    34.40, 1.10
+#:
+#: `conv_bn_relu_stack`'s floor tightens to 33 dB. `dilated_stack`'s floor
+#: tightens to 35 dB, and **its count stays at 2 although the rule would give
+#: 3**, because a bound is never loosened. Its count is of a smaller unit at
+#: `-O2`, the fused relu output's scale, 0.0192, where at `-O0` it is the
+#: convolution output's, 0.0419, so the same error is 2.18 times as many
+#: counts; the absolute largest error fell from 0.0461 to 0.0329. The margin
+#: under this bound is therefore 0.29 of a count rather than the half count the
+#: rule aims for, and that is recorded here rather than widened.
+QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL: Final[dict[int, dict[str, tuple[float, int]]]] = {
+    0: QUANTIZED_ACCURACY_BUDGETS,
+    1: QUANTIZED_ACCURACY_BUDGETS,
+    2: {
+        **QUANTIZED_ACCURACY_BUDGETS,
+        "conv_bn_relu_stack": (33.0, 3),
+        "dilated_stack": (35.0, 2),
+    },
+}

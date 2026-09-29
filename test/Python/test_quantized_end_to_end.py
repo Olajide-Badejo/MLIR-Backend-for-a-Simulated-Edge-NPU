@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 #
 # SPDX-License-Identifier: MIT
-"""Section 14's two end to end bounds, on every model of the suite.
+"""Section 14's two end to end bounds, on every model of the suite and level.
 
-Each model is calibrated from its committed profile, compiled at `-O0` through
-the QDQ contraction, encoded and run on the machine, and the answer is held to
-two references that measure two different things:
+Each model is calibrated from its committed profile, compiled at `-O0`, `-O1`
+and `-O2` through the QDQ contraction, encoded and run on the machine, and the
+answer is held to two references that measure two different things:
 
 1. **The numpy integer reference from the same profile, within one count of the
    output scale.** `refgraph` executes the same tensor level program with every
@@ -25,6 +25,14 @@ quantize, and the largest of them when there are several, which is
 `inception_block`'s three branches. An f32 operation after it, an average pool
 or a transpose, changes where a value lands between counts and not what a count
 is.
+
+**The levels are also held to each other.** At `-O2` the calibration runs after
+`-npu-fuse-bias`, `-npu-fold-batchnorm` and `-npu-fuse-ops`, so the two models
+with a fold compile to a different integer program than at `-O0`, and the
+other five to the same one. `-O1` has none of the three and is `-O0`'s program
+on all seven. Which is which is asserted bit for bit, so that a change that
+moved the calibration back, or let `-O1` drift, is a red rather than a number
+that happens to stay inside a budget.
 """
 
 from __future__ import annotations
@@ -44,12 +52,21 @@ from npu_frontend.model_generator import MODELS
 from npu_frontend.results import quant_boundary_crossings
 from npu_frontend.tolerances import (
     QUANTIZED_ACCURACY_BUDGETS,
+    QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL,
     QUANTIZED_BUDGET_CLASS,
 )
 from numpy.typing import NDArray
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILES = REPO_ROOT / "experiments" / "calibration"
+
+#: The levels a quantized compilation is measured at, which are all of them.
+LEVELS: tuple[int, ...] = (0, 1, 2)
+
+#: The models whose calibrated program `-O2` changes: a batch norm folded into
+#: each convolution before its weights are scaled, and a bias add fused into a
+#: convolution so that the relu after it fuses into the instruction.
+CHANGED_AT_O2: frozenset[str] = frozenset({"conv_bn_relu_stack", "dilated_stack"})
 
 _DEFINITION = re.compile(r"^\s*(%[\w]+) = (npu\.[a-z_0-9]+|tensor\.empty)(.*)$")
 
@@ -108,9 +125,11 @@ def sqnr_db(reference: NDArray[Any], approximation: NDArray[Any]) -> float:
 
 @dataclass
 class Quantized:
-    """One model, calibrated, compiled and ready to run."""
+    """One model at one level, calibrated, compiled and ready to run."""
 
     name: str
+    level: int
+    onnx_path: Path
     batch: int
     binary: bytes
     npu_text: str
@@ -124,32 +143,36 @@ class Quantized:
 @pytest.fixture(scope="module")
 def quantized(
     tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[dict[str, Quantized]]:
-    """Every model of the suite, compiled once for this file."""
+) -> Iterator[dict[tuple[str, int], Quantized]]:
+    """Every model of the suite at every level, compiled once for this file."""
     directory = tmp_path_factory.mktemp("quantized-end-to-end")
-    compiled: dict[str, Quantized] = {}
+    compiled: dict[tuple[str, int], Quantized] = {}
     for name in sorted(MODELS):
-        onnx_path = generate_model(name, directory)
-        program = compile_model(
-            onnx_path,
-            level=0,
-            emit="nbin",
-            calibrate=str(PROFILES / f"{name}.json"),
+        onnx_path = Path(generate_model(name, directory))
+        session = ort.InferenceSession(
+            str(onnx_path), providers=["CPUExecutionProvider"]
         )
-        assert program.binary is not None
-        compiled[name] = Quantized(
-            name=name,
-            batch=int(MODELS[name].input_shape[0]),
-            binary=program.binary,
-            npu_text=program.stages["npu"],
-            npuisa_text=program.stages["npuisa"],
-            input_shapes=program.input_shapes,
-            output_shapes=program.output_shapes,
-            count=output_count(program.stages["npu"]),
-            session=ort.InferenceSession(
-                str(onnx_path), providers=["CPUExecutionProvider"]
-            ),
-        )
+        for level in LEVELS:
+            program = compile_model(
+                onnx_path,
+                level=level,
+                emit="nbin",
+                calibrate=str(PROFILES / f"{name}.json"),
+            )
+            assert program.binary is not None
+            compiled[(name, level)] = Quantized(
+                name=name,
+                level=level,
+                onnx_path=onnx_path,
+                batch=int(MODELS[name].input_shape[0]),
+                binary=program.binary,
+                npu_text=program.stages["npu"],
+                npuisa_text=program.stages["npuisa"],
+                input_shapes=program.input_shapes,
+                output_shapes=program.output_shapes,
+                count=output_count(program.stages["npu"]),
+                session=session,
+            )
     yield compiled
 
 
@@ -165,12 +188,13 @@ def _run(model: Quantized, input_class: str) -> tuple[list[Any], list[NDArray[An
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("input_class", INPUT_CLASSES)
 @pytest.mark.parametrize("name", sorted(MODELS))
 def test_the_machine_agrees_with_the_integer_reference(
-    name: str, input_class: str, quantized: dict[str, Quantized]
+    name: str, input_class: str, level: int, quantized: dict[tuple[str, int], Quantized]
 ) -> None:
-    """Within one count of the output scale, on every class.
+    """Within one count of the output scale, on every class and level.
 
     **Measured at zero counts on every model and every class**, 2026-09-24:
     the two answers are the same bits, including on `conv_bn_relu_stack`,
@@ -180,8 +204,12 @@ def test_the_machine_agrees_with_the_integer_reference(
     zero on that model is a measurement and not a guarantee: a batch norm
     evaluated in a different order is allowed to put a value on the other side
     of a rounding.
+
+    **And zero at `-O1` and `-O2`**, measured 2026-09-29 with the calibration
+    after the `-O2` folds: the reference reads the `-O2` tensor level program as
+    it reads the `-O0` one, the folded filter and the fused bias included.
     """
-    model = quantized[name]
+    model = quantized[(name, level)]
     inputs, (simulated,) = _run(model, input_class)
     (reference,) = refgraph.execute_module(model.npu_text, inputs)
     counts = (
@@ -189,8 +217,8 @@ def test_the_machine_agrees_with_the_integer_reference(
         / model.count
     )
     assert float(counts.max()) <= 1.0, (
-        f"{name} on {input_class}: {float(counts.max()):.3f} counts from the "
-        f"integer reference at a count of {model.count}"
+        f"{name} -O{level} on {input_class}: {float(counts.max()):.3f} counts "
+        f"from the integer reference at a count of {model.count}"
     )
 
 
@@ -202,27 +230,48 @@ def test_the_machine_agrees_with_the_integer_reference(
 def test_every_model_has_exactly_one_budget() -> None:
     """A model added to the suite without a budget is a red, not an unbounded model."""
     assert set(QUANTIZED_ACCURACY_BUDGETS) == set(MODELS)
+    assert set(QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL) == set(LEVELS)
+    for level in LEVELS:
+        assert set(QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL[level]) == set(MODELS)
 
 
+def test_no_level_is_allowed_more_error_than_minus_o_zero() -> None:
+    """A budget tightens and never loosens, and that includes across levels.
+
+    A higher level is allowed to be more accurate than `-O0` and to have a
+    tighter budget for it, and is never allowed a wider one: an optimization
+    that made a model less accurate is a finding, not a new budget.
+    """
+    for level in LEVELS:
+        for name, (floor_db, counts) in QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL[
+            level
+        ].items():
+            base_floor, base_counts = QUANTIZED_ACCURACY_BUDGETS[name]
+            assert floor_db >= base_floor, (name, level)
+            assert counts <= base_counts, (name, level)
+
+
+@pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("name", sorted(MODELS))
 def test_the_model_is_within_its_accuracy_budget(
-    name: str, quantized: dict[str, Quantized]
+    name: str, level: int, quantized: dict[tuple[str, int], Quantized]
 ) -> None:
     """The SQNR floor and the largest error in counts, asserted separately.
 
     The budget and the measurement behind it are in `npu_frontend.tolerances`,
-    on `normal`, which is the class the calibration draws come from.
+    on `normal`, which is the class the calibration draws come from, and the
+    budget is the level's own.
     """
-    floor_db, largest_counts = QUANTIZED_ACCURACY_BUDGETS[name]
-    model = quantized[name]
+    floor_db, largest_counts = QUANTIZED_ACCURACY_BUDGETS_AT_LEVEL[level][name]
+    model = quantized[(name, level)]
     inputs, (simulated,) = _run(model, QUANTIZED_BUDGET_CLASS)
     names = [entry.name for entry in model.session.get_inputs()]
     (expected,) = model.session.run(None, dict(zip(names, inputs, strict=True)))
 
     ratio = sqnr_db(np.asarray(expected), simulated)
     assert ratio >= floor_db, (
-        f"{name}: {ratio:.3f} dB against onnxruntime, below its floor of "
-        f"{floor_db} dB"
+        f"{name} -O{level}: {ratio:.3f} dB against onnxruntime, below its floor "
+        f"of {floor_db} dB"
     )
     worst = float(
         np.abs(
@@ -230,9 +279,137 @@ def test_the_model_is_within_its_accuracy_budget(
         ).max()
     )
     assert worst / model.count <= largest_counts, (
-        f"{name}: the largest error is {worst / model.count:.3f} counts of "
-        f"{model.count}, above its bound of {largest_counts}"
+        f"{name} -O{level}: the largest error is {worst / model.count:.3f} counts "
+        f"of {model.count}, above its bound of {largest_counts}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The levels against each other.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("input_class", INPUT_CLASSES)
+@pytest.mark.parametrize("name", sorted(MODELS))
+def test_each_level_computes_what_minus_o_zero_computes_unless_a_fold_changed_it(
+    name: str, input_class: str, quantized: dict[tuple[str, int], Quantized]
+) -> None:
+    """`-O1` is `-O0` on all seven, and `-O2` is `-O0` on the five without a fold.
+
+    `-O1` runs constant folding and one canonicalization, and neither finds
+    anything in a QDQ program whose value it could change. At `-O2` the
+    calibration sees the folded programs, and on five models the folds and the
+    fusion change nothing the calibration quantizes: the fused regions are put
+    back into the block, and the one other difference, `inception_block`'s three
+    input quantizes merged by CSE, computes what each of the three computed. On
+    `conv_bn_relu_stack` and `dilated_stack` the program differs, and so must
+    the answer, or the calibration is no longer where the level puts it.
+    """
+    _, (at_zero,) = _run(quantized[(name, 0)], input_class)
+    _, (at_one,) = _run(quantized[(name, 1)], input_class)
+    _, (at_two,) = _run(quantized[(name, 2)], input_class)
+    assert np.array_equal(at_one.view(np.uint32), at_zero.view(np.uint32))
+    if name in CHANGED_AT_O2:
+        assert not np.array_equal(at_two.view(np.uint32), at_zero.view(np.uint32))
+    else:
+        assert np.array_equal(at_two.view(np.uint32), at_zero.view(np.uint32))
+
+
+@pytest.mark.parametrize("name", sorted(MODELS))
+def test_no_fused_region_survives_the_calibration(
+    name: str, quantized: dict[tuple[str, int], Quantized]
+) -> None:
+    """Every calibrated operation of every model is outside a region at `-O2`.
+
+    `-npu-fuse-ops` forms fifteen regions on these programs in fp32 and the
+    calibration puts back every one around an operation its profile names,
+    which on this suite is every one. A surviving region would be a pair sealed
+    in where no neighbour's dequantize could fold with it.
+    """
+    assert "npu.fused_op" not in quantized[(name, 2)].npu_text
+
+
+def _weight_scales(npu_text: str) -> list[NDArray[Any]]:
+    """Each convolution's `weight_scales`, in program order."""
+    found: list[NDArray[Any]] = []
+    for line in npu_text.splitlines():
+        if "npu.conv2d" not in line or "weight_scales" not in line:
+            continue
+        body = re.search(r"weight_scales = array<f32: ([^>]*)>", line)
+        assert body is not None
+        found.append(
+            np.array([float(piece) for piece in body.group(1).split(",")], np.float32)
+        )
+    return found
+
+
+def test_the_folded_filters_are_scaled_from_the_fold(
+    quantized: dict[tuple[str, int], Quantized],
+) -> None:
+    """Section 14's argument for per channel weights, on the batch norm model.
+
+    The batch norm fold multiplies each output channel's filter by its own
+    factor, `gamma / sqrt(variance + epsilon)`, and at `-O2` the calibration
+    scales the weights after it. So each channel's scale is `max |w'_c| / 127`
+    of the folded filter, and this reproduces the fold's f32 arithmetic in
+    numpy and holds every channel of both convolutions to it bit for bit.
+    Measured on 2026-09-29, the largest channel scale over the smallest:
+
+        convolution   channels   factor          before fold   after fold
+        conv0         8          0.572 to 1.445  1.567         3.141
+        conv1         8          0.561 to 2.229  1.483         3.254
+
+    Per tensor weights would give the smallest channel 127 over that spread,
+    about 40 levels after the fold where it had 81 and 86. Per channel weights
+    lose nothing: the integer filters at `-O2` are the `-O0` ones times the
+    sign of each channel's factor, on every one of the 792 elements, which is
+    why the program's answer moves only by where the output is rounded.
+    """
+    import onnx
+    from npu_frontend.onnx_importer import name_every_node
+    from onnx import numpy_helper
+
+    name = "conv_bn_relu_stack"
+    before = _weight_scales(quantized[(name, 0)].npu_text)
+    after = _weight_scales(quantized[(name, 2)].npu_text)
+
+    model = onnx.load(str(quantized[(name, 2)].onnx_path))
+    name_every_node(model.graph)
+    initializers = {
+        entry.name: numpy_helper.to_array(entry) for entry in model.graph.initializer
+    }
+    readers: dict[str, list[Any]] = {}
+    for node in model.graph.node:
+        for tensor in node.input:
+            readers.setdefault(tensor, []).append(node)
+    convolutions = [node for node in model.graph.node if node.op_type == "Conv"]
+    assert len(convolutions) == len(before) == len(after) == 2
+
+    f32 = np.float32
+    for index, convolution in enumerate(convolutions):
+        (norm,) = readers[convolution.output[0]]
+        assert norm.op_type == "BatchNormalization"
+        epsilon = next(
+            (f32(entry.f) for entry in norm.attribute if entry.name == "epsilon"),
+            f32(1e-5),
+        )
+        gamma, _, _, variance = (
+            initializers[tensor].astype(f32) for tensor in norm.input[1:5]
+        )
+        factor = (
+            gamma * (f32(1.0) / np.sqrt((variance + epsilon).astype(f32))).astype(f32)
+        ).astype(f32)
+        filters = initializers[convolution.input[1]].astype(f32)
+        folded = (filters * factor.reshape(-1, 1, 1, 1)).astype(f32)
+        expected = np.array(
+            [f32(float(np.abs(channel).max()) / 127.0) for channel in folded],
+            np.float32,
+        )
+        assert np.array_equal(after[index].view(np.uint32), expected.view(np.uint32))
+
+        spread_before = float(before[index].max() / before[index].min())
+        spread_after = float(after[index].max() / after[index].min())
+        assert spread_after > 1.9 * spread_before, (spread_before, spread_after)
 
 
 # ---------------------------------------------------------------------------
@@ -259,14 +436,38 @@ CROSSINGS_AT_O0: dict[str, tuple[int, int]] = {
     "resnet_block": (2, 1),
 }
 
+#: The same at `-O2`, where the calibration runs after the folds and the
+#: fusion, derived in `experiments/predictions/p14-quantized-o1-o2.md` from the
+#: committed fp32 `-O2` programs. `conv_bn_relu_stack`'s relus now read their
+#: convolutions, the batch norms folded into them, so both fuse and the pair
+#: between the layers folds; `dilated_stack`'s `activated` reads a convolution
+#: with its bias fused in and fuses; `inception_block` quantizes its shared
+#: input once, CSE having merged the three identical quantizes. `-O1` has no
+#: fold and no fusion and is `-O0`'s table.
+CROSSINGS_AT_O2: dict[str, tuple[int, int]] = {
+    **CROSSINGS_AT_O0,
+    "conv_bn_relu_stack": (4, 0),
+    "dilated_stack": (4, 1),
+    "inception_block": (4, 1),
+}
+
+CROSSINGS_AT_LEVEL: dict[int, dict[str, tuple[int, int]]] = {
+    0: CROSSINGS_AT_O0,
+    1: CROSSINGS_AT_O0,
+    2: CROSSINGS_AT_O2,
+}
+
 
 def test_every_model_has_its_crossings_counted() -> None:
-    assert set(CROSSINGS_AT_O0) == set(MODELS)
+    assert set(CROSSINGS_AT_LEVEL) == set(LEVELS)
+    for table in CROSSINGS_AT_LEVEL.values():
+        assert set(table) == set(MODELS)
 
 
+@pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("name", sorted(MODELS))
 def test_the_integer_fields_a_quantized_cell_records(
-    name: str, quantized: dict[str, Quantized]
+    name: str, level: int, quantized: dict[tuple[str, int], Quantized]
 ) -> None:
     """`int8_macs` from the machine and `quant_boundary_crossings` from the program.
 
@@ -283,7 +484,7 @@ def test_the_integer_fields_a_quantized_cell_records(
     stayed in f32 behind a calibrated operation would be a fusion that did not
     happen and would show there first.
     """
-    model = quantized[name]
+    model = quantized[(name, level)]
     inputs = make_inputs(
         QUANTIZED_BUDGET_CLASS, model.input_shapes, model=name, batch=model.batch
     )
@@ -296,7 +497,7 @@ def test_the_integer_fields_a_quantized_cell_records(
         re.findall(r"npuisa\.(?:conv2d|matmul) ins\([^)]*xi8,", model.npuisa_text)
     )
     crossings = quant_boundary_crossings(quantized=True, npuisa_op_counts=counts)
-    expected_crossings, expected_relus = CROSSINGS_AT_O0[name]
+    expected_crossings, expected_relus = CROSSINGS_AT_LEVEL[level][name]
     assert crossings == {"quant_boundary_crossings": expected_crossings}
     assert counts.get("npuisa.relu", 0) == expected_relus
     assert integer > 0
