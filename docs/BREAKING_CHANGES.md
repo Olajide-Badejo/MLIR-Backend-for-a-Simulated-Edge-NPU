@@ -42,6 +42,65 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-29, Phase P14: the quantized goldens arrive at `-O1` and `-O2`, with the calibration after the `-O2` folds
+
+**Written before the commits that cause it.** Two commits follow this one: the
+harness learns to write a quantized golden at every level, and a `record:`
+commit writes them. Each is named here once it exists.
+
+**What changes.** `scripts/regression_baseline.py` compiles each model
+calibrated from its committed profile at `-O0`, `-O1` and `-O2`, where it
+compiled it at `-O0` only, and keeps each answer under
+`test/baseline/golden/int8/<model>-O<level>-out0`. Twenty one quantized goldens
+where there were seven. The quantized end to end test is extended to the same
+three levels with both of its bounds, in a commit before the harness change
+that moves no recorded field.
+
+**Why.** The owner's ruling of 2026-09-29 puts quantized cells at all three
+levels, and 7e313eb moved the calibration after `-npu-fuse-bias`,
+`-npu-fold-batchnorm` and `-npu-fuse-ops` at `-O2`, which makes `-O2` a
+different integer program from `-O0` on the two models with a fold. A level
+whose arithmetic can differ from `-O0`'s and has no golden is a level whose
+arithmetic can move silently.
+
+**Which baseline fields move.**
+
+- **Fourteen golden tensors arrive**, and the check before the record reports
+  each as produced and not recorded, which is the category a moved golden is
+  counted in. Measured in the working tree after 7e313eb, before this entry:
+  - at `-O1` all seven are byte identical to their `-O0` quantized goldens,
+    because `-O1` runs no fold and no fusion and the calibration still runs
+    first there. They are recorded anyway, because the layout is per level and
+    a later change that separated the two levels should show as a moved tensor
+    rather than a missing one;
+  - at `-O2` five are byte identical to their `-O0` quantized goldens,
+    `depthwise_separable`, `inception_block`, `lenet`, `lenet_batched` and
+    `resnet_block`, and two are new tensors: `conv_bn_relu_stack`, whose batch
+    norms are folded before its weights are scaled, and `dilated_stack`, whose
+    bias add is fused into its second convolution so that the relu after it
+    fuses too.
+- **No `-O0` quantized golden, no fp32 golden and no cell field moves.** The
+  harness change adds compilations beside the existing ones and changes none of
+  them, and 7e313eb left all 217 planned fp32 cells byte identical, debug
+  section included.
+- **Not baseline fields, and declared here anyway because they are recorded
+  numbers**: the quantized end to end budgets gain a per level table in
+  `npu_frontend.tolerances`, identical to the `-O0` one at `-O1` and tightened
+  at `-O2` for the two models that move, never loosened; and
+  `quant_boundary_crossings` on a quantized compilation is 28 at `-O2` over the
+  seven where it is 32 at `-O0` and `-O1`, which no committed cell carries yet
+  because the quantized cells are item 5.
+- **Test counts and names**, which grow. One test is renamed rather than kept:
+  the one that asserted the quantized golden set is exactly one `-O0` tensor
+  per model cannot hold once the set is per level, and it becomes the per level
+  assertion.
+
+**The prediction** is `experiments/predictions/p14-quantized-o1-o2.md`,
+committed in b8e661d before any quantized program was compiled at `-O1`, or at
+`-O2` with the calibration in its new position.
+
+**The commits that cause it:** named here once they exist.
+
 ### 2026-09-29, Phase P14: a relu that reads a calibrated operation is fused into its integer instruction, and an identical dequantize and quantize pair is removed
 
 **Written before the commits that cause it.** Two commits follow this one and
