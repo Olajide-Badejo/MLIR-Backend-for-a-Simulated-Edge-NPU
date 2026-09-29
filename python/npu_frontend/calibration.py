@@ -397,7 +397,7 @@ def observe_weights(model_path: str | Path) -> dict[str, ChannelObservation]:
 
 @dataclass(frozen=True)
 class NodeRecord:
-    """One quantizable node, by the name the IR will carry for it."""
+    """One node, by the name the IR will carry for it."""
 
     op_type: str
     inputs: list[str]
@@ -419,22 +419,45 @@ def observe_nodes(model_path: str | Path) -> dict[str, NodeRecord]:
     second copy of the rule, so a model whose exporter left its nodes unnamed
     gets the same synthesised names on both sides.
 
-    Only the operations the QDQ rewrite can quantize are recorded. A profile
-    that also described every `Relu` would be describing operations the rewrite
-    is documented not to touch, and Section 14's boundary is deliberate.
+    Only the operations the QDQ rewrite can quantize are recorded here. The
+    whole graph, which is what says which tensor an operation absorbed into one
+    of these writes, is `observe_graph`'s, and it is a separate section so that
+    this one keeps meaning what the rewrite quantizes.
+    """
+    return {
+        name: record
+        for name, record in observe_graph(model_path).items()
+        if record.op_type in QUANTIZABLE_OPS
+    }
+
+
+def observe_graph(model_path: str | Path) -> dict[str, NodeRecord]:
+    """Every node of the graph, keyed by the name its operation will carry.
+
+    *Added with the relu fusion.* A calibrated operation whose only reader is a
+    relu is quantized after the relu, with the relu's output range, because the
+    integer instruction applies the relu itself. The pass standing on the
+    `npu.relu` knows the relu's node name from its location and nothing else,
+    so the profile has to say which tensor that node writes, and the
+    quantizable nodes' own section cannot, because a relu is not one of them.
+
+    **It records the graph as the model states it, and decides nothing.** Which
+    readers the compiler can absorb is the compiler's question, asked where the
+    operations are; a profile that recorded only the relus that follow a
+    quantizable node would have made that decision in the observer, and the
+    batch norm and the bias add that `-O2` folds into a convolution would each
+    have needed a second change to the profile format.
     """
     model = onnx.load(str(model_path))
     name_every_node(model.graph)
-    records: dict[str, NodeRecord] = {}
-    for node in model.graph.node:
-        if node.op_type not in QUANTIZABLE_OPS:
-            continue
-        records[node.name] = NodeRecord(
+    return {
+        node.name: NodeRecord(
             op_type=node.op_type,
             inputs=[entry for entry in node.input if entry],
             outputs=[entry for entry in node.output if entry],
         )
-    return records
+        for node in model.graph.node
+    }
 
 
 def _trimmed_bins(observation: Observation, trim: float) -> tuple[int, int]:
@@ -713,6 +736,7 @@ def build_profile(
     observations: dict[str, Observation],
     weights: dict[str, ChannelObservation],
     nodes: dict[str, NodeRecord] | None = None,
+    graph: dict[str, NodeRecord] | None = None,
 ) -> dict[str, Any]:
     """The committed profile: what was seen, and what each method makes of it.
 
@@ -737,6 +761,17 @@ def build_profile(
                 "outputs": record.outputs,
             }
             for name, record in sorted((nodes or {}).items())
+        },
+        # Every node, which is what says which tensor a node the compiler
+        # absorbs into a quantized operation writes. `observe_graph` has the
+        # reason it is a section of its own.
+        "graph": {
+            name: {
+                "op_type": record.op_type,
+                "inputs": record.inputs,
+                "outputs": record.outputs,
+            }
+            for name, record in sorted((graph or {}).items())
         },
         "observed": {
             name: {"min": observation.minimum, "max": observation.maximum}

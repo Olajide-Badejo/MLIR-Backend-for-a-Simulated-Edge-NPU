@@ -266,6 +266,120 @@
     }
   },
   "batch": 1,
+  "graph": {
+    "bn0": {
+      "inputs": [
+        "conv0",
+        "bn0.scale",
+        "bn0.bias",
+        "bn0.mean",
+        "bn0.var"
+      ],
+      "op_type": "BatchNormalization",
+      "outputs": [
+        "bn0"
+      ]
+    },
+    "bn1": {
+      "inputs": [
+        "conv1",
+        "bn1.scale",
+        "bn1.bias",
+        "bn1.mean",
+        "bn1.var"
+      ],
+      "op_type": "BatchNormalization",
+      "outputs": [
+        "bn1"
+      ]
+    },
+    "conv0": {
+      "inputs": [
+        "ident1",
+        "conv0.weight",
+        "conv0.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv0"
+      ]
+    },
+    "conv1": {
+      "inputs": [
+        "relu0",
+        "conv1.weight",
+        "conv1.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv1"
+      ]
+    },
+    "flat": {
+      "inputs": [
+        "pooled"
+      ],
+      "op_type": "Flatten",
+      "outputs": [
+        "flat"
+      ]
+    },
+    "head": {
+      "inputs": [
+        "flat",
+        "head.weight"
+      ],
+      "op_type": "MatMul",
+      "outputs": [
+        "output"
+      ]
+    },
+    "ident0": {
+      "inputs": [
+        "input"
+      ],
+      "op_type": "Identity",
+      "outputs": [
+        "ident0"
+      ]
+    },
+    "ident1": {
+      "inputs": [
+        "ident0"
+      ],
+      "op_type": "Identity",
+      "outputs": [
+        "ident1"
+      ]
+    },
+    "pooled": {
+      "inputs": [
+        "relu1"
+      ],
+      "op_type": "GlobalAveragePool",
+      "outputs": [
+        "pooled"
+      ]
+    },
+    "relu0": {
+      "inputs": [
+        "bn0"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu0"
+      ]
+    },
+    "relu1": {
+      "inputs": [
+        "bn1"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu1"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "conv_bn_relu_stack",

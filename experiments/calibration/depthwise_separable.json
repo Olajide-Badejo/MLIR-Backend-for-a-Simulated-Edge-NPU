@@ -134,6 +134,57 @@
     }
   },
   "batch": 1,
+  "graph": {
+    "node_avg_pool2d": {
+      "inputs": [
+        "relu_1"
+      ],
+      "op_type": "AveragePool",
+      "outputs": [
+        "output"
+      ]
+    },
+    "node_conv2d": {
+      "inputs": [
+        "input",
+        "depthwise.weight",
+        "depthwise.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d"
+      ]
+    },
+    "node_conv2d_1": {
+      "inputs": [
+        "relu",
+        "pointwise.weight",
+        "pointwise.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d_1"
+      ]
+    },
+    "node_relu": {
+      "inputs": [
+        "conv2d"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu"
+      ]
+    },
+    "node_relu_1": {
+      "inputs": [
+        "conv2d_1"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu_1"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "depthwise_separable",

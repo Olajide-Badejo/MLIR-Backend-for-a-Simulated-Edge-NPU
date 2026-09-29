@@ -288,6 +288,127 @@
     }
   },
   "batch": 4,
+  "graph": {
+    "node_conv2d": {
+      "inputs": [
+        "input",
+        "conv1.weight",
+        "conv1.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d"
+      ]
+    },
+    "node_conv2d_1": {
+      "inputs": [
+        "max_pool2d",
+        "conv2.weight",
+        "conv2.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d_1"
+      ]
+    },
+    "node_linear": {
+      "inputs": [
+        "view",
+        "fc1.weight",
+        "fc1.bias"
+      ],
+      "op_type": "Gemm",
+      "outputs": [
+        "linear"
+      ]
+    },
+    "node_linear_1": {
+      "inputs": [
+        "relu_2",
+        "fc2.weight",
+        "fc2.bias"
+      ],
+      "op_type": "Gemm",
+      "outputs": [
+        "linear_1"
+      ]
+    },
+    "node_linear_2": {
+      "inputs": [
+        "relu_3",
+        "fc3.weight",
+        "fc3.bias"
+      ],
+      "op_type": "Gemm",
+      "outputs": [
+        "output"
+      ]
+    },
+    "node_max_pool2d": {
+      "inputs": [
+        "relu"
+      ],
+      "op_type": "MaxPool",
+      "outputs": [
+        "max_pool2d"
+      ]
+    },
+    "node_max_pool2d_1": {
+      "inputs": [
+        "relu_1"
+      ],
+      "op_type": "MaxPool",
+      "outputs": [
+        "max_pool2d_1"
+      ]
+    },
+    "node_relu": {
+      "inputs": [
+        "conv2d"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu"
+      ]
+    },
+    "node_relu_1": {
+      "inputs": [
+        "conv2d_1"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu_1"
+      ]
+    },
+    "node_relu_2": {
+      "inputs": [
+        "linear"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu_2"
+      ]
+    },
+    "node_relu_3": {
+      "inputs": [
+        "linear_1"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu_3"
+      ]
+    },
+    "node_view": {
+      "inputs": [
+        "max_pool2d_1",
+        "val_5"
+      ],
+      "op_type": "Reshape",
+      "outputs": [
+        "view"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "lenet_batched",

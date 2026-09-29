@@ -156,6 +156,67 @@
     }
   },
   "batch": 1,
+  "graph": {
+    "activated": {
+      "inputs": [
+        "biased"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "activated"
+      ]
+    },
+    "biased": {
+      "inputs": [
+        "conv1",
+        "conv1.bias"
+      ],
+      "op_type": "Add",
+      "outputs": [
+        "biased"
+      ]
+    },
+    "clipped": {
+      "inputs": [
+        "conv0",
+        "clip.min"
+      ],
+      "op_type": "Clip",
+      "outputs": [
+        "clipped"
+      ]
+    },
+    "conv0": {
+      "inputs": [
+        "input",
+        "conv0.weight",
+        "conv0.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv0"
+      ]
+    },
+    "conv1": {
+      "inputs": [
+        "clipped",
+        "conv1.weight"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv1"
+      ]
+    },
+    "to_nhwc": {
+      "inputs": [
+        "activated"
+      ],
+      "op_type": "Transpose",
+      "outputs": [
+        "output"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "dilated_stack",

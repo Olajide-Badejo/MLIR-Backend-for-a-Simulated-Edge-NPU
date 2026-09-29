@@ -90,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from npu_frontend.calibration import (  # noqa: PLC0415
         build_profile,
         observe,
+        observe_graph,
         observe_nodes,
         observe_weights,
         write_profile,
@@ -110,6 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 weights=observe_weights(model_path),
                 nodes=observe_nodes(model_path),
+                graph=observe_graph(model_path),
             )
         written = write_profile(profile, PROFILE_DIR / f"{name}.json")
         print(

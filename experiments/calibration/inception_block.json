@@ -134,6 +134,61 @@
     }
   },
   "batch": 1,
+  "graph": {
+    "node_cat": {
+      "inputs": [
+        "conv2d",
+        "conv2d_1",
+        "conv2d_2"
+      ],
+      "op_type": "Concat",
+      "outputs": [
+        "cat"
+      ]
+    },
+    "node_conv2d": {
+      "inputs": [
+        "input",
+        "branch1.weight",
+        "branch1.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d"
+      ]
+    },
+    "node_conv2d_1": {
+      "inputs": [
+        "input",
+        "branch2.weight",
+        "branch2.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d_1"
+      ]
+    },
+    "node_conv2d_2": {
+      "inputs": [
+        "input",
+        "branch3.weight",
+        "branch3.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d_2"
+      ]
+    },
+    "node_relu": {
+      "inputs": [
+        "cat"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "output"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "inception_block",

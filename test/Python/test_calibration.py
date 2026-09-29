@@ -393,8 +393,11 @@ def test_the_node_section_is_keyed_by_the_name_the_ir_will_carry(
 
 
 def test_only_the_quantizable_operations_are_recorded(tmp_path: Path) -> None:
-    """A profile that described a Relu would describe an operation the rewrite
-    is documented not to touch."""
+    """The node section is what the rewrite quantizes, and a relu is not that.
+
+    The relu is in the graph section instead, which is the next case: the
+    fusion needs to know which tensor it writes, and this section keeps
+    meaning what it always meant."""
     import numpy as np
     import onnx
     from npu_frontend.calibration import QUANTIZABLE_OPS, observe_nodes
@@ -428,6 +431,31 @@ def test_only_the_quantizable_operations_are_recorded(tmp_path: Path) -> None:
     nodes = observe_nodes(path)
     assert set(nodes) == {"Conv_0"}
     assert "Relu" not in QUANTIZABLE_OPS
+
+
+def test_the_graph_section_records_every_node_as_the_model_states_it(
+    tmp_path: Path,
+) -> None:
+    """Which tensor a relu writes, by the name the relu's operation will carry.
+
+    A calibrated operation whose only reader is a relu is quantized after the
+    relu, with the relu's output range, and the pass standing on the `npu.relu`
+    knows its node name and nothing else. So the graph section records every
+    node, quantizable or not, with its inputs and outputs, and records the
+    quantizable ones exactly as the node section does, so the two sections
+    cannot disagree about a node they both name.
+    """
+    from npu_frontend.calibration import observe_graph, observe_nodes
+
+    path = _conv_relu_model(tmp_path)
+    graph = observe_graph(path)
+    nodes = observe_nodes(path)
+
+    assert list(graph) == ["Conv_0", "Relu_1"]
+    assert graph["Relu_1"].op_type == "Relu"
+    assert graph["Relu_1"].inputs == ["c"]
+    assert graph["Relu_1"].outputs == ["y"]
+    assert {name: graph[name] for name in nodes} == nodes
 
 
 def _conv_relu_model(directory: Path, *, dynamic_batch: bool = False) -> Path:
@@ -556,6 +584,7 @@ def test_a_profile_of_a_real_graph_carries_all_four_sections(tmp_path: Path) -> 
     """The whole observer, end to end, into the file that gets committed."""
     from npu_frontend.calibration import (
         observe,
+        observe_graph,
         observe_nodes,
         observe_weights,
     )
@@ -568,12 +597,19 @@ def test_a_profile_of_a_real_graph_carries_all_four_sections(tmp_path: Path) -> 
         observations=observe(path, model_name="conv_relu", count=2, bins=32),
         weights=observe_weights(path),
         nodes=observe_nodes(path),
+        graph=observe_graph(path),
     )
 
     assert profile["observed"]
     assert profile["ranges"]
     assert profile["weights"]["w"]["axis"] == 0
     assert profile["nodes"]["Conv_0"]["outputs"] == ["c"]
+    assert profile["graph"]["Relu_1"] == {
+        "op_type": "Relu",
+        "inputs": ["c"],
+        "outputs": ["y"],
+    }
+    assert "y" in profile["activation_scales"]
 
     written = write_profile(profile, tmp_path / "conv_relu.json")
     assert read_profile(written)["model"] == "conv_relu"
@@ -704,6 +740,40 @@ def test_no_committed_profile_carries_a_scale_of_zero() -> None:
         for weight, record in profile["weights"].items():
             for scale in record["scales"]:
                 assert scale > 0.0, f"{name}:{weight}"
+
+
+def test_every_committed_profile_carries_the_whole_graph() -> None:
+    """The graph section of each committed profile, against the model.
+
+    Every node of every model is there under the name the importer gives it,
+    every quantizable one agrees with the node section, and every relu's output
+    has a range under every method, which is what the relu fusion reads.
+    """
+    import tempfile
+
+    from npu_frontend.calibration import observe_graph
+    from npu_frontend.model_generator import MODELS, generate_model
+
+    with tempfile.TemporaryDirectory() as directory:
+        for name in sorted(MODELS):
+            profile = read_profile(COMMITTED_PROFILES / f"{name}.json")
+            batch = int(MODELS[name].input_shape[0])
+            model = generate_model(name, directory, batch=batch)
+            observed = {
+                node: {
+                    "op_type": record.op_type,
+                    "inputs": record.inputs,
+                    "outputs": record.outputs,
+                }
+                for node, record in observe_graph(model).items()
+            }
+            assert profile["graph"] == observed, name
+            for node, record in profile["nodes"].items():
+                assert profile["graph"][node] == record, f"{name}:{node}"
+            for node, record in profile["graph"].items():
+                if record["op_type"] == "Relu":
+                    scales = profile["activation_scales"][record["outputs"][0]]
+                    assert set(scales) == set(CALIB_METHODS), f"{name}:{node}"
 
 
 def test_every_profiled_operation_is_covered_end_to_end() -> None:

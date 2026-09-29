@@ -156,6 +156,68 @@
     }
   },
   "batch": 1,
+  "graph": {
+    "node_add": {
+      "inputs": [
+        "input",
+        "mul"
+      ],
+      "op_type": "Add",
+      "outputs": [
+        "add"
+      ]
+    },
+    "node_conv2d": {
+      "inputs": [
+        "input",
+        "conv1.weight",
+        "conv1.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d"
+      ]
+    },
+    "node_conv2d_1": {
+      "inputs": [
+        "relu",
+        "conv2.weight",
+        "conv2.bias"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "conv2d_1"
+      ]
+    },
+    "node_mul": {
+      "inputs": [
+        "conv2d_1",
+        "view"
+      ],
+      "op_type": "Mul",
+      "outputs": [
+        "mul"
+      ]
+    },
+    "node_relu": {
+      "inputs": [
+        "conv2d"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "relu"
+      ]
+    },
+    "node_relu_1": {
+      "inputs": [
+        "add"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "output"
+      ]
+    }
+  },
   "input_distribution": "synthetic standard normal, not sampled data",
   "inputs": 32,
   "model": "resnet_block",
