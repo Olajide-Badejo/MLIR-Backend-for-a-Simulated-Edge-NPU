@@ -145,10 +145,10 @@ def NPU_Conv2DOp : NPU_ComputeOp<"conv2d",
     because the QDQ form cannot carry it: `npu.quantize` has a single `scale`
     attribute, so this level expresses per tensor activation quantization
     exactly and per channel weight quantization not at all. `-npu-calibrate`
-    writes it from the committed profile and the contraction in the lowering
-    reads it; an operation carrying it whose input is not the result of an
-    `npu.dequantize` is refused, because that is an operation claiming to be
-    quantized in a compilation that is not.
+    computes it from the constant the filter is, by Section 14's symmetric rule,
+    and the contraction in the lowering reads it; an operation carrying it
+    whose input is not the result of an `npu.dequantize` is refused, because
+    the contraction can only find the attribute's arithmetic there.
   }];
 
   let arguments = (ins
@@ -201,11 +201,11 @@ def NPU_MatMulOp : NPU_ComputeOp<"matmul",
     compilation. It exists because the QDQ form cannot carry it: `npu.quantize`
     has a single `scale` attribute, so this level expresses per tensor
     activation quantization exactly and per channel weight quantization not at
-    all. `-npu-calibrate` writes it from the committed profile and the
-    contraction in the lowering reads it; nothing else may set it, and an
-    operation carrying it whose input is not the result of an `npu.dequantize`
-    is refused, because that is an operation claiming to be quantized in a
-    compilation that is not.
+    all. `-npu-calibrate` computes it from the constant the right operand is,
+    by Section 14's symmetric rule, and the contraction in the lowering reads
+    it; nothing else may set it, and an operation carrying it whose input is not
+    the result of an `npu.dequantize` is refused, because the contraction can
+    only find the attribute's arithmetic there.
   }];
 
   let arguments = (ins

@@ -1073,10 +1073,25 @@ takes: min/max is adequate at 8 bits and the ablation measures whether that
 holds on this suite.
 
 **Where the numbers live is a decision, not an accident.** The profile carries
-the ranges and the affine pair derived from them, and the pass reads them.
-Deriving the pair in the compiler would put one rule in two implementations
-with nothing comparing them, which is the observer against kernel disagreement
-Section 14 opens by warning about.
+the activation ranges and the affine pair derived from them, and the pass reads
+them. Deriving the pair in the compiler would put one rule in two
+implementations with nothing comparing them, which is the observer against
+kernel disagreement Section 14 opens by warning about.
+
+**The weight scales are the exception, and are computed by the pass from the
+constant each operation holds.** *Revised 2026-09-29; until then the profile's
+weight entries were read too.* The rule is the one above, evaluated the way the
+observer evaluates it. The reason is Section 14's own argument for per channel
+weights: at `-O2` the batch norm fold multiplies each output channel of a
+filter by its own factor, and calibration runs after it there, which is exactly
+the spread across channels per tensor scaling cannot absorb, and only scales
+taken from the folded constant describe what the machine quantizes. The profile's entry
+describes the initializer before the fold, and on `conv_bn_relu_stack` would
+clamp 32 of its 792 folded weights at the rails. **The comparison the
+observer's rule needs still exists**: the profile's weight entries are the
+oracle at `-O0`, where nothing has touched a filter, and the two agree bit for
+bit on all 22 operations and 556 channels of the suite, which
+`test_quantized_contraction.py` holds.
 
 **The profile records the graph as well as the ranges.** Its `nodes` section is
 the quantizable nodes, the join between an operation's location and the tensors
@@ -1098,9 +1113,12 @@ what lets every pass after it stay unchanged.
 **The weights are not quantized here, and that is a limit of the level rather
 than an omission.** `npu.quantize` carries a single scale, so the QDQ form can
 express per tensor activation quantization exactly and per channel weight
-quantization not at all. The per channel scales travel in the profile to the
-instruction, whose fourth operand holds one multiplier and one shift per output
-channel.
+quantization not at all. The per channel scales travel in `weight_scales` to
+the instruction, whose fourth operand holds one multiplier and one shift per
+output channel, and they are computed from the operation's own constant; the
+methodology above has why. `test/Transforms/calibrate-weight-scales.mlir` has
+the rule on distinct channels, a channel of zeros, a matrix multiplication's
+columns, and a filter the batch norm fold rewrote.
 
 ### A relu that is the operation's only reader is quantized after
 
@@ -1148,22 +1166,20 @@ statistic.
 
 **`weight-granularity`, the two arms of Section 14's ablation.** `per-channel`
 is the default and is Section 14's own granularity: each output channel's
-weights take the channel's symmetric scale from the profile. `per-tensor` gives
+weights take the channel's own symmetric scale. `per-tensor` gives
 every channel the tensor's one scale, which is the arm the section's per channel
 against per tensor ablation compares against. It reaches the pipeline as
 `weight-granularity=` and `compile_model` as `weight_granularity`, the way
 `calib-method` does.
 
-The per tensor scale is **chosen from the profile rather than computed**. The
-symmetric rule over the whole tensor is its largest magnitude over 127, the
-largest magnitude is some channel's, and division by 127 is monotone, so the per
-tensor scale is exactly that channel's own scale. A channel of zeros is left out
-of the choice, because its scale is the degenerate 1 and is not a magnitude;
-that needs the profile's `absolute_maxima`, and a profile without them is
-refused under `per-tensor` rather than guessed at. Every channel then carries
-the same scale in `weight_scales`, so the contraction in the lowering computes
-the same requantization pair for every channel and emits the instruction with
-the scalar pair alone and no fourth operand.
+The per tensor scale is the symmetric rule over the whole tensor, its largest
+magnitude over 127. The largest magnitude is some channel's and division by 127
+is monotone, so it is exactly that channel's own scale. A channel of zeros does
+not decide it, because its scale is the degenerate 1 and is not a magnitude, and
+a tensor of zeros takes 1 everywhere. Every channel then carries the same scale
+in `weight_scales`, so the contraction in the lowering computes the same
+requantization pair for every channel and emits the instruction with the scalar
+pair alone and no fourth operand.
 
 **`requant-mode` has one mode, `fixed`, and `float` is refused by name**, the
 owner's ruling of 2026-09-29. `fixed` is the integer multiplier and shift the

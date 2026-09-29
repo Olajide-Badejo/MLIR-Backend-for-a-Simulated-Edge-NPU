@@ -441,9 +441,9 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     is what turns `quantize(conv2d(dequantize, ...))` into one, and keeping
     this level in f32 is what lets every pass after it stay unchanged.
 
-    **The numbers come from the profile rather than from this pass.** A range
-    and the affine pair derived from it are arithmetic over observed data,
-    pinned by Section 14 and held to hand computed cases in
+    **The activation numbers come from the profile rather than from this
+    pass.** A range and the affine pair derived from it are arithmetic over
+    observed data, pinned by Section 14 and held to hand computed cases in
     `test/Python/test_calibration.py`. Deriving them again here would be a
     second implementation of one rule with nothing comparing the two, which is
     the observer against kernel disagreement that section opens by warning
@@ -453,8 +453,12 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     Section 14 makes weight scales per output channel and `npu.quantize`
     carries a single scale, so this form can express per tensor activation
     quantization exactly and per channel weight quantization not at all. The
-    per channel scales travel in the profile to the instruction, whose fourth
-    operand holds one multiplier and one shift per output channel.
+    per channel scales travel in `weight_scales` to the instruction, whose
+    fourth operand holds one multiplier and one shift per output channel, and
+    **they are computed here from the constant the operation holds**: after
+    the batch norm fold the profile's entry describes weights the machine no
+    longer has. At `-O0` the two agree bit for bit, which makes the profile the
+    oracle for the rule.
 
     **Three diagnostics, each saying something different.** An empty profile is
     a pass failure, because a pass asked to calibrate from nothing has been

@@ -884,6 +884,57 @@ def test_the_rescale_the_compiler_wrote_is_the_one_python_computes(
     assert channels > 0
 
 
+def test_the_profile_is_the_oracle_for_the_weight_scales_at_o0(
+    models: dict[str, Path],
+) -> None:
+    """The scales `-npu-calibrate` computes from the constants, against the
+    observer's, bit for bit, where both see the same weights.
+
+    The pass computes each operation's weight scales from the constant it
+    holds, because at `-O2` the batch norm fold has rewritten the filter and the
+    profile's entry describes the initializer before the fold. At `-O0` nothing
+    has touched a filter, so the two are the same rule over the same numbers and
+    must agree on every channel of every model: 22 operations and 556 channels,
+    the whole of the suite's quantized arithmetic.
+    """
+    operations = 0
+    channels = 0
+    for name in sorted(MODELS):
+        location = PROFILES / f"{name}.json"
+        profile = json.loads(location.read_text(encoding="utf-8"))
+        compiled = compile_model(
+            models[name], level=0, emit="npu", calibrate=str(location)
+        )
+        assert compiled.text is not None
+        # The printer spells a location as an alias defined at the end of the
+        # module, so the aliases are resolved to the node names they hold.
+        aliases = dict(
+            re.findall(r'^(#loc\d*) = loc\("([^"]+)"\)', compiled.text, re.MULTILINE)
+        )
+        found = [
+            (text, aliases.get(where, where.strip('"')))
+            for text, where in re.findall(
+                r"weight_scales = array<f32: ([^>]*)>\}[^\n]*loc\((#loc\d*|\"[^\"]+\")\)",
+                compiled.text,
+            )
+        ]
+        assert found, name
+        for text, node in found:
+            computed = np.array(
+                [float(value) for value in text.split(",")], dtype=np.float32
+            )
+            record = profile["nodes"][node]
+            expected = np.array(
+                profile["weights"][record["inputs"][1]]["scales"], dtype=np.float32
+            )
+            np.testing.assert_array_equal(
+                computed.view(np.uint32), expected.view(np.uint32), err_msg=node
+            )
+            operations += 1
+            channels += len(computed)
+    assert (operations, channels) == (22, 556)
+
+
 # ---------------------------------------------------------------------------
 # 4. One whole model, against the numpy integer reference.
 # ---------------------------------------------------------------------------

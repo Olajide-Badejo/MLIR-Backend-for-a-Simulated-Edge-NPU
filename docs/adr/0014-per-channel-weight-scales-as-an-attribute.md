@@ -82,3 +82,25 @@ carries the wrong number and is refused by the length rule, by name. That is
 deliberate: slicing them would be writing the quantized tiling path before
 anything exercises it, and dropping them would silently turn a quantized
 convolution into an unquantized tile.
+
+## Revision, 2026-09-29
+
+**The attribute is now computed by `-npu-calibrate` from the constant the
+operation holds, not copied from the profile.** Everything else here stands:
+the attribute, its three rules, and the lowering reading it and never a file.
+
+The reason is the one this record's context gives for per channel weights at
+all. At `-O2` the batch norm fold multiplies each output channel of a filter by
+its own factor, and calibration is to run after the fold there, which the
+owner ruled the same day, so the profile's entry, which describes the
+initializer, describes weights the machine no longer has; on `conv_bn_relu_stack` it would clamp 32 of the 792 folded weights. Only
+scales taken from the folded constant describe what the machine quantizes.
+
+**The profile stops being the single source of truth for the weights and
+becomes their oracle.** The rule is evaluated the way the observer evaluates
+it, and at `-O0`, where nothing has touched a filter, the two agree bit for bit
+on all 22 operations and 556 channels, which a test holds. The consequence
+above, a divergence between the profile and the instruction being a red, holds
+at `-O0` exactly as before, and it is the level at which the two describe the
+same weights. The per tensor arm no longer needs the profile's absolute maxima
+to tell a channel of zeros from a real one, because it reads the zeros.

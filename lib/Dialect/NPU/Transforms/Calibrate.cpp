@@ -37,12 +37,24 @@
 // rather than an omission.** Section 14 makes weight scales per output
 // channel, and `npu.quantize` carries a single `scale` attribute: the QDQ form
 // at this level can express per tensor activation quantization exactly and
-// per channel weight quantization not at all. The per channel scales are in
-// the profile, and the operation that can hold them is the instruction, whose
-// fourth operand carries one multiplier and one shift per output channel. So
-// the weight half travels in the profile to the contraction, and this file
-// says so rather than quietly quantizing weights per tensor and losing the
-// granularity the phase gate asks to measure.
+// per channel weight quantization not at all. The operation that can hold them
+// is the instruction, whose fourth operand carries one multiplier and one
+// shift per output channel, so the scales travel to the contraction in the
+// `weight_scales` attribute rather than being quantized per tensor here.
+//
+// **The weight scales are computed here, from the constant the operation
+// holds**, and that is a revision rather than the design this pass started
+// with. The profile's weight entries describe the ONNX initializers, and at
+// `-O2` the batch norm fold rewrites a convolution's filter before this pass
+// sees it, multiplying each output channel by its own factor. Section 14's
+// argument for per channel weights is exactly the spread that fold creates, so
+// only scales taken from the folded constant describe what the machine
+// quantizes. The rule is the observer's, `max |w_c| / 127` with 1 for a
+// channel of zeros, evaluated the same way, and at `-O0`, where nothing has
+// touched the filter, the result equals the profile's entry bit for bit on
+// every channel of every model, which `test_quantized_contraction.py` holds.
+// The profile's weight entries are that oracle now, and nothing reads them
+// here.
 //
 // **The three diagnostics are Section 14's own**, and each says something
 // different. An empty profile is a pass failure, because a calibration pass
@@ -76,6 +88,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <string>
 
@@ -130,12 +143,6 @@ struct Profile {
   llvm::StringMap<NodeRecord> graph;
   /// Keyed by tensor name, for the one method the pass was asked for.
   llvm::StringMap<ActivationScale> activations;
-  /// Keyed by initializer name: one symmetric scale per output channel.
-  llvm::StringMap<llvm::SmallVector<float>> weightScales;
-  /// Keyed the same way: each channel's largest weight magnitude, which is
-  /// what tells a channel of zeros, whose scale is the degenerate 1, from one
-  /// whose largest magnitude is 127.
-  llvm::StringMap<llvm::SmallVector<double>> weightMaxima;
   bool empty() const { return nodes.empty(); }
 };
 
@@ -219,30 +226,6 @@ llvm::Expected<Profile> readProfile(llvm::StringRef path,
     }
   }
 
-  if (const llvm::json::Object *weights = root->getObject("weights")) {
-    for (const auto &entry : *weights) {
-      const llvm::json::Object *record = entry.second.getAsObject();
-      if (!record)
-        continue;
-      const llvm::json::Array *scales = record->getArray("scales");
-      if (!scales)
-        continue;
-      llvm::SmallVector<float> values;
-      for (const llvm::json::Value &scale : *scales)
-        if (std::optional<double> number = scale.getAsNumber())
-          values.push_back(static_cast<float>(*number));
-      profile.weightScales[entry.first.str()] = std::move(values);
-
-      if (const llvm::json::Array *maxima = record->getArray("absolute_maxima")) {
-        llvm::SmallVector<double> magnitudes;
-        for (const llvm::json::Value &maximum : *maxima)
-          if (std::optional<double> number = maximum.getAsNumber())
-            magnitudes.push_back(*number);
-        profile.weightMaxima[entry.first.str()] = std::move(magnitudes);
-      }
-    }
-  }
-
   if (const llvm::json::Object *scales = root->getObject("activation_scales")) {
     for (const auto &entry : *scales) {
       const llvm::json::Object *byMethod = entry.second.getAsObject();
@@ -303,6 +286,83 @@ Value quantizeAndBack(OpBuilder &builder, Location loc, Value value,
   Value down = QuantizeOp::create(builder, loc, quantized, value, scale,
                                   zeroPoint);
   return DequantizeOp::create(builder, loc, type, down, scale, zeroPoint);
+}
+
+/// The value an operand stands for outside an `npu.fused_op` region, or the
+/// operand itself when it is not a block argument of one.
+///
+/// A region is `IsolatedFromAbove`, so an operation fused into one reads every
+/// value through a block argument, and the argument's position is the region's
+/// operand position. This is how the pass sees through a region to the
+/// constant a filter is and to the value an input is.
+Value outsideValue(Value value) {
+  auto argument = dyn_cast<BlockArgument>(value);
+  if (!argument)
+    return value;
+  auto fused = dyn_cast_or_null<FusedOp>(argument.getOwner()->getParentOp());
+  if (!fused)
+    return value;
+  return fused->getOperand(argument.getArgNumber());
+}
+
+/// Section 14's symmetric weight rule over the constant the operation holds:
+/// one scale per output channel, `max |w_c| / 127`, and 1 for a channel whose
+/// weights are all zero, whose scale is not a magnitude. With `perTensor`
+/// every channel takes the tensor's one scale, the largest magnitude of the
+/// whole tensor over 127, which is the scale of the channel that holds it.
+///
+/// **Evaluated the way the observer evaluates it**, so that the two agree bit
+/// for bit where they see the same weights: the largest magnitude is exact in
+/// f32, the division is in double, and the quotient is rounded once to f32,
+/// which is what the profile's double becomes when the pass reads it.
+///
+/// Nothing when the weights are not an f32 constant. The contraction needs a
+/// constant to quantize at compile time, so an operation without one is not
+/// contracted, and a scale for it would be a number nothing reads.
+std::optional<llvm::SmallVector<float>> weightScalesOf(Operation *op,
+                                                       bool perTensor) {
+  const bool column = isa<MatMulOp>(op);
+  Value weights =
+      column ? cast<MatMulOp>(op).getRhs() : cast<Conv2DOp>(op).getFilter();
+  auto constant = outsideValue(weights).getDefiningOp<ConstantOp>();
+  if (!constant)
+    return std::nullopt;
+  auto dense = dyn_cast<DenseFPElementsAttr>(constant.getValue());
+  if (!dense || !dense.getElementType().isF32())
+    return std::nullopt;
+
+  // A filter is `(M, C/group, kH, kW)` and its output channel is the slowest
+  // axis; a matrix is `(K, N)` and its output channel is the fastest. D-0067
+  // is what reading one layout for both cost.
+  auto type = cast<RankedTensorType>(dense.getType());
+  const int64_t channels = column ? type.getDimSize(1) : type.getDimSize(0);
+  if (channels <= 0)
+    return std::nullopt;
+  const int64_t perChannel = type.getNumElements() / channels;
+
+  llvm::SmallVector<float> maxima(channels, 0.0f);
+  int64_t flat = 0;
+  for (float value : dense.getValues<float>()) {
+    const int64_t channel = column ? flat % channels : flat / perChannel;
+    ++flat;
+    maxima[channel] = std::max(maxima[channel], std::fabs(value));
+  }
+
+  auto scaleOf = [](float maximum) {
+    return maximum > 0.0f
+               ? static_cast<float>(static_cast<double>(maximum) / 127.0)
+               : 1.0f;
+  };
+  llvm::SmallVector<float> scales;
+  scales.reserve(channels);
+  if (perTensor) {
+    const float largest = *std::max_element(maxima.begin(), maxima.end());
+    scales.assign(channels, scaleOf(largest));
+    return scales;
+  }
+  for (float maximum : maxima)
+    scales.push_back(scaleOf(maximum));
+  return scales;
 }
 
 class NPUCalibratePass
@@ -536,26 +596,19 @@ private:
     // **The per output channel weight scales, carried as an attribute because
     // the QDQ form cannot carry them.** `npu.quantize` has a single scale, so
     // this level expresses per tensor activation quantization exactly and per
-    // channel weight quantization not at all. The scales are in the profile,
-    // the contraction in the lowering needs them, and an attribute is how they
-    // travel between the two without a second file read in the lowering or a
-    // per tensor weight that would discard the granularity the gate measures.
+    // channel weight quantization not at all. The contraction in the lowering
+    // needs them, and an attribute is how they travel between the two without
+    // a file read in the lowering or a per tensor weight that would discard the
+    // granularity the gate measures.
     //
-    // Written from the profile and from nowhere else, and only here, which is
-    // what the verifier's rule that the operand must come from a dequantize
-    // enforces at the other end.
-    if (node->second.inputs.size() >= 2) {
-      const std::string &initializer = node->second.inputs[1];
-      auto weights = loaded.weightScales.find(initializer);
-      if (weights != loaded.weightScales.end() && !weights->second.empty()) {
-        llvm::SmallVector<float> scales = weights->second;
-        if (llvm::StringRef(weightGranularity) == "per-tensor" &&
-            failed(perTensor(op, loaded, initializer, scales)))
-          return failure();
-        op->setAttr("weight_scales",
-                    DenseF32ArrayAttr::get(op->getContext(), scales));
-      }
-    }
+    // Computed from the constant the operation holds, which after the batch
+    // norm fold is the folded one; the file header has why. Written only here,
+    // which is what the verifier's rule that the operand must come from a
+    // dequantize enforces at the other end.
+    if (std::optional<llvm::SmallVector<float>> scales = weightScalesOf(
+            op, llvm::StringRef(weightGranularity) == "per-tensor"))
+      op->setAttr("weight_scales",
+                  DenseF32ArrayAttr::get(op->getContext(), *scales));
 
     ++rewritten;
     if (input->second.degenerate || outputScale.degenerate)
@@ -563,45 +616,6 @@ private:
           << "a tensor of this operation calibrated to a degenerate range, so "
              "the profile substituted a scale of 1 and a zero point of 0. The "
              "quantization is legal and it is not meaningful.";
-    return success();
-  }
-
-  /// Section 14's other granularity arm: every channel takes the tensor's one
-  /// symmetric scale.
-  ///
-  /// **The scale is chosen from the profile rather than computed here.** The
-  /// symmetric rule over the whole tensor is its largest magnitude over 127,
-  /// and the largest magnitude is some channel's, so the per tensor scale is
-  /// that channel's own scale, which the profile already holds, exactly: the
-  /// division by 127 is monotone, so the largest quotient is the quotient of
-  /// the largest. Computing it again here would be the weight rule written a
-  /// second time with nothing comparing the two.
-  ///
-  /// A channel of zeros is excluded, because its scale is the degenerate 1
-  /// and is not a magnitude; that is what the absolute maxima are read for,
-  /// and a profile without them cannot tell the two apart, so it is refused
-  /// rather than guessed at. Every channel of zeros leaves the degenerate 1.
-  LogicalResult perTensor(Operation *op, const Profile &loaded,
-                          const std::string &initializer,
-                          llvm::SmallVector<float> &scales) {
-    auto maxima = loaded.weightMaxima.find(initializer);
-    if (maxima == loaded.weightMaxima.end() ||
-        maxima->second.size() != scales.size())
-      return op->emitError()
-             << "per-tensor weight granularity needs the profile's absolute "
-                "maxima for '"
-             << initializer
-             << "', one per channel, to tell a channel of zeros from a real "
-                "one, and the profile has "
-             << (maxima == loaded.weightMaxima.end() ? 0
-                                                     : maxima->second.size())
-             << " for " << scales.size() << " scales";
-
-    std::optional<float> tensorScale;
-    for (auto [scale, maximum] : llvm::zip_equal(scales, maxima->second))
-      if (maximum > 0.0)
-        tensorScale = tensorScale ? std::max(*tensorScale, scale) : scale;
-    scales.assign(scales.size(), tensorScale.value_or(1.0f));
     return success();
   }
 };
