@@ -757,6 +757,19 @@ the earliest layer that can name a problem is the one that should, and
 because the calibrator's degenerate range rule exists precisely so that a
 zero scale never escapes it.
 
+**A quantize of a dequantize with the same scale and zero point folds to
+the dequantize's input**, because the pair returns every one of the 256
+int8 values unchanged. `q - zero_point` is at most 255 in magnitude, so
+`(q - zero_point) * scale` rounds to f32 with a relative error of at most
+2^-24, and none at all where the product is subnormal; divided back by the
+same scale it lands within 255 * 2^-24 of the integer it came from, and
+rounding to nearest recovers that integer exactly. The one exception is a
+scale so large that 255 times it is not a finite f32, and the fold declines
+there. The scales are compared bit for bit rather than as numbers, so a
+pair whose scales merely print alike is left alone. `-npu-calibrate`
+applies the fold to the pairs it forms, because `-O0` runs no
+canonicalization, and `-canonicalize` applies it wherever it runs.
+
 Traits: `AlwaysSpeculatableImplTrait`
 
 Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`

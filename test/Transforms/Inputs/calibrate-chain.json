@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "model": "calibrate-chain-lit",
+  "batch": 1,
+  "inputs": 8,
+  "seed": 1,
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "nodes": {
+    "Conv_0": {"op_type": "Conv", "inputs": ["x", "w0"], "outputs": ["y"]},
+    "Conv_1": {"op_type": "Conv", "inputs": ["y", "w1"], "outputs": ["z"]}
+  },
+  "weights": {
+    "w0": {"axis": 0, "absolute_maxima": [1.27, 2.54], "scales": [0.01, 0.02]},
+    "w1": {"axis": 0, "absolute_maxima": [2.54, 1.27], "scales": [0.02, 0.01]}
+  },
+  "activation_scales": {
+    "x": {"minmax": {"scale": 0.025, "zero_point": -3, "degenerate": false}},
+    "y": {"minmax": {"scale": 0.016, "zero_point": -128, "degenerate": false}},
+    "z": {"minmax": {"scale": 0.04, "zero_point": 5, "degenerate": false}}
+  }
+}

@@ -5,8 +5,9 @@
 code with it.
 
 `-npu-lower-to-npuisa` turns a calibrated convolution or matrix multiplication
-into one integer instruction. Four claims about that are made here, and each is
-exact rather than a tolerance except the last, whose bound is Section 14's own:
+into one integer instruction. Five claims about that are made here, and each is
+exact rather than a tolerance except the fourth, whose bound is Section 14's
+own:
 
 1. **Hand computed.** The two functions of
    `test/Dialect/NPUISA/lowering-quantized.mlir`, compiled, encoded and run on
@@ -25,6 +26,9 @@ exact rather than a tolerance except the last, whose bound is Section 14's own:
 4. **One whole model.** LeNet, compiled, encoded and simulated, against the
    numpy integer reference from the same profile, within one count of the
    output scale, which is Section 14's first end to end bound.
+5. **The pair fold is exact.** A dequantize then a quantize with the same scale
+   and zero point returns all 256 values at every scale the committed profiles
+   hold, which is what lets the compiler remove one.
 """
 
 from __future__ import annotations
@@ -668,3 +672,37 @@ def test_lenet_quantized_agrees_with_the_integer_reference(
         (simulated.astype(np.float64) - reference.astype(np.float64)) / scale
     )
     assert np.max(np.abs(counts)) <= 1, counts
+
+
+# ---------------------------------------------------------------------------
+# 5. The pair fold, at every scale a committed profile holds.
+# ---------------------------------------------------------------------------
+
+
+def test_a_matching_pair_returns_every_value_at_every_profiled_scale() -> None:
+    """`npu.quantize`'s folder removes a dequantize then quantize with bitwise
+    equal scales and equal zero points, and that is exact only if the pair
+    returns every one of the 256 values. `NPUSimulatorTests`' case proves it on
+    the machine at the boundary scales; this proves it in the numpy reference,
+    which agrees with the machine bit for bit on both operations, at every
+    scale and zero point the seven committed profiles hold under all four
+    methods, and at both rails and zero for each of those scales as well.
+    """
+    values = np.arange(-128, 128, dtype=np.int64).astype(np.int8)
+    pairs: set[tuple[float, int]] = set()
+    for name in sorted(MODELS):
+        profile = json.loads((PROFILES / f"{name}.json").read_text(encoding="utf-8"))
+        for methods in profile["activation_scales"].values():
+            for entry in methods.values():
+                scale = float(np.float32(entry["scale"]))
+                for zero_point in (int(entry["zero_point"]), -128, 0, 127):
+                    pairs.add((scale, zero_point))
+
+    # Hundreds of distinct pairs, so this is a sweep and not a spot check.
+    assert len(pairs) >= 300
+    for scale, zero_point in sorted(pairs):
+        real = refexec.dequantize(values, scale, zero_point)
+        back = refexec.quantize(real, scale, zero_point)
+        np.testing.assert_array_equal(
+            back, values, err_msg=f"scale {scale!r}, zero point {zero_point}"
+        )

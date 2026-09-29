@@ -463,6 +463,13 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     another model. A partially covered operation is skipped and counted, never
     half rewritten, because an operation whose output has no calibrated range
     has no scale to quantize its result with.
+
+    **And the pairs it forms that compute nothing are removed.** Where one
+    calibrated operation's output is the next one's input, the first's output
+    pair and the second's input pair meet as a dequantize then a quantize with
+    the same scale and zero point, which returns every value unchanged. The
+    pass applies `npu.quantize`'s folder to them, because `-O0` runs no
+    canonicalization, and counts them in `folded-pairs`.
   }];
 
   let options = [
@@ -494,6 +501,9 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
               "Operations the profile names but does not fully cover">,
     Statistic<"uncovered", "uncovered",
               "Operations the profile does not name at all">,
+    Statistic<"foldedPairs", "folded-pairs",
+              "Dequantize then quantize pairs removed because they return "
+              "every value unchanged">,
   ];
 
   let dependentDialects = [

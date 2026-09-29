@@ -350,6 +350,8 @@ public:
       if (failed(rewriteOne(op, *loaded)))
         return signalPassFailure();
 
+    foldRoundTrips(function);
+
     // **A profile that covers nothing is one remark, not one per operation.**
     // It is a real configuration, the profile of another model, and a reader
     // needs to be told once with the count rather than told repeatedly.
@@ -368,6 +370,35 @@ public:
   }
 
 private:
+  /// Removes every dequantize then quantize pair that returns its values
+  /// unchanged, which is `npu.quantize`'s folder applied here.
+  ///
+  /// **Here as well as in `-canonicalize`, because `-O0` runs no
+  /// canonicalization** and the pairs are this pass's own making: where one
+  /// calibrated operation's quantized output is the next one's input, the first
+  /// operation's output pair and the second's input pair meet as a dequantize
+  /// then a quantize of the same tensor with the same scale and zero point.
+  /// Left in place, that is a `DEQUANT` and a `QUANT` that compute nothing
+  /// between two integer instructions, and a boundary crossing Section 14 never
+  /// drew. The condition is `QuantizeOp::getRoundTripSource`, written once, and
+  /// a dequantize left with no reader goes too, because nothing after this pass
+  /// at `-O0` would remove it.
+  void foldRoundTrips(func::FuncOp function) {
+    SmallVector<QuantizeOp> quantizes;
+    function.walk([&](QuantizeOp op) { quantizes.push_back(op); });
+    for (QuantizeOp op : quantizes) {
+      Value source = op.getRoundTripSource();
+      if (!source)
+        continue;
+      auto pair = op.getInput().getDefiningOp<DequantizeOp>();
+      op.getResult().replaceAllUsesWith(source);
+      op.erase();
+      if (pair.getResult().use_empty())
+        pair.erase();
+      ++foldedPairs;
+    }
+  }
+
   LogicalResult rewriteOne(Operation *op, const Profile &loaded) {
     llvm::StringRef name = nameFromLocation(op->getLoc());
     auto node = loaded.nodes.find(name);

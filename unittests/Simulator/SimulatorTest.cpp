@@ -1152,6 +1152,79 @@ TEST(Quantization, DequantIsTheInverseOfQuantize) {
   expectValues(harness.outputF32(0), {-31.25f, 0.0f, 0.75f, 32.5f});
 }
 
+TEST(Quantization, DequantThenQuantIsTheIdentity) {
+  // **What makes `npu.quantize`'s folder exact, on the machine.** A `DEQUANT`
+  // then a `QUANT` with the same scale and zero point returns every one of the
+  // 256 int8 values unchanged, so a compiler that removes such a pair moves no
+  // value. The argument is in `QuantizeOp::getRoundTripSource`; this is the
+  // machine agreeing with it over all 256 inputs at each of these scales:
+  //
+  //   2^-149          the smallest subnormal, where `n * scale` is exact
+  //   2^-126          the smallest normal
+  //   0.001, 0.025    two a calibration produces
+  //   1               where the pair is trivially exact
+  //   the largest     the largest f32 whose 255 multiple is still finite,
+  //                   which is the edge of the folder's condition
+  //
+  // and at zero points at both rails, at zero and at a negative one, so that
+  // `q - zp` reaches 255 in both directions.
+  const double ceiling = static_cast<double>(std::numeric_limits<float>::max());
+  float largest = static_cast<float>(ceiling / 255.0);
+  while (255.0 * static_cast<double>(largest) > ceiling)
+    largest = std::nextafter(largest, 0.0f);
+  const std::vector<float> scales = {std::ldexp(1.0f, -149),
+                                     std::numeric_limits<float>::min(),
+                                     0.001f,
+                                     0.025f,
+                                     1.0f,
+                                     largest};
+  const std::vector<int32_t> zeroPoints = {-128, -3, 0, 127};
+
+  std::vector<int8_t> every;
+  std::vector<int32_t> expected;
+  for (int32_t value = -128; value <= 127; ++value) {
+    every.push_back(static_cast<int8_t>(value));
+    expected.push_back(value);
+  }
+  const std::vector<int64_t> shape = {256};
+
+  for (float scale : scales) {
+    for (int32_t zeroPoint : zeroPoints) {
+      Builder builder;
+      const int64_t source = builder.constantI8(shape, every);
+      const int64_t loaded = builder.scratch(256, ElemType::I8);
+      const int64_t real = builder.scratch(256);
+      const int64_t back = builder.scratch(256, ElemType::I8);
+      const int64_t sink = builder.output(shape, ElemType::I8);
+
+      builder.add(dmaLoad(loaded, shape,
+                          at(MemSpace::Dram, source, shape, ElemType::I8)));
+      Instruction dequantize =
+          compute(Opcode::DEQUANT, real, shape,
+                  {at(MemSpace::Scratchpad, loaded, shape, ElemType::I8)});
+      dequantize.scale = scale;
+      dequantize.zeroPoint = zeroPoint;
+      builder.add(std::move(dequantize));
+      Instruction quantize =
+          compute(Opcode::QUANT, back, shape,
+                  {at(MemSpace::Scratchpad, real, shape)}, ElemType::I8);
+      quantize.scale = scale;
+      quantize.zeroPoint = zeroPoint;
+      builder.add(std::move(quantize));
+      builder.add(dmaStore(
+          sink, shape, at(MemSpace::Scratchpad, back, shape, ElemType::I8)));
+      builder.add(halt());
+
+      // 256 bytes in, 1024 bytes of f32, 256 bytes out.
+      Harness harness(builder.finish(1536));
+      const SimResult outcome = harness.run();
+      ASSERT_TRUE(outcome.ok()) << outcome.error.value_or("");
+      EXPECT_EQ(harness.outputI8(0), expected)
+          << "scale " << scale << ", zero point " << zeroPoint;
+    }
+  }
+}
+
 TEST(Quantization, ConvolutionPaddingContributesTheZeroPoint) {
   // A 3 by 3 input, a 3 by 3 filter of ones, one pad on every side, stride 1,
   // and an input zero point of -2. The int32 bias carries the folded term

@@ -24,6 +24,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
+
 using namespace mlir;
 using namespace mlir::npu;
 
@@ -997,6 +999,43 @@ LogicalResult verifyQuantizationOp(Operation *op, Value input, Value result,
 LogicalResult QuantizeOp::verify() {
   return verifyQuantizationOp(getOperation(), getInput(), getResult(),
                               getScale(), getZeroPoint());
+}
+
+/// The value a dequantize then quantize pair returns unchanged, or null.
+///
+/// **Why the pair is exact, and where it stops being.** With `n = q - zp`,
+/// `|n| <= 255`, the machine's `DEQUANT` computes `n * scale` in double, where
+/// it is exact, and rounds it once to f32: relative error at most 2^-24, and
+/// none where the product is subnormal, because a subnormal scale times an
+/// integer is a multiple of 2^-149. `QUANT` divides that by the same scale in
+/// double, so the quotient is within `255 * 2^-24` of `n`, far inside the half
+/// that round to nearest needs, and adding the zero point back gives `q` inside
+/// the rails. The only way out is an overflow, `255 * scale` above the largest
+/// f32, and the fold declines there rather than reasoning about infinities.
+///
+/// The scales are compared bit for bit. Two scales that differ in the last
+/// bit are two scales, and the pair between them is a requantization.
+Value QuantizeOp::getRoundTripSource() {
+  auto source = getInput().getDefiningOp<DequantizeOp>();
+  if (!source)
+    return {};
+  if (!source.getScale().bitwiseIsEqual(getScale()))
+    return {};
+  if (source.getZeroPoint() != getZeroPoint())
+    return {};
+  if (source.getInput().getType() != getType())
+    return {};
+  const double largest =
+      255.0 * static_cast<double>(getScale().convertToFloat());
+  if (!(largest <= static_cast<double>(std::numeric_limits<float>::max())))
+    return {};
+  return source.getInput();
+}
+
+OpFoldResult QuantizeOp::fold(FoldAdaptor) {
+  if (Value source = getRoundTripSource())
+    return source;
+  return {};
 }
 
 LogicalResult DequantizeOp::verify() {
