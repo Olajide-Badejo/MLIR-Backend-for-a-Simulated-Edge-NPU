@@ -34,6 +34,12 @@ intermittent, it has never been reproduced in isolation, and its assertion text
 has been lost twice to the harness's own temporary directory. It is
 deliberately **not** attributed to D-0049, and the entry says why.
 
+**D-0069**, quantized compilation at `-O2` and a tight budget fails
+verification on all seven models, with a message that says the input is not a
+quantized compilation when it is one. Open: the refusal itself is right, and
+which of two fixes lands waits on whether quantized compilation exists above
+`-O0` in P14.
+
 **D-0050**, the binary format cannot express a buffer written in pieces, so a
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
 `Program::kVersion` bump, which P14's gate forbids by name and which the
@@ -3341,6 +3347,38 @@ The one minute figure fell below 0.3 within a minute of the suite finishing and
 the machine was not idle: the five minute average was still above 2. Waiting on
 the one minute number alone is what three of these four reds have in common.
 
+**The tenth observation is the ninth's shape again, at P14 checkpoint B, and its
+message was lost the same way.** At `f8f6940`, the record of item 3's `-O0`
+boundary, the CI shape suite reported
+`test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing`
+failed, with 1273 passed and 33 skipped, on a run started at a one minute load
+average of **3.27** immediately after the baseline check that closed the
+record, whose own suite had just finished. Run alone in the same shape it
+passed in 32.27 seconds, and the whole CI shape suite run again four minutes
+later, from a start at 1.84, gave 1274 passed and 33 skipped, which is the
+tree's count.
+
+**The attribution rests on the case and on the start, not on the message**,
+because there is no message: the battery kept the last three lines of
+`pytest -q`, which carry the identifier and the counts and not the assertion.
+The case is the one the eighth and ninth observations name, the start is the
+ninth's, a suite begun on a machine still draining from the one before it, and
+the two runs that followed passed. That is enough to file it here and not
+enough to say which of the two bounds fired or by how much, and it is recorded
+with that gap named rather than with numbers borrowed from the eighth.
+
+**It is not D-0066's.** That entry is a different case,
+`test_a_rerun_reproduces_the_external_fields_too`, the same comparison with the
+external fields included, and it has only ever failed inside the baseline
+check. This one failed in a plain suite run, which is where this entry's
+observations are.
+
+**And the tooling half again, because a tail ate the message a third time**,
+after this entry's first sighting and D-0066. The batteries I run at a
+boundary now write the whole of `pytest -rfE --tb=short` to a log and print the
+`FAILED` lines with their assertion out of it, so the next red arrives with its
+text. No bound moved.
+
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by
@@ -4622,3 +4660,72 @@ before any test had driven the value.
   check was proven on the values it refuses and never on the last value it
   accepts. That is the edge where a mask, a count or a loop bound is computed
   from the value itself.
+
+### D-0069 quantized `-O2` at a tight budget fails verification on all seven models, with a message that is false for the input
+
+**Status: open, and its fix waits on a scope decision**: whether quantized
+compilation exists above `-O0` in P14. The entry records both fixes that
+decision chooses between. Found 2026-09-24 at `f8f6940`, by the investigation
+of quantized compilation above `-O0` that ran before anything was built for
+those levels.
+
+- **Reproduce.** At any commit from `a8e75ef`, where `weight_scales`, its
+  verifier rule and the tiling interface's copy of it arrived together, with the
+  model IR built:
+
+  ```
+  python scripts/build-model-ir.py
+  build/bin/npu-opt experiments/models/conv_bn_relu_stack-O0.npu.mlir \
+    "--npu-O2=calibrate=experiments/calibration/conv_bn_relu_stack.json budget=6464 stop-after=npu"
+  ```
+
+  ```
+  error: loc("conv1"): 'npu.conv2d' op carries weight_scales and its data
+  operand is not the result of an npu.dequantize, so this is not a quantized
+  compilation. The attribute is written by -npu-calibrate from a profile and
+  read by the contraction in the lowering, and it means nothing anywhere else
+  ```
+
+  The same through `compile_model(model, level=2, calibrate=profile,
+  budget=TIGHT_BUDGETS[name])` fails on every one of the seven models at its
+  ADR 0008 tight budget; `lenet` fails on `node_linear`, a matrix
+  multiplication split four ways over its 120 output channels. At the default
+  budget all seven compile, at batch 1 and at batch 4, and so does every tight
+  budget without a profile.
+
+- **The mechanism.** `-npu-calibrate` runs first at every level, so every later
+  pass sees the QDQ form, and the pair between a convolution and its relu is
+  what `-npu-fuse-ops` does not look through. So at `-O2` no calibrated
+  operation is fused, and every one of them is visible to
+  `-npu-tile-to-scratchpad`, which in fp32 sees only the fourteen of forty four
+  that fusion leaves. At a tight budget the search splits one. The tile's data
+  operand is then a `tensor.extract_slice` of the dequantized value rather than
+  the dequantize, and its `weight_scales` is the whole operation's array, which
+  the tiling interface carries unsliced on purpose. The verifier refuses the
+  first of the two after the pass, by name.
+
+- **What is right about it and what is not.** The refusal is the design
+  working: `NPUTilingInterfaceImpl.cpp` says a quantized tile is to be refused
+  loudly rather than silently turned into an f32 one, and no program that would
+  have computed something else is produced. **The sentence is what is wrong.**
+  "This is not a quantized compilation" is false for exactly this input, and a
+  user who asked for a quantized program at a tight budget is told they asked for
+  something else. A quieter fact goes with it: the search sizes the working set
+  from the tensor's element type, which in the QDQ form is f32, so it tiles an
+  operation whose integer instruction moves a quarter of those bytes.
+
+- **Who can reach it.** Anyone calling `compile_model` with `calibrate` and a
+  budget at `-O2`, or `npu-opt --npu-O2` with `calibrate=` and `budget=`.
+  `npu-compile` has no calibration flag, and nothing committed compiles a
+  quantized program above `-O0`, which is why nothing has gone red.
+
+- **The two fixes.** If quantized compilation above `-O0` is in scope, the tiling
+  pass declines a calibrated operation with a counted remark, the way it
+  declines a fused region over the budget, and the verifier's sentence names the
+  case it refuses; quantized tiling proper goes with Checkpoint C's reduction
+  tiling under INT8. If it is not, `-npu-calibrate` is refused by name at `-O1`
+  and `-O2`. The sentence changes either way.
+
+- **The shape.** A diagnostic written for the route its author had in mind, an
+  attribute written by hand, reached by a second route, a pass that copies it,
+  and describing the first. The check is right and its explanation is not.
