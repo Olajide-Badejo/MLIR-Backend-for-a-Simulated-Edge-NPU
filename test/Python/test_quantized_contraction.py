@@ -5,9 +5,10 @@
 code with it.
 
 `-npu-lower-to-npuisa` turns a calibrated convolution or matrix multiplication
-into one integer instruction. Five claims about that are made here, and each is
-exact rather than a tolerance except the fourth, whose bound is Section 14's
-own:
+into one integer instruction. Six claims about that are made here, and each is
+exact rather than a tolerance except two: the fourth, whose bound is Section
+14's own, and the second half of the sixth, whose bound is derived where it is
+asserted:
 
 1. **Hand computed.** The two functions of
    `test/Dialect/NPUISA/lowering-quantized.mlir`, compiled, encoded and run on
@@ -29,6 +30,10 @@ own:
 5. **The pair fold is exact.** A dequantize then a quantize with the same scale
    and zero point returns all 256 values at every scale the committed profiles
    hold, which is what lets the compiler remove one.
+6. **The fused relu.** Hand computed, with the clamp at an output zero point of
+   -128, at 5 and at -100; and against the unfused program, which rounds to the
+   operation's own scale, runs the relu in f32 and rounds again, within the
+   bound that extra rounding allows and no more.
 """
 
 from __future__ import annotations
@@ -261,6 +266,76 @@ def test_what_the_lowering_leaves_in_the_qdq_form_runs_in_f32_on_both_sides() ->
     assert np.max(np.abs(difference)) <= 1
 
 
+def _with_relu(module: str, zero_point: int) -> str:
+    """The same program with a relu before its quantize, and that quantize at
+    another output zero point. The scale stays, so the rescale and every value
+    before the zero point is added are the ones worked out above."""
+    returned = re.search(
+        r"  %qy = npu\.quantize %y \{scale = ([^ ]+) : f32, zero_point = -?\d+ : i32\}\n"
+        r"        : (tensor<[^>]+>) to (tensor<[^>]+>)\n",
+        module,
+    )
+    assert returned is not None
+    scale, real, integer = returned.groups()
+    relu = (
+        f"  %dr = tensor.empty() : {real}\n"
+        f"  %r = npu.relu ins(%y : {real}) outs(%dr : {real}) -> {real}\n"
+        f"  %qy = npu.quantize %r {{scale = {scale} : f32, zero_point = {zero_point} : i32}}\n"
+        f"        : {real} to {integer}\n"
+    )
+    return module.replace(returned.group(0), relu)
+
+
+@pytest.mark.parametrize(
+    ("zero_point", "expected"),
+    [
+        # **Mid range.** The values before the zero point are the ones worked
+        # out above, -1, 20, -7 and so on; adding 5 gives 4, 25, -2, and the
+        # relu clamps at 5, the value that represents real zero, so 4 and -2
+        # become 5. A relu clamping at 0 would have answered 4 and 0.
+        (
+            5,
+            [[[[5, 25, 5]], [[5, 17, 5]]], [[[5, 127, 5]], [[5, 127, 5]]]],
+        ),
+        # **At -128, where every level is at or above real zero**, which is the
+        # zero point a post relu tensor calibrates to. The clamp is the rail
+        # there, so nothing below it survives either way: -1 - 128 is -129 and
+        # is -128, while 20 - 128 is -108 and stays.
+        (
+            -128,
+            [
+                [[[-128, -108, -128]], [[-128, -116, -128]]],
+                [[[-128, 127, -128]], [[-128, 108, -128]]],
+            ],
+        ),
+    ],
+)
+def test_a_fused_relu_clamps_the_convolution_at_its_output_zero_point(
+    zero_point: int, expected: list[Any]
+) -> None:
+    text, binary = _compile(_with_relu(HAND_CONVOLUTION, zero_point))
+    assert "npuisa.relu" not in text
+    assert re.search(r"npuisa\.conv2d ins\([^\n]*relu", text.replace("\n  ", " "))
+    x = np.array([[[[10, -4]]], [[[127, -128]]]], dtype=np.int8)
+    (result,) = _run_integer(binary, [x], [(2, 2, 1, 3)])
+    np.testing.assert_array_equal(result, np.array(expected, dtype=np.int8))
+
+
+def test_a_fused_relu_clamps_the_matmul_at_its_output_zero_point() -> None:
+    """The hand computed matrix multiplication with a relu and a zero point of
+    -100. Before the zero point the values are 179 and -32, 482 and 0; adding
+    -100 gives 79 and -132, 382 and -100, and the relu clamps at -100 rather than
+    at 0, so -132 becomes -100 and the rail takes 382. Without the relu the
+    second column would have been -128 and -100."""
+    text, binary = _compile(_with_relu(HAND_MATMUL, -100))
+    assert "npuisa.relu" not in text
+    x = np.array([[20, -7, 100], [127, -128, 127]], dtype=np.int8)
+    (result,) = _run_integer(binary, [x], [(2, 2)])
+    np.testing.assert_array_equal(
+        result, np.array([[79, -100], [127, -100]], dtype=np.int8)
+    )
+
+
 def test_the_hand_computed_program_is_one_integer_instruction() -> None:
     """What was compiled is the contraction and not something that happens to
     compute the same integers: one integer convolution, no DEQUANT of the input,
@@ -476,6 +551,176 @@ func.func @main(%qx: tensor<3x7xi8>) -> tensor<3x5xi8> {{
     assert interior > DRAWS * 15 // 2
 
 
+def _relu_program(
+    x_shape: tuple[int, int, int, int],
+    weights: NDArray[np.float32],
+    bias: NDArray[np.float32],
+    scales: NDArray[np.float32],
+    y_shape: tuple[int, ...],
+    attributes: dict[str, Any],
+    pair_x: tuple[float, int],
+    pair_c: tuple[float, int] | None,
+    pair_r: tuple[float, int],
+) -> str:
+    """A calibrated convolution followed by a relu, quantized after the relu.
+
+    With `pair_c`, the operation's own output is quantized to it first and the
+    relu runs in f32 between a `DEQUANT` and the final `QUANT`, which is the
+    program the compiler wrote before the relu was fused. Without it, the relu
+    is the instruction's.
+    """
+    y_type = f"tensor<{_shape(y_shape)}xf32>"
+    q_type = f"tensor<{_shape(y_shape)}xi8>"
+    head = _conv_program(
+        x_shape, weights, bias, scales, y_shape, attributes, pair_x, (1.0, 0)
+    ).split("  %qy = npu.quantize")[0]
+    if pair_c is None:
+        relu_input = "%y"
+        middle = ""
+    else:
+        relu_input = "%yc"
+        middle = (
+            f"  %qc = npu.quantize %y {{scale = {_f32(pair_c[0])} : f32, zero_point = {pair_c[1]} : i32}}\n"
+            f"        : {y_type} to {q_type}\n"
+            f"  %yc = npu.dequantize %qc {{scale = {_f32(pair_c[0])} : f32, zero_point = {pair_c[1]} : i32}}\n"
+            f"        : {q_type} to {y_type}\n"
+        )
+    return (
+        head
+        + middle
+        + f"  %dr = tensor.empty() : {y_type}\n"
+        + f"  %r = npu.relu ins({relu_input} : {y_type}) outs(%dr : {y_type}) -> {y_type}\n"
+        + f"  %qy = npu.quantize %r {{scale = {_f32(pair_r[0])} : f32, zero_point = {pair_r[1]} : i32}}\n"
+        + f"        : {y_type} to {q_type}\n"
+        + f"  return %qy : {q_type}\n}}\n"
+    )
+
+
+def test_the_fused_relu_differs_from_the_unfused_one_only_by_its_rounding() -> None:
+    """The fused instruction against the program it replaced, over random draws.
+
+    **The bound, derived rather than fitted.** Write `A` for a channel's int32
+    accumulator, which both programs compute identically, and `s_c`, `s_r` for
+    the operation's own output scale and the relu output's, with `rho = s_c /
+    s_r`. The machine's requantization `R(A, M)` is a rounding doubling high
+    multiply and a rounding divide by `2^n`, two roundings of half a unit each,
+    the second at `2^-n` of the first's size, from an `M0` that is itself within
+    half a unit of `M * 2^(31 + n)`; with `|A| < 2^31` that gives
+    `|R(A, M) - A * M| <= 1/2 + 2^-n`.
+
+    - **Fused**, the result above the zero point is `max(R(A, M_r), 0)`, so it
+      is within `1/2 + 2^-n_r` of `max(T, 0)`, where `T = A * M_r` is the exact
+      answer in counts of `s_r`.
+    - **Unfused**, `g = R(A, M_c)` is within `1/2 + 2^-n_c` counts of `s_c` of
+      `A * M_c`, which is `T / rho`; the `DEQUANT` rounds `g * s_c` to f32, off
+      by at most `2^-24` of `|g| * s_c <= 255 * s_c`; the relu is 1-Lipschitz;
+      and the `QUANT` rounds once more, half a count of `s_r`. So it is within
+      `1/2 + rho * (1/2 + 2^-n_c) + 256 * rho * 2^-24` of `max(T, 0)`.
+
+    The two differ by at most the sum, and both are integers and the rails are
+    1-Lipschitz, so per element, per output channel,
+
+        |fused - unfused| <= floor(1 + 2^-n_r + rho * (1/2 + 2^-n_c)
+                                   + 256 * rho * 2^-24)
+
+    which is 2 at the ratios a relu gives, near 2. It holds where the unfused
+    program's intermediate does not saturate, and the ranges here are chosen
+    from the draws with a margin so that it does not, which the numpy reference
+    checks rather than assumes. It is **not** a tolerance on the fused program:
+    the fused program is held to the numpy reference exactly elsewhere. It is
+    what the unfused program's extra rounding is allowed to cost.
+    """
+    rng = np.random.default_rng(14004)
+    x_shape = (2, 3, 9, 8)
+    filter_shape = (4, 3, 3, 3)
+    attributes = {
+        "strides": [2, 2],
+        "pads": [1, 2, 0, 1],
+        "dilations": [1, 1],
+        "group": 1,
+    }
+    weights, scales = _weights_and_scales(rng, filter_shape, axis=0)
+    bias = rng.uniform(-1.0, 1.0, size=filter_shape[0]).astype(np.float32)
+    pair_x = (0.02, -17)
+    height = refexec.windowed_extent(9, 3, 2, 1, 0, 1)
+    width = refexec.windowed_extent(8, 3, 2, 2, 1, 1)
+    y_shape = (2, filter_shape[0], height, width)
+
+    draws = [
+        rng.integers(-128, 128, size=x_shape, dtype=np.int64).astype(np.int8)
+        for _ in range(DRAWS)
+    ]
+    real = [
+        refexec.conv2d(
+            refexec.dequantize(x, pair_x[0], pair_x[1]), weights, bias, **attributes
+        )
+        for x in draws
+    ]
+    low = min(float(np.min(y)) for y in real) * 1.25
+    high = max(float(np.max(y)) for y in real) * 1.25
+    scale_c = float(np.float32((high - low) / 255.0))
+    pair_c = (scale_c, int(round(-low / scale_c)) - 128)
+    pair_r = (float(np.float32(high / 255.0)), -128)
+
+    _, fused = _compile(
+        _relu_program(
+            x_shape, weights, bias, scales, y_shape, attributes, pair_x, None, pair_r
+        )
+    )
+    text, unfused = _compile(
+        _relu_program(
+            x_shape, weights, bias, scales, y_shape, attributes, pair_x, pair_c, pair_r
+        )
+    )
+    assert "npuisa.relu" in text
+
+    rho = float(np.float32(pair_c[0])) / float(np.float32(pair_r[0]))
+    bounds = []
+    for scale in scales:
+        _, shift_r = decompose_multiplier(
+            requantization_multiplier(pair_x[0], float(scale), pair_r[0])
+        )
+        _, shift_c = decompose_multiplier(
+            requantization_multiplier(pair_x[0], float(scale), pair_c[0])
+        )
+        bounds.append(
+            int(
+                np.floor(
+                    1.0
+                    + 2.0**-shift_r
+                    + rho * (0.5 + 2.0**-shift_c)
+                    + 256.0 * rho * 2.0**-24
+                )
+            )
+        )
+    bound = np.array(bounds, dtype=np.int64).reshape(1, -1, 1, 1)
+
+    largest = 0
+    for draw, x in enumerate(draws):
+        intermediate = refexec.contracted_conv2d(
+            x,
+            weights,
+            bias,
+            scale_x=pair_x[0],
+            zero_point_x=pair_x[1],
+            weight_scales=[float(s) for s in scales],
+            scale_y=pair_c[0],
+            zero_point_y=pair_c[1],
+            **attributes,
+        )
+        assert -128 < int(intermediate.min()) and int(intermediate.max()) < 127
+        (a,) = _run_integer(fused, [x], [y_shape])
+        (b,) = _run_integer(unfused, [x], [y_shape])
+        difference = np.abs(a.astype(np.int64) - b.astype(np.int64))
+        assert np.all(difference <= bound), f"draw {draw}"
+        largest = max(largest, int(difference.max()))
+
+    # The two programs are different programs: the extra rounding moves at
+    # least one element somewhere, or this would be comparing a program with
+    # itself.
+    assert largest >= 1
+
+
 # ---------------------------------------------------------------------------
 # 3. The pinned arithmetic, over every committed profile.
 # ---------------------------------------------------------------------------
@@ -488,7 +733,9 @@ def models(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Path]
     yield {name: generate_model(name, directory) for name in sorted(MODELS)}
 
 
-def _integer_instructions(text: str) -> list[tuple[str, list[list[int]]]]:
+def _integer_instructions(
+    text: str,
+) -> list[tuple[str, list[list[int]], bool]]:
     """Every integer compute instruction of a compiled program: the node name
     its location carries, and its rescale as rows of multipliers and shifts.
 
@@ -520,7 +767,7 @@ def _integer_instructions(text: str) -> list[tuple[str, list[list[int]]]]:
 
     context = ir.Context()
     context.allow_unregistered_dialects = True
-    found: list[tuple[str, list[list[int]]]] = []
+    found: list[tuple[str, list[list[int]], bool]] = []
     with context, ir.Location.unknown(context=context):
         module = ir.Module.parse(generic)
         function = module.body.operations[0]
@@ -558,7 +805,12 @@ def _integer_instructions(text: str) -> list[tuple[str, list[list[int]]]]:
                     ],
                     [int(ir.IntegerAttr(operation.attributes["requant_shift"]).value)],
                 ]
-            found.append((located.group(1), rows))
+            try:
+                operation.attributes["relu"]
+                fused = True
+            except KeyError:
+                fused = False
+            found.append((located.group(1), rows, fused))
     return found
 
 
@@ -598,13 +850,25 @@ def test_the_rescale_the_compiler_wrote_is_the_one_python_computes(
         and record["outputs"][0] in activations
     }
     assert covered, f"{name}'s profile covers nothing"
-    assert sorted(node for node, _ in instructions) == sorted(covered)
+    assert sorted(node for node, _, _ in instructions) == sorted(covered)
 
     channels = 0
-    for node, rows in instructions:
+    for node, rows, fused in instructions:
         record = covered[node]
         scale_x = activations[record["inputs"][0]]["minmax"]["scale"]
-        scale_y = activations[record["outputs"][0]]["minmax"]["scale"]
+        # A relu that is the operation's only reader in the graph is fused, and
+        # the instruction then requantizes into the relu output's scale. The
+        # graph says which it should be and the instruction says which it is.
+        readers = [
+            reader
+            for reader in profile["graph"].values()
+            if record["outputs"][0] in reader["inputs"]
+        ]
+        relu = readers[0] if len(readers) == 1 else None
+        should_fuse = relu is not None and relu["op_type"] == "Relu"
+        assert fused == should_fuse, node
+        target = relu["outputs"][0] if should_fuse else record["outputs"][0]
+        scale_y = activations[target]["minmax"]["scale"]
         scales = profile["weights"][record["inputs"][1]]["scales"]
         pairs = [
             decompose_multiplier(requantization_multiplier(scale_x, scale, scale_y))

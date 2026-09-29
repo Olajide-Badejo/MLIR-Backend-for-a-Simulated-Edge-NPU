@@ -154,3 +154,31 @@ func.func @no_fuse_pool_producer(%x: tensor<1x2x4x4xf32>) -> tensor<1x2x2x2xf32>
   %r = npu.relu ins(%p : tensor<1x2x2x2xf32>) outs(%d1 : tensor<1x2x2x2xf32>) -> tensor<1x2x2x2xf32>
   return %r : tensor<1x2x2x2xf32>
 }
+
+// -----------------------------------------------------------------------------
+// Negative 4: a calibrated producer. Its relu is the QDQ contraction's to fuse
+// into the integer instruction's activation field, and a region around the pair
+// would hide the producer from it; the producer's `weight_scales` would also be
+// read inside the region with a block argument for its data operand, which the
+// verifier refuses. Only `-npu-calibrate` writes the attribute, so no fp32
+// compilation meets this guard.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: func.func @no_fuse_calibrated_producer
+// CHECK-NOT: npu.fused_op
+// CHECK: npu.relu
+func.func @no_fuse_calibrated_producer(%q: tensor<1x2x4x4xi8>) -> tensor<1x2x4x4xf32> {
+  %x = npu.dequantize %q {scale = 2.500000e-02 : f32, zero_point = -3 : i32}
+       : tensor<1x2x4x4xi8> to tensor<1x2x4x4xf32>
+  %w = npu.constant dense<2.000000e+00> : tensor<2x2x1x1xf32>
+  %d0 = tensor.empty() : tensor<1x2x4x4xf32>
+  %c = npu.conv2d ins(%x, %w : tensor<1x2x4x4xf32>, tensor<2x2x1x1xf32>)
+                  outs(%d0 : tensor<1x2x4x4xf32>)
+                  {strides = array<i64: 1, 1>, pads = array<i64: 0, 0, 0, 0>,
+                   dilations = array<i64: 1, 1>, group = 1 : i64,
+                   weight_scales = array<f32: 1.000000e-02, 2.000000e-02>}
+       -> tensor<1x2x4x4xf32>
+  %d1 = tensor.empty() : tensor<1x2x4x4xf32>
+  %r = npu.relu ins(%c : tensor<1x2x4x4xf32>) outs(%d1 : tensor<1x2x4x4xf32>) -> tensor<1x2x4x4xf32>
+  return %r : tensor<1x2x4x4xf32>
+}

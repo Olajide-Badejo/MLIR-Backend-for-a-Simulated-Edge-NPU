@@ -380,3 +380,77 @@ func.func @no_quantize_after_it(%qx: tensor<1x3xi8>) -> tensor<1x2xf32> {
        -> tensor<1x2xf32>
   return %y : tensor<1x2xf32>
 }
+
+// -----------------------------------------------------------------------------
+// A relu between the operation and its quantize is fused into the instruction.
+//
+// `-npu-calibrate` puts the output quantize after the relu when a relu is the
+// operation's only reader, and the contraction takes dequantize, operation,
+// relu, quantize: the instruction carries `relu`, which is its activation
+// field, and clamps at the output zero point. This is the hand computed matrix
+// multiplication above with a relu before the quantize and an output zero
+// point of -100, so the constants are the ones worked out there. What the clamp
+// does to the values is `test_quantized_contraction.py`'s to run.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: func.func @a_fused_relu(
+// CHECK-NOT:   npuisa.relu
+// CHECK:       npuisa.const dense<{{\[\[}}1, 3], [-2, 1], [2, -2]]> : tensor<3x2xi8>
+// CHECK:       npuisa.const dense<[5, 2]> : tensor<2xi32>
+// CHECK:       npuisa.matmul ins({{.*}} : memref<2x3xi8, #npu.scratchpad>, memref<3x2xi8, #npu.scratchpad>, memref<2xi32, #npu.scratchpad>, memref<2x2xi32, #npu.scratchpad>)
+// CHECK-SAME:    outs(%{{.*}} : memref<2x2xi8, #npu.scratchpad>)
+// CHECK-SAME:    output_zero_point = -100 : i32
+// CHECK-SAME:    relu
+// CHECK-NOT:   npuisa.relu
+// CHECK-NOT:   f32, #npu.scratchpad
+// CHECK:       return
+
+func.func @a_fused_relu(%qx: tensor<2x3xi8>) -> tensor<2x2xi8> {
+  %w = npu.constant dense<[[0.75, 0.65625], [-1.5, 0.21875], [1.875, -0.4375]]>
+       : tensor<3x2xf32>
+  %b = npu.constant dense<[0.5, -0.1]> : tensor<2xf32>
+  %dx = npu.dequantize %qx {scale = 2.500000e-01 : f32, zero_point = -2 : i32}
+        : tensor<2x3xi8> to tensor<2x3xf32>
+  %d = tensor.empty() : tensor<2x2xf32>
+  %y = npu.matmul ins(%dx, %w, %b : tensor<2x3xf32>, tensor<3x2xf32>,
+                                    tensor<2xf32>)
+                  outs(%d : tensor<2x2xf32>)
+                  {weight_scales = array<f32: 7.500000e-01, 2.187500e-01>}
+       -> tensor<2x2xf32>
+  %dr = tensor.empty() : tensor<2x2xf32>
+  %r = npu.relu ins(%y : tensor<2x2xf32>) outs(%dr : tensor<2x2xf32>)
+       -> tensor<2x2xf32>
+  %qy = npu.quantize %r {scale = 2.500000e-01 : f32, zero_point = -100 : i32}
+        : tensor<2x2xf32> to tensor<2x2xi8>
+  return %qy : tensor<2x2xi8>
+}
+
+// A relu whose result is also read in f32 cannot be the instruction's, for the
+// reason a result read twice cannot: the program would need the value both
+// before and after the integer rounding. The whole cluster stays in the QDQ
+// form, and the relu is an f32 instruction of its own.
+// CHECK-LABEL: func.func @a_relu_read_twice(
+// CHECK:       npuisa.dequant
+// CHECK:       npuisa.matmul ins({{.*}} : memref<1x3xf32, #npu.scratchpad>, memref<3x2xf32, #npu.scratchpad>)
+// CHECK-NOT:   relu,
+// CHECK:       npuisa.relu
+// CHECK:       npuisa.quant
+
+func.func @a_relu_read_twice(%qx: tensor<1x3xi8>)
+    -> (tensor<1x2xi8>, tensor<1x2xf32>) {
+  %w = npu.constant dense<[[0.75, 0.65625], [-1.5, 0.21875], [1.875, -0.4375]]>
+       : tensor<3x2xf32>
+  %dx = npu.dequantize %qx {scale = 2.500000e-01 : f32, zero_point = -2 : i32}
+        : tensor<1x3xi8> to tensor<1x3xf32>
+  %d = tensor.empty() : tensor<1x2xf32>
+  %y = npu.matmul ins(%dx, %w : tensor<1x3xf32>, tensor<3x2xf32>)
+                  outs(%d : tensor<1x2xf32>)
+                  {weight_scales = array<f32: 7.500000e-01, 2.187500e-01>}
+       -> tensor<1x2xf32>
+  %dr = tensor.empty() : tensor<1x2xf32>
+  %r = npu.relu ins(%y : tensor<1x2xf32>) outs(%dr : tensor<1x2xf32>)
+       -> tensor<1x2xf32>
+  %qy = npu.quantize %r {scale = 2.500000e-01 : f32, zero_point = -128 : i32}
+        : tensor<1x2xf32> to tensor<1x2xi8>
+  return %qy, %r : tensor<1x2xi8>, tensor<1x2xf32>
+}

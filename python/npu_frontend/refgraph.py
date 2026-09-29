@@ -119,6 +119,10 @@ class _Scope:
     users: dict[ir.Value, list[ir.Operation]]
     dequantized: dict[ir.Value, tuple[QuantTensor, float, int]]
     constants: set[ir.Value]
+    #: The results of the relus a contraction fused into its instruction. Each
+    #: passes the contraction's integer result through unchanged, because the
+    #: instruction already applied it.
+    fused_relus: set[ir.Value]
 
 
 def _scope_of(block: ir.Block) -> _Scope:
@@ -126,7 +130,7 @@ def _scope_of(block: ir.Block) -> _Scope:
     for op in block.operations:
         for operand in op.operation.operands:
             users.setdefault(operand, []).append(op.operation)
-    return _Scope(users=users, dequantized={}, constants=set())
+    return _Scope(users=users, dequantized={}, constants=set(), fused_relus=set())
 
 
 #: How many trailing operands of each operation are destinations.
@@ -291,9 +295,11 @@ def _contract(
     that contracted where the compiler did not, or the other way round, would
     compare an integer answer with an f32 one and blame the arithmetic: the
     operation carries `weight_scales`, its data operand is a dequantize, its one
-    reader is a quantize, its weights and any bias are constants, and its
-    destination is a `tensor.empty`. Anything else returns False and is executed
-    in f32 like any other operation, which is the partial coverage rule.
+    reader is a quantize or a relu whose one reader is a quantize, its weights
+    and any bias are constants, and its destination and any relu's are
+    `tensor.empty`. Anything else returns False and is executed in f32 like any
+    other operation, which is the partial coverage rule. A relu between is the
+    instruction's fused activation, clamping at the output zero point.
     """
     operation = op.operation
     try:
@@ -305,6 +311,21 @@ def _contract(
     data, weights, destination = operands[0], operands[1], operands[-1]
     bias = operands[2] if len(operands) == 4 else None
     readers = scope.users.get(op.results[0], [])
+    fused: ir.Operation | None = None
+    if len(readers) == 1 and readers[0].name == "npu.relu":
+        relu = readers[0]
+        relu_readers = scope.users.get(relu.results[0], [])
+        # The relu's destination is defined after this operation, so it is
+        # asked of the IR rather than of the values executed so far.
+        owner = relu.operands[1].owner
+        if (
+            relu.operands[0] == op.results[0]
+            and len(relu_readers) == 1
+            and hasattr(owner, "operation")
+            and owner.operation.name == "tensor.empty"
+        ):
+            fused = relu
+            readers = relu_readers
     if (
         data not in scope.dequantized
         or len(readers) != 1
@@ -323,6 +344,7 @@ def _contract(
         "weight_scales": [float(scale) for scale in ir.DenseF32ArrayAttr(raw_scales)],
         "scale_y": _real(sink.attributes["scale"]),
         "zero_point_y": _integer(sink.attributes["zero_point"]),
+        "relu": fused is not None,
     }
     bias_values = values[bias] if bias is not None else None
     try:
@@ -346,6 +368,8 @@ def _contract(
             f"and the operation declares {result_shape}"
         )
     values[op.results[0]] = _Contracted(produced)
+    if fused is not None:
+        scope.fused_relus.add(fused.results[0])
     return True
 
 
@@ -401,6 +425,12 @@ def _execute_one(op: ir.OpView, values: dict[ir.Value, Any], scope: _Scope) -> N
     if mnemonic in ("conv2d", "matmul") and _contract(
         op, mnemonic, values, scope, result_shape
     ):
+        return
+
+    # A relu a contraction fused is the instruction's activation, already
+    # applied, so it passes the integer result through to the quantize.
+    if mnemonic == "relu" and op.results[0] in scope.fused_relus:
+        values[op.results[0]] = values[operation.operands[0]]
         return
 
     # The quantize after a contracted operation is the instruction's own

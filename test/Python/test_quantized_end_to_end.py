@@ -240,6 +240,30 @@ def test_the_model_is_within_its_accuracy_budget(
 # ---------------------------------------------------------------------------
 
 
+#: The boundary crossings of each model's quantized program at `-O0`, and the
+#: f32 `RELU` instructions left in it, counted from the ONNX graphs rather than
+#: from a compilation. `experiments/predictions/p14-fused-relu-and-pair-fold.md`
+#: carries the derivation. A relu that is a calibrated operation's only reader is
+#: the instruction's activation; where its output is the next calibrated
+#: operation's input, the pair between them folds away and the two integer
+#: instructions meet with no crossing at all; everything else crosses into f32
+#: and back, which is Section 14's I8 boundary around the pools, the adds, the
+#: batch norms and the relus that do not follow a calibrated operation.
+CROSSINGS_AT_O0: dict[str, tuple[int, int]] = {
+    "conv_bn_relu_stack": (6, 2),
+    "depthwise_separable": (2, 0),
+    "dilated_stack": (4, 2),
+    "inception_block": (6, 1),
+    "lenet": (6, 0),
+    "lenet_batched": (6, 0),
+    "resnet_block": (2, 1),
+}
+
+
+def test_every_model_has_its_crossings_counted() -> None:
+    assert set(CROSSINGS_AT_O0) == set(MODELS)
+
+
 @pytest.mark.parametrize("name", sorted(MODELS))
 def test_the_integer_fields_a_quantized_cell_records(
     name: str, quantized: dict[str, Quantized]
@@ -248,12 +272,16 @@ def test_the_integer_fields_a_quantized_cell_records(
 
     **Every multiply accumulate of a quantized model is an int8 one**, because
     every convolution and matrix multiplication in the seven contracts, so the
-    machine's `int8_macs` equals its `macs` and is not zero. **The crossings are
-    two per integer instruction at `-O0`**: each contracted operation reads the
-    `QUANT` of its own input and is read by its own `DEQUANT`, and nothing
-    between two of them is shared. That is the cost Section 14 asks to be
-    measured rather than asserted, and a level that shares a quantize between
-    readers would count fewer.
+    machine's `int8_macs` equals its `macs` and is not zero.
+
+    **The crossings are the table's**, and they are fewer than two per integer
+    instruction wherever a fused relu's output is the next calibrated
+    operation's input: the pair between the two folds away. That is the cost
+    Section 14 asks to be measured rather than asserted, and what it counts is
+    the I8 boundary Section 14 draws rather than an artefact of the lowering.
+    The f32 `RELU` instructions are counted beside them, because a relu that
+    stayed in f32 behind a calibrated operation would be a fusion that did not
+    happen and would show there first.
     """
     model = quantized[name]
     inputs = make_inputs(
@@ -268,5 +296,7 @@ def test_the_integer_fields_a_quantized_cell_records(
         re.findall(r"npuisa\.(?:conv2d|matmul) ins\([^)]*xi8,", model.npuisa_text)
     )
     crossings = quant_boundary_crossings(quantized=True, npuisa_op_counts=counts)
-    assert crossings == {"quant_boundary_crossings": 2 * integer}
+    expected_crossings, expected_relus = CROSSINGS_AT_O0[name]
+    assert crossings == {"quant_boundary_crossings": expected_crossings}
+    assert counts.get("npuisa.relu", 0) == expected_relus
     assert integer > 0

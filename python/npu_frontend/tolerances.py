@@ -140,6 +140,24 @@ QUANTIZED_BUDGET_CLASS: Final[str] = "normal"
 #:     lenet_batched           42.97   1.34
 #:     resnet_block            46.14   2.17
 #:
+#: **Tightened on 2026-09-29 by the fused relu**, after its own prediction,
+#: `experiments/predictions/p14-fused-relu-and-pair-fold.md`, and never
+#: loosened. A relu that is a calibrated operation's only reader is now the
+#: integer instruction's activation and its output is quantized once, at the
+#: relu output's scale, where it used to be rounded twice. Three models have no
+#: such relu and did not move by a bit; the four that do, measured the same way:
+#:
+#:     model                 SQNR dB   largest error, counts   was
+#:     depthwise_separable     52.68   0.11                    46.17, 0.14
+#:     lenet                   45.24   0.93                    43.89, 1.07
+#:     lenet_batched           46.76   0.92                    42.97, 1.34
+#:     resnet_block            47.83   1.64                    46.14, 2.17
+#:
+#: `depthwise_separable`'s counts are of the relu output's scale now, 0.00531
+#: where it was the convolution output's 0.00977, because that is the scale of
+#: the dequantize its output comes from; the absolute error fell from 0.00135 to
+#: 0.00059.
+#:
 #: Each floor is the observed ratio less 1 dB, rounded down to a whole dB, and
 #: each count is the smallest whole count at least half a count above the
 #: observed one. **The margin is not for the host**: the program's answer is bit
@@ -151,10 +169,10 @@ QUANTIZED_BUDGET_CLASS: Final[str] = "normal"
 #: is a finding.
 QUANTIZED_ACCURACY_BUDGETS: Final[dict[str, tuple[float, int]]] = {
     "conv_bn_relu_stack": (32.0, 3),
-    "depthwise_separable": (45.0, 1),
+    "depthwise_separable": (51.0, 1),
     "dilated_stack": (33.0, 2),
     "inception_block": (35.0, 2),
-    "lenet": (42.0, 2),
-    "lenet_batched": (41.0, 2),
-    "resnet_block": (45.0, 3),
+    "lenet": (44.0, 2),
+    "lenet_batched": (45.0, 2),
+    "resnet_block": (46.0, 3),
 }

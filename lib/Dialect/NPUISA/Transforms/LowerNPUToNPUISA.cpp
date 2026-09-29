@@ -885,10 +885,23 @@ protected:
   /// after it would rescale a result that had been rescaled. The operation's
   /// own f32 result has one reader, that quantize, so nothing is left reading
   /// it.
+  ///
+  /// **A fused relu is retired with them**, between the two, because the
+  /// instruction's result is the relu's: the quantize read the relu and the
+  /// relu read the operation, so the three are replaced in the order their
+  /// readers go.
   void retire(Operation *op, const npuisa::QuantizedPlan &plan,
               Value destination, ConversionPatternRewriter &rewriter) const {
     rewriter.replaceOp(plan.sink, destination);
+    if (plan.relu)
+      rewriter.replaceOp(plan.relu, destination);
     rewriter.replaceOp(op, destination);
+  }
+
+  /// The fused activation a contraction carries, or none.
+  static UnitAttr fusedRelu(const npuisa::QuantizedPlan &plan,
+                            ConversionPatternRewriter &rewriter) {
+    return plan.relu ? rewriter.getUnitAttr() : UnitAttr();
   }
 
   LoweringState &state;
@@ -1396,8 +1409,8 @@ private:
         rewriter.getI32IntegerAttr(plan.inputZeroPoint),
         rewriter.getI32IntegerAttr(plan.outputZeroPoint),
         rewriter.getI32IntegerAttr(plan.scalar.multiplier),
-        rewriter.getI32IntegerAttr(plan.scalar.shift), /*relu=*/UnitAttr(),
-        operands.destination);
+        rewriter.getI32IntegerAttr(plan.scalar.shift),
+        fusedRelu(plan, rewriter), operands.destination);
     retire(op, plan, operands.destination, rewriter);
     return success();
   }
@@ -1441,8 +1454,8 @@ private:
         rewriter, op.getLoc(), operands.input, operands.weights, operands.bias,
         operands.rescale, rewriter.getI32IntegerAttr(plan.outputZeroPoint),
         rewriter.getI32IntegerAttr(plan.scalar.multiplier),
-        rewriter.getI32IntegerAttr(plan.scalar.shift), /*relu=*/UnitAttr(),
-        operands.destination);
+        rewriter.getI32IntegerAttr(plan.scalar.shift),
+        fusedRelu(plan, rewriter), operands.destination);
     retire(op, plan, operands.destination, rewriter);
     return success();
   }

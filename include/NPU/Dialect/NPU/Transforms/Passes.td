@@ -464,6 +464,14 @@ def NPUCalibrate : Pass<"npu-calibrate", "::mlir::func::FuncOp"> {
     half rewritten, because an operation whose output has no calibrated range
     has no scale to quantize its result with.
 
+    **A relu that is a calibrated operation's only reader is quantized after,
+    rather than the operation.** The output pair goes on the relu's result
+    with the range the profile holds for the relu's output tensor, which the
+    profile's graph section names, because the contraction fuses the relu into
+    the integer instruction and the instruction's result is the relu's. A relu
+    the graph does not show reading this operation's own output, or a profile
+    without the section, leaves the pair where it always was.
+
     **And the pairs it forms that compute nothing are removed.** Where one
     calibrated operation's output is the next one's input, the first's output
     pair and the second's input pair meet as a dequantize then a quantize with

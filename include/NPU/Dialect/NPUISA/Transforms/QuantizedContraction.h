@@ -136,6 +136,11 @@ struct QuantizedPlan {
   /// requantization.
   Operation *sink = nullptr;
 
+  /// The `npu.relu` between the operation and the quantize, when there is one.
+  /// The instruction carries it as its fused activation and its i8 result
+  /// replaces it as well, because the instruction's result is the relu's.
+  Operation *relu = nullptr;
+
   /// The operations whose results only this operation reads and that the
   /// contraction therefore makes dead: the leading dequantize, the f32 weight
   /// and bias constants, and the f32 destination. Collected per plan and
@@ -174,13 +179,18 @@ struct ContractionPlans {
   /// dequantize that something outside the contraction still reads is lowered
   /// as it always was.
   llvm::DenseSet<Operation *> consumed;
+  /// The relus the contractions fused. A relu's destination is consumed when
+  /// its one reader is one of these, the way an operation's own destination is
+  /// consumed when its reader contracts.
+  llvm::DenseSet<Operation *> absorbed;
 };
 
 /// Plans every contraction in the module, or refuses one by name.
 ///
 /// **An operation contracts when the calibrator left it whole**: it carries
 /// `weight_scales`, its data operand is an `npu.dequantize`, its one reader is
-/// an `npu.quantize`, and its weights and any bias are f32 constants. An
+/// an `npu.quantize` or an `npu.relu` whose one reader is, and its weights and
+/// any bias are f32 constants. A relu between is fused into the instruction. An
 /// operation missing any of those is **not contracted and not refused**: it
 /// stays in the QDQ form and lowers to `QUANT`, f32 compute and `DEQUANT` as it
 /// did before this existed, which is Section 14's partial coverage rule. It is

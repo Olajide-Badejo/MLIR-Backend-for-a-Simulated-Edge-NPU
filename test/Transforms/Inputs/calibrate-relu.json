@@ -1,0 +1,84 @@
+{
+  "activation_scales": {
+    "other": {
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.5,
+        "zero_point": 0
+      }
+    },
+    "r": {
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.008,
+        "zero_point": -128
+      }
+    },
+    "x": {
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.025,
+        "zero_point": -3
+      }
+    },
+    "y": {
+      "minmax": {
+        "degenerate": false,
+        "scale": 0.016,
+        "zero_point": -9
+      }
+    }
+  },
+  "batch": 1,
+  "graph": {
+    "Conv_0": {
+      "inputs": [
+        "x",
+        "w"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "y"
+      ]
+    },
+    "Relu_1": {
+      "inputs": [
+        "y"
+      ],
+      "op_type": "Relu",
+      "outputs": [
+        "r"
+      ]
+    }
+  },
+  "input_distribution": "synthetic standard normal, not sampled data",
+  "inputs": 8,
+  "model": "calibrate-relu-lit",
+  "nodes": {
+    "Conv_0": {
+      "inputs": [
+        "x",
+        "w"
+      ],
+      "op_type": "Conv",
+      "outputs": [
+        "y"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "seed": 1,
+  "weights": {
+    "w": {
+      "absolute_maxima": [
+        1.27,
+        2.54
+      ],
+      "axis": 0,
+      "scales": [
+        0.01,
+        0.02
+      ]
+    }
+  }
+}

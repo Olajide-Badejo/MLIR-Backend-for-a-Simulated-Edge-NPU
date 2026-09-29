@@ -205,6 +205,10 @@ namespace {
 struct Cluster {
   npu::DequantizeOp lead;
   npu::QuantizeOp sink;
+  /// The relu between the operation and its quantize, and that relu's
+  /// destination. Both null when the quantize reads the operation directly.
+  npu::ReluOp relu;
+  Operation *reluDestination = nullptr;
   npu::ConstantOp weightOp;
   DenseFPElementsAttr weights;
   /// Both null when the operation has no bias.
@@ -276,10 +280,27 @@ std::optional<Cluster> clusterOf(Operation *op) {
   // because that is where the output scale and zero point are. A result that
   // is also read in f32 elsewhere would need both the integer result and the
   // f32 one, and contracting it would be half contracting it.
+  //
+  // **Or a relu whose one reader is that quantize**, which is where the
+  // calibrator puts it when a relu is the operation's only reader. The relu is
+  // then the instruction's fused activation, clamping at the output zero point,
+  // and the quantize's scale is the relu output's. The same one reader rule
+  // holds at the relu, for the same reason.
   Value result = op->getResult(0);
   if (!result.hasOneUse())
     return std::nullopt;
-  cluster.sink = dyn_cast<npu::QuantizeOp>(*result.getUsers().begin());
+  Operation *reader = *result.getUsers().begin();
+  if (auto relu = dyn_cast<npu::ReluOp>(reader)) {
+    if (relu.getInput() != result || !relu.getResult().hasOneUse())
+      return std::nullopt;
+    cluster.reluDestination =
+        relu.getDestination().getDefiningOp<tensor::EmptyOp>();
+    if (!cluster.reluDestination)
+      return std::nullopt;
+    cluster.relu = relu;
+    reader = *relu.getResult().getUsers().begin();
+  }
+  cluster.sink = dyn_cast<npu::QuantizeOp>(reader);
   if (!cluster.sink)
     return std::nullopt;
 
@@ -382,6 +403,7 @@ FailureOr<QuantizedPlan> planOne(Operation *op, Cluster cluster) {
   QuantizedPlan plan;
   plan.quantizedInput = cluster.lead.getInput();
   plan.sink = cluster.sink;
+  plan.relu = cluster.relu ? cluster.relu.getOperation() : nullptr;
   plan.inputZeroPoint = zeroPointX;
   plan.outputZeroPoint = zeroPointY;
   plan.weights = DenseElementsAttr::get(
@@ -413,6 +435,8 @@ FailureOr<QuantizedPlan> planOne(Operation *op, Cluster cluster) {
   if (cluster.biasOp)
     plan.inputs.push_back(cluster.biasOp);
   plan.inputs.push_back(cluster.destination);
+  if (cluster.reluDestination)
+    plan.inputs.push_back(cluster.reluDestination);
   return plan;
 }
 
@@ -428,6 +452,8 @@ mlir::npuisa::planQuantizedContractions(ModuleOp module,
     FailureOr<QuantizedPlan> plan = planOne(op, *cluster);
     if (failed(plan))
       return WalkResult::interrupt();
+    if (plan->relu)
+      contractions.absorbed.insert(plan->relu);
     contractions.plans.try_emplace(op, std::move(*plan));
     return WalkResult::advance();
   });
@@ -443,7 +469,8 @@ mlir::npuisa::planQuantizedContractions(ModuleOp module,
     for (Operation *input : entry.second.inputs) {
       const bool onlyContracted =
           llvm::all_of(input->getUsers(), [&](Operation *user) {
-            return contractions.plans.contains(user);
+            return contractions.plans.contains(user) ||
+                   contractions.absorbed.contains(user);
           });
       if (onlyContracted)
         contractions.consumed.insert(input);

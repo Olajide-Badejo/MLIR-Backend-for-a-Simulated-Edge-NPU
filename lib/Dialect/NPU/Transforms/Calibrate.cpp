@@ -121,6 +121,11 @@ struct NodeRecord {
 
 struct Profile {
   llvm::StringMap<NodeRecord> nodes;
+  /// Every node of the graph, quantizable or not, which is what says which
+  /// tensor a relu writes. Empty in a profile written before the section
+  /// existed, and then no relu is fused, which is the compilation such a
+  /// profile always had.
+  llvm::StringMap<NodeRecord> graph;
   /// Keyed by tensor name, for the one method the pass was asked for.
   llvm::StringMap<ActivationScale> activations;
   /// Keyed by initializer name: one symmetric scale per output channel.
@@ -184,7 +189,14 @@ llvm::Expected<Profile> readProfile(llvm::StringRef path,
         kProfileVersion);
 
   Profile profile;
-  if (const llvm::json::Object *nodes = root->getObject("nodes")) {
+  // The node section and the graph section have one record shape, so they are
+  // read by one loop over the two keys.
+  for (llvm::StringRef section : {"nodes", "graph"}) {
+    const llvm::json::Object *nodes = root->getObject(section);
+    if (!nodes)
+      continue;
+    llvm::StringMap<NodeRecord> &into =
+        section == "nodes" ? profile.nodes : profile.graph;
     for (const auto &entry : *nodes) {
       const llvm::json::Object *record = entry.second.getAsObject();
       if (!record)
@@ -201,7 +213,7 @@ llvm::Expected<Profile> readProfile(llvm::StringRef path,
             (field == "inputs" ? node.inputs : node.outputs)
                 .push_back(text->str());
       }
-      profile.nodes[entry.first.str()] = std::move(node);
+      into[entry.first.str()] = std::move(node);
     }
   }
 
@@ -399,6 +411,39 @@ private:
     }
   }
 
+  /// The relu a calibrated operation's output pair goes after, with the
+  /// range the profile holds for the relu's output, or nothing.
+  ///
+  /// **Four conditions, and each one is a reason the relu could not be the
+  /// instruction's.** The operation's result has exactly one reader, and it is
+  /// an `npu.relu` reading it as its input, because a second reader would need
+  /// the value before the relu. The relu's location names a `Relu` node of the
+  /// profile's graph. That node reads the tensor this operation's own node
+  /// writes, which is the check that the relu the IR holds is the relu the
+  /// observer saw after this operation rather than one that shares a name. And
+  /// the node's output has a range for the method asked for. A profile without
+  /// the graph section fails the second, and compiles as it always did.
+  std::optional<std::pair<ReluOp, ActivationScale>>
+  fusibleRelu(Operation *op, const NodeRecord &record, const Profile &loaded) {
+    Value result = op->getResult(0);
+    if (!result.hasOneUse())
+      return std::nullopt;
+    auto relu = dyn_cast<ReluOp>(*result.getUsers().begin());
+    if (!relu || relu.getInput() != result)
+      return std::nullopt;
+
+    auto found = loaded.graph.find(nameFromLocation(relu.getLoc()));
+    if (found == loaded.graph.end() || found->second.opType != "Relu" ||
+        found->second.inputs.empty() || found->second.outputs.empty() ||
+        found->second.inputs.front() != record.outputs.front())
+      return std::nullopt;
+
+    auto range = loaded.activations.find(found->second.outputs.front());
+    if (range == loaded.activations.end())
+      return std::nullopt;
+    return std::make_pair(relu, range->second);
+  }
+
   LogicalResult rewriteOne(Operation *op, const Profile &loaded) {
     llvm::StringRef name = nameFromLocation(op->getLoc());
     auto node = loaded.nodes.find(name);
@@ -445,12 +490,26 @@ private:
     else
       cast<MatMulOp>(op).getLhsMutable().assign(staged);
 
-    Value result = op->getResult(0);
-    builder.setInsertionPointAfter(op);
-    Value back = quantizeAndBack(builder, loc, result, output->second);
-    result.replaceAllUsesExcept(back, back.getDefiningOp()
-                                          ->getOperand(0)
-                                          .getDefiningOp());
+    // **The output is quantized after the relu when a relu is the only
+    // reader**, with the relu's own range, because the contraction fuses the
+    // relu into the integer instruction and the instruction's result is the
+    // relu's. Quantizing the operation's result instead would round it at its
+    // own scale, dequantize it, run the relu in f32 and round it again, which
+    // is a program no INT8 NPU runs and a boundary crossing Section 14 never
+    // drew. `fusibleRelu` says when, and anything it declines is quantized
+    // where it always was.
+    Value quantized = op->getResult(0);
+    Location outputLoc = loc;
+    ActivationScale outputScale = output->second;
+    if (auto fused = fusibleRelu(op, node->second, loaded)) {
+      quantized = fused->first.getResult();
+      outputLoc = fused->first.getLoc();
+      outputScale = fused->second;
+    }
+    builder.setInsertionPointAfterValue(quantized);
+    Value back = quantizeAndBack(builder, outputLoc, quantized, outputScale);
+    quantized.replaceAllUsesExcept(
+        back, back.getDefiningOp()->getOperand(0).getDefiningOp());
 
     // **The per output channel weight scales, carried as an attribute because
     // the QDQ form cannot carry them.** `npu.quantize` has a single scale, so
@@ -477,7 +536,7 @@ private:
     }
 
     ++rewritten;
-    if (input->second.degenerate || output->second.degenerate)
+    if (input->second.degenerate || outputScale.degenerate)
       op->emitWarning()
           << "a tensor of this operation calibrated to a degenerate range, so "
              "the profile substituted a scale of 1 and a zero point of 0. The "

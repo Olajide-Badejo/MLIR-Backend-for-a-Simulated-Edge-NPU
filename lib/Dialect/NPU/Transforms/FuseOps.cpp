@@ -86,6 +86,18 @@ bool fuse(ReluOp relu) {
   if (!producer->getResult(0).hasOneUse())
     return false;
 
+  // **A calibrated producer's relu is the contraction's to fuse, not this
+  // pass's.** `-npu-calibrate` puts the output quantize after the relu of a
+  // calibrated convolution or matrix multiplication, and the QDQ contraction
+  // in the lowering fuses the relu into the integer instruction's activation
+  // field. A region around the pair would hide the producer from that
+  // contraction, and its `weight_scales` would be read inside a region whose
+  // data operand is a block argument rather than a dequantize, which the
+  // verifier refuses by name. Only `-npu-calibrate` writes the attribute, so
+  // no fp32 compilation reaches this guard.
+  if (producer->hasAttr("weight_scales"))
+    return false;
+
   OpBuilder builder(relu);
   Location loc = relu.getLoc();
 

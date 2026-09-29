@@ -909,6 +909,7 @@ def contracted_conv2d(
     pads: tuple[int, int, int, int] | list[int] = (0, 0, 0, 0),
     dilations: tuple[int, int] | list[int] = (1, 1),
     group: int = 1,
+    relu: bool = False,
 ) -> QuantTensor:
     """A calibrated convolution as the integer instruction computes it, unfolded.
 
@@ -917,6 +918,10 @@ def contracted_conv2d(
     outside the input is ``zp_x - zp_x``, which is zero, so the centred input is
     padded with zero; that is the same statement as the machine's rule that
     padding contributes the zero point, seen from the other side of the fold.
+
+    ``relu`` is the fused activation the contraction sets when a relu is the
+    operation's only reader: a clamp at the output zero point, the value that
+    represents real zero, after the zero point is added and before the rails.
     """
     q_w = quantize_weights(weights, weight_scales, axis=0)
     centred = x.astype(np.int64) - np.int64(zero_point_x)
@@ -936,6 +941,8 @@ def contracted_conv2d(
     rescaled = requantize_per_channel(out, multipliers, shifts, axis=1) + np.int64(
         zero_point_y
     )
+    if relu:
+        rescaled = np.maximum(rescaled, np.int64(zero_point_y))
     return np.clip(rescaled, -128, 127).astype(np.int8)
 
 
@@ -949,8 +956,10 @@ def contracted_matmul(
     weight_scales: Sequence[float],
     scale_y: float,
     zero_point_y: int,
+    relu: bool = False,
 ) -> QuantTensor:
-    """A calibrated matrix multiplication, unfolded, one channel per column."""
+    """A calibrated matrix multiplication, unfolded, one channel per column,
+    with the fused relu clamping at the output zero point when it is set."""
     q_w = quantize_weights(weights, weight_scales, axis=1)
     centred = x.astype(np.int64) - np.int64(zero_point_x)
     out = np.matmul(centred, q_w.astype(np.int64))
@@ -961,6 +970,8 @@ def contracted_matmul(
     rescaled = requantize_per_channel(out, multipliers, shifts, axis=1) + np.int64(
         zero_point_y
     )
+    if relu:
+        rescaled = np.maximum(rescaled, np.int64(zero_point_y))
     return np.clip(rescaled, -128, 127).astype(np.int8)
 
 
