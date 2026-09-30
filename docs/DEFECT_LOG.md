@@ -26,15 +26,14 @@ back that far.
 Reproduced under load, explained, and deliberately not fixed here, because
 the fix is a change to a gate and a red at a gate is not answered by
 widening it. The entry carries the reproduction and the proposed
-precondition.
+precondition. **It now surfaces through a second case**, D-0066's, inside the
+regression baseline check; its eleventh observation has the message.
 
-**D-0066**, `test_a_rerun_reproduces_the_external_fields_too` fails inside the
-regression baseline check and nowhere else. Open as a **candidate**: it is
-intermittent, it has never been reproduced in isolation, and its assertion text
-has been lost twice to the harness's own temporary directory. It is
-deliberately **not** attributed to D-0049, and the entry says why. **A third
-sighting on 2026-09-30 kept its message, and the message is D-0049's gap
-bound**; whether the entry closes into D-0049 is left for a ruling.
+**D-0066 is closed as a duplicate of D-0049.** Of its three sightings the only
+one whose message survived is D-0049's upper gap bound, raised by the benchmark
+harness inside the case. The other two are consistent with that and unproven. A
+failure of this case with a different message is a new defect with a new
+number.
 
 **D-0050**, the binary format cannot express a buffer written in pieces, so a
 tiled program cannot be encoded. Escalated rather than fixed: the fix needs a
@@ -3375,6 +3374,42 @@ boundary now write the whole of `pytest -rfE --tb=short` to a log and print the
 `FAILED` lines with their assertion out of it, so the next red arrives with its
 text. No bound moved.
 
+**The eleventh observation is on a second case, and it closes D-0066 into this
+entry.** At `a6d80b8`, P14 checkpoint B, inside
+`bash scripts/regression-baseline.sh --check`,
+`test_a_rerun_reproduces_the_external_fields_too` went red, and the harness,
+which keeps a red suite's reports since the tooling half above, kept its JUnit
+XML under `build/regression-baseline-evidence/20260929T222345Z`:
+
+```
+npu_frontend.pass_stats.PassStatisticsError: --mlir-timing reports
+NPUConstantFold at 0.6000 ms and this project's instrumentation at 0.1615 ms, a
+gap of 0.4385 ms against a bound of 0.3500 ms, which is 0.0500 ms of display
+rounding plus 50% of MLIR's figure.
+```
+
+raised by `run_benchmarks.main` on the case's second run over
+`conv_bn_relu_stack`, at `test/Python/test_benchmarks.py:378`, the case taking
+27.5 s. That is this entry's upper bound, on a pass whose whole MLIR figure is
+0.6 ms, reached through the benchmark harness the case drives rather than
+through the case's own comparison. D-0066's two earlier sightings, whose
+messages were lost, are consistent with it and unproven.
+
+**The new fact is where it fired.** It was the second of two checks at that
+tip. The first, begun at a one minute load of 0.24, had every suite green.
+Between the two, the coverage run ran for twelve minutes and ended at a one
+minute load of 13.76; the second check was begun four and a half minutes later,
+when the one minute average had fallen to 0.23 and the five minute one was
+still 4.94. So the bound now fires inside the regression baseline check itself,
+from a start that is quiet by the one minute average, and the check's own
+workload, a build, 42 measured cells and the suite in one invocation on a
+machine still draining, is contention enough. That is the ninth observation's
+lesson about which average to read, arriving inside the gate that is supposed
+to be read on a quiet machine, and it belongs to P15's flake governance with the
+precondition proposed above. Neither bound moves, and the baseline was not
+recorded around the red: the two records that followed each ran every suite
+green from a quiet start, and the check after them reported no drift.
+
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
 - **Found:** 2026-09-05, phase P13, immediately after the D-0052 fix, by
@@ -4451,6 +4486,18 @@ text. No bound moved.
   that the test breaks with it.
 
 ### D-0066 `test_a_rerun_reproduces_the_external_fields_too` fails inside the baseline check and nowhere else
+
+**Status, 2026-09-30: closed as a duplicate of D-0049**, surfacing through a
+second case. Of the three sightings below, the only one whose message survived
+is the third, and it is D-0049's upper gap bound: `--mlir-timing` reports
+`NPUConstantFold` at 0.6000 ms against this project's 0.1615 ms, a gap of
+0.4385 ms against a bound of 0.3500 ms, raised by `run_benchmarks` inside this
+case. The first two lost their messages, so they are recorded as consistent
+with that mechanism and unproven, not as attributed to it. D-0049's eleventh
+observation carries the sighting. **A future failure of this case with a
+different message is a new defect with a new number**, not a reopening of this
+one. Neither bound moves. The entry below is as it was written while it was
+open.
 
 **Status: open, and a candidate rather than a confirmed defect.** Found
 2026-09-22 while re-recording the baseline during P14. The numbers D-0064 and
