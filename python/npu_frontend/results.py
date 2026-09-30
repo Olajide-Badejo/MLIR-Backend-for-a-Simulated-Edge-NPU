@@ -467,10 +467,11 @@ NULL_REASONS: Final[dict[str, str]] = {
         "zero that means something different from the zero P14 will record."
     ),
     "simulated_cycles_without_int8_packing": (
-        "an fp32 cell performs no int8 multiply accumulate, so charging every "
-        "int8 one at the f32 peak would reproduce simulated_cycles exactly, and "
-        "a copy of it here would read as a measurement of the packing "
-        "assumption on a program the assumption never touched."
+        "P14, on a quantized cell only. This cell is fp32 and performs no int8 "
+        "multiply accumulate, so charging every int8 one at the f32 peak would "
+        "reproduce simulated_cycles exactly, and a copy of it here would read "
+        "as a measurement of the packing assumption on a program the "
+        "assumption never touched."
     ),
     "roofline_bound_cycles": "P11, with experiments/roofline.py per Section 16.6.",
     "roofline_bound_cycles_per_layer": (
