@@ -50,6 +50,7 @@ def fake_cell(
     *,
     macs: int,
     effective_macs: float,
+    int8_macs: int = 0,
     scratchpad_read: int = 1024,
     scratchpad_written: int = 512,
     dram_read: int = 4096,
@@ -62,6 +63,7 @@ def fake_cell(
         "simulation": {
             "macs": macs,
             "effective_macs": effective_macs,
+            "int8_macs": int8_macs,
             "scratchpad_elements_read": scratchpad_read,
             "scratchpad_elements_written": scratchpad_written,
             "dram_bytes_read": dram_read,
@@ -95,6 +97,34 @@ def test_the_energy_path_never_sees_the_scaled_count() -> None:
         ]
         == 250
     )
+
+
+def test_every_mac_is_charged_once_at_the_arithmetic_it_ran_in() -> None:
+    """The int8 MACs are a subset of `macs`, charged at their own coefficient.
+
+    *Added at P14.* A quantized cell's `macs` counts every multiply accumulate
+    and its `int8_macs` the integer ones, so the array's two action counts are
+    the difference and the subset. On an fp32 cell the int8 count is zero and
+    the fp32 count is `macs`, which is what it was before the int8 action
+    existed. A null int8 count raises rather than becoming zero, because a zero
+    there would charge every integer MAC at the fp32 coefficient; and an int8
+    count above the raw one is a counting fault, not a number to charge.
+    """
+    quantized = energy.counts_for(
+        fake_cell(macs=1000, effective_macs=1000.0, int8_macs=960)
+    )
+    assert quantized["mac_array"] == {"mac": 40, "int8_mac": 960}
+
+    fp32 = energy.counts_for(fake_cell(macs=1000, effective_macs=1000.0))
+    assert fp32["mac_array"] == {"mac": 1000, "int8_mac": 0}
+
+    cell = fake_cell(macs=1000, effective_macs=1000.0)
+    cell["simulation"]["int8_macs"] = None
+    with pytest.raises(energy.AccelergyError, match="int8_macs as null"):
+        energy.counts_for(cell)
+
+    with pytest.raises(energy.AccelergyError, match="subset"):
+        energy.counts_for(fake_cell(macs=10, effective_macs=10.0, int8_macs=11))
 
 
 def test_a_partial_dram_access_is_paid_in_full() -> None:
@@ -315,6 +345,55 @@ def test_the_sanity_check_of_section_16_4_including_where_it_does_not_pass(
         "the fp32 MAC coefficient now passes Section 16.4's order of magnitude "
         "check. That is good news and it means docs/NUMBERS.md is out of date: "
         "the finding recorded there says it does not."
+    )
+
+
+@pytest.mark.slow
+def test_the_int8_mac_passes_the_sanity_check_and_adds_no_area(
+    tmp_path: Path,
+) -> None:
+    """The int8 MAC's coefficient against the published figures, and its area.
+
+    *Added at P14.* Section 16.4's published figures are an 8 bit integer
+    multiply at about 0.2 pJ and an 8 bit integer add at about 0.03 pJ. The
+    coefficient Accelergy answers is the `Aladdin_table` plug in's 32 bit, 1 ns
+    multiplier row scaled by the square of the width, 12.68 / 16, plus its
+    32 bit, 1 ns adder row, 0.21: **1.0025 pJ, 4.36 times the published 0.23,
+    which is inside the order of magnitude the section asks for**, where the
+    fp32 MAC's 10.71 is not. It is high for the fp32 figure's reason, a
+    synthesised unit at a 1 ns clock, and because the machine accumulates in 32
+    bits where the published add is an 8 bit one.
+
+    Pinned, as the fp32 coefficient is, so that it moving is a failure. And the
+    int8 datapath adds no area, because four int8 multiplies packed into an
+    fp32 lane are the fp32 lane: the array's area is the one P11 recorded, 256
+    PEs at 2.12877056 mm2.
+    """
+    require_accelergy()
+    cell = fake_cell(macs=1000, effective_macs=1000.0, int8_macs=1000, budget=32768)
+    estimate = energy.run_accelergy(
+        scratchpad_bytes=32768,
+        counts=energy.counts_for(cell),
+        directory=tmp_path / "run",
+    )
+
+    per_int8_mac = estimate.energy_per_action_pj["mac_array"]["int8_mac"]
+    reference = energy.REFERENCE_PJ["int8_multiply"] + energy.REFERENCE_PJ["int8_add"]
+    assert per_int8_mac == pytest.approx(1.0025, rel=1e-4)
+    assert reference / 10 <= per_int8_mac <= reference * 10
+    assert per_int8_mac / reference == pytest.approx(4.36, abs=0.01)
+
+    # The fp32 MAC is untouched by the second action beside it.
+    assert estimate.energy_per_action_pj["mac_array"]["mac"] == pytest.approx(
+        49.286, rel=1e-4
+    )
+
+    answer = energy.energy_for(cell, estimate)
+    assert answer.area_mm2_per_component["mac_array"] == pytest.approx(
+        2.12877056, rel=1e-6
+    )
+    assert answer.energy_pj_per_component["mac_array"] == pytest.approx(
+        per_int8_mac * 1000
     )
 
 

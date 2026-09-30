@@ -13,14 +13,16 @@ repository asks for.
 
 ## The three components, and the counts each is given
 
-- **the MAC array**, one `fpmac` per processing element. Its action count is
-  `simulation.macs`, **raw**. Section 5.5 forbids the energy path from ever
+- **the MAC array**, one `fpmac` per processing element. Its action counts
+  are `simulation.macs`, **raw**, split in two: `mac`, the fp32 MACs, and
+  `int8_mac`, the simulator's own `int8_macs`, so every MAC is charged once and
+  at the arithmetic it ran in. Section 5.5 forbids the energy path from ever
   seeing `effective_macs`: utilization describes how long the array was busy,
   not how many multiplies happened, and feeding a utilization scaled count into
   Accelergy would overstate the energy of exactly the layers the evaluation cares
-  most about. `_action_counts` reads `simulation.macs` and nothing else, and
-  `test_accelergy_energy.py` asserts a cell whose `effective_macs` is four times
-  its `macs` produces the energy of `macs`.
+  most about. `counts_for` reads `simulation.macs` and `simulation.int8_macs`
+  and nothing else, and `test_accelergy_energy.py` asserts a cell whose
+  `effective_macs` is four times its `macs` produces the energy of `macs`.
 - **the scratchpad**, one SRAM of the cell's own budget. Its action counts are
   `scratchpad_elements_read` and `scratchpad_elements_written`, which the
   simulator counts at the scratchpad port.
@@ -109,7 +111,22 @@ DRAM_ACCESS_BYTES = 8
 
 #: The scratchpad word width in bits. One f32 element per access, which is what
 #: makes `scratchpad_elements_read` an access count rather than a byte count.
+#:
+#: *An int8 element is one access too*, as the 2026-09-30 entry in
+#: `docs/BREAKING_CHANGES.md` declares. Packing four int8 elements to a word
+#: would lower the int8 scratchpad energy by up to four times and is not
+#: assumed, which is the direction that does not flatter the quantized result.
 SCRATCHPAD_WORD_BITS = 32
+
+#: The int8 MAC's datapath, *added at P14*: an 8 bit by 8 bit integer multiply
+#: accumulated into 32 bits. Section 14 multiplies int8 by int8 and accumulates
+#: in int32, and `-npu-calibrate`'s static guard exists because the accumulator
+#: is 32 bits and no wider. So the int8 MAC's coefficient is an 8 bit integer
+#: multiplier and a 32 bit integer adder, from the same plug in and at the same
+#: node and clock as the fp32 MAC's, rather than a single 8 bit `intmac`, whose
+#: adder would be the multiplier's width.
+INT8_MULTIPLIER_BITS = 8
+ACCUMULATOR_BITS = 32
 
 #: The three components, named once. Section 16.4 asks for energy and area parsed
 #: per component so the evaluation can attribute energy rather than quoting one
@@ -161,6 +178,15 @@ def compound_components() -> str:
     is one PE, its action is one MAC, and `ARRAY_DIM * ARRAY_DIM` from this
     project's own cost model scales the area. The arithmetic is this project's
     and is auditable; the coefficients are Accelergy's.
+
+    **The PE has a second action, `int8_mac`, and it adds no area.** *Added at
+    P14.* Its subcomponents are an `INT8_MULTIPLIER_BITS` integer multiplier and
+    an `ACCUMULATOR_BITS` integer adder, and both carry an area scale of zero.
+    The int8 peak in `CostModel.h` rests on `kI8MacsPerLane` int8 multiplies
+    packed into each fp32 lane, and a lane that packs them is the fp32 lane, so
+    the array's area is the one P11 recorded. What a machine with separate int8
+    units would add is measured and recorded in `docs/NUMBERS.md`, so the
+    assumption carries a number.
     """
     return f"""compound_components:
   version: 0.4
@@ -171,6 +197,8 @@ def compound_components() -> str:
         global_cycle_seconds: {GLOBAL_CYCLE_SECONDS}
         exponent: 8
         mantissa: 23
+        int8_multiplier_width: {INT8_MULTIPLIER_BITS}
+        accumulator_width: {ACCUMULATOR_BITS}
       subcomponents:
         - name: mac
           class: fpmac
@@ -179,9 +207,27 @@ def compound_components() -> str:
             global_cycle_seconds: global_cycle_seconds
             exponent: exponent
             mantissa: mantissa
+        - name: int8_multiplier
+          class: intmultiplier
+          area_scale: 0
+          attributes:
+            technology: technology
+            global_cycle_seconds: global_cycle_seconds
+            width: int8_multiplier_width
+        - name: int8_accumulator
+          class: intadder
+          area_scale: 0
+          attributes:
+            technology: technology
+            global_cycle_seconds: global_cycle_seconds
+            width: accumulator_width
       actions:
         - name: mac
           subcomponents: [{{name: mac, actions: [{{name: access}}]}}]
+        - name: int8_mac
+          subcomponents:
+            - {{name: int8_multiplier, actions: [{{name: access}}]}}
+            - {{name: int8_accumulator, actions: [{{name: access}}]}}
 
     - name: scratchpad
       attributes:
@@ -286,6 +332,12 @@ def counts_for(result: dict[str, Any]) -> dict[str, dict[str, int]]:
     read here, which Section 5.5 requires and
     `test_the_energy_path_never_sees_the_scaled_count` asserts by constructing a
     cell whose two differ and checking which one the answer follows.
+
+    **Each MAC is charged once, at the arithmetic it ran in.** *Added at P14.*
+    `int8_macs` is the simulator's count of the integer ones, a subset of
+    `macs`, so the array's two action counts are `macs - int8_macs` fp32 MACs
+    and `int8_macs` int8 ones. On an fp32 cell the second is zero and the first
+    is `macs`, which is what it has always been.
     """
     simulation = result["simulation"]
 
@@ -299,8 +351,24 @@ def counts_for(result: dict[str, Any]) -> dict[str, dict[str, int]]:
                 f"its own memory."
             )
 
+    if simulation.get("int8_macs") is None:
+        raise AccelergyError(
+            f"{result['cell']['name']} records int8_macs as null, so its MACs "
+            f"cannot be split between the fp32 and the int8 coefficient. A "
+            f"count read as zero here would charge an integer MAC as an fp32 "
+            f"one, at about fifty times its energy."
+        )
+    macs = int(simulation["macs"])
+    int8_macs = int(simulation["int8_macs"])
+    if not 0 <= int8_macs <= macs:
+        raise AccelergyError(
+            f"{result['cell']['name']} records {int8_macs} int8 MACs of {macs}. "
+            f"The int8 count is a subset of the raw count, so this is a counting "
+            f"fault in the simulator rather than a number to charge."
+        )
+
     return {
-        "mac_array": {"mac": int(simulation["macs"])},
+        "mac_array": {"mac": macs - int8_macs, "int8_mac": int8_macs},
         "scratchpad": {
             "read": int(simulation["scratchpad_elements_read"]),
             "write": int(simulation["scratchpad_elements_written"]),
@@ -744,10 +812,15 @@ def _run(arguments: argparse.Namespace) -> int:
 
     per_mac = answers[0].energy_per_action_pj["mac_array"]["mac"]
     reference = REFERENCE_PJ["fp32_multiply"] + REFERENCE_PJ["fp32_add"]
+    per_int8_mac = answers[0].energy_per_action_pj["mac_array"]["int8_mac"]
+    int8_reference = REFERENCE_PJ["int8_multiply"] + REFERENCE_PJ["int8_add"]
     print(
         f"accelergy: {len(answers)} cells at {TECHNOLOGY_NODE}. Per MAC "
         f"{per_mac:.4f} pJ against a published fp32 multiply plus add of "
-        f"{reference:.2f} pJ, a factor of {per_mac / reference:.2f}."
+        f"{reference:.2f} pJ, a factor of {per_mac / reference:.2f}. Per int8 "
+        f"MAC {per_int8_mac:.4f} pJ against a published 8 bit multiply plus add "
+        f"of {int8_reference:.2f} pJ, a factor of "
+        f"{per_int8_mac / int8_reference:.2f}."
     )
     return 0
 

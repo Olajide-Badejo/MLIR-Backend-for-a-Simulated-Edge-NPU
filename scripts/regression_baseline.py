@@ -850,6 +850,11 @@ def energy_tables(cells: list[dict[str, Any]]) -> tuple[dict[str, Any], str, lis
                     },
                     "simulation": {
                         "macs": int(cell["macs"]),
+                        # Every baseline cell is fp32, so none of its MACs is
+                        # an int8 one. The table this run records carries the
+                        # int8 coefficient all the same, because Accelergy
+                        # answers every action the array defines.
+                        "int8_macs": 0,
                         "scratchpad_elements_read": int(
                             cell["scratchpad_elements_read"]
                         ),
