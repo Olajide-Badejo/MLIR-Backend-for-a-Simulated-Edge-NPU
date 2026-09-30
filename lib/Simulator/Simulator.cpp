@@ -310,6 +310,16 @@ SimResult Simulator::execute(const SimOptions &options) {
       }
     }
 
+    // `SimOptions::int8AtF32Peak`, the integer contraction charged at the f32
+    // peak. The charge is `tileMacs / (utilization * delta * peak)` summed over
+    // the tiles, so it is inversely proportional to the peak, and scaling it by
+    // the ratio of the two peaks is the f32 charge exactly, a power of two
+    // applied to every term; `CostModelTest` asserts that against `gemmCharge`
+    // rather than assuming it. `effectiveMacs` is `cycles * peak` and does not
+    // move, and nothing but the cycles is touched.
+    if (options.int8AtF32Peak && cost.int8Macs > 0)
+      cost.cycles *= static_cast<double>(kI8MacsPerLane);
+
     // ---- Traffic, counted from the shapes the instruction names. -----------
     for (const Operand &operand : instruction.operands) {
       const int64_t elements = checkedElementCount(operand.shape);

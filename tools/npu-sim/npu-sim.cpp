@@ -70,6 +70,13 @@ cl::opt<bool> singlePort(
              "reproducibility flag"),
     cl::init(false));
 
+cl::opt<bool> int8AtF32Peak(
+    "int8-at-f32-peak",
+    cl::desc("Charge every int8 multiply accumulate at the f32 peak, which "
+             "separates the int8 packing assumption's share of a cycle win "
+             "from the DMA traffic reduction's"),
+    cl::init(false));
+
 cl::opt<bool> quiet("quiet", cl::desc("Do not print the statistics"),
                     cl::init(false));
 
@@ -139,7 +146,7 @@ void printStats(raw_ostream &out, const nbin::Stats &stats) {
 /// to trust a cycle count needs to know whether the machine stopped because the
 /// program said so or because it ran out of program.
 json::Object statsAsJson(const nbin::Stats &stats, bool reachedHalt,
-                         bool singlePortRun) {
+                         bool singlePortRun, bool int8AtF32PeakRun) {
   return json::Object{
       {"instructions", stats.instructions},
       {"cycles", stats.cycles},
@@ -157,6 +164,7 @@ json::Object statsAsJson(const nbin::Stats &stats, bool reachedHalt,
       {"delta", stats.delta},
       {"reached_halt", reachedHalt},
       {"single_port", singlePortRun},
+      {"int8_at_f32_peak", int8AtF32PeakRun},
   };
 }
 
@@ -243,6 +251,7 @@ int main(int argc, char **argv) {
 
   nbin::SimOptions options;
   options.singlePort = singlePort;
+  options.int8AtF32Peak = int8AtF32Peak;
   const nbin::SimResult result = simulator.run(options);
 
   if (!result.ok()) {
@@ -285,9 +294,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     statsOut << llvm::formatv("{0:2}",
-                              json::Value(statsAsJson(result.stats,
-                                                      result.reachedHalt,
-                                                      options.singlePort)))
+                              json::Value(statsAsJson(
+                                  result.stats, result.reachedHalt,
+                                  options.singlePort, options.int8AtF32Peak)))
              << "\n";
     statsOut.close();
     if (statsOut.has_error()) {

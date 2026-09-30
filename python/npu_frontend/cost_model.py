@@ -49,6 +49,9 @@ PEAK_MACS_PER_CYCLE_F32 = 256
 #: Peak multiply accumulate throughput per cycle at int8, four per f32 lane.
 PEAK_MACS_PER_CYCLE_I8 = 1024
 
+#: How many int8 multiplies one f32 lane performs in a cycle. *Added at P14.*
+I8_MACS_PER_LANE = 4
+
 #: DRAM bandwidth in bytes per cycle, for a contiguous burst.
 DRAM_BANDWIDTH_BYTES_PER_CYCLE = 16.0
 
@@ -75,6 +78,7 @@ HEADER_NAMES = {
     "kArrayDim": "ARRAY_DIM",
     "kPeakMacsPerCycleF32": "PEAK_MACS_PER_CYCLE_F32",
     "kPeakMacsPerCycleI8": "PEAK_MACS_PER_CYCLE_I8",
+    "kI8MacsPerLane": "I8_MACS_PER_LANE",
     "kDramBandwidthBytesPerCycle": "DRAM_BANDWIDTH_BYTES_PER_CYCLE",
     "kDmaDescriptorCycles": "DMA_DESCRIPTOR_CYCLES",
     "kDmaStridedElementCycles": "DMA_STRIDED_ELEMENT_CYCLES",
@@ -88,6 +92,7 @@ VALUES: dict[str, float] = {
     "ARRAY_DIM": ARRAY_DIM,
     "PEAK_MACS_PER_CYCLE_F32": PEAK_MACS_PER_CYCLE_F32,
     "PEAK_MACS_PER_CYCLE_I8": PEAK_MACS_PER_CYCLE_I8,
+    "I8_MACS_PER_LANE": I8_MACS_PER_LANE,
     "DRAM_BANDWIDTH_BYTES_PER_CYCLE": DRAM_BANDWIDTH_BYTES_PER_CYCLE,
     "DMA_DESCRIPTOR_CYCLES": DMA_DESCRIPTOR_CYCLES,
     "DMA_STRIDED_ELEMENT_CYCLES": DMA_STRIDED_ELEMENT_CYCLES,

@@ -84,11 +84,23 @@ inline constexpr int64_t kPeakMacsPerCycleF32 = 256;
 /// from the contribution of reduced DRAM traffic, and it is cross checked
 /// against Accelergy at Phase P11.
 ///
-/// **Nothing charges against it at Phase P7**, because no integer kernel exists
-/// until Phase P14. It is here so that the constant has one home from the
-/// moment the cost model does, rather than arriving in the same commit as the
-/// kernels that would make a mistake in it invisible.
+/// **Nothing charged against it until Phase P14**, when the integer kernels
+/// arrived. It was here from P7 so that the constant had one home from the
+/// moment the cost model did, rather than arriving in the same commit as the
+/// kernels that would have made a mistake in it invisible.
 inline constexpr int64_t kPeakMacsPerCycleI8 = 1024;
+
+/// How many int8 multiplies one f32 lane performs in a cycle.
+///
+/// *Added at P14 with the cost model's INT8 terms.* The int8 peak has been four
+/// times the f32 peak since P7, and this is the four written as its own
+/// assumption rather than left inside a ratio. It is what the simulator's
+/// `int8AtF32Peak` option divides back out, so that a quantized program's
+/// cycle win can be split into the part the packing buys and the part the
+/// smaller transfers buy, which Section 14's gate asks to see separately. And
+/// it is why the energy path gives the int8 datapath no area of its own: a lane
+/// that packs four int8 multiplies is the f32 lane.
+inline constexpr int64_t kI8MacsPerLane = 4;
 
 /// DRAM bandwidth, in bytes per cycle, for a contiguous burst.
 ///

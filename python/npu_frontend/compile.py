@@ -605,8 +605,14 @@ def run_program(
     output_shapes: Sequence[Sequence[int]],
     *,
     single_port: bool = False,
+    int8_at_f32_peak: bool = False,
 ) -> SimulationResult:
     """Runs a `.nbin` under `npu-sim` and returns its outputs and statistics.
+
+    `int8_at_f32_peak` charges every int8 multiply accumulate at the f32 peak,
+    which is how a quantized cell separates the int8 packing assumption's share
+    of its cycle win from the DMA traffic reduction's. It changes the cycles and
+    nothing else.
 
     `output_shapes` is required rather than inferred, and that is not laziness.
     The file declares its output regions with their extents, but reading them
@@ -639,6 +645,8 @@ def run_program(
         command += ["--json-stats", str(stats_path)]
         if single_port:
             command.append("--single-port")
+        if int8_at_f32_peak:
+            command.append("--int8-at-f32-peak")
 
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0:

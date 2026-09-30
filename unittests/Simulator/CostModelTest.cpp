@@ -52,13 +52,42 @@ TEST(FrozenConstants, TheCostModelsNumbers) {
   EXPECT_EQ(kElementwiseLaneWidth, 16);
   EXPECT_DOUBLE_EQ(kIssueOverheadCycles, 4.0);
   EXPECT_DOUBLE_EQ(kWeightPreloadCycles, 16.0);
+  // *Added at P14 with the INT8 terms.* The packing factor the int8 peak has
+  // always been written as a multiple of, now a constant of its own.
+  EXPECT_EQ(kI8MacsPerLane, 4);
 
   // The array is square and one MAC per processing element per cycle, so the
   // f32 peak is the array's area. The two are separate constants on purpose;
   // this asserts they still agree.
   EXPECT_EQ(kPeakMacsPerCycleF32, kArrayDim * kArrayDim);
   // Four int8 multiplies packed per f32 lane.
-  EXPECT_EQ(kPeakMacsPerCycleI8, 4 * kPeakMacsPerCycleF32);
+  EXPECT_EQ(kPeakMacsPerCycleI8, kI8MacsPerLane * kPeakMacsPerCycleF32);
+}
+
+TEST(CostModel, TheInt8PackingIsExactlyTheRatioOfThePeaks) {
+  // What `SimOptions::int8AtF32Peak` rests on: the charge at the int8 peak,
+  // multiplied by the packing factor, is the charge at the f32 peak, **bit for
+  // bit**. Every term of the charge is divided by the peak once and the two
+  // peaks differ by a power of two, so no rounding separates them. Asserted
+  // over narrow tiles, folded ones and a depthwise convolution, which are the
+  // shapes whose charge has the most terms.
+  const int64_t shapes[][3] = {
+      {4, 16, 16}, {7, 3, 5}, {4, 40, 33}, {1024, 1, 1}, {25, 400, 120}};
+  for (const auto &shape : shapes) {
+    const ComputeCharge f32 =
+        gemmCharge(shape[0], shape[1], shape[2], kPeakMacsPerCycleF32);
+    const ComputeCharge i8 =
+        gemmCharge(shape[0], shape[1], shape[2], kPeakMacsPerCycleI8);
+    EXPECT_EQ(f32.cycles, i8.cycles * static_cast<double>(kI8MacsPerLane));
+    EXPECT_EQ(f32.macs, i8.macs);
+    EXPECT_EQ(f32.effectiveMacs, i8.effectiveMacs);
+  }
+  const ComputeCharge depthwiseF32 =
+      conv2dCharge(1, 8, 8, 8, 8, 3, 3, 8, kPeakMacsPerCycleF32);
+  const ComputeCharge depthwiseI8 =
+      conv2dCharge(1, 8, 8, 8, 8, 3, 3, 8, kPeakMacsPerCycleI8);
+  EXPECT_EQ(depthwiseF32.cycles,
+            depthwiseI8.cycles * static_cast<double>(kI8MacsPerLane));
 }
 
 //===----------------------------------------------------------------------===//
@@ -336,6 +365,101 @@ TEST(Timelines, SinglePortReproducesTheSum) {
   EXPECT_DOUBLE_EQ(result.stats.dmaCycles, overlapped.stats.dmaCycles);
   EXPECT_DOUBLE_EQ(result.stats.computeCycles, overlapped.stats.computeCycles);
   EXPECT_EQ(result.stats.instructions, overlapped.stats.instructions);
+}
+
+/// An integer matrix multiplication of 16 rows against a 32 by 24 weight
+/// matrix, loaded, computed and stored.
+///
+/// Its charge folds the weights into two by two tiles, one of them sixteen
+/// columns wide and one eight, so the packing assumption applies to a charge
+/// with more than one term in it.
+Program buildIntegerMatmul() {
+  std::vector<int8_t> lhs(16 * 32);
+  for (size_t index = 0; index < lhs.size(); ++index)
+    lhs[index] = static_cast<int8_t>(static_cast<int>(index % 17) - 8);
+  std::vector<int8_t> rhs(32 * 24);
+  for (size_t index = 0; index < rhs.size(); ++index)
+    rhs[index] = static_cast<int8_t>(static_cast<int>(index % 13) - 6);
+
+  Builder builder;
+  const std::vector<int64_t> lhsShape = {16, 32};
+  const std::vector<int64_t> rhsShape = {32, 24};
+  const std::vector<int64_t> resultShape = {16, 24};
+
+  const int64_t lhsRegion = builder.constantI8(lhsShape, lhs);
+  const int64_t rhsRegion = builder.constantI8(rhsShape, rhs);
+  const int64_t lhsBuffer = builder.scratch(16 * 32, ElemType::I8);
+  const int64_t rhsBuffer = builder.scratch(32 * 24, ElemType::I8);
+  const int64_t resultBuffer = builder.scratch(16 * 24, ElemType::I8);
+  const int64_t sink = builder.output(resultShape, ElemType::I8);
+
+  builder.add(dmaLoad(lhsBuffer, lhsShape,
+                      at(MemSpace::Dram, lhsRegion, lhsShape, ElemType::I8)));
+  builder.add(dmaLoad(rhsBuffer, rhsShape,
+                      at(MemSpace::Dram, rhsRegion, rhsShape, ElemType::I8)));
+  Instruction matmul =
+      compute(Opcode::MATMUL, resultBuffer, resultShape,
+              {at(MemSpace::Scratchpad, lhsBuffer, lhsShape, ElemType::I8),
+               at(MemSpace::Scratchpad, rhsBuffer, rhsShape, ElemType::I8)},
+              ElemType::I8);
+  matmul.requantMultiplier = kHalfMultiplier;
+  matmul.requantShift = 4;
+  builder.add(std::move(matmul));
+  builder.add(dmaStore(
+      sink, resultShape,
+      at(MemSpace::Scratchpad, resultBuffer, resultShape, ElemType::I8)));
+  builder.add(halt());
+
+  // Scratchpad: 512 + 768 + 384 one byte elements, 1664 bytes.
+  return builder.finish(1664);
+}
+
+TEST(Timelines, TheInt8PackingIsSeparable) {
+  // Section 14's gate asks for the int8 throughput assumption's share of a
+  // cycle win separately from the DMA traffic reduction's, and this is the
+  // mechanism: the same program run twice, once as the machine is modelled
+  // and once with every int8 MAC charged at the f32 peak.
+  Harness packed(buildIntegerMatmul());
+  const SimResult withPacking = packed.run();
+  SimOptions options;
+  options.int8AtF32Peak = true;
+  Harness unpacked(buildIntegerMatmul());
+  const SimResult withoutPacking = unpacked.run(options);
+  ASSERT_TRUE(withPacking.ok()) << withPacking.error.value_or("");
+  ASSERT_TRUE(withoutPacking.ok()) << withoutPacking.error.value_or("");
+
+  // Only the integer instruction's charge moves, and by exactly what the
+  // packing bought: three quarters of the f32 charge, which is three times the
+  // int8 one.
+  const ComputeCharge charge = gemmCharge(16, 32, 24, kPeakMacsPerCycleI8);
+  EXPECT_EQ(withPacking.stats.int8Macs, 16u * 32u * 24u);
+  EXPECT_DOUBLE_EQ(withoutPacking.stats.computeCycles -
+                       withPacking.stats.computeCycles,
+                   charge.cycles * static_cast<double>(kI8MacsPerLane - 1));
+  EXPECT_GT(withoutPacking.stats.cycles, withPacking.stats.cycles);
+
+  // And nothing else: the work is the same work.
+  EXPECT_DOUBLE_EQ(withoutPacking.stats.dmaCycles, withPacking.stats.dmaCycles);
+  EXPECT_EQ(withoutPacking.stats.instructions, withPacking.stats.instructions);
+  EXPECT_EQ(withoutPacking.stats.macs, withPacking.stats.macs);
+  EXPECT_EQ(withoutPacking.stats.int8Macs, withPacking.stats.int8Macs);
+  EXPECT_DOUBLE_EQ(withoutPacking.stats.effectiveMacs,
+                   withPacking.stats.effectiveMacs);
+  EXPECT_EQ(withoutPacking.stats.dramBytesRead,
+            withPacking.stats.dramBytesRead);
+  EXPECT_EQ(withoutPacking.stats.scratchpadElementsRead,
+            withPacking.stats.scratchpadElementsRead);
+
+  // An f32 program has no int8 MAC to charge differently, so the option leaves
+  // every figure it produces exactly as it was.
+  Harness plain(buildOverlappedProgram());
+  const SimResult f32 = plain.run();
+  Harness optioned(buildOverlappedProgram());
+  const SimResult f32Optioned = optioned.run(options);
+  ASSERT_TRUE(f32.ok() && f32Optioned.ok());
+  EXPECT_DOUBLE_EQ(f32Optioned.stats.cycles, f32.stats.cycles);
+  EXPECT_DOUBLE_EQ(f32Optioned.stats.computeCycles, f32.stats.computeCycles);
+  EXPECT_DOUBLE_EQ(f32Optioned.stats.dmaCycles, f32.stats.dmaCycles);
 }
 
 TEST(CostModel, AStridedMoveCostsMoreThanThePermutationThatAvoidsIt) {

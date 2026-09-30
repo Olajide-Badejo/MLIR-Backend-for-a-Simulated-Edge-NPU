@@ -148,6 +148,19 @@ struct SimOptions {
   /// sum of the two timelines and `overlap_fraction` is zero, which
   /// `SimulatorTest` asserts rather than assumes.
   bool singlePort = false;
+
+  /// Charge every int8 multiply accumulate at the f32 peak.
+  ///
+  /// *Added at P14.* The int8 peak is `kI8MacsPerLane` times the f32 one, on
+  /// the assumption that a lane packs four int8 multiplies, and Section 14's
+  /// gate asks for that assumption's contribution to a cycle win to be
+  /// reported separately from the reduction in DMA traffic. Under this option
+  /// an integer `CONV2D` or `MATMUL` takes exactly the cycles its shape takes
+  /// at the f32 peak, and nothing else about the run changes: the same
+  /// instructions, the same bytes, the same MAC counts, the same answer. A
+  /// quantized program's cycles with and without it differ by the packing's
+  /// share, and the rest of its win over the f32 program is the traffic's.
+  bool int8AtF32Peak = false;
 };
 
 /// What a run produced.
