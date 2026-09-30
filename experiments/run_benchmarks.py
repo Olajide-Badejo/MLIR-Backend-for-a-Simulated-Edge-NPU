@@ -185,6 +185,7 @@ from npu_frontend.results import (  # noqa: E402
     ResultSchemaError,
     content_hash,
     host_manifest,
+    int8_packing_cycles,
     load_result,
     null,
     quant_boundary_crossings,
@@ -608,6 +609,43 @@ class Runner:
         answer = run_program(program.binary, arrays, program.output_shapes)
         statistics = answer.stats
 
+        # A quantized cell runs its program a second time with every int8 MAC
+        # charged at the f32 peak, which separates the packing assumption's
+        # share of its cycle win from the smaller transfers'. Everything but
+        # the cycles has to come back the same, or the two runs are not one
+        # program measured twice, and that is asserted rather than assumed.
+        without_packing = None
+        if key.quantized:
+            unpacked = run_program(
+                program.binary, arrays, program.output_shapes, int8_at_f32_peak=True
+            )
+            for field in (
+                "instructions",
+                "macs",
+                "int8_macs",
+                "dram_bytes_read",
+                "dram_bytes_written",
+                "scratchpad_elements_read",
+                "scratchpad_elements_written",
+            ):
+                if unpacked.stats[field] != statistics[field]:
+                    raise BenchmarkError(
+                        f"{cell.name}: {field} is {statistics[field]} with the "
+                        f"int8 packing and {unpacked.stats[field]} without it. "
+                        f"The option changes the cycles and nothing else, so "
+                        f"this is not the same program measured twice."
+                    )
+            for produced, repeated in zip(
+                answer.outputs, unpacked.outputs, strict=True
+            ):
+                if not np.array_equal(produced, repeated):
+                    raise BenchmarkError(
+                        f"{cell.name}: the answer moved when the int8 MACs were "
+                        f"charged at the f32 peak. A cost option cannot change "
+                        f"the arithmetic."
+                    )
+            without_packing = float(unpacked.stats["cycles"])
+
         names = [
             entry.name for entry in self.session(key.model, key.batch).get_inputs()
         ]
@@ -640,6 +678,7 @@ class Runner:
             npuisa_counts=npuisa_counts,
             allocation=allocation,
             accuracy=accuracy,
+            without_packing=without_packing,
         )
 
     # ---- the parts of a cell --------------------------------------------
@@ -726,6 +765,7 @@ class Runner:
         npuisa_counts: dict[str, int],
         allocation: dict[str, float],
         accuracy: dict[str, Any],
+        without_packing: float | None = None,
     ) -> dict[str, Any]:
         key = cell.key
         dram_total = int(statistics["dram_bytes_read"]) + int(
@@ -758,6 +798,14 @@ class Runner:
         simulation.update(
             quant_boundary_crossings(
                 quantized=key.quantized, npuisa_op_counts=npuisa_counts
+            )
+        )
+        # The int8 packing assumption's share, separable: the program's cycles
+        # with every int8 MAC at the f32 peak on a quantized cell, a null with
+        # its reason on an fp32 one.
+        simulation.update(
+            int8_packing_cycles(
+                quantized=key.quantized, cycles_without_packing=without_packing
             )
         )
 

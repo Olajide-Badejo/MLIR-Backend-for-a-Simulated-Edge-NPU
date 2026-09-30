@@ -48,6 +48,7 @@ from npu_frontend.results import (
     aggregate,
     content_hash,
     field_at,
+    int8_packing_cycles,
     load_result,
     null,
     quant_boundary_crossings,
@@ -125,6 +126,9 @@ def test_an_fp32_cell_records_no_integer_arithmetic(
             simulation["quant_boundary_crossings_null_reason"]
             == NULL_REASONS["quant_boundary_crossings"]
         ), name
+        # *Added at P14.* And no cycles at the f32 peak, because the program
+        # has no int8 MAC to charge there.
+        assert simulation["simulated_cycles_without_int8_packing"] is None, name
 
 
 def test_the_fp32_form_is_byte_for_byte_what_the_committed_files_carry(
@@ -140,15 +144,34 @@ def test_the_fp32_form_is_byte_for_byte_what_the_committed_files_carry(
     written = quant_boundary_crossings(
         quantized=False, npuisa_op_counts={"npuisa.quant": 3, "npuisa.dequant": 3}
     )
+    written.update(int8_packing_cycles(quantized=False, cycles_without_packing=1234.5))
     for result in results:
         carried = {
             key: result["simulation"][key]
             for key in (
                 "quant_boundary_crossings",
                 "quant_boundary_crossings_null_reason",
+                "simulated_cycles_without_int8_packing",
+                "simulated_cycles_without_int8_packing_null_reason",
             )
         }
         assert carried == written, result["cell"]["name"]
+
+
+def test_a_quantized_cell_records_its_cycles_without_the_packing() -> None:
+    """The int8 throughput assumption, separable, and never silently absent.
+
+    *Added at P14.* A quantized cell writes the cycles its program takes with
+    every int8 MAC at the f32 peak, which is what separates the packing's share
+    of the cycle win from the traffic's. A quantized cell that arrives without
+    the figure is refused rather than written with a null, because the null
+    would hide the one number the field exists for.
+    """
+    assert int8_packing_cycles(quantized=True, cycles_without_packing=8594.5) == {
+        "simulated_cycles_without_int8_packing": 8594.5
+    }
+    with pytest.raises(ResultSchemaError, match="f32 peak"):
+        int8_packing_cycles(quantized=True, cycles_without_packing=None)
 
 
 def test_a_quantized_cell_counts_each_quant_and_dequant_as_one_crossing() -> None:
@@ -197,6 +220,7 @@ def test_the_groups_are_the_ones_section_16_1_names() -> None:
     }
     assert {"macs", "effective_macs", "utilization", "delta"} <= set(SIMULATION_KEYS)
     assert {"tiling_choices", "quant_boundary_crossings"} <= set(SIMULATION_KEYS)
+    assert "simulated_cycles_without_int8_packing" in SIMULATION_KEYS
     assert {"roofline_verdict", "operational_intensity"} <= set(ROOFLINE_KEYS)
     assert {"energy_pj_per_inference", "edp", "macs_per_dram_byte"} <= set(
         NORMALIZED_KEYS

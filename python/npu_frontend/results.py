@@ -100,7 +100,16 @@ RESULTS_DIR: Final[Path] = REPO_ROOT / "experiments" / "results"
 #: reproducible by re-running the simulator. A version 1 file is refused rather
 #: than read, because a reader would otherwise find two absent keys and have to
 #: guess whether the design performed no scratchpad accesses.
-SCHEMA_VERSION: Final[int] = 2
+#:
+#: **3 at P14**, declared in `docs/BREAKING_CHANGES.md` on 2026-09-30 before the
+#: commit that caused it. What changed: `simulation` gained
+#: `simulated_cycles_without_int8_packing`, the cycles a quantized program takes
+#: with every int8 MAC charged at the f32 peak, so that the int8 throughput
+#: assumption's share of a cycle win is separable from the DMA traffic
+#: reduction's, which Section 14's gate asks for. Null on an fp32 cell, with
+#: its reason. A version 2 file is refused for the same reason a version 1 file
+#: was.
+SCHEMA_VERSION: Final[int] = 3
 
 #: One MAC is two operations, and FLOPs is never reported for an integer cell.
 #: Section 16.1 requires this stated in the file rather than in a report nobody
@@ -338,6 +347,12 @@ SIMULATION_KEYS: Final[tuple[str, ...]] = (
     "scratchpad_elements_read",
     "scratchpad_elements_written",
     "int8_macs",
+    # *Added at P14 with the cost model's INT8 terms.* The same program's cycles
+    # with every int8 multiply accumulate charged at the f32 peak. The
+    # difference from `simulated_cycles` is what the int8 packing assumption
+    # buys, and the rest of a quantized cell's win over its fp32 twin is what
+    # the smaller transfers buy, net of the crossings.
+    "simulated_cycles_without_int8_packing",
     "spill_count",
     "fragmentation_ratio",
     "tiling_choices",
@@ -450,6 +465,12 @@ NULL_REASONS: Final[dict[str, str]] = {
         "P14, with the quantization passes. Every cell here is fp32 and a count "
         "of crossings in a program with no quantization boundary would be a "
         "zero that means something different from the zero P14 will record."
+    ),
+    "simulated_cycles_without_int8_packing": (
+        "an fp32 cell performs no int8 multiply accumulate, so charging every "
+        "int8 one at the f32 peak would reproduce simulated_cycles exactly, and "
+        "a copy of it here would read as a measurement of the packing "
+        "assumption on a program the assumption never touched."
     ),
     "roofline_bound_cycles": "P11, with experiments/roofline.py per Section 16.6.",
     "roofline_bound_cycles_per_layer": (
@@ -646,6 +667,39 @@ def quant_boundary_crossings(
             int(npuisa_op_counts.get(name, 0)) for name in QUANTIZATION_BOUNDARY_OPS
         )
     }
+
+
+def int8_packing_cycles(
+    *, quantized: bool, cycles_without_packing: float | None
+) -> dict[str, Any]:
+    """The int8 throughput assumption, made separable, as the key or keys it writes.
+
+    *Added at P14 with the cost model's INT8 terms.* The int8 peak is
+    `I8_MACS_PER_LANE` times the f32 one, on the assumption that a lane packs
+    four int8 multiplies, and Section 14's gate asks for that assumption's share
+    of a cycle win to be reported apart from the DMA traffic reduction's. A
+    quantized cell records the cycles its own program takes with every int8 MAC
+    charged at the f32 peak, from `npu-sim --int8-at-f32-peak`. The packing's
+    share of the cell's win over its fp32 twin is this minus `simulated_cycles`,
+    and the rest of the win is the traffic's, net of what the crossings cost.
+
+    **An fp32 cell carries a null with its reason**, because the option leaves
+    an fp32 program's cycles exactly as they are, and a copy of
+    `simulated_cycles` would read as a measurement of an assumption the program
+    never used. A quantized cell without the figure is refused rather than
+    written with a null, because the null would hide the one number the field
+    exists for.
+    """
+    if not quantized:
+        return null("simulated_cycles_without_int8_packing")
+    if cycles_without_packing is None:
+        raise ResultSchemaError(
+            "a quantized cell arrived without its cycles at the f32 peak. The "
+            "field is what separates the int8 packing assumption's share of the "
+            "cycle win from the DMA traffic reduction's, and a null on the one "
+            "kind of cell it exists for would hide exactly that."
+        )
+    return {"simulated_cycles_without_int8_packing": float(cycles_without_packing)}
 
 
 # ---------------------------------------------------------------------------
