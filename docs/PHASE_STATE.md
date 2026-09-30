@@ -109,30 +109,33 @@ landed, above. What is left:
    asserted unchanged over the 217 cells field by field, the int8 energy
    coefficients recorded the way P11 recorded fp32, measured over the int8
    program shape that will be reported.
-2. **Item 5, the quantized cells**: the count derived from the driver, every
-   hardcoded count site moved in one commit, and the Section 2 paragraph for
-   the owner. **The count needs a ruling first**, below.
+2. **Item 5, the quantized cells**: **63**, ruled on 2026-09-30, the mirror of
+   the benchmark grid the driver runs under ADR 0010, so the suite is 63 fp32
+   benchmark cells, 63 int8 ones and 154 fp32 ablation cells, **280**. Every
+   hardcoded count site moves in one commit, and the Section 2 paragraph for
+   the owner states it that way, with the measured seconds per cell and one
+   sentence saying that 84 and 301 were an earlier misstatement of the grid,
+   not a different ruling.
 3. **Checkpoint C**, starting with the merge of `main`; then the close.
 
 ### Open at this boundary
 
-- **Item 5's count.** Ruling A's 84 is three levels, two budgets, two batches
-  and seven models. The driver's fp32 benchmark grid is not that: the tight
-  budget runs at each model's declared batch only, per ADR 0010, so it is 63
-  benchmark cells, three levels by three budget and batch combinations by
-  seven, and 217 is those 63 plus 154 ablation cells. Mirroring it gives 63
-  quantized cells and 280 in all, not 301. Measured at this tip, a quantized
-  model at its declared batch compiles and runs at the tight budget at every
-  level, the answer bit identical to the default budget's; at batch 4, five of
-  the seven do not fit the tight budget, as in fp32. Which count is meant is
-  the owner's.
-- **D-0066 has a third sighting, the first with its message**, and the message
-  is D-0049's gap bound, reached through the benchmark harness the case drives.
-  Whether it closes into D-0049 is left for a ruling; neither bound moved.
+- **Item 5's count is ruled: 63 int8 benchmark cells and 280 in all.** The
+  84 was an earlier misstatement of the grid: it is Section 2's arithmetic,
+  and the driver runs the tight budget at each model's declared batch only,
+  per ADR 0010. Measured at `a6d80b8`, a quantized model at its declared batch
+  compiles and runs at the tight budget at every level, the answer bit
+  identical to the default budget's; at batch 4, five of the seven do not fit
+  the tight budget, as in fp32.
+- **D-0066 is closed as a duplicate of D-0049**, surfacing through a second
+  case: its one surviving message is D-0049's gap bound, and D-0049's eleventh
+  observation carries it. Neither bound moved.
 - **Section 14's static guard bounds the products and not the folded bias on
   top of them.** Recorded at the contraction's boundary, not changed.
-- D-0049 open, its fix P15's; D-0065 on `main`, deferred to P15; D-0066 open as
-  a candidate. D-0069 is fixed. **The next free defect number is D-0070.**
+- D-0049 open, its fix P15's, now with the observation that the regression
+  baseline check's own workload is contention enough; D-0065 on `main`,
+  deferred to P15. D-0066 and D-0069 are closed. **The next free defect number
+  is D-0070.**
 - The Section 2 and Section 5.5 edits to the specification are still the
   owner's, from P10 to P13, and item 5 adds the quantized arithmetic to the
   Section 2 paragraph.

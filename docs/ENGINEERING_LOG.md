@@ -7653,7 +7653,12 @@ rather than rewritten out of history.
 
 `experiments/predictions/p14-quantized-o1-o2.md` was committed after the move
 and before any quantized program was compiled at `-O1`, or at `-O2` with the
-calibration in its new position. On the `normal` class, against onnxruntime:
+calibration in its new position. **So `7e313eb`, which moves the quantized
+`-O2` output, landed before its prediction `b8e661d`, and that is acceptable
+only because nothing quantized at `-O2` was measured or recorded before
+`b8e661d`**: the one quantized `-O2` compilation in between was LeNet's in the
+placement test, which reads the pass order and the operation counts and runs
+nothing. On the `normal` class, against onnxruntime:
 
 | Model | `-O0` and `-O1` | `-O2` | Crossings, f32 relus: `-O0` and `-O1`, `-O2` |
 |---|---|---|---|
