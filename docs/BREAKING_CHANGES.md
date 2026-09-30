@@ -42,6 +42,70 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-09-30, Phase P14: the cost model's INT8 terms, an int8 MAC coefficient and the throughput assumption made separable
+
+**Written before the commits that cause it.** Three commits follow this one and
+a `record:` commit after them; each is named here once it exists.
+
+**What changes.**
+
+- **An int8 multiply accumulate is charged its own energy.** The MAC array
+  gains a second action, `int8_mac`, whose coefficient Accelergy answers from
+  the same `Aladdin_table` plug in the fp32 MAC's comes from, at the same
+  pinned 45 nm and 1 ns: an 8 bit integer multiplier and a 32 bit integer
+  adder, because the machine multiplies int8 by int8 and accumulates in int32,
+  as Section 14 requires. `macs` stays raw and stays one count: the array's
+  action counts become `mac`, the fp32 MACs, and `int8_mac`, the simulator's
+  own `int8_macs`, so every MAC is charged exactly once.
+- **The int8 datapath adds no area.** The int8 peak already rests on four int8
+  multiplies packed into each fp32 lane, and a lane that packs them is the fp32
+  lane, so the two subcomponents carry an area scale of zero and the array's
+  area is the one P11 recorded. The area a machine with separate int8 units
+  would add is measured and recorded beside it, so the assumption has a number
+  on it.
+- **The cycle charge does not change.** An integer `CONV2D` or `MATMUL` is
+  charged at `kPeakMacsPerCycleI8`, as it has been since the integer kernels
+  landed. What changes is that the assumption becomes separable: the simulator
+  gains an option that charges every int8 MAC at the fp32 peak instead, and a
+  quantized cell records the cycles its own program takes under it, so that the
+  int8 throughput assumption's share of a cycle win is the difference between
+  the two figures and the rest is the DMA traffic reduction and the crossings.
+  Section 14's gate asks for exactly that separation.
+- **`include/NPU/Simulator/CostModel.h` gains `kI8MacsPerLane`, 4**, the
+  packing factor the int8 peak has been written as a multiple of, pinned in
+  `FrozenConstants`, mirrored in `npu_frontend.cost_model`, and asserted to be
+  the ratio of the two peaks.
+- **An int8 element at the scratchpad port stays one 32 bit access**, as an f32
+  element is. Packing four to a word would lower the int8 scratchpad energy by
+  up to four times and is not assumed, which is the direction that does not
+  flatter the result.
+
+**Which baseline fields move.**
+
+- **`test/baseline/baseline.json`: `energy_per_action_pj` gains
+  `mac_array.int8_mac` at each of its seven budgets.** No existing coefficient
+  moves, and no cell field moves: every baseline cell is fp32 and performs no
+  int8 MAC.
+- **`experiments/results/*.json`, `schema_version` 2 to 3.** `simulation` gains
+  `simulated_cycles_without_int8_packing`, null on every fp32 cell with its
+  reason, and the manifest's `cost_model_constants` gains `I8_MACS_PER_LANE`.
+  The 217 cells are re-recorded in one run, because a version 2 file is refused
+  rather than read, and **every field each of them carried before is asserted
+  unchanged, field by field**, apart from what a re-record always moves: the
+  timing objects, the timestamps, the git sha and the content hash.
+- **No fp32 cycle, byte, MAC, energy or area figure moves, and no golden
+  tensor**, fp32 or quantized.
+- **Not baseline fields, and declared here anyway because they are recorded
+  numbers**: the cycles, the cycles without packing and the energy of the
+  quantized programs, per model at the three levels, over the 63 configurations
+  item 5 will record as cells.
+- **Test counts and names**, which grow.
+
+**The prediction** is `experiments/predictions/p14-int8-cost-terms.md`,
+committed before any of these commits exists.
+
+**The commits that cause it:** named here once they exist.
+
 ### 2026-09-29, Phase P14: the quantized goldens arrive at `-O1` and `-O2`, with the calibration after the `-O2` folds
 
 **Written before the commits that cause it.** Two commits follow this one: the
