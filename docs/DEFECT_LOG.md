@@ -4798,3 +4798,53 @@ above `-O0` that ran before anything was built for those levels.
 - **The shape.** A diagnostic written for the route its author had in mind, an
   attribute written by hand, reached by a second route, a pass that copies it,
   and describing the first. The check is right and its explanation is not.
+
+### D-0070 a fused location reached the per layer names of the SCALE-Sim and roofline breakdowns, and the walker read it as no name
+
+**Status: fixed in the commit that follows this entry.** Found 2026-09-30 at
+`387a641`, by the field by field comparison of the 217 re-recorded fp32 cells
+against the committed ones that the cost model's INT8 terms required before
+their record.
+
+- **What moved.** 170 fields over 45 cells, every one of them a layer's
+  `name`: in `external.scalesim_cycles_per_layer`, `scalesim_approximations`
+  and `scalesim_skipped`, and in `roofline.roofline_bound_cycles_per_layer`.
+  `conv0` became `conv2d_4` and `conv1` became `conv2d_8`, on the `-O2` cells
+  of `conv_bn_relu_stack` and `dilated_stack` and their ablation rows other
+  than the one that removes the fold. **Not one number moved**: every cycle,
+  byte, MAC, energy, area, divergence and bound in the 217 cells is identical,
+  and so is every binary, debug section included.
+
+- **Reproduce.** At `ff36b1f` or later, with the model IR built, walk the
+  allocated `-O2` program of `conv_bn_relu_stack`:
+
+  ```
+  python -c "from pathlib import Path; from npu_frontend.npuisa_walk import walk; \
+    print([o.name for o in walk(Path('experiments/models/conv_bn_relu_stack-O2.npuisa.mlir').read_text()) \
+    if o.op == 'conv2d'])"
+  ```
+
+  prints `['conv2d_4', 'conv2d_8']`, where the same program at `ff36b1f`'s
+  parent prints `['conv0', 'conv1']`: the walker found no name and synthesised
+  one from the operation and its position.
+
+- **What was wrong.** `ff36b1f` made `-npu-fuse-bias` and `-npu-fold-batchnorm`
+  leave the convolution a fused location, its own name first, and the printer
+  writes that as an alias, `#loc10 = loc(fused[#loc1, #loc2])`.
+  `npu_frontend.npuisa_walk` resolved only an alias of a plain name,
+  `#loc1 = loc("conv0")`, so the fused alias resolved to nothing. The encoder's
+  debug section takes a fused location's first name, which is why the binaries
+  did not move and why the commit's own verification did not see this.
+
+- **Why the verification missed it.** P3 was measured against every binary of
+  the 217 cells with and without the debug section, the 28 golden tensors, the
+  model IR and the regression baseline. None of those carries a result cell's
+  per layer names; only the cells do, and they were not re-recorded until the
+  INT8 terms needed them. **A verification that re-derived the per layer
+  breakdowns from the new IR would have caught it the same day.**
+
+- **The fix.** The walker resolves a fused location to its first name, as the
+  encoder's debug section does, whether the first element is an alias or an
+  inline name, and an alias chain is followed to its end. The comparison is run
+  again at the fix and has to find no field moved outside the ones a re-record
+  always moves.
