@@ -135,6 +135,18 @@ _MEMREF = re.compile(
 
 _LOCATION = re.compile(r'^#(loc\d*) = loc\("(?P<name>[^"]*)"\)')
 
+#: A fused location's alias, `#loc10 = loc(fused[#loc1, #loc2])`, and the first
+#: element of its list, which is either another alias or an inline name.
+#:
+#: *Added for D-0070.* `-npu-fuse-bias` and `-npu-fold-batchnorm` leave the
+#: convolution a fused location with its own name first, and the encoder's debug
+#: section takes that first name. This walker read only an alias of a plain
+#: name, so a fused alias resolved to nothing and the per layer breakdowns of
+#: the SCALE-Sim export and the roofline fell back to a synthesised name.
+_FUSED_LOCATION = re.compile(
+    r'^#(loc\d*) = loc\(fused(?:<[^>]*>)?\[\s*(?:#(?P<alias>loc\d*)|"(?P<name>[^"]*)")'
+)
+
 _OP = re.compile(r"npuisa\.(?P<op>[a-z_0-9]+)")
 
 _INT_ATTRIBUTE = re.compile(r"(?P<name>[a-z_]+) = (?P<value>-?\d+) : i64")
@@ -453,10 +465,28 @@ def statements(npuisa_text: str) -> list[str]:
 def walk(npuisa_text: str) -> list[Operation]:
     """Every `npuisa` operation of an allocated module, in program order."""
     names: dict[str, str] = {}
+    fused: dict[str, str] = {}
     for line in npuisa_text.splitlines():
         found = _LOCATION.match(line.strip())
         if found is not None:
             names[found.group(1)] = found.group("name")
+            continue
+        combined = _FUSED_LOCATION.match(line.strip())
+        if combined is not None:
+            if combined.group("name") is not None:
+                names[combined.group(1)] = combined.group("name")
+            else:
+                fused[combined.group(1)] = combined.group("alias")
+    # A fused location takes its first element's name, following a chain of
+    # aliases to its end, which is what the encoder's debug section does.
+    for alias in fused:
+        target = fused[alias]
+        seen = {alias}
+        while target in fused and target not in seen:
+            seen.add(target)
+            target = fused[target]
+        if target in names:
+            names[alias] = names[target]
 
     operations: list[Operation] = []
     for text in statements(npuisa_text):

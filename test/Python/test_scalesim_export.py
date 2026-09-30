@@ -117,6 +117,47 @@ def test_the_layout_header_is_the_pinned_versions_own() -> None:
     assert export.LAYOUT_HEADER == header
 
 
+def test_a_fused_location_names_its_layer_by_its_first_name() -> None:
+    """D-0070: the bias fusion and the batch norm fold leave a fused location.
+
+    The convolution they rewrite keeps its own name first, and the per layer
+    breakdowns here and in the roofline are read by that name. A walker that
+    resolved only a plain name gave the convolution a synthesised one instead,
+    on 170 fields of the committed cells, and the numbers beside them did not
+    move, which is why nothing else noticed.
+    """
+    from npu_frontend.npuisa_walk import walk
+
+    text = REPO_ROOT / "experiments" / "models" / "conv_bn_relu_stack-O2.npuisa.mlir"
+    if not text.is_file():
+        pytest.skip("the model IR is a build artefact; build-model-ir.py writes it")
+    program = text.read_text(encoding="utf-8")
+    assert "loc(fused[" in program
+    names = [operation.name for operation in walk(program) if operation.op == "conv2d"]
+    assert names == ["conv0", "conv1"]
+
+    # An inline first element, and a chain of aliases, resolve the same way.
+    for location_lines, expected in (
+        (['#loc9 = loc(fused["conv7", "bn7"])'], "conv7"),
+        (
+            [
+                '#loc1 = loc("conv3")',
+                "#loc2 = loc(fused[#loc1, #loc4])",
+                "#loc9 = loc(fused[#loc2, #loc5])",
+            ],
+            "conv3",
+        ),
+    ):
+        module = (
+            "npuisa.relu ins(%a : memref<4xf32, #npu.scratchpad>) "
+            "outs(%b : memref<4xf32, #npu.scratchpad>) loc(#loc9)\n"
+            + "\n".join(location_lines)
+            + "\n"
+        )
+        (operation,) = walk(module)
+        assert operation.name == expected
+
+
 def test_a_matmul_maps_to_one_gemm_shaped_row() -> None:
     """Section 16.3's mapping, with the reading a column name does not give.
 
