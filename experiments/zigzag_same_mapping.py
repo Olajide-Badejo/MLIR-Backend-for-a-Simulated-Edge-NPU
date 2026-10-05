@@ -106,6 +106,7 @@ sys.path.insert(0, str(_mlir_python_packages_dir()))
 from npu_frontend import cost_model  # noqa: E402
 from npu_frontend.compile import CompileError, compile_model  # noqa: E402
 from npu_frontend.model_generator import MODELS, generate_model  # noqa: E402
+from npu_frontend.npuisa_walk import location_names  # noqa: E402
 from three_arms import ARMS, SWEPT  # noqa: E402
 
 #: The array this project has, from the one place its size is written down.
@@ -158,8 +159,6 @@ class ExportError(Exception):
 # ---------------------------------------------------------------------------
 # Reading the compiler's own answer.
 # ---------------------------------------------------------------------------
-
-_LOCATION = re.compile(r'^#(?P<id>loc\d*) = loc\("(?P<name>[^"]*)"\)', re.MULTILINE)
 
 _OPERATION = re.compile(
     r"npu\.(?P<op>conv2d|matmul)\s+ins\((?P<ins>[^)]*)\)\s+"
@@ -280,10 +279,13 @@ def problems(text: str) -> dict[str, Problem]:
     it survives the rewrite because MLIR propagates it onto the operations a
     pattern builds. `test_zigzag_same_mapping.py` asserts that rather than
     trusting it.
+
+    **The name is the walker's**, `location_names`, which resolves a fused
+    location to its first name. *Changed for D-0070*: this module had its own
+    pattern for a plain name location, and the batch norm fold and the bias
+    fusion leave a fused one, so a folded convolution was named by its alias id.
     """
-    names = {
-        match.group("id"): match.group("name") for match in _LOCATION.finditer(text)
-    }
+    names = location_names(text)
     found: dict[str, Problem] = {}
     for match in _OPERATION.finditer(text):
         name = names.get(match.group("loc"), match.group("loc"))
@@ -870,9 +872,7 @@ def collect(models: list[str]) -> list[Cell]:
 
 def _choices(text: str) -> dict[str, Choice]:
     """One mapping per layer name, and a refusal if two tiles disagree."""
-    names = {
-        match.group("id"): match.group("name") for match in _LOCATION.finditer(text)
-    }
+    names = location_names(text)
     found: dict[str, Choice] = {}
     for match in _OPERATION.finditer(text):
         choice = _choice(match.group("attributes") or "")

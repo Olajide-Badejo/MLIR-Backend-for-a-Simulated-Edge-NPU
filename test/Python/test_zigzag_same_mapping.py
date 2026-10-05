@@ -117,6 +117,26 @@ def test_the_location_is_what_joins_a_tiled_layer_to_its_own_shape() -> None:
     assert set(export._choices(TILED_IR)) <= set(export.problems(UNTILED_IR))
 
 
+def test_a_folded_layer_is_named_by_its_own_name() -> None:
+    """D-0070: the batch norm fold and the bias fusion leave a fused location.
+
+    The convolution they rewrite keeps its own name first, and this export joins
+    a tiled layer to its untiled shape by that name. It had its own pattern for
+    a plain name location and named a folded convolution by its alias id,
+    `loc10`, which a tiled and an untiled program need not share. Read here off
+    the `-O2` program of the model with two folds.
+    """
+    import tempfile
+
+    from npu_frontend import compile_model, generate_model
+
+    with tempfile.TemporaryDirectory() as directory:
+        onnx = generate_model("conv_bn_relu_stack", directory)
+        text = compile_model(onnx, level=2, emit="npu").text
+    assert text is not None and "loc(fused[" in text
+    assert set(export.problems(text)) == {"conv0", "conv1", "head"}
+
+
 def test_the_mapping_attribute_is_read_field_by_field() -> None:
     choice = export._choices(TILED_IR)["node_conv2d_1"]
     assert choice.temporal_tiles == (1, 1, 8, 4, 8)

@@ -462,11 +462,20 @@ def statements(npuisa_text: str) -> list[str]:
     return found_statements
 
 
-def walk(npuisa_text: str) -> list[Operation]:
-    """Every `npuisa` operation of an allocated module, in program order."""
+def location_names(ir_text: str) -> dict[str, str]:
+    """Every location alias of a printed module, mapped to the name it carries.
+
+    *Factored out for D-0070*, so that every program that reads a layer's name
+    out of printed IR resolves a location the same way. A name location,
+    `#loc1 = loc("conv0")`, carries its name; a fused one,
+    `#loc10 = loc(fused[#loc1, #loc2])`, carries its first element's, whether
+    that is another alias or an inline name, following a chain of aliases to
+    its end, which is what the encoder's debug section does. Any other alias,
+    a file position for instance, carries none and is absent from the map.
+    """
     names: dict[str, str] = {}
     fused: dict[str, str] = {}
-    for line in npuisa_text.splitlines():
+    for line in ir_text.splitlines():
         found = _LOCATION.match(line.strip())
         if found is not None:
             names[found.group(1)] = found.group("name")
@@ -487,6 +496,12 @@ def walk(npuisa_text: str) -> list[Operation]:
             target = fused[target]
         if target in names:
             names[alias] = names[target]
+    return names
+
+
+def walk(npuisa_text: str) -> list[Operation]:
+    """Every `npuisa` operation of an allocated module, in program order."""
+    names = location_names(npuisa_text)
 
     operations: list[Operation] = []
     for text in statements(npuisa_text):
