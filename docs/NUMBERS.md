@@ -1173,6 +1173,15 @@ The area is the same on every row because it describes the machine and not the
 program: a 256 element fp32 MAC array at 2.129 mm2 plus a 1 MB scratchpad at
 6.416 mm2. DRAM contributes no area, which is right: it is off chip.
 
+**An int8 MAC adds no area, by assumption.** *Added at P14 with the cost
+model's INT8 terms.* The int8 peak rests on four int8 multiplies packed into
+each fp32 lane, and a lane that packs them is the fp32 lane, so the int8
+datapath's subcomponents carry an area scale of zero and every area on this
+page, quantized or not, is the machine above. **Four separate int8 MAC units
+per lane would add 0.691 mm2**, 32.5 percent of the array's 2.129, measured by
+running the same description with the area scale at four; that is the number
+the assumption carries.
+
 ### Two things a reader could reasonably get wrong
 
 **Accelergy is not an independent check of activity.** The action counts come
@@ -1193,6 +1202,7 @@ the per MAC figure: the table's 2 ns row would give about 40.7 pJ instead of
 | Action | Measured | Published at 45 nm and 0.9 V | Ratio | Estimator |
 |---|---|---|---|---|
 | one fp32 MAC | 49.286 pJ | 3.7 multiply plus 0.9 add, 4.6 pJ | **10.71** | `Aladdin_table` |
+| one int8 MAC, *added at P14* | 1.0025 pJ | 0.2 multiply plus 0.03 add, 0.23 pJ | 4.36 | `Aladdin_table` |
 | one 32 kB scratchpad read | 6.427 pJ | about 20 pJ for a 32 kB cache | 0.32 | `CactiSRAM` |
 | one 64 bit DRAM access | 512.0 pJ | 1.3 to 2.6 nJ | 0.39 to 0.20 | `CactiDRAM` |
 
@@ -1201,6 +1211,15 @@ That is reported rather than smoothed, and the cause is identifiable: Aladdin's
 figure is a synthesised three stage pipelined fp32 unit at a 1 ns clock,
 registers included, and the published figure is a combinational datapath. The
 gap is the pipeline, not this project.
+
+**The int8 MAC, added at P14, lands within an order of magnitude.** It is an
+8 bit integer multiplier and a 32 bit integer adder, because the machine
+accumulates in int32: the plug in's 32 bit, 1 ns multiplier row scaled by the
+square of the width, 12.68 / 16, plus its 32 bit, 1 ns adder row, 0.21. It is
+high by 4.36 for the fp32 figure's reason and because its adder is 32 bits
+where the published one is 8, and it is 1/49.2 of the fp32 MAC. The same test
+file pins it and asserts the ratio. Recorded at the same plug in shas and
+estimator list as the fp32 coefficient, at 45 nm and 1 ns.
 
 **The bound was not widened to make it pass.**
 `test_the_sanity_check_of_section_16_4_including_where_it_does_not_pass` pins the

@@ -106,6 +106,55 @@ committed before any of these commits exists.
 
 **The commits that cause it:** named here once they exist.
 
+**Measured, after the commits that cause it.** *Added in the docs commit before
+the baseline's record; everything above is the declaration as committed in
+`5217d0c`, unchanged.*
+
+- **The commits.** The simulator's option is `d383a48`, the energy path
+  `b9b6288`, the schema `387a641`, and the 217 cells' record `408cf17`. Five
+  more landed that the declaration did not foresee, and the correction is here
+  rather than above: D-0070's entry `d71478e`, its fix `7c75ab8`, its audit
+  `31f91a0` and its second fix `655295c`, and `c3eadc9`, a null reason's
+  wording. And there are two records, not one: the 217 cells in `408cf17`, and
+  the baseline in the `record:` commit after the one carrying this paragraph,
+  because the baseline records the suites and the suites read the cells.
+- **What the declaration covered, checked against the record.** It names
+  schema 3 and the re-record of all 217 committed result files, with every
+  field asserted unchanged apart from the timing objects, the timestamps, the
+  git sha and the content hash. Leaf by leaf, the 217 files at `408cf17`
+  against their parents differ in exactly those and in `schema_version`: 16
+  leaf patterns, `content_hash`, `manifest.git_sha`, `manifest.timestamp`,
+  `schema_version`, the four statistics of `timing.compile_ms` and of
+  `timing.passes_total_ms`, and the same four of every `passes[*].timing`;
+  12236 leaf differences in all. Three leaves arrived on every file, the two
+  the declaration names and the null's reason. **It did not name two files the
+  record also moved**, `report/generated/macros.tex`, whose results sha,
+  schema version and content hash follow the cells, and
+  `experiments/results-runtime.json`, the run's own timing.
+- **Every field the 217 cells carried is unchanged**, compared field by field
+  at the record against the files it replaced: every cycle, byte, MAC, energy,
+  area, divergence, bound, pass count, oracle distance and layer name. What
+  moved is what a re-record always moves, and what arrived is what this entry
+  names: `schema_version` 3, `simulated_cycles_without_int8_packing` as a null
+  with its reason on all 217, `I8_MACS_PER_LANE` in every manifest. **It took a
+  defect fix to be true**: the first comparison found 170 layer names moved
+  over 45 cells, D-0070, which `ff36b1f` had caused and nothing had checked,
+  and the walker was fixed before anything was recorded.
+- **The baseline's check before its record found suites only**, at
+  `408cf17`: the simulator suite 80 to 82 and the pytest suite 1445 to 1450,
+  and not one cell or golden line; `655295c` adds one pytest case after it.
+  Its coefficient table gains `mac_array.int8_mac` at the record.
+- **The int8 MAC is 1.0025 pJ**, 4.36 times the published 0.23, inside an order
+  of magnitude; the fp32 MAC is untouched at 49.286. Separate int8 units would
+  have added 0.691 mm2, which the zero area scale assumes away.
+- **The quantized numbers, which are not baseline fields**, measured over the 63
+  configurations item 5 will record: the cycles did not move; the packing's
+  share of the cycle win is 0.26 on LeNet at batch 1 and 0.93 to 1.57 on the
+  other models at the default budget, and 0.30 to 0.52 where an fp32 twin
+  spills at a tight budget; the quantized energy is 0.20 to 0.63 of fp32 at the
+  default budget and 0.07 to 0.29 at the tight one. The prediction's
+  adjudication is in `docs/ENGINEERING_LOG.md` under 2026-09-30.
+
 ### 2026-09-29, Phase P14: the quantized goldens arrive at `-O1` and `-O2`, with the calibration after the `-O2` folds
 
 **Written before the commits that cause it.** Two commits follow this one: the

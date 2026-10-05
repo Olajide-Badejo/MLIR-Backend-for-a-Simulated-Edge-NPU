@@ -13,8 +13,9 @@ calibration, the QDQ contraction, the relu fused into the integer instruction,
 and the calibration after the `-O2` folds**: a calibrated model now compiles at
 every level to integer instructions that meet each other without going back to
 f32 where nothing between them needs it, runs on the machine, and meets both of
-Section 14's bounds at `-O0`, `-O1` and `-O2`. The cost model's INT8 terms and
-the quantized cells remain. The dialect's
+Section 14's bounds at `-O0`, `-O1` and `-O2`, with the int8 MAC charged its own
+energy and the int8 throughput assumption separable from the DMA traffic
+reduction. The quantized cells remain. The dialect's
 operator set is complete for the first time, the integer kernels have hand
 computed semantics and an independent numpy implementation that agrees with them
 **to the bit**, and `Program::kVersion` has not moved.
@@ -27,6 +28,27 @@ commit that moved it and re-recorded in a commit of its own, and so are the
 fourteen quantized goldens that arrive with `-O1` and `-O2`. The measurements
 are in `docs/PHASE_STATE.md` beside the claims.
 
+- **An int8 multiply accumulate is charged its own energy**, 1.0025 pJ from the
+  same Accelergy plug in and pinned 45 nm as the fp32 MAC's 49.286: an 8 bit
+  multiplier and a 32 bit accumulator, 4.36 times Section 16.4's published
+  figure, inside the order of magnitude the fp32 MAC is not. It adds no area,
+  because four int8 multiplies packed into an fp32 lane are the fp32 lane;
+  separate units would add 0.691 mm2, and that is recorded. Declared first.
+- **The int8 throughput assumption is separable.** `npu-sim --int8-at-f32-peak`
+  charges every int8 MAC at the f32 peak and changes nothing else, and result
+  schema 3 records a quantized cell's cycles under it, so the packing's share
+  of a cycle win and the DMA traffic reduction's are two numbers. Measured over
+  the 63 quantized configurations: the packing is most or all of the cycle win
+  on every model except LeNet at batch 1 and the tight budget cells where fp32
+  spills; the quantized energy is 0.20 to 0.63 of fp32 at the default budget
+  and 0.07 to 0.29 at the tight one. `kI8MacsPerLane` is pinned.
+- **The 217 fp32 cells re-recorded at schema 3, every field unchanged**, which
+  took D-0070's fix: a fused location from the batch norm fold had reached the
+  SCALE-Sim and roofline breakdowns' layer names and read as no name, and an
+  audit of every reader of a location found ZigZag's export doing the same. No
+  number had moved, and the two readers now share one resolver.
+- **D-0066 closes as D-0049** surfacing through a second case, its one surviving
+  message D-0049's gap bound.
 - **At `-O2` the calibration runs after `-npu-fuse-bias`, `-npu-fold-batchnorm`
   and `-npu-fuse-ops`**, and before the second canonicalization, CSE and the
   tiling; at `-O0` and `-O1` it still runs first. It puts back the fused regions

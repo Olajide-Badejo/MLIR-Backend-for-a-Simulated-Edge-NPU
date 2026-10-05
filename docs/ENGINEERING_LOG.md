@@ -7768,3 +7768,218 @@ moved, and the baseline was not re-recorded around the red.
 The record, which writes the fourteen new quantized goldens. Then item 4, the
 cost model's INT8 terms, declared first and measured over this program shape,
 and item 5, the quantized cells.
+
+## 2026-09-30 Phase P14, checkpoint B: the cost model's INT8 terms, and how much of the win is the packing
+
+**What this was for.** Section 14's gate asks for the cycles and energy win
+measured "with the int8 throughput assumption's contribution separated from the
+DMA traffic reduction", and before this item neither half could be read. The
+energy path charged every MAC at the fp32 coefficient, so an int8 program's
+array energy was about fifty times what an 8 bit multiply costs; and the int8
+peak, four times the fp32 one, was applied inside every integer charge with no
+way to take it back out. Item 4 gives the int8 MAC its own coefficient and
+makes the throughput assumption separable, and nothing fp32 was to move.
+
+The commits: the declaration `5217d0c`, the prediction `8bf6576`, the
+simulator's option `d383a48`, the energy path `b9b6288`, the result schema
+`387a641`, D-0070's entry `d71478e` and fix `7c75ab8`, a null reason's wording
+`c3eadc9`, the record of the 217 cells `408cf17`, D-0070's audit `31f91a0` and
+its second fix `655295c`, the docs commit that carries this entry, and the
+baseline's record after it. Beside them, the owner's rulings of
+the same day are in `5f3701f`, D-0066 closed as D-0049, and `0f26de8`, item 5 at
+63 cells.
+
+### Three changes, and one that was not made
+
+**The int8 MAC's coefficient.** The MAC array gained a second Accelergy action,
+`int8_mac`, answered by the same `Aladdin_table` plug in at the same 45 nm and
+1 ns: an 8 bit integer multiplier and a 32 bit integer adder, because the
+machine multiplies int8 by int8 and accumulates in int32. The array's action
+counts are `mac`, the fp32 MACs, and `int8_mac`, the simulator's `int8_macs`, so
+every MAC is charged once, at the arithmetic it ran in. The two int8
+subcomponents carry an area scale of zero: four int8 multiplies packed into an
+fp32 lane are the fp32 lane, which is the assumption the int8 peak already
+rests on.
+
+**The throughput assumption, separable.** The simulator gained
+`int8AtF32Peak`, under which an integer contraction is charged at the fp32 peak
+and nothing else changes, and a quantized result cell records the cycles its
+program takes under it, `simulated_cycles_without_int8_packing`. The charge is
+inversely proportional to the peak and the two peaks differ by a power of two,
+so the option's charge is the fp32 charge bit for bit, which a unit test holds
+against `gemmCharge` rather than assuming. The packing's share of a quantized
+cell's win over its fp32 twin is `phi`, that field minus `simulated_cycles` over
+the whole win; the rest is the DMA traffic reduction, net of the crossings.
+
+**`kI8MacsPerLane`, 4**, the factor the int8 peak had been written as a
+multiple of since P7, is pinned in `FrozenConstants`, mirrored, and asserted to
+be the ratio of the two peaks.
+
+**What was not made is the int8 charge itself.** An integer contraction is
+still charged at four times the fp32 peak with the fp32 tile shape, as it has
+been since the integer kernels landed. That is a claim about the packing's
+geometry that nothing in the specification settles, and it is set out below as
+a question rather than changed here.
+
+### The coefficient, recorded the way P11 recorded the fp32 one
+
+At the plug in shas this project pins, `accelergy` `6911d15`,
+`accelergy-aladdin-plug-in` `5e2e126`, `accelergy-cacti-plug-in` `7649b2c`,
+`accelergy-library-plug-in` `ba4e9da` and `accelergy-table-based-plug-ins`
+`bad19e9`, with the seven registered estimators P11 recorded and the node at
+45 nm: **an int8 MAC is 1.0025 pJ**, the plug in's 32 bit, 1 ns multiplier row
+scaled by the square of the width, 12.68 / 16 = 0.7925, plus its 32 bit, 1 ns
+adder row, 0.21. That is 1/49.2 of the fp32 MAC's 49.286 pJ. Against Section
+16.4's published 8 bit multiply plus 8 bit add, 0.2 + 0.03 = 0.23 pJ, **the
+ratio is 4.36, inside the order of magnitude the section asks for**, where the
+fp32 MAC's 10.71 is not. It is high for the fp32 figure's reason, a synthesised
+unit at a 1 ns clock rather than a combinational datapath, and because the
+machine's adder is 32 bits where the published one is 8. The test pins it as the
+fp32 one is pinned and asserts the ratio.
+
+**Four separate int8 MAC units per lane would add 0.691 mm2**, 32.5 percent of
+the fp32 array's 2.129, measured by running the same description with the area
+scale at four. That is what the zero area scale assumes away, and it is in
+`docs/NUMBERS.md` beside the assumption.
+
+### Nothing fp32 moved, and D-0070 is how that was checked
+
+The energy path was first checked against all 217 committed cells by
+recomputing each one's energy, per component energy, area, energy per inference
+and EDP from its own counts: identical, field by field. Then the 217 were
+re-recorded at schema 3 and compared with the committed files field by field,
+and **the first comparison found 170 fields over 45 cells moved**, every one a
+layer's name in the SCALE-Sim and roofline breakdowns: `conv0` had become
+`conv2d_4` on the `-O2` cells of `conv_bn_relu_stack` and `dilated_stack`.
+Not a number had moved. The cause was P3, `ff36b1f`: the folded convolution's
+location became fused, the encoder's debug section takes a fused location's
+first name, and the `npuisa` walker the exporter and the roofline read names
+from resolved only a plain one. P3's own verification compared binaries, the
+goldens, the model IR and the baseline, none of which carries a cell's per
+layer names. D-0070 has the account; the walker now takes a fused location's
+first name, and the second comparison, at `7c75ab8`, found **no field moved** in
+any of the 217 outside what a re-record always moves and what the declaration
+names. The committed record, `408cf17`, was measured once more at `c3eadc9`,
+after a null reason's wording that a filtered test run had let through was
+corrected, and it moved nothing either.
+
+**The audit found a second reader with the same fault.** Searching every place
+a location is constructed, cast or parsed turned up
+`experiments/zigzag_same_mapping.py`, which parses the tensor level program with
+its own pattern for a plain name location and fell back to the alias id: at
+`-O2` it named `conv_bn_relu_stack`'s folded convolutions `loc10` and `loc11`.
+Its committed artefacts predate P3 and did not move; a re-run would have. Both
+readers now share one resolver, `npuisa_walk.location_names`. What can carry a
+location is short: in a result cell, the names in the SCALE-Sim and roofline
+per layer lists, all from the walker; in a binary, only the debug section. The
+entry keeps the shape, which is that a proof over the binary is not a proof
+over every reader of the IR.
+
+### The measurement, over the 63 configurations item 5 will record
+
+`experiments/predictions/p14-int8-cost-terms.md` was committed before any of the
+code existed. Measured at `387a641`, each quantized configuration against its
+fp32 twin in the committed results. At the default budget and each model's
+declared batch, `-O0`, which `-O1` equals on every model:
+
+| Model | fp32 cycles | int8 | int8 without packing | `phi` | fp32 energy | int8 energy | ratio |
+|---|---|---|---|---|---|---|---|
+| `conv_bn_relu_stack` | 1372.5 | 1156 | 1412.75 | 1.19 | 4.226 uJ | 2.041 uJ | 0.48 |
+| `depthwise_separable` | 1324 | 866.5 | 1346.5 | 1.05 | 1.706 uJ | 1.072 uJ | 0.63 |
+| `dilated_stack` | 1243.69 | 950.94 | 1410.69 | **1.57** | 3.243 uJ | 1.773 uJ | 0.55 |
+| `inception_block` | 2398.5 | 1511 | 2528.5 | 1.15 | 4.260 uJ | 1.967 uJ | 0.46 |
+| `lenet` | 17766.25 | 5407.5 | 8594.5 | **0.26** | 54.406 uJ | 23.222 uJ | 0.43 |
+| `lenet_batched`, batch 4 | 20000 | 8734.38 | 20392.38 | 1.03 | 127.527 uJ | 37.509 uJ | **0.29** |
+| `resnet_block` | 1626 | 1132 | 1590 | 0.93 | 5.425 uJ | 1.777 uJ | 0.33 |
+
+At `-O2` the two models the folds change: `conv_bn_relu_stack` 1160.5, 876 and
+1164.75 cycles, `phi` 1.02, energy **3.480 to 0.823 uJ, 0.24**;
+`dilated_stack` 1234.06, 931.69 and 1391.44, `phi` 1.52, 3.212 to 1.718 uJ,
+0.53. `inception_block` at `-O2` keeps its cycles and its CSE merged quantize
+saves energy, 1.731 uJ, 0.41. At batch 4 the default budget's `phi` is 0.94 to
+1.54 and LeNet's is 1.03. At the tight budgets `phi` falls where the fp32 twin
+spills and the int8 program does not: `inception_block` 0.45 and 0.52,
+`resnet_block` 0.52 and 0.30; and the energy ratio is 0.07 to 0.29.
+
+**What it says, in one sentence per half.** On this machine, at these sizes,
+the quantized cycle win is the packing assumption on every model except where
+DMA dominates: without the packing, four of the seven quantized programs at
+batch 1 are slower than their fp32 twins and `resnet_block` is within 3 percent
+of its twin, because their `QUANT` and `DEQUANT` instructions cost about as much
+compute as their smaller transfers save;
+LeNet at batch 1, DMA bound on its weights, is the exception, where the traffic
+reduction is three quarters of the win, and so are the tight budget cells where
+fp32 spills and int8 fits. The energy win does not depend on the packing at
+all: the int8 MAC makes the array almost free, and the quantized energy is 0.20
+to 0.63 of fp32 at the default budget, where the 1 MB scratchpad at 127.7 pJ a
+read is 74 to 93 percent of what remains, and 0.07 to 0.29 at the tight budget.
+
+### The adjudication, clause by clause
+
+- **The int8 MAC at 1.0025 pJ and a ratio of 4.36, inside an order of
+  magnitude: met exactly.** The area of separate units, 0.3 to 1.5 mm2: met, at
+  0.691.
+- **Nothing fp32 moving: met**, and it took a defect fix to be met: D-0070, a
+  P3 regression in layer names only, found by this item's field by field
+  comparison and fixed before the record. The baseline's cells do not move.
+- **The quantized cycles not moving: met exactly** on every configuration
+  named.
+- **`phi` inside its bracket at `-O0`: met on six of seven.** `dilated_stack`
+  is **falsified**, 1.57 against a bracket of 0.5 to 1.5, and it stays above
+  the bracket at every level and both batches, 1.50 to 1.57.
+- **LeNet's `phi` at batch 4 in 0.6 to 1.1: met**, 1.03. **The other five in
+  0.5 to 1.5 at batch 4: falsified by `dilated_stack` again**, 1.54 and 1.51.
+- **No configuration faster without the packing than with it: met**, all 63.
+- **The quantized energy between 0.30 and 0.65 of fp32 at the default budget:
+  falsified on three configurations**, `conv_bn_relu_stack` at `-O2`, 0.24 and
+  0.20, and LeNet at batch 4, 0.29, which is also `lenet_batched`'s declared
+  batch. **And LeNet at the low end: falsified**; at batch 1 it is 0.43, above
+  `resnet_block`'s 0.33.
+- **Between 0.05 and 0.30 at the tight budget: met**, 0.07 to 0.29.
+- **The array below 5 percent of every quantized program's energy: falsified**,
+  at 6.2 and 8.2 percent on `conv_bn_relu_stack` at `-O2` and at 5.7 to 24.9
+  percent at the tight budget on every model but LeNet, whose is 3.2. **The
+  scratchpad the largest consumer at the
+  default budget: met** on every model.
+
+**What the model got wrong is where the fp32 energy was.** The energy brackets
+were built from the batch 1 shares, where the fp32 array is 37 to 67 percent of
+the energy. On the three configurations that fell below the floor it is 64 to
+79 percent, LeNet at batch 4 and `conv_bn_relu_stack` after the `-O2` fold, so
+removing it removes more. The array clause failed from the other side: at a
+tight budget the whole quantized energy is so small, a 6 KB scratchpad at 6.4 pJ
+a read, that 1.0025 pJ MACs are up to a quarter of it. And `dilated_stack`'s
+`phi` is above 1.5 because its crossings sit on the compute timeline beside
+its largest convolution, so without the packing the program is 13 percent
+slower than fp32 rather than level with it.
+
+### The battery, and the one row it got wrong
+
+Predicted before it ran, at `408cf17`: every row met except the pytest count,
+1450 where 1449 was predicted, and the CI shape's 1434 where 1433 was. The
+missing case is the cost model mirror's `test_the_values_agree`, which is
+parametrized over the header's constants and so gains a case for every constant
+added; the arithmetic counted the new tests by file and missed it. The baseline
+check before the record moved suites only, and coverage held every threshold.
+
+### Two questions for the owner
+
+- **The packing's geometry.** The int8 charge is the fp32 charge at four times
+  the peak with the fp32 tile shape, which amounts to packing four activation
+  rows through one stationary weight. Section 5.5 says four int8 multiplies per
+  fp32 lane and does not say along which axis. Packed along the reduction axis,
+  where four int8 activations fill one 32 bit word and one int32 accumulator
+  takes their sum, a layer with fewer than 64 reduction terms would not fill
+  the packed tile, and a depthwise layer, nine terms per group, would gain
+  nothing from the packing. Every figure above is bounded by the two columns
+  either side of it: the int8 cycles with the packing as charged, and without
+  it. Changing the charge would move the quantized cycles and nothing fp32.
+- **The scratchpad's int8 accesses.** An int8 element is one 32 bit access, as
+  declared, which does not flatter the quantized energy; packed four to a word,
+  consistently with the throughput assumption, the scratchpad's share of the
+  quantized energy would fall by up to four times.
+
+### What is next
+
+The baseline's record, which gives its coefficient table the int8 action. Then
+item 5, the 63 quantized cells.
