@@ -4848,3 +4848,70 @@ their record.
   inline name, and an alias chain is followed to its end. The comparison is run
   again at the fix and has to find no field moved outside the ones a re-record
   always moves.
+
+- **The fix landed in `7c75ab8`**, and the comparison at it found no field
+  moved. The record of the 217 cells is `408cf17`.
+
+- **Why P3's byte identity proof could not see it, at length.** `ff36b1f` was
+  proved against four things: all 217 binaries, with and without the debug
+  section; the 28 golden tensors; the regression baseline's 42 cells; and the
+  98 model IR files. **Each of the first three is downstream of a single reader
+  of the location, or of none.** The binary's only use of a location is the
+  debug section, and the encoder writes a fused location's first name there, so
+  the debug section was byte identical by construction and said nothing about
+  any other reader. The goldens are output tensors and the baseline's cells
+  are counts; neither carries a name. **The fourth did see the change**: eight
+  model IR files differed from their parents, and the verification recorded
+  them as differing "in location text only", without asking which programs
+  read location text. Two do, and neither is the encoder.
+
+- **Every reader of a location in this repository**, found by searching the
+  sources for every place a location is constructed, cast or parsed:
+  - `lib/Encoding/InstructionEncoder.cpp`, the debug section: a name location
+    or a fused location's first name. Byte identical across `ff36b1f`.
+  - `lib/Dialect/NPU/Transforms/Calibrate.cpp`: the first name for the node the
+    profile describes, the last for the tensor a fold made the operation write.
+    The reader P3 was written for.
+  - `FuseBias.cpp` and `FoldBatchNorm.cpp`, the writers.
+  - MLIR's own diagnostics, which print a location as text and are recorded
+    nowhere.
+  - `python/npu_frontend/npuisa_walk.py`, which the SCALE-Sim export, the
+    roofline and the cost model mirror's tests read layer names through. This
+    entry's defect, fixed in `7c75ab8`.
+  - **`experiments/zigzag_same_mapping.py`, the same defect a second time**,
+    found by this search rather than by a test. It parses the tensor level
+    program with its own regular expression for a plain name location, in two
+    places, and falls back to the alias id. At this tree it names
+    `conv_bn_relu_stack`'s folded convolutions `loc10` and `loc11` at `-O2`,
+    and `dilated_stack`'s `loc11`. Its committed artefacts under
+    `experiments/results-zigzag/` were recorded at `101cb17`, before
+    `ff36b1f`, so not one of them moved; a re-run would have renamed
+    `conv_bn_relu_stack`'s `conv1` mappings, and could have failed the join
+    between a tiled program and its untiled twin, whose alias numbers need not
+    agree. Fixed in the commit that follows this paragraph, by giving both
+    readers one resolver.
+  - The tests that resolve a location: `test_quantized_contraction.py`'s
+    weight scale oracle reads plain name aliases at `-O0`, where no fused
+    location exists; `test_compile_driver.py` asserts that locations survive
+    to the instruction level. Neither reads a folded program's names.
+
+- **What in a result file or a binary can carry a location.** In a result
+  cell, exactly four lists, each entry's `name`: `scalesim_cycles_per_layer`,
+  `scalesim_skipped` and `scalesim_approximations` under `external`, and
+  `roofline_bound_cycles_per_layer` under `roofline`, every one of them from
+  the walker. Nothing else in the schema does: `passes` carry pass names,
+  `npuisa_op_counts` carry mnemonics, and `per_layer_sqnr_db` and
+  `tiling_choices` are null. In a binary, only the debug section, one name per
+  instruction. Beside the cells, `experiments/results-zigzag/` carries
+  ZigZag's names, and `experiments/models/` carries the IR text itself.
+
+- **The shape, which is the reason to keep this entry.** A check that covers
+  the binary does not cover every reader of the IR. The binary was proved
+  identical and taken as the whole of what the compiler produces, while two
+  Python programs read the IR text independently, each with its own idea of
+  what a location is, and an artefact a third program writes from them, the
+  result cells, was not regenerated until a later item needed it. **A change to
+  what the IR carries, locations included, is verified against every consumer
+  of that IR**, and regenerating the artefacts those consumers write is part of
+  the proof, not a later phase's job. The same shape as D-0067's gate that read
+  a stale build artefact: the check was sound and its coverage was not.
