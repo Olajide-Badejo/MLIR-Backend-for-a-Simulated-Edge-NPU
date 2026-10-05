@@ -803,6 +803,7 @@
   "energy_per_action_pj": {
     "1048576": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -816,6 +817,7 @@
     },
     "194624": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -829,6 +831,7 @@
     },
     "200832": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -842,6 +845,7 @@
     },
     "6144": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -855,6 +859,7 @@
     },
     "6464": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -868,6 +873,7 @@
     },
     "8064": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -881,6 +887,7 @@
     },
     "8192": {
       "mac_array": {
+        "int8_mac": 1.0025,
         "mac": 49.286
       },
       "main_memory": {
@@ -898,7 +905,7 @@
     "scalesim_source_tree_present": true
   },
   "generator_version": "1.1.0",
-  "git_sha": "eeb02cb83b8f07028c44f588b30ad284c0f8e898",
+  "git_sha": "c3b77e9f1877a157f296eb87fc976fc247d98dbd",
   "levels": [
     0,
     1,
@@ -1109,7 +1116,7 @@
     "NPUSimulatorTests": {
       "failed": 0,
       "failures": [],
-      "passed": 80,
+      "passed": 82,
       "skipped": 1,
       "tests": [
         "Control.NopAdvancesAndHaltStops",
@@ -1126,6 +1133,7 @@
         "CostModel.MacsAreRawAndTheOccupancyIsBeside",
         "CostModel.OverlapFractionReachesItsEndpoints",
         "CostModel.TheDmaChargeHasThreeTerms",
+        "CostModel.TheInt8PackingIsExactlyTheRatioOfThePeaks",
         "CostModel.TheWeightPreloadIsChargedOncePerFold",
         "Determinism.OneThreadAndMaxThreadsAgreeBitwise",
         "Determinism.TheCycleCountDoesNotDependOnTheThreadCount",
@@ -1184,6 +1192,7 @@
         "Timelines.EveryInstructionPaysTheIssueOverhead",
         "Timelines.IndependentStreamsOverlapCompletely",
         "Timelines.SinglePortReproducesTheSum",
+        "Timelines.TheInt8PackingIsSeparable",
         "Trap.AMisalignedAddressTrapsGracefully",
         "Trap.AnInstructionWithTooFewOperandsTrapsGracefully",
         "Trap.AnOutOfRangeOperandAddressTrapsGracefully",
@@ -1296,17 +1305,19 @@
     "pytest": {
       "failed": 0,
       "failures": [],
-      "passed": 1445,
+      "passed": 1451,
       "skipped": 18,
       "tests": [
         "test.Python.test_accelergy_energy::test_a_null_scratchpad_count_raises_rather_than_becoming_zero",
         "test.Python.test_accelergy_energy::test_a_partial_dram_access_is_paid_in_full",
         "test.Python.test_accelergy_energy::test_a_run_that_writes_no_output_is_refused",
+        "test.Python.test_accelergy_energy::test_every_mac_is_charged_once_at_the_arithmetic_it_ran_in",
         "test.Python.test_accelergy_energy::test_the_architecture_carries_the_pinned_node_and_clock",
         "test.Python.test_accelergy_energy::test_the_array_area_is_scaled_by_this_project_and_the_energy_is_not",
         "test.Python.test_accelergy_energy::test_the_cached_table_gives_the_same_answer_as_a_fresh_run",
         "test.Python.test_accelergy_energy::test_the_energy_path_never_sees_the_scaled_count",
         "test.Python.test_accelergy_energy::test_the_estimator_list_is_read_from_the_tool_and_not_written_here",
+        "test.Python.test_accelergy_energy::test_the_int8_mac_passes_the_sanity_check_and_adds_no_area",
         "test.Python.test_accelergy_energy::test_the_sanity_check_of_section_16_4_including_where_it_does_not_pass",
         "test.Python.test_accelergy_energy::test_the_schema_block_carries_no_null_reason",
         "test.Python.test_accelergy_energy::test_the_scratchpad_depth_is_rounded_up_and_never_down",
@@ -1458,6 +1469,7 @@
         "test.Python.test_cost_model_mirror::test_the_values_agree[kDmaStridedElementCycles]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kDramBandwidthBytesPerCycle]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kElementwiseLaneWidth]",
+        "test.Python.test_cost_model_mirror::test_the_values_agree[kI8MacsPerLane]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kIssueOverheadCycles]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kPeakMacsPerCycleF32]",
         "test.Python.test_cost_model_mirror::test_the_values_agree[kPeakMacsPerCycleI8]",
@@ -2613,6 +2625,7 @@
         "test.Python.test_result_schema::test_a_null_without_a_reason_is_refused",
         "test.Python.test_result_schema::test_a_path_that_is_not_a_field_raises",
         "test.Python.test_result_schema::test_a_quantized_cell_counts_each_quant_and_dequant_as_one_crossing",
+        "test.Python.test_result_schema::test_a_quantized_cell_records_its_cycles_without_the_packing",
         "test.Python.test_result_schema::test_a_reason_cannot_be_invented_at_the_call_site",
         "test.Python.test_result_schema::test_a_result_is_written_atomically",
         "test.Python.test_result_schema::test_a_timing_object_needs_ten_whole_pipeline_repetitions",
@@ -2652,6 +2665,7 @@
         "test.Python.test_roofline::test_the_walk_reproduces_the_machines_totals[lenet-O2-default-n1-fp32-normal]",
         "test.Python.test_roofline::test_the_walker_reads_the_asynchronous_transfer_forms",
         "test.Python.test_roofline::test_the_walker_refuses_an_operation_it_does_not_know",
+        "test.Python.test_scalesim_export::test_a_fused_location_names_its_layer_by_its_first_name",
         "test.Python.test_scalesim_export::test_a_grouped_convolution_becomes_one_row_per_group",
         "test.Python.test_scalesim_export::test_a_matmul_maps_to_one_gemm_shaped_row",
         "test.Python.test_scalesim_export::test_a_report_with_a_moved_column_order_is_refused",
@@ -2745,6 +2759,7 @@
         "test.Python.test_transform_passes::test_sccp_has_nothing_to_do_on_a_single_function",
         "test.Python.test_transform_passes::test_the_bias_fusion_is_a_saving_and_not_a_rearrangement",
         "test.Python.test_transform_passes::test_the_suite_gives_the_bias_fusion_exactly_one_target",
+        "test.Python.test_zigzag_same_mapping::test_a_folded_layer_is_named_by_its_own_name",
         "test.Python.test_zigzag_same_mapping::test_a_mapping_attribute_that_lost_a_field_is_refused",
         "test.Python.test_zigzag_same_mapping::test_a_reduction_that_does_not_factorise_fills_less_than_the_array",
         "test.Python.test_zigzag_same_mapping::test_an_ordering_that_does_not_multiply_out_is_refused",
