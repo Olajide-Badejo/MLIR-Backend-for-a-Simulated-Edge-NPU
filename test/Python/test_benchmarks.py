@@ -80,6 +80,7 @@ def test_the_planned_cells_are_the_computed_cross_product(built: None) -> None:
         for budget, batch in combinations:
             for level in levels:
                 expected.add(f"{model}-O{level}-{budget}-n{batch}-fp32-normal")
+                expected.add(f"{model}-O{level}-{budget}-n{batch}-int8-normal")
         for budget in ("default", "tight"):
             for ablated in ablatable:
                 expected.add(
@@ -94,8 +95,11 @@ def test_the_counts_are_what_adr_0010_says(built: None) -> None:
     """The arithmetic, written out once so a change to the rule is visible.
 
     Seven models times three levels times three budget and batch combinations is
-    63 benchmark cells; eleven ablatable passes times seven models times two
-    budgets is 154 ablation cells; 217 in total.
+    63 benchmark cells, once in fp32 and once quantized; eleven ablatable passes
+    times seven models times two budgets is 154 ablation cells, fp32 only; 280
+    in total. *280 since P14's quantized cells, where it was 217.* Section 2's
+    84 is the free cross product of budgets and batches, which ADR 0010 takes
+    21 from.
 
     **Eleven from P13, and the eight it replaces was never the whole of Section
     2's disagreement with this file.** `-npu-assign-layout`,
@@ -110,12 +114,19 @@ def test_the_counts_are_what_adr_0010_says(built: None) -> None:
     """
     cells = run_benchmarks.planned_cells()
     ablation = [cell for cell in cells if cell.key.ablated_pass is not None]
-    benchmark = [cell for cell in cells if cell.key.ablated_pass is None]
+    benchmark = [
+        cell
+        for cell in cells
+        if cell.key.ablated_pass is None and not cell.key.quantized
+    ]
+    quantized = [cell for cell in cells if cell.key.quantized]
 
     assert len(ablatable_passes(2)) == 11
     assert len(benchmark) == len(MODELS) * len(implemented_levels()) * 3 == 63
+    assert len(quantized) == len(benchmark) == 63
+    assert all(cell.key.ablated_pass is None for cell in quantized)
     assert len(ablation) == 11 * len(MODELS) * 2 == 154
-    assert len(cells) == 217
+    assert len(cells) == 63 + 63 + 154 == 280
 
 
 def test_every_ablatable_pass_has_a_row_at_every_budget(built: None) -> None:
@@ -486,7 +497,7 @@ def test_the_committed_run_records_its_own_measured_cost() -> None:
     if not runtime.is_file():
         pytest.skip("no run recorded yet; run experiments/run_benchmarks.py")
     recorded = json.loads(runtime.read_text(encoding="utf-8"))
-    assert recorded["cells_total"] == 217
+    assert recorded["cells_total"] == 280
     assert recorded["seconds_per_cell"] > 0.0
     assert recorded["budget_minutes"] == 90.0
     assert (

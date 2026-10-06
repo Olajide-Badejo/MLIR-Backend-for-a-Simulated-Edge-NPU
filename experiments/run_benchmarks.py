@@ -10,9 +10,18 @@
 ## The cells, computed and never written out
 
 **Benchmark cells:** 7 models times 3 levels times 3 budget and batch
-combinations, which is **63**. **Ablation cells:** the ablatable `-O2` set, read
-from the driver at run time, times 7 models times 2 budgets, which is 11 times 7
-times 2 and therefore **154**. **217 in total.**
+combinations, which is **63**, once in fp32 and once quantized, **126**.
+**Ablation cells:** the ablatable `-O2` set, read from the driver at run time,
+times 7 models times 2 budgets, which is 11 times 7 times 2 and therefore
+**154**, fp32 only. **280 in total.**
+
+**The quantized half is the fp32 benchmark grid with `quantized` set**, as ruled
+on 2026-09-30: the model calibrated from its committed profile under
+`experiments/calibration/`, compiled through the QDQ contraction, run twice so
+that the int8 packing assumption's share of its cycles is separable, and held
+against its fp32 twin at the same model, level, budget and batch. It was 217
+before P14's quantized cells. Section 2's 84 benchmark cells are the free cross
+product of budgets and batches, which ADR 0010 takes 21 from.
 
 One of those numbers differs from Section 2's arithmetic and the difference is
 recorded rather than reconciled away.
@@ -101,6 +110,7 @@ happen is caught by measurement rather than trusted to a flag.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -217,6 +227,12 @@ INPUT_CLASS = "normal"
 #: state the sha of the commit that contains it.
 ABLATION_PREDICTION = "p10-ablation-deltas"
 
+#: The prediction every quantized cell is evidence for. *Added at P14.*
+QUANTIZED_PREDICTION = "p14-quantized-cells"
+
+#: Where each model's committed calibration profile is.
+PROFILES_DIR = Path(__file__).resolve().parents[1] / "experiments" / "calibration"
+
 #: The allocator's own attributes, read back off the allocated function.
 _ATTRIBUTE = re.compile(r"npuisa\.(\w+) = ([-0-9.e+]+)")
 
@@ -326,6 +342,40 @@ def budgets_and_batches(model: str) -> list[tuple[str, int, int]]:
     return combinations
 
 
+def calibration_methodology(model: str) -> dict[str, Any]:
+    """What a quantized cell's `calibration_methodology_version` records.
+
+    *Added at P14.* The methodology is the one `docs/PASSES.md` writes down in
+    one place, and what makes a quantized number reproducible is the profile it
+    was calibrated from and the four options the pipeline read it with. The
+    profile is named by path and pinned by its sha256, so a profile rebuilt with
+    different draws cannot be mistaken for the one this cell measured. The
+    options are the pipeline's defaults, which `compile_model` passes when it
+    is given none, and they are written here rather than read back because the
+    compiler does not report them.
+    """
+    path = PROFILES_DIR / f"{model}.json"
+    if not path.is_file():
+        raise BenchmarkError(
+            f"{path} is missing, so {model} has no quantized cells. The profiles "
+            f"are committed per model; scripts/build-calibration-profiles.py "
+            f"writes them."
+        )
+    raw = path.read_bytes()
+    document = json.loads(raw)
+    return {
+        "profile": f"experiments/calibration/{model}.json",
+        "profile_sha256": hashlib.sha256(raw).hexdigest(),
+        "profile_schema_version": int(document["schema_version"]),
+        "calibration_inputs": int(document["inputs"]),
+        "calibration_seed": int(document["seed"]),
+        "calib_method": "minmax",
+        "weight_granularity": "per-channel",
+        "requant_mode": "fixed",
+        "methodology": "docs/PASSES.md, the calibration methodology in one place",
+    }
+
+
 def planned_cells(models: list[str] | None = None) -> list[Cell]:
     """The cell set, computed from the registries and the compiler.
 
@@ -343,20 +393,25 @@ def planned_cells(models: list[str] | None = None) -> list[Cell]:
     cells: list[Cell] = []
 
     for model in names:
-        for budget_name, budget_bytes, batch in budgets_and_batches(model):
-            for level in levels:
-                cells.append(
-                    Cell(
-                        key=CellKey(
-                            model=model,
-                            opt_level=level,
-                            scratchpad_budget=budget_name,
-                            batch=batch,
-                            input_class=INPUT_CLASS,
-                        ),
-                        budget_bytes=budget_bytes,
+        # The fp32 benchmark grid, and its quantized mirror, ruled on 2026-09-30:
+        # the same models, levels, budgets and batches, with ablations fp32
+        # only.
+        for quantized in (False, True):
+            for budget_name, budget_bytes, batch in budgets_and_batches(model):
+                for level in levels:
+                    cells.append(
+                        Cell(
+                            key=CellKey(
+                                model=model,
+                                opt_level=level,
+                                scratchpad_budget=budget_name,
+                                batch=batch,
+                                input_class=INPUT_CLASS,
+                                quantized=quantized,
+                            ),
+                            budget_bytes=budget_bytes,
+                        )
                     )
-                )
 
         # Section 16.2: an ablation row for every ablatable `-O2` pass **at every
         # budget**, because passes can behave oppositely at a tight budget and a
@@ -474,7 +529,8 @@ class Runner:
         self._hash = hash_of_sources
         self._onnx: dict[tuple[str, int], Path] = {}
         self._sessions: dict[tuple[str, int], ort.InferenceSession] = {}
-        self._references: dict[tuple[str, str, int], Reference] = {}
+        self._references: dict[tuple[str, str, int, bool], Reference] = {}
+        self._twins: dict[tuple[str, int, str, int], Reference] = {}
         self._tool_versions = tool_versions()
         self._git_sha = git_sha()
         # `landing_sha` refuses in a shallow checkout rather than returning the
@@ -513,6 +569,12 @@ class Runner:
                 f"so no cell can name a prediction_sha for the SCALE-Sim "
                 f"numbers it now carries."
             )
+        self._quantized_sha = landing_sha(QUANTIZED_PREDICTION)
+        if self._quantized_sha is None:
+            raise BenchmarkError(
+                f"the prediction {QUANTIZED_PREDICTION!r} is not in any commit, "
+                f"so no quantized cell can name a prediction_sha for it."
+            )
 
     # ---- the pieces a cell needs ----------------------------------------
 
@@ -531,16 +593,28 @@ class Runner:
         return self._sessions[key]
 
     def reference(
-        self, model: str, budget: str, budget_bytes: int, batch: int
+        self,
+        model: str,
+        budget: str,
+        budget_bytes: int,
+        batch: int,
+        *,
+        quantized: bool = False,
     ) -> Reference:
-        """The unablated `-O0` answer for the same model, budget and batch."""
-        key = (model, budget, batch)
+        """The unablated `-O0` answer for the same model, budget and batch.
+
+        Quantized when the cell is, *since P14*, so that a quantized cell's
+        movement against `-O0` is the movement of the integer program across
+        levels rather than its quantization error, which has a field of its own.
+        """
+        key = (model, budget, batch, quantized)
         if key not in self._references:
             program = compile_model(
                 self.onnx(model, batch),
                 level=0,
                 emit="nbin",
                 budget=budget_bytes,
+                calibrate=(str(PROFILES_DIR / f"{model}.json") if quantized else None),
             )
             assert program.binary is not None
             arrays = make_inputs(
@@ -552,12 +626,41 @@ class Runner:
             )
         return self._references[key]
 
+    def twin(
+        self, model: str, level: int, budget: str, budget_bytes: int, batch: int
+    ) -> Reference:
+        """The fp32 answer at the same model, level, budget and batch.
+
+        *Added at P14.* A quantized cell's `sqnr_db_vs_fp32_simulated` and
+        `max_abs_error_vs_fp32_simulated` are taken against it, which is what
+        makes them isolate the quantization error from every other source: the
+        two programs differ in their arithmetic and in nothing the level, the
+        budget or the batch did.
+        """
+        key = (model, level, budget, batch)
+        if key not in self._twins:
+            program = compile_model(
+                self.onnx(model, batch), level=level, emit="nbin", budget=budget_bytes
+            )
+            assert program.binary is not None
+            arrays = make_inputs(
+                INPUT_CLASS, program.input_shapes, model=model, batch=batch
+            )
+            answer = run_program(program.binary, arrays, program.output_shapes)
+            self._twins[key] = Reference(
+                outputs=[array.copy() for array in answer.outputs]
+            )
+        return self._twins[key]
+
     # ---- one cell --------------------------------------------------------
 
     def run(self, cell: Cell, position: int, seed: int) -> dict[str, Any]:
         key = cell.key
         onnx = self.onnx(key.model, key.batch)
-        expected = expected_passes(key.opt_level, ablated=key.ablated_pass)
+        expected = expected_passes(
+            key.opt_level, ablated=key.ablated_pass, calibrated=key.quantized
+        )
+        profile = str(PROFILES_DIR / f"{key.model}.json") if key.quantized else None
 
         stats_path = self._work / f"{cell.name}.stats.json"
         compile_samples: list[float] = []
@@ -579,6 +682,7 @@ class Runner:
                 ablate=key.ablated_pass,
                 pass_stats_json=stats_path,
                 mlir_timing=(trial == 0),
+                calibrate=profile,
             )
             compile_samples.append((time.perf_counter() - started) * 1000.0)
 
@@ -703,7 +807,11 @@ class Runner:
                 worst_relative = max(worst_relative, float(difference.max()) / scale)
 
         reference = self.reference(
-            key.model, key.scratchpad_budget, cell.budget_bytes, key.batch
+            key.model,
+            key.scratchpad_budget,
+            cell.budget_bytes,
+            key.batch,
+            quantized=key.quantized,
         )
         movement = 0.0
         noise = 0.0
@@ -715,6 +823,26 @@ class Runner:
             noise += float(np.square(wide - reference_wide).sum())
             signal += float(np.square(reference_wide).sum())
 
+        # A quantized cell's two quantization fields are taken against its fp32
+        # twin, and its movement against the quantized `-O0` answer above.
+        twin_error = 0.0
+        if key.quantized:
+            twin = self.twin(
+                key.model,
+                key.opt_level,
+                key.scratchpad_budget,
+                cell.budget_bytes,
+                key.batch,
+            )
+            noise = 0.0
+            signal = 0.0
+            for got, base in zip(produced, twin.outputs, strict=True):
+                wide = got.astype(np.float64)
+                twin_wide = base.astype(np.float64)
+                twin_error = max(twin_error, float(np.abs(wide - twin_wide).max()))
+                noise += float(np.square(wide - twin_wide).sum())
+                signal += float(np.square(twin_wide).sum())
+
         accuracy: dict[str, Any] = {
             "max_abs_error_vs_onnxruntime": worst_absolute,
             "max_rel_error_vs_onnxruntime": worst_relative,
@@ -725,7 +853,9 @@ class Runner:
             "ranking_metric": RANKING_METRIC,
         }
 
-        is_the_reference = key.opt_level == 0 and key.ablated_pass is None
+        is_the_reference = (
+            key.opt_level == 0 and key.ablated_pass is None and not key.quantized
+        )
         if is_the_reference:
             accuracy.update(null("sqnr_db_vs_fp32_simulated"))
         elif noise == 0.0:
@@ -735,8 +865,12 @@ class Runner:
                 np.log10(signal / noise)
             )
 
-        accuracy.update(null("per_layer_sqnr_db"))
-        accuracy.update(null("max_abs_error_vs_fp32_simulated"))
+        if key.quantized:
+            accuracy.update(null("per_layer_sqnr_db", cause="quantized"))
+            accuracy["max_abs_error_vs_fp32_simulated"] = twin_error
+        else:
+            accuracy.update(null("per_layer_sqnr_db"))
+            accuracy.update(null("max_abs_error_vs_fp32_simulated"))
         return accuracy
 
     @staticmethod
@@ -870,7 +1004,12 @@ class Runner:
             "tool_versions": self._tool_versions,
         }
         manifest.update(host_manifest())
-        manifest.update(null("calibration_methodology_version"))
+        if key.quantized:
+            manifest["calibration_methodology_version"] = calibration_methodology(
+                key.model
+            )
+        else:
+            manifest.update(null("calibration_methodology_version"))
         manifest.update(null("technology_node"))
         manifest.update(null("tool_shas"))
         manifest.update(null("registered_estimators"))
@@ -879,9 +1018,19 @@ class Runner:
         # row, and the unablated `-O2` cells its deltas are taken against. Every
         # other cell carries null for both fields, which Section 16.1 calls
         # legitimate and common in those words.
-        names_prediction = key.ablated_pass is not None or (
-            key.opt_level == 2 and key.batch == declared_batch(key.model)
+        names_prediction = not key.quantized and (
+            key.ablated_pass is not None
+            or (key.opt_level == 2 and key.batch == declared_batch(key.model))
         )
+        if key.quantized:
+            prediction_id: str | None = QUANTIZED_PREDICTION
+            prediction_sha: str | None = self._quantized_sha
+        elif names_prediction:
+            prediction_id = ABLATION_PREDICTION
+            prediction_sha = self._prediction_sha
+        else:
+            prediction_id = None
+            prediction_sha = None
 
         return {
             "schema_version": SCHEMA_VERSION,
@@ -898,8 +1047,8 @@ class Runner:
             "passes": passes,
             "simulation": simulation,
             "roofline": roofline,
-            "prediction_id": ABLATION_PREDICTION if names_prediction else None,
-            "prediction_sha": self._prediction_sha if names_prediction else None,
+            "prediction_id": prediction_id,
+            "prediction_sha": prediction_sha,
             "normalized": normalized,
             "external": external,
             "accuracy": accuracy,

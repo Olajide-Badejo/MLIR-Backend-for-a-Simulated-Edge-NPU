@@ -518,6 +518,9 @@ def test_the_calibration_runs_where_the_level_puts_it(
     assert names.count("npu-calibrate") == 1
     at = names.index("npu-calibrate")
     assert names[:at] + names[at + 1 :] == expected_passes(level, ablated=ablate)
+    # And the benchmark harness's statement of the same rule, which is what a
+    # quantized cell's pass list is checked against.
+    assert names == expected_passes(level, ablated=ablate, calibrated=True)
 
     if level < 2:
         assert at == 0

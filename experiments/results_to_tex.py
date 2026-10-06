@@ -115,7 +115,12 @@ def results_sha(cells: list[dict[str, Any]]) -> str:
 def macros(cells: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Every macro this file emits, as (name, body) in emission order."""
     by_name = {cell["cell"]["name"]: cell for cell in cells}
-    plain = [cell for cell in cells if cell["cell"]["ablated_pass"] is None]
+    plain = [
+        cell
+        for cell in cells
+        if cell["cell"]["ablated_pass"] is None and not cell["cell"]["quantized"]
+    ]
+    quantized = [cell for cell in cells if cell["cell"]["quantized"]]
 
     entries: list[tuple[str, str]] = [
         (SHA_MACRO, results_sha(cells)),
@@ -146,6 +151,36 @@ def macros(cells: list[dict[str, Any]]) -> list[tuple[str, str]]:
             (
                 f"{stem}MaxAbsErrorVsOnnxruntime",
                 _scientific(cell["accuracy"]["max_abs_error_vs_onnxruntime"]),
+            )
+        )
+
+    # The quantized cells, *since P14*, at the same budget and batch, with the
+    # two figures only they carry: the cycles without the int8 packing, which
+    # separate the packing's share of the win, and the boundary crossings.
+    for cell in quantized:
+        key = cell["cell"]
+        if key["scratchpad_budget"] != "default":
+            continue
+        if key["batch"] != _declared_batch(by_name, key["model"]):
+            continue
+        stem = macro_name(key["model"], f"O{key['opt_level']}", "int8")
+        simulation = cell["simulation"]
+        entries.append((f"{stem}Instructions", str(cell["instruction_count"])))
+        entries.append((f"{stem}Cycles", _number(simulation["simulated_cycles"])))
+        entries.append(
+            (
+                f"{stem}CyclesWithoutPacking",
+                _number(simulation["simulated_cycles_without_int8_packing"]),
+            )
+        )
+        entries.append(
+            (f"{stem}Crossings", str(simulation["quant_boundary_crossings"]))
+        )
+        entries.append((f"{stem}DramBytes", str(simulation["dram_bytes_total"])))
+        entries.append(
+            (
+                f"{stem}SqnrDbVsFpSimulated",
+                _number(cell["accuracy"]["sqnr_db_vs_fp32_simulated"]),
             )
         )
 

@@ -89,8 +89,10 @@ times 3 levels times 3 budget and batch combinations, which is 63 benchmark
 cells, plus the ablatable `-O2` set times 7 models times 2 budgets at the
 declared batch. **This decision fixes the 63 and nothing else**: the ablation
 half is however many ablatable passes the driver reports, which was 8 and 112
-when this record was written and is 11 and 154 from P13, for 217 in total. The
-number this ADR is about is the 63.
+when this record was written and is 11 and 154 from P13, for 217 in total. P14
+adds the quantized mirror of the 63, the same models, levels, budgets and
+batches with the model calibrated, for 280 in total. The number this ADR is
+about is the 63.
 
 **No constant in ADR 0008 moves and none is added.** The alternative considered
 and rejected was to extend the 64 byte sweep to batch 4 and record seven more
@@ -111,7 +113,8 @@ is exactly the unverifiable number ground rule 1 forbids.
   product would give. The count is computed from this rule rather than written
   down, so it moves when the rule or the model suite does, and it did not move
   at P13 when the ablatable set went from 8 to 11 and the suite from 175 cells
-  to 217.
+  to 217. The quantized mirror P14 added is 63 cells by the same rule, which
+  took the suite to 280.
 - Every ablation row's `baseline_cell` is a cell the same run measured, because
   ablation cells and their baselines share the declared batch. `fill_deltas`
   refuses a row whose baseline is missing, so this is checked rather than assumed.

@@ -430,12 +430,21 @@ def test_at_least_one_committed_result_names_a_prediction() -> None:
     divergence = [
         cell for cell in naming if cell["prediction_id"] == "p11-scalesim-divergence"
     ]
+    # **Three from P14**: every quantized cell is evidence for the prediction of
+    # the quantized cells, and no fp32 cell is.
+    quantized = [
+        cell for cell in naming if cell["prediction_id"] == "p14-quantized-cells"
+    ]
     assert {cell["prediction_id"] for cell in naming} == {
         "p10-ablation-deltas",
         "p11-scalesim-divergence",
+        "p14-quantized-cells",
     }
-    for group in (ablation, divergence):
+    for group in (ablation, divergence, quantized):
         assert len({cell["prediction_sha"] for cell in group}) == 1
+    assert len(quantized) == 63
+    assert all(cell["cell"]["quantized"] for cell in quantized)
+    assert not any(cell["cell"]["quantized"] for cell in ablation + divergence)
 
     # Every ablation row is evidence for the deltas, and so is each unablated
     # `-O2` cell they are taken against. Counted rather than asserted loosely, so
@@ -454,7 +463,7 @@ def test_at_least_one_committed_result_names_a_prediction() -> None:
     # And every remaining cell names the divergence prediction, which is what
     # "every cell carries a SCALE-Sim number" means when it is checked rather
     # than said.
-    assert len(divergence) == len(results) - 168
+    assert len(divergence) == len(results) - 168 - 63
     assert all(cell["cell"]["ablated_pass"] is None for cell in divergence)
 
 

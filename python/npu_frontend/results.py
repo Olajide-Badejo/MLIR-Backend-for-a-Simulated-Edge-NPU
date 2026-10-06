@@ -513,6 +513,13 @@ NULL_REASONS: Final[dict[str, str]] = {
         "and every cell here is fp32, so its value would be exactly zero for a "
         "reason that has nothing to do with what it measures."
     ),
+    "per_layer_sqnr_db.quantized": (
+        "this cell is quantized and the figure is not measured. The machine "
+        "returns only a program's declared outputs, so a per layer ratio would "
+        "need a program per layer; the end to end ratio beside it, against the "
+        "fp32 twin, is the one recorded, and a per layer figure estimated from "
+        "anything else would be a number this project did not measure."
+    ),
     # Two causes, because this field has two legitimate ways to be null and one
     # string covering both would tell a reader less than the field does. See
     # `null()` for how a cause is named at the call site without a reason being

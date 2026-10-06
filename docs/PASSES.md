@@ -90,8 +90,10 @@ they land.
 | `-npu-calibrate` | none | no | P14 | implemented |
 
 **Eleven ablatable, which is Section 12's own number.** The three P13 rows went
-into `-O2` in one commit, so the ablatable set is eleven, the suite is 217 cells
-and the ablation half of Section 2's arithmetic agrees exactly at 154.
+into `-O2` in one commit, so the ablatable set is eleven and the ablation half
+of Section 2's arithmetic agrees exactly at 154. The suite was 217 cells from
+there, and is 280 from P14, when the fp32 benchmark grid gained its quantized
+mirror; ablation cells stay fp32 only.
 `-npu-calibrate` is quantized mode only and never in a default `-O` level,
 which is why eleven rather than twelve: it exists, it has a row above, and no
 `-O` level runs it. The table's order is the order `-O2` runs them, which

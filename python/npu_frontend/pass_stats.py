@@ -131,7 +131,11 @@ class PassRecord:
 
 
 def expected_passes(
-    level: int, *, stage: str = "npuisa", ablated: str | None = None
+    level: int,
+    *,
+    stage: str = "npuisa",
+    ablated: str | None = None,
+    calibrated: bool = False,
 ) -> list[str]:
     """The pass arguments a level runs, in order, as the compiler describes it.
 
@@ -142,6 +146,14 @@ def expected_passes(
     the argument is `canonicalize` at `-O2`. That mirrors `build()` in
     `lib/Pipeline/Pipeline.cpp`, and it mirrors it by reading the same two
     fields out of the same table rather than by reimplementing the decision.
+
+    `calibrated` adds `-npu-calibrate` where `build()` puts it when a profile is
+    named. *Added at P14 with the quantized cells.* The pass is in no level's
+    table, so its position cannot be read out of the description and is the
+    one rule here written down rather than read: after `-npu-fuse-ops` at a
+    level whose table has it, whether or not that row is ablated, and first at
+    a level whose table does not. `test_compile_driver.py` holds it against the
+    order the pass manager actually ran.
     """
     if stage not in ("npu", "npuisa"):
         raise PassStatisticsError(
@@ -158,12 +170,18 @@ def expected_passes(
         raise PassStatisticsError(f"-O{level} is not an optimization level")
 
     names: list[str] = []
+    after_fusion = any(entry["pass"] == "npu-fuse-ops" for entry in rows)
+    if calibrated and not after_fusion:
+        names.append("npu-calibrate")
     for entry in rows:
         if stage == "npu" and entry["stage"] != "npu":
             continue
-        if ablated is not None and entry["ablatable"] and entry["pass"] == ablated:
-            continue
-        names.append(str(entry["pass"]))
+        if not (
+            ablated is not None and entry["ablatable"] and entry["pass"] == ablated
+        ):
+            names.append(str(entry["pass"]))
+        if calibrated and entry["pass"] == "npu-fuse-ops":
+            names.append("npu-calibrate")
     return names
 
 

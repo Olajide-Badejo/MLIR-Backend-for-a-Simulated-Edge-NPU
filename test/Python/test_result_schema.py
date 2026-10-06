@@ -110,15 +110,15 @@ def test_an_fp32_cell_records_no_integer_arithmetic(
 ) -> None:
     """The two fields Section 14 gives meaning to, on every committed cell.
 
-    Every committed cell is fp32, and says so twice: `int8_macs` is the
-    simulator's count and is zero, and `quant_boundary_crossings` is a null with
-    the reason it has carried since P10, because a crossing count in a program
-    with no boundary would be a zero meaning something other than a quantized
-    cell's zero.
+    Every fp32 cell says so twice: `int8_macs` is the simulator's count and
+    is zero, and `quant_boundary_crossings` is a null with the reason it has
+    carried since P10, because a crossing count in a program with no boundary
+    would be a zero meaning something other than a quantized cell's zero.
     """
-    for result in results:
+    fp32 = [result for result in results if not result["cell"]["quantized"]]
+    assert len(fp32) == 217
+    for result in fp32:
         name = result["cell"]["name"]
-        assert result["cell"]["quantized"] is False, name
         simulation = result["simulation"]
         assert simulation["int8_macs"] == 0, name
         assert simulation["quant_boundary_crossings"] is None, name
@@ -138,14 +138,16 @@ def test_the_fp32_form_is_byte_for_byte_what_the_committed_files_carry(
 
     `quant_boundary_crossings` is now computed rather than written as a fixed
     null, and the fp32 half of that computation must produce exactly the two
-    keys every committed cell holds, or the next re-record would move 217 files
-    for a reason that is not a measurement.
+    keys every committed fp32 cell holds, or the next re-record would move 217
+    files for a reason that is not a measurement.
     """
     written = quant_boundary_crossings(
         quantized=False, npuisa_op_counts={"npuisa.quant": 3, "npuisa.dequant": 3}
     )
     written.update(int8_packing_cycles(quantized=False, cycles_without_packing=1234.5))
     for result in results:
+        if result["cell"]["quantized"]:
+            continue
         carried = {
             key: result["simulation"][key]
             for key in (
@@ -172,6 +174,37 @@ def test_a_quantized_cell_records_its_cycles_without_the_packing() -> None:
     }
     with pytest.raises(ResultSchemaError, match="f32 peak"):
         int8_packing_cycles(quantized=True, cycles_without_packing=None)
+
+
+def test_a_quantized_cell_records_what_only_a_quantized_cell_has(
+    results: list[dict[str, Any]],
+) -> None:
+    """The 63 quantized cells, each with the fields an fp32 cell leaves null.
+
+    *Added with them, at P14.* Every multiply accumulate is an int8 one, the
+    crossings are counted, the cycles without the packing are recorded and are
+    never below the cycles with it, the quantization error is measured against
+    the fp32 twin, and the calibration that produced the program is named and
+    pinned by the profile's sha256.
+    """
+    quantized = [result for result in results if result["cell"]["quantized"]]
+    assert len(quantized) == 63
+    for result in quantized:
+        name = result["cell"]["name"]
+        simulation = result["simulation"]
+        assert simulation["int8_macs"] == simulation["macs"] > 0, name
+        assert simulation["quant_boundary_crossings"] > 0, name
+        assert (
+            simulation["simulated_cycles_without_int8_packing"]
+            >= simulation["simulated_cycles"]
+        ), name
+        assert result["accuracy"]["max_abs_error_vs_fp32_simulated"] > 0.0, name
+        assert result["accuracy"]["sqnr_db_vs_fp32_simulated"] > 0.0, name
+        assert result["accuracy"]["per_layer_sqnr_db"] is None, name
+        methodology = result["manifest"]["calibration_methodology_version"]
+        assert methodology["profile"].endswith(f"{result['cell']['model']}.json")
+        assert len(methodology["profile_sha256"]) == 64
+        assert result["cell"]["ablated_pass"] is None, name
 
 
 def test_a_quantized_cell_counts_each_quant_and_dequant_as_one_crossing() -> None:
