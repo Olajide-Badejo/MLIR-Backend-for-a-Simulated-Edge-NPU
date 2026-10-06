@@ -391,3 +391,34 @@ def test_a_program_mixing_int8_and_f32_macs_is_refused_a_whole_bound() -> None:
     result["simulation"]["int8_macs"] = result["simulation"]["macs"] - 1
     with pytest.raises(roofline.RooflineError, match="no single peak"):
         roofline.roofline_for(result, text)
+
+
+def test_a_committed_quantized_cell_is_recompiled_from_its_profile() -> None:
+    """*D-0071.* The analysis recompiles a quantized cell as the program it was.
+
+    A result file carries the numbers and not the program, so the roofline and
+    the SCALE-Sim export recompile each cell. They did so from the model, batch,
+    level, budget and ablation, which a quantized cell shares with its fp32
+    twin, so every committed quantized cell was walked as its fp32 twin and the
+    walk's check refused it. The quantized program is the one the walk must see,
+    and the fp32 twin in the same compiler must still be the fp32 program.
+    """
+    tool("npu-opt")
+    quantized_path = RESULTS_DIR / "lenet-O2-default-n1-int8-normal.json"
+    twin_path = RESULTS_DIR / "lenet-O2-default-n1-fp32-normal.json"
+    if not (quantized_path.is_file() and twin_path.is_file()):
+        pytest.skip("the lenet -O2 pair is not committed in this checkout")
+    quantized = load_result(quantized_path)
+    twin = load_result(twin_path)
+
+    with tempfile.TemporaryDirectory(prefix="npu-roofline-test-") as directory:
+        compiler = roofline.Compiler(Path(directory))
+        quantized_text = compiler.allocated_ir(quantized)
+        twin_text = compiler.allocated_ir(twin)
+
+    assert quantized_text != twin_text
+    for result, text in ((quantized, quantized_text), (twin, twin_text)):
+        operations = npuisa_walk.attribute_transfers(npuisa_walk.walk(text), text)
+        npuisa_walk.check_against_result(operations, result)
+    answer = roofline.roofline_for(quantized, quantized_text)
+    assert answer.violations == []

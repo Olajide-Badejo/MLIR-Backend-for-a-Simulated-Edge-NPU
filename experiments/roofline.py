@@ -117,6 +117,10 @@ from npu_frontend.results import (  # noqa: E402
 )
 from npu_frontend.tolerances import ROOFLINE_RELATIVE_SLACK  # noqa: E402
 
+#: Where each model's committed calibration profile is, which is what a
+#: quantized cell was compiled from. *Added at D-0071.*
+PROFILES_DIR = REPO_ROOT / "experiments" / "calibration"
+
 #: Section 16.1's two verdicts, spelled once.
 AT_OR_ABOVE = "at_or_above_bound"
 BELOW = "below_bound"
@@ -289,14 +293,21 @@ class Compiler:
 
     A cell's roofline needs the program, and a result file records the numbers
     rather than the program. Recompiling is cheap and deterministic; caching on
-    the four things that decide the IR keeps the whole suite to one compile per
+    the things that decide the IR keeps the whole suite to one compile per
     distinct program rather than one per cell.
+
+    **A quantized cell is recompiled from its committed profile**, *since
+    D-0071*: the model, the batch, the level, the budget and the ablation do
+    not decide the program of a quantized cell, because its fp32 twin has all
+    five. Before it, every quantized cell was walked as its fp32 twin, and the
+    walk's check against the cell refused it, so no committed quantized cell
+    could be bounded or decomposed from the command line.
     """
 
     def __init__(self, work: Path) -> None:
         self._work = work
         self._onnx: dict[tuple[str, int], Path] = {}
-        self._ir: dict[tuple[str, int, int, int, str | None], str] = {}
+        self._ir: dict[tuple[str, int, int, int, str | None, bool], str] = {}
 
     def allocated_ir(self, result: dict[str, Any]) -> str:
         cell = result["cell"]
@@ -305,8 +316,9 @@ class Compiler:
         level = int(cell["opt_level"])
         budget = int(cell["scratchpad_budget_bytes"])
         ablated = cell["ablated_pass"]
+        quantized = bool(cell["quantized"])
 
-        key = (model, batch, level, budget, ablated)
+        key = (model, batch, level, budget, ablated, quantized)
         if key not in self._ir:
             onnx_key = (model, batch)
             if onnx_key not in self._onnx:
@@ -317,6 +329,7 @@ class Compiler:
                 emit="npuisa",
                 budget=budget,
                 ablate=ablated,
+                calibrate=(str(PROFILES_DIR / f"{model}.json") if quantized else None),
             )
             self._ir[key] = compiled.stages["npuisa"]
         return self._ir[key]
