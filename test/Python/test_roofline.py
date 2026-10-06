@@ -305,3 +305,89 @@ def test_the_schema_block_carries_no_null_reason() -> None:
     assert not any(key.endswith("_null_reason") for key in block)
     assert all(value is not None for value in block.values())
     assert block["roofline_verdict"] in {roofline.AT_OR_ABOVE, roofline.BELOW}
+
+
+def quantized_cell(model: str, level: int) -> tuple[dict, str]:
+    """A quantized program and the result fields the walk is checked against.
+
+    Compiled from the model's committed profile and run on the machine, with
+    the simulator's own counts in the shape a result cell carries them.
+    """
+    from npu_frontend import compile_model, generate_model, run_program
+    from npu_frontend.input_classes import make_inputs
+
+    profile = REPO_ROOT / "experiments" / "calibration" / f"{model}.json"
+    with tempfile.TemporaryDirectory(prefix="npu-int8-walk-") as directory:
+        onnx = generate_model(model, directory)
+        program = compile_model(onnx, level=level, emit="nbin", calibrate=str(profile))
+    assert program.binary is not None
+    inputs = make_inputs("normal", program.input_shapes, model=model, batch=1)
+    stats = run_program(program.binary, inputs, program.output_shapes).stats
+    result = {
+        "cell": {
+            "name": f"{model}-O{level}-default-n1-int8-normal",
+            "quantized": True,
+            "scratchpad_budget_bytes": 1048576,
+        },
+        "instruction_count": stats["instructions"],
+        "simulation": {
+            "macs": stats["macs"],
+            "int8_macs": stats["int8_macs"],
+            "effective_macs": stats["effective_macs"],
+            "utilization": stats["utilization"],
+            "delta": stats["delta"],
+            "dram_bytes_read": stats["dram_bytes_read"],
+            "dram_bytes_written": stats["dram_bytes_written"],
+            "dram_bytes_total": stats["dram_bytes_read"] + stats["dram_bytes_written"],
+            "simulated_cycles": stats["cycles"],
+            "dma_cycles": stats["dma_cycles"],
+            "compute_cycles": stats["compute_cycles"],
+        },
+    }
+    return result, program.stages["npuisa"]
+
+
+def test_an_int8_program_is_walked_and_bounded_at_its_own_peak() -> None:
+    """*Added at P14.* The walk reads a quantized program and agrees with the
+    machine on it, and each contraction is bounded at the peak it runs at.
+
+    The walker read f32 alone until the quantized cells. Here it reads i8
+    activations and weights, an i32 bias and rescale table, and the `QUANT` and
+    `DEQUANT` on either side, and reproduces the machine's counts exactly and
+    its two timelines to the cycle. An integer contraction is charged at the
+    int8 peak, so its compute branch is its effective MACs over that peak; at
+    the f32 peak every compute bound int8 layer would read four times below a
+    bound it never claimed to meet.
+    """
+    tool("npu-opt")
+    result, text = quantized_cell("lenet", 0)
+    operations = npuisa_walk.attribute_transfers(npuisa_walk.walk(text), text)
+    npuisa_walk.check_against_result(operations, result)
+    walked = npuisa_walk.totals(operations)
+    assert walked.compute_cycles == result["simulation"]["compute_cycles"]
+    assert walked.dma_cycles == result["simulation"]["dma_cycles"]
+
+    contractions = [operation for operation in operations if operation.is_compute]
+    assert contractions and all(operation.is_integer for operation in contractions)
+    assert {operation.peak for operation in contractions} == {
+        cost_model.PEAK_MACS_PER_CYCLE_I8
+    }
+    assert {"quant", "dequant"} <= {operation.op for operation in operations}
+
+    answer = roofline.roofline_for(result, text)
+    assert answer.violations == []
+    assert answer.whole.verdict == roofline.AT_OR_ABOVE
+
+
+def test_a_program_mixing_int8_and_f32_macs_is_refused_a_whole_bound() -> None:
+    """A whole program bound needs one peak, and a mixed program has none.
+
+    No cell of this suite mixes the two, because every contraction of a
+    quantized model contracts. The refusal is what keeps a future partial
+    calibration from being bounded at either peak and called a measurement.
+    """
+    tool("npu-opt")
+    result, text = quantized_cell("lenet", 0)
+    result["simulation"]["int8_macs"] = result["simulation"]["macs"] - 1
+    with pytest.raises(roofline.RooflineError, match="no single peak"):
+        roofline.roofline_for(result, text)

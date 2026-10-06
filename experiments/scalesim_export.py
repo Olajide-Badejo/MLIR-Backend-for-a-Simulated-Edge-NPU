@@ -494,7 +494,12 @@ def _export_matmul(topology: Topology, operation: npuisa_walk.Operation) -> None
 # ---------------------------------------------------------------------------
 
 
-def architecture_config(scratchpad_bytes: int, *, run_name: str = RUN_NAME) -> str:
+def architecture_config(
+    scratchpad_bytes: int,
+    *,
+    run_name: str = RUN_NAME,
+    element_bytes: int = npuisa_walk.ELEMENT_BYTES,
+) -> str:
     """The `CostModel` constants, restated in SCALE-Sim's own format.
 
     Section 16.3 asks the configuration to restate the constants from their
@@ -514,10 +519,13 @@ def architecture_config(scratchpad_bytes: int, *, run_name: str = RUN_NAME) -> s
     capacities and this machine has one flat scratchpad, so the budget is given
     to each rather than split, and the layer sizes in this suite are small enough
     that no split would bind. That is an approximation and it is named here.
+
+    **The word is the contractions' element**, *since P14*: four bytes for an
+    f32 program and one for a quantized one, whose convolutions and matrix
+    multiplications read and write int8. Handing an int8 program the f32 word
+    would model its data at a quarter of the bandwidth this machine has.
     """
-    words_per_cycle = (
-        cost_model.DRAM_BANDWIDTH_BYTES_PER_CYCLE / npuisa_walk.ELEMENT_BYTES
-    )
+    words_per_cycle = cost_model.DRAM_BANDWIDTH_BYTES_PER_CYCLE / element_bytes
     kilobytes = max(1, scratchpad_bytes // 1024)
 
     parser = configparser.ConfigParser()
@@ -996,6 +1004,7 @@ def decompose(
     layers: list[LayerDivergence] = []
     fragmentation = 0.0
     double_buffering = 0.0
+    int8_packing = 0.0
 
     for position, group_reports in sorted(by_position.items()):
         operation = covered[position]
@@ -1037,7 +1046,21 @@ def decompose(
         # accounts for and counting it here as well was a double count the first
         # version of this function made.
         scalesim_compute = matched_cycles - scalesim_stalls
-        fragmentation += operation.cycles - scalesim_compute
+        if operation.is_integer:
+            # **The int8 packing, named.** *Since P14.* SCALE-Sim models no
+            # packing, so an int8 layer's compute time differs from its answer
+            # by the packing as well as by the occupancy. The packing's share
+            # is this machine's int8 charge less what the same layer costs at
+            # the f32 peak, which is the int8 kernel charge times the packing
+            # factor; what remains is fragmentation as an f32 layer has it.
+            at_f32_peak = (
+                operation.kernel_cycles * cost_model.I8_MACS_PER_LANE
+                + cost_model.ISSUE_OVERHEAD_CYCLES
+            )
+            int8_packing += operation.cycles - at_f32_peak
+            fragmentation += at_f32_peak - scalesim_compute
+        else:
+            fragmentation += operation.cycles - scalesim_compute
 
         # **Double buffering.** SCALE-Sim models it and this project does not
         # until P13, so the term is this machine's unhidden DMA time against
@@ -1110,6 +1133,7 @@ def decompose(
         "dilation_approximation": dilation,
         "array_fragmentation": fragmentation,
         "double_buffering": double_buffering,
+        "int8_packing": int8_packing,
     }
     total_divergence = analytical_serial - scalesim_total
     named["residual"] = total_divergence - sum(named.values())
@@ -1224,7 +1248,14 @@ def divergence_for(
     npuisa_walk.check_against_result(operations, result)
 
     topology = export(operations)
-    config = architecture_config(int(result["cell"]["scratchpad_budget_bytes"]))
+    config = architecture_config(
+        int(result["cell"]["scratchpad_budget_bytes"]),
+        element_bytes=(
+            npuisa_walk.ELEMENT_WIDTHS["i8"]
+            if result["cell"]["quantized"]
+            else npuisa_walk.ELEMENT_BYTES
+        ),
+    )
 
     reports = run_scalesim(
         topology_csv=topology.csv_text(),

@@ -474,3 +474,40 @@ def test_rank_fidelity_on_orderings_a_reader_can_check() -> None:
     assert tied["tied_on_this_project"] == 1.0
     assert tied["pairwise_accuracy"] == pytest.approx(1.0)
     assert tied["kendall_tau_b"] < 1.0
+
+
+def test_an_int8_program_names_its_packing_in_the_decomposition(tmp_path: Path) -> None:
+    """*Added at P14.* SCALE-Sim models no packing, and the gap is a named term.
+
+    An int8 layer's compute time differs from SCALE-Sim's by the packing as
+    well as by the occupancy, so the decomposition takes the packing out as its
+    own term: the int8 charge less the same layer at the f32 peak, which is
+    exactly minus three times the int8 kernel charge, and the partition still
+    sums with no residual. And the bandwidth SCALE-Sim is given is in int8
+    words, sixteen a cycle, where an f32 program's is four.
+    """
+    import configparser
+
+    from npu_frontend import cost_model
+    from test_roofline import quantized_cell
+
+    require_scalesim()
+    tool("npu-opt")
+    result, text = quantized_cell("conv_bn_relu_stack", 2)
+    answer = export.divergence_for(result, text, tmp_path)
+    operations = npuisa_walk.attribute_transfers(npuisa_walk.walk(text), text)
+    kernel = sum(
+        operation.kernel_cycles for operation in operations if operation.is_integer
+    )
+    assert kernel > 0
+    assert answer.terms["int8_packing"] == -3 * kernel
+    assert abs(answer.terms["residual"]) <= 1e-6 * max(
+        1.0, abs(answer.terms["total_divergence"])
+    )
+
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+    parser.read_string(export.architecture_config(65536, element_bytes=1))
+    assert float(parser["architecture_presets"]["Bandwidth"]) == (
+        cost_model.DRAM_BANDWIDTH_BYTES_PER_CYCLE / 1
+    )

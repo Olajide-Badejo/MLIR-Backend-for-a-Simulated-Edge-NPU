@@ -334,7 +334,6 @@ def roofline_for(result: dict[str, Any], npuisa_text: str) -> CellRoofline:
     )
     npuisa_walk.check_against_result(operations, result)
 
-    peak = cost_model.PEAK_MACS_PER_CYCLE_F32
     layers = tuple(
         LayerBound(
             name=operation.name,
@@ -362,7 +361,11 @@ def roofline_for(result: dict[str, Any], npuisa_text: str) -> CellRoofline:
                 # interconnect; they were moved by an instruction the comparison
                 # had left out.
                 charged_cycles=max(operation.cycles, operation.attributed_dma_cycles),
-                peak=peak,
+                # **Each layer at the peak its arithmetic runs at.** *Since
+                # P14*: an integer contraction is charged at the int8 peak, so
+                # bounding it at the f32 one would put every compute bound int8
+                # layer four times below a bound it never claimed to meet.
+                peak=operation.peak,
             ),
         )
         for operation in operations
@@ -377,6 +380,24 @@ def roofline_for(result: dict[str, Any], npuisa_text: str) -> CellRoofline:
         )
 
     simulation = result["simulation"]
+    # The whole program at one peak, which a program has when its MACs are all
+    # one arithmetic: every fp32 cell, and every quantized cell of this suite,
+    # whose contractions all contract. A program with both would need a peak
+    # weighted by where its effective MACs fell, which nothing here measures,
+    # so it is refused by name rather than bounded at either one.
+    int8_macs = int(simulation["int8_macs"])
+    macs = int(simulation["macs"])
+    if int8_macs == 0:
+        peak = cost_model.PEAK_MACS_PER_CYCLE_F32
+    elif int8_macs == macs:
+        peak = cost_model.PEAK_MACS_PER_CYCLE_I8
+    else:
+        raise RooflineError(
+            f"{result['cell']['name']} performs {int8_macs} int8 MACs of {macs}, "
+            f"so its whole program has no single peak to bound it at. No cell of "
+            f"this suite mixes the two, and a bound at either peak would be a "
+            f"number about a different machine."
+        )
     whole = bound_for(
         effective_macs=float(simulation["effective_macs"]),
         dram_bytes=int(simulation["dram_bytes_total"]),

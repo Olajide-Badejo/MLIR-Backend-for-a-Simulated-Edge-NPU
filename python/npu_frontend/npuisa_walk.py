@@ -49,10 +49,20 @@ from typing import Any, Final
 
 from . import cost_model
 
-#: Every tensor on this machine is f32 until the integer kernels of P14, and the
-#: walker refuses anything else rather than assuming a width. Section 16.1's
-#: `int8_macs` stays zero for the same reason.
+#: The f32 element's width, which SCALE-Sim's bandwidth in words is computed
+#: against for an f32 program.
 ELEMENT_BYTES: Final[int] = 4
+
+#: Every element type this machine has, and its width in bytes.
+#:
+#: *Widened at P14.* Until the integer kernels the walker read f32 alone and
+#: refused anything else rather than assuming a width; a quantized program moves
+#: i8 activations and weights, an i32 bias and an i32 rescale table, and f32 on
+#: either side of a `QUANT` or `DEQUANT`. The widths are `elementByteSize` in
+#: the format's own header, and an element type outside this table is still
+#: refused, for the reason it always was: a byte count at the wrong width would
+#: be wrong in a direction nothing would notice.
+ELEMENT_WIDTHS: Final[dict[str, int]] = {"f32": 4, "i8": 1, "i32": 4}
 
 #: The operations that carry a systolic charge, which is to say the two the
 #: SCALE-Sim topology of Section 16.3 can represent at all.
@@ -72,8 +82,25 @@ TRANSFER_OPS: Final[frozenset[str]] = frozenset(
 )
 
 #: The operations charged as elementwise, at the result's element count.
+#:
+#: `quant` and `dequant` *since P14*: `kernelQUANT` and `kernelDEQUANT` charge
+#: the result's element count over the lane width, as every other elementwise
+#: kernel does.
 ELEMENTWISE_OPS: Final[frozenset[str]] = frozenset(
-    {"add", "mul", "sub", "div", "max", "min", "relu", "reshape", "transpose", "concat"}
+    {
+        "add",
+        "mul",
+        "sub",
+        "div",
+        "max",
+        "min",
+        "relu",
+        "reshape",
+        "transpose",
+        "concat",
+        "quant",
+        "dequant",
+    }
 )
 
 #: The windowed reductions, charged at the result's element count times the
@@ -174,8 +201,13 @@ class MemRef:
         return count
 
     @property
+    def width(self) -> int:
+        """Bytes per element, from the type."""
+        return ELEMENT_WIDTHS[self.element]
+
+    @property
     def byte_count(self) -> int:
-        return self.elements * ELEMENT_BYTES
+        return self.elements * self.width
 
     @property
     def innermost_stride(self) -> int:
@@ -202,11 +234,12 @@ def _parse_memref(text: str) -> MemRef:
         int(part) for part in match.group("extents").split("x") if part.strip()
     )
     element = match.group("element")
-    if element != "f32":
+    if element not in ELEMENT_WIDTHS:
         raise WalkError(
-            f"the element type is {element!r} and this walker reads f32. The "
-            f"integer kernels arrive at P14 and a byte count computed at the "
-            f"wrong width would be wrong in a direction nothing would notice."
+            f"the element type is {element!r} and this walker reads "
+            f"{sorted(ELEMENT_WIDTHS)}. A byte count computed at a width guessed "
+            f"for a type it does not know would be wrong in a direction nothing "
+            f"would notice."
         )
     strides_text = match.group("strides")
     strides = (
@@ -292,6 +325,23 @@ class Operation:
     def is_compute(self) -> bool:
         return self.op in COMPUTE_OPS
 
+    @property
+    def is_integer(self) -> bool:
+        """An integer contraction, charged at the int8 peak.
+
+        *Added at P14.* The machine picks the peak from the result's element
+        type, `kernelCONV2D` and `kernelMATMUL` alike, and this reads the same
+        thing the same way.
+        """
+        return self.op in COMPUTE_OPS and self.result.element == "i8"
+
+    @property
+    def peak(self) -> int:
+        """The MACs per cycle this operation's arithmetic is charged at."""
+        if self.is_integer:
+            return cost_model.PEAK_MACS_PER_CYCLE_I8
+        return cost_model.PEAK_MACS_PER_CYCLE_F32
+
 
 def _attribute_values(text: str) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
@@ -364,8 +414,15 @@ def _charge(
     Every branch mirrors one function in `lib/Simulator/Kernels.cpp` and takes
     its element counts from the same place that file does, which is the result
     shape everywhere except the pools.
+
+    **The peak is the one the result's arithmetic runs on**, as in the kernels:
+    the int8 peak for an integer contraction, the f32 peak otherwise.
     """
-    peak = cost_model.PEAK_MACS_PER_CYCLE_F32
+    peak = (
+        cost_model.PEAK_MACS_PER_CYCLE_I8
+        if op in COMPUTE_OPS and result.element == "i8"
+        else cost_model.PEAK_MACS_PER_CYCLE_F32
+    )
 
     if op == "conv2d":
         batch = result.shape[0]
@@ -402,7 +459,7 @@ def _charge(
     if op in TRANSFER_OPS:
         source = operands[0]
         cycles = cost_model.dma_cycles(
-            result.elements * ELEMENT_BYTES, result.elements, source.innermost_stride
+            result.byte_count, result.elements, source.innermost_stride
         )
         return "dma", cycles, empty
 
@@ -549,9 +606,9 @@ def walk(npuisa_text: str) -> list[Operation]:
         # An asynchronous load moves the same bytes as a synchronous one: the
         # token says when they have landed, not whether they were moved.
         if op in LOAD_OPS:
-            read = result.elements * ELEMENT_BYTES
+            read = result.byte_count
         elif op in STORE_OPS:
-            written = result.elements * ELEMENT_BYTES
+            written = result.byte_count
 
         operations.append(
             Operation(
