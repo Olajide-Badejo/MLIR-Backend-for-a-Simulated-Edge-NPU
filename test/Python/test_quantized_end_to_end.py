@@ -37,6 +37,7 @@ that happens to stay inside a budget.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -282,6 +283,63 @@ def test_the_model_is_within_its_accuracy_budget(
         f"{name} -O{level}: the largest error is {worst / model.count:.3f} counts "
         f"of {model.count}, above its bound of {largest_counts}"
     )
+
+
+def test_the_tight_budget_computes_what_the_default_budget_computes() -> None:
+    """The budget axis, delegated to the recorded cells and checked there.
+
+    *Added at P14 with the quantized cells, D-0072.* This file compiles every
+    model at the default budget only, so the bounds above say nothing about the
+    tight budget by themselves. The recorded quantized cells are what does:
+    every model, level and budget must have one, and at the tight budget each
+    must compute exactly what it computes at the default budget at the same
+    batch, every field of its accuracy group equal. Then the default budget's
+    bounds are the tight budget's too, checked rather than assumed, as
+    `test_end_to_end.py` checks its own delegation of the same axis.
+    """
+    results_dir = REPO_ROOT / "experiments" / "results"
+    cells = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(results_dir.glob("*-int8-*.json"))
+    ]
+    if not cells:
+        pytest.skip("no quantized results recorded yet; run run_benchmarks.py")
+
+    answers: dict[tuple[str, int, str, int], dict[str, Any]] = {}
+    for cell in cells:
+        if not cell["cell"]["quantized"] or cell["cell"]["ablated_pass"] is not None:
+            continue
+        key = (
+            cell["cell"]["model"],
+            int(cell["cell"]["opt_level"]),
+            cell["cell"]["scratchpad_budget"],
+            int(cell["cell"]["batch"]),
+        )
+        answers[key] = cell["accuracy"]
+
+    missing = [
+        (name, level, budget)
+        for name in sorted(MODELS)
+        for level in LEVELS
+        for budget in ("default", "tight")
+        if not any(key[:3] == (name, level, budget) for key in answers)
+    ]
+    assert not missing, (
+        f"this file bounds the default budget only, on the understanding that "
+        f"the recorded quantized cells carry the tight one, and these "
+        f"combinations are not there: {missing}"
+    )
+
+    for (name, level, budget, batch), accuracy in sorted(answers.items()):
+        if budget != "tight":
+            continue
+        default = answers.get((name, level, "default", batch))
+        assert default is not None, (name, level, batch)
+        assert accuracy == default, (
+            f"{name} -O{level} at batch {batch}: the tight budget's answer differs "
+            f"from the default budget's, so the bounds this file asserts at the "
+            f"default budget do not cover it"
+        )
 
 
 # ---------------------------------------------------------------------------

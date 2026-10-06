@@ -406,6 +406,12 @@ def test_the_budget_axis_is_covered_where_this_file_delegates_it() -> None:
     is required to be there with an accuracy figure inside the same band this
     file enforces. `docs/adr/0010` is why the combinations are not a free cross
     product: a tight budget cell exists only at the model's declared batch.
+
+    **The fp32 cells, and only those**, *since P14's quantized cells, D-0072*. A
+    quantized cell's distance to onnxruntime is its quantization error, bounded
+    per model by `test_quantized_end_to_end.py` and not by this file's band, and
+    that file checks its own delegation of the budget axis against the recorded
+    quantized cells.
     """
     results_dir = Path(__file__).resolve().parents[2] / "experiments" / "results"
     cells = sorted(results_dir.glob("*.json"))
@@ -415,7 +421,7 @@ def test_the_budget_axis_is_covered_where_this_file_delegates_it() -> None:
     covered: dict[tuple[str, int, str], float] = {}
     for path in cells:
         cell = json.loads(path.read_text(encoding="utf-8"))
-        if cell["cell"]["ablated_pass"] is not None:
+        if cell["cell"]["ablated_pass"] is not None or cell["cell"]["quantized"]:
             continue
         key = (
             cell["cell"]["model"],
