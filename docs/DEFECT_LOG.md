@@ -4915,3 +4915,59 @@ their record.
   of that IR**, and regenerating the artefacts those consumers write is part of
   the proof, not a later phase's job. The same shape as D-0067's gate that read
   a stale build artefact: the check was sound and its coverage was not.
+
+### D-0071 the roofline and the SCALE-Sim export recompile a quantized cell as its fp32 twin
+
+**Status: fixed in the commit that follows this entry.** Found 2026-10-06 at
+`6b628f0`, the record of the 280 cells, by reading the path the two command
+lines take before running them over the record. Neither command line had been
+run over a quantized cell, and no test does.
+
+- **Reproduce.** At `6b628f0`, with the model IR built:
+
+  ```
+  python experiments/roofline.py --models lenet
+  ```
+
+  exits 2 with
+
+  ```
+  roofline: the walk of lenet-O0-default-n1-int8-normal disagrees with the numbers the simulator recorded for the same cell:
+    dram_bytes_read: the walk says 249960, the cell says 67438
+    instruction_count: the walk says 25, the cell says 32
+  ```
+
+  and `python experiments/scalesim_export.py` refuses the same cell the same
+  way, because it recompiles through the same class.
+
+- **What was wrong.** A result file records numbers and not a program, so the
+  two command lines recompile each cell through `roofline.Compiler`, which
+  keyed the program on the model, the batch, the level, the budget and the
+  ablated pass, and compiled with nothing else. A quantized cell shares all
+  five with its fp32 twin, so it was compiled as its twin, and the walk's own
+  check against the cell refused it: the fp32 program moves four bytes an
+  element where the quantized one moves one, and has no `QUANT` or `DEQUANT`.
+  The numbers committed in the cells are not affected. `run_benchmarks.py`
+  fills a cell's roofline and SCALE-Sim fields from the program it has just
+  run, in the same process, and never goes through this class.
+
+- **Why `ddedfe5` did not catch it.** That commit taught the walker, the
+  roofline and the export to read an int8 program and proved it on programs
+  its tests compiled themselves, with the profile, which is the path the
+  driver takes. The second path, from a committed cell back to its program,
+  had no quantized cell to read until `6b628f0` existed, and a check that
+  refuses is a check that runs: the refusal above is the walk's check doing
+  its job on a program it should never have been handed.
+
+- **The fix.** `Compiler` compiles a quantized cell from its committed profile
+  and keys the cache on whether the cell is quantized, so a quantized cell and
+  its twin in one run are two programs. A test recompiles the committed `lenet`
+  `-O2` pair through one `Compiler`, asserts the two programs differ, and
+  checks each against its own cell; it fails at `6b628f0` on the walk's check
+  and passes at the fix. The fix moves no recorded field: the class is not on
+  the path that records one.
+
+- **The shape.** The same as D-0070's, from the other side: a cell gained a
+  property that decides its program, and every reader that rebuilds a program
+  from a cell has to read that property too. `Compiler` is the only such
+  reader in this repository; the tests that call it name fp32 cells.
