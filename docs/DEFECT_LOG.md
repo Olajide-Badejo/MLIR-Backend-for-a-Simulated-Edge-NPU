@@ -4971,3 +4971,61 @@ run over a quantized cell, and no test does.
   property that decides its program, and every reader that rebuilds a program
   from a cell has to read that property too. `Compiler` is the only such
   reader in this repository; the tests that call it name fp32 cells.
+
+### D-0072 the fp32 end to end file's delegation check read the quantized cells and held them to the fp32 band
+
+**Status: fixed in the commit that follows this entry.** Found 2026-10-06 at
+`778105c` by item 5's battery, in both the development and the CI shape suite,
+before anything was pushed. The tree has been red on this case since the record
+`6b628f0`.
+
+- **Reproduce.** At `6b628f0` or later, before the fix:
+
+  ```
+  python -m pytest test/Python/test_end_to_end.py -k budget_axis -m 'slow or not slow'
+  ```
+
+  fails with
+
+  ```
+  AssertionError: a recorded cell sits 6.833e-02 from onnxruntime, outside the
+  band of 5.000e-05 this file enforces. The two have to be the same band or the
+  delegation is to a weaker check.
+  ```
+
+  The cell is `dilated_stack-O0-default-n4-int8-normal`.
+
+- **What was wrong.** `test_end_to_end.py` drops Section 17.4's budget axis and
+  checks the delegation by reading every committed cell that is not an
+  ablation row and requiring its distance to onnxruntime to sit inside the fp32
+  band, 5e-5. That was a statement about fp32 cells written when every cell was
+  fp32. A quantized cell's distance to onnxruntime is its quantization error,
+  four orders of magnitude above that band by design and bounded per model by
+  `test_quantized_end_to_end.py`, so the first record with quantized cells in
+  it failed the check. No recorded number is wrong; the check was asking a
+  quantized cell an fp32 question.
+
+- **Why `d5db735` did not move it.** That commit moved every site that counts
+  the suite or names its grid, found by searching for the count and for the
+  tests that build the planned cells. This one does neither: it reads whatever
+  is committed and applies an fp32 meaning to it, which is a semantic site and
+  not a count site. And before the record was committed, the tests run against
+  it were the ones expected to move, four files, rather than the suite; the
+  whole suite ran for the first time in the battery after the record.
+
+- **The fix.** The fp32 file's check reads the fp32 cells only and says why.
+  The quantized half of the same delegation is added where it belongs, in
+  `test_quantized_end_to_end.py`, which compiles every model at the default
+  budget only: the recorded quantized cells must cover every model, level and
+  budget, and each tight budget cell must compute exactly what the default
+  budget cell computes at the same batch, every field of its accuracy group
+  equal, so that the default budget's bounds are the tight budget's too. That
+  check was shown red by changing one committed tight cell's accuracy field in
+  the working tree, and green with the file restored.
+
+- **The shape.** A cell gained a property that changes what its numbers mean,
+  and a reader that applies a meaning to every committed cell has to read that
+  property; D-0071 is the same shape for the reader that rebuilds a program.
+  The practice it changes is mine: **a commit that adds a kind of cell runs the
+  whole suite against the record before the record is committed**, not the
+  files the commit expected to move.
