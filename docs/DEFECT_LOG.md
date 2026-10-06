@@ -27,7 +27,8 @@ Reproduced under load, explained, and deliberately not fixed here, because
 the fix is a change to a gate and a red at a gate is not answered by
 widening it. The entry carries the reproduction and the proposed
 precondition. **It now surfaces through a second case**, D-0066's, inside the
-regression baseline check; its eleventh observation has the message.
+regression baseline check; its eleventh observation has the message, and
+its twelfth is the first case again, with its message, at item 5's boundary.
 
 **D-0066 is closed as a duplicate of D-0049.** Of its three sightings the only
 one whose message survived is D-0049's upper gap bound, raised by the benchmark
@@ -3409,6 +3410,33 @@ to be read on a quiet machine, and it belongs to P15's flake governance with the
 precondition proposed above. Neither bound moves, and the baseline was not
 recorded around the red: the two records that followed each ran every suite
 green from a quiet start, and the check after them reported no drift.
+
+**The twelfth observation is the eighth to tenth's case, with its message, at
+item 5's boundary.** At `778105c`, P14 checkpoint B, the CI shape suite
+reported `test_a_rerun_is_byte_identical_apart_from_the_timestamp_and_the_timing`
+failed, with 1439 passed and 35 skipped beside it and D-0072 the other red,
+and the battery kept the text:
+
+```
+npu_frontend.pass_stats.PassStatisticsError: --mlir-timing reports SymbolDCE at
+0.4000 ms and this project's instrumentation at 0.1493 ms, a gap of 0.2507 ms
+against a bound of 0.2500 ms, which is 0.0500 ms of display rounding plus 50%
+of MLIR's figure.
+```
+
+That is this entry's upper bound, over by 0.0007 ms on a pass whose whole MLIR
+figure is 0.4 ms. The suite was begun six and a half minutes after the
+development suite ended at a one minute load of 6.17, from a one minute
+average of **0.23 and a five minute one of 1.34**, the ninth observation's
+lesson about which average to read once more. Run alone in the same shape eleven
+minutes later it passed in 42.53 seconds.
+
+**The case does more work than it did**, and that is worth recording beside
+the start. Since `d5db735` each of its two runs over `conv_bn_relu_stack` is 40
+cells where it was 31, the nine quantized cells added, each with its ten
+compile trials, so it samples the bound about 29 percent more often per run, and
+it took 42.53 seconds alone where the tenth observation's took 32.27. Neither
+bound moves; P15's flake governance has the precondition proposed above.
 
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
