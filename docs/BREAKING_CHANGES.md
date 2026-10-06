@@ -42,6 +42,61 @@ that causes it once it exists.
 
 ## Entries
 
+### 2026-10-06, Phase P14: the quantized cells, 63 of them, and the suite at 280
+
+**Written before the commits that cause it.** Three commits follow this one and
+a `record:` commit after them; each is named here once it exists.
+
+**What changes.**
+
+- **The benchmark suite gains 63 quantized cells**, the mirror of the fp32
+  benchmark grid the driver runs under ADR 0010, as ruled on 2026-09-30: seven
+  models at three levels, at the default budget at both batches and at the
+  tight budget at each model's declared batch. Each is the model calibrated
+  from its committed profile, compiled through the QDQ contraction, and
+  measured as an fp32 cell is, with the fields only a quantized cell fills:
+  `quant_boundary_crossings`, `simulated_cycles_without_int8_packing`,
+  `max_abs_error_vs_fp32_simulated` and `sqnr_db_vs_fp32_simulated` against its
+  fp32 twin at the same model, level, budget and batch, and the manifest's
+  `calibration_methodology_version`. Ablation cells stay fp32 only. **The suite
+  is 280 cells**: 63 fp32 benchmark cells, 63 int8 ones and 154 fp32 ablation
+  cells.
+- **The analysis reads an int8 program.** The `npuisa` walker, the roofline and
+  the SCALE-Sim export were written for f32 programs and refuse any other
+  element type. They learn the int8 and int32 widths, the int8 peak an integer
+  contraction is charged at, and the `QUANT` and `DEQUANT` instructions; the
+  SCALE-Sim decomposition gains a named `int8_packing` term, because SCALE-Sim
+  models no packing and an int8 layer's divergence would otherwise sit inside
+  the fragmentation term. Every one of these is a mirror of what the simulator
+  already charges, and none of them changes what an f32 program gets.
+- **Every hardcoded count of the suite moves from 217 to 280 in one commit**,
+  derived from the driver: the tests, the harness's docstrings, and the
+  documents that state the suite's size.
+
+**Which baseline fields move.**
+
+- **`experiments/results/`: 63 files arrive.** The 217 fp32 cells are
+  re-recorded in the same serial run and **every field each of them carries is
+  asserted unchanged against `d2caa05`**, apart from what a re-record always
+  moves, the timing objects, the timestamps, the git sha and the content hash,
+  **and `manifest.run_order_position`**, which moves on nearly every fp32 cell:
+  Section 16.2's seeded shuffle runs over the whole suite, and a suite of 280
+  shuffles into a different order than a suite of 217. It records where a cell
+  ran in that run and nothing the cell measured.
+- **`report/generated/macros.tex`**: the cell count, the results sha and
+  content hash, and macros for the quantized cells beside the fp32 ones.
+- **`experiments/results-runtime.json`**: the run's own count and timing.
+- **`test/baseline/baseline.json`**: suites only, which grow. Its 42 cells are
+  fp32 and do not move, and neither does a golden tensor.
+- **Not baseline fields, and declared here anyway because they are recorded
+  numbers**: the 63 quantized cells' own figures, predicted before any of them
+  is recorded.
+
+**The prediction** is `experiments/predictions/p14-quantized-cells.md`,
+committed before any of these commits exists.
+
+**The commits that cause it:** named here once they exist.
+
 ### 2026-09-30, Phase P14: the cost model's INT8 terms, an int8 MAC coefficient and the throughput assumption made separable
 
 **Written before the commits that cause it.** Three commits follow this one and
