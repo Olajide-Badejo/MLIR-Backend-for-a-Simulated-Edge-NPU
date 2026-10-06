@@ -26,7 +26,7 @@
     "scratchpad_budget": "default",
     "scratchpad_budget_bytes": 1048576
   },
-  "content_hash": "b9cd93c6f8a04621b5266261b9ff22eb419e57453b50257ac8555c390062684e",
+  "content_hash": "61b75bc989c8078acae2405507bd163edd60a04e7db17143fb2cc7cf57dc31ec",
   "deltas": null,
   "external": {
     "area_mm2": 8.54464056,
@@ -185,7 +185,7 @@
     "cpu_model": "Intel(R) Core(TM) i7-14700K",
     "endianness": "little",
     "generator_version": "1.1.0",
-    "git_sha": "c3eadc94ea44622b5d548d559593f011fe948271",
+    "git_sha": "d5db735132d63d55c4024de7f2a9e792a721c598",
     "llvm_tag": "LLVM version 22.1.8",
     "registered_estimators": [
       "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
@@ -196,10 +196,10 @@
       "CactiDRAM",
       "CactiSRAM"
     ],
-    "run_order_position": 100,
+    "run_order_position": 106,
     "run_order_seed": 20260901,
     "technology_node": "45nm",
-    "timestamp": "2026-09-30T19:00:05.464452+00:00",
+    "timestamp": "2026-10-06T20:58:07.368369+00:00",
     "tool_shas": {
       "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
       "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
@@ -266,10 +266,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 0,
       "timing": {
-        "ci95_high_ms": 0.6703783,
-        "ci95_low_ms": 0.486308425,
-        "iqr_ms": 0.08976249999999997,
-        "median_ms": 0.505585,
+        "ci95_high_ms": 0.6257084500000001,
+        "ci95_low_ms": 0.48689855000000004,
+        "iqr_ms": 0.02872275000000002,
+        "median_ms": 0.502532,
         "n_trials": 10
       }
     },
@@ -306,10 +306,10 @@
       "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
       "position": 1,
       "timing": {
-        "ci95_high_ms": 0.303054675,
-        "ci95_low_ms": 0.2123882,
-        "iqr_ms": 0.015479999999999994,
-        "median_ms": 0.221211,
+        "ci95_high_ms": 0.41846035000000004,
+        "ci95_low_ms": 0.217357,
+        "iqr_ms": 0.021743249999999992,
+        "median_ms": 0.226469,
         "n_trials": 10
       }
     }
@@ -399,17 +399,17 @@
   },
   "timing": {
     "compile_ms": {
-      "ci95_high_ms": 39.81423391524004,
-      "ci95_low_ms": 36.87391865096288,
-      "iqr_ms": 0.992266257526353,
-      "median_ms": 37.75489502004348,
+      "ci95_high_ms": 47.686544561292976,
+      "ci95_low_ms": 39.57533148932271,
+      "iqr_ms": 2.798821369651705,
+      "median_ms": 42.592074431013316,
       "n_trials": 10
     },
     "passes_total_ms": {
-      "ci95_high_ms": 0.966159175,
-      "ci95_low_ms": 0.7045775,
-      "iqr_ms": 0.11122725000000011,
-      "median_ms": 0.7270730000000001,
+      "ci95_high_ms": 0.9897419000000001,
+      "ci95_low_ms": 0.714417225,
+      "iqr_ms": 0.019252999999999965,
+      "median_ms": 0.7362215,
       "n_trials": 10
     }
   }

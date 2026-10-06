@@ -1,0 +1,553 @@
+{
+  "accuracy": {
+    "cosine_similarity_vs_onnxruntime": 0.9999914588253624,
+    "max_abs_error_vs_fp32_simulated": 0.014855742454528809,
+    "max_abs_error_vs_onnxruntime": 0.01485586166381836,
+    "max_abs_movement_vs_o0": 0.0,
+    "max_rel_error_vs_onnxruntime": 0.004484745495551422,
+    "mean_abs_error_vs_onnxruntime": 0.0015771934922668152,
+    "per_layer_sqnr_db": null,
+    "per_layer_sqnr_db_null_reason": "this cell is quantized and the figure is not measured. The machine returns only a program's declared outputs, so a per layer ratio would need a program per layer; the end to end ratio beside it, against the fp32 twin, is the one recorded, and a per layer figure estimated from anything else would be a number this project did not measure.",
+    "ranking_metric": "signal to quantization noise ratio in dB is the primary accuracy metric. top1_agreement_vs_onnxruntime and cosine_similarity_vs_onnxruntime are recorded and are explicitly not used to rank configurations: this suite's models are seeded and never trained, so their logits are unseparated and argmax agreement is close to a coin flip or a saturated one, while cosine similarity parks at four nines and has no resolution. SQNR is log scaled, unbounded above, and moves visibly.",
+    "sqnr_db_vs_fp32_simulated": 47.667521303824444,
+    "top1_agreement_vs_onnxruntime": 0.99609375
+  },
+  "cell": {
+    "ablated_pass": null,
+    "baseline_cell": null,
+    "batch": 4,
+    "input_class": "normal",
+    "model": "resnet_block",
+    "name": "resnet_block-O1-default-n4-int8-normal",
+    "opt_level": 1,
+    "quantized": true,
+    "scratchpad_budget": "default",
+    "scratchpad_budget_bytes": 1048576
+  },
+  "content_hash": "61b75bc989c8078acae2405507bd163edd60a04e7db17143fb2cc7cf57dc31ec",
+  "deltas": null,
+  "external": {
+    "area_mm2": 8.54464056,
+    "area_mm2_per_component": {
+      "mac_array": 2.12877056,
+      "main_memory": 0.0,
+      "scratchpad": 6.41587
+    },
+    "energy_pj": 6012579.656,
+    "energy_pj_per_component": {
+      "mac_array": 295649.27999999997,
+      "main_memory": 1136640.0,
+      "scratchpad": 4580290.376
+    },
+    "scalesim_approximations": [],
+    "scalesim_covered_cycle_fraction": 0.26687354538401864,
+    "scalesim_covered_op_fraction": 0.125,
+    "scalesim_cycles": 3018,
+    "scalesim_cycles_per_layer": [
+      {
+        "analytical_compute_cycles": 344.0,
+        "analytical_cycles": 344.0,
+        "analytical_dma_cycles": 246.0,
+        "divergence_cycles": -1165.0,
+        "macs": 147456,
+        "name": "node_conv2d",
+        "op": "conv2d",
+        "position": 5,
+        "relative_divergence": -0.7720344599072233,
+        "scalesim_arithmetic_matched_cycles": 1509,
+        "scalesim_cycles": 1509,
+        "scalesim_overall_utilization": 0.3817097415506958,
+        "scalesim_stall_cycles": 0
+      },
+      {
+        "analytical_compute_cycles": 344.0,
+        "analytical_cycles": 344.0,
+        "analytical_dma_cycles": 246.0,
+        "divergence_cycles": -1165.0,
+        "macs": 147456,
+        "name": "node_conv2d_1",
+        "op": "conv2d",
+        "position": 9,
+        "relative_divergence": -0.7720344599072233,
+        "scalesim_arithmetic_matched_cycles": 1509,
+        "scalesim_cycles": 1509,
+        "scalesim_overall_utilization": 0.3817097415506958,
+        "scalesim_stall_cycles": 0
+      }
+    ],
+    "scalesim_skipped": [
+      {
+        "analytical_cycles": 580.0,
+        "name": "dma_load_0",
+        "op": "dma_load",
+        "position": 0,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "node_conv2d",
+        "op": "quant",
+        "position": 1,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 104.0,
+        "name": "node_conv2d",
+        "op": "dma_load",
+        "position": 2,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "node_conv2d",
+        "op": "dma_load",
+        "position": 3,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 72.0,
+        "name": "node_conv2d",
+        "op": "dma_load",
+        "position": 4,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 104.0,
+        "name": "node_conv2d_1",
+        "op": "dma_load",
+        "position": 6,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "node_conv2d_1",
+        "op": "dma_load",
+        "position": 7,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 72.0,
+        "name": "node_conv2d_1",
+        "op": "dma_load",
+        "position": 8,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "node_conv2d_1",
+        "op": "dequant",
+        "position": 10,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 70.0,
+        "name": "view",
+        "op": "dma_load",
+        "position": 11,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "node_mul",
+        "op": "mul",
+        "position": 12,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "node_add",
+        "op": "add",
+        "position": 13,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 132.0,
+        "name": "node_relu_1",
+        "op": "relu",
+        "position": 14,
+        "reason": "an elementwise or shape operation. A systolic array topology has no row for it."
+      },
+      {
+        "analytical_cycles": 580.0,
+        "name": "dma_store_15",
+        "op": "dma_store",
+        "position": 15,
+        "reason": "a DMA between DRAM and the scratchpad. SCALE-Sim models its own memory hierarchy from the topology it is given and has no representation for an explicit transfer instruction."
+      }
+    ],
+    "technology_node": "45nm"
+  },
+  "instruction_count": 17,
+  "manifest": {
+    "calibration_methodology_version": {
+      "calib_method": "minmax",
+      "calibration_inputs": 32,
+      "calibration_seed": 3198279117,
+      "methodology": "docs/PASSES.md, the calibration methodology in one place",
+      "profile": "experiments/calibration/resnet_block.json",
+      "profile_schema_version": 1,
+      "profile_sha256": "0c5c434c3997cc1a27d85da56745638661ed323e3880b02c6d001b764d9cace0",
+      "requant_mode": "fixed",
+      "weight_granularity": "per-channel"
+    },
+    "cost_model_constants": {
+      "ARRAY_DIM": 16,
+      "DMA_DESCRIPTOR_CYCLES": 64.0,
+      "DMA_STRIDED_ELEMENT_CYCLES": 0.5,
+      "DRAM_BANDWIDTH_BYTES_PER_CYCLE": 16.0,
+      "ELEMENTWISE_LANE_WIDTH": 16,
+      "I8_MACS_PER_LANE": 4,
+      "ISSUE_OVERHEAD_CYCLES": 4.0,
+      "PEAK_MACS_PER_CYCLE_F32": 256,
+      "PEAK_MACS_PER_CYCLE_I8": 1024,
+      "WEIGHT_PRELOAD_CYCLES": 16.0
+    },
+    "cpu_model": "Intel(R) Core(TM) i7-14700K",
+    "endianness": "little",
+    "generator_version": "1.1.0",
+    "git_sha": "d5db735132d63d55c4024de7f2a9e792a721c598",
+    "llvm_tag": "LLVM version 22.1.8",
+    "registered_estimators": [
+      "DEPRECATED table-based-plug-ins. Use the Library plug-in instead.",
+      "dummy",
+      "Aladdin_table",
+      "Library",
+      "CactiCache",
+      "CactiDRAM",
+      "CactiSRAM"
+    ],
+    "run_order_position": 81,
+    "run_order_seed": 20260901,
+    "technology_node": "45nm",
+    "timestamp": "2026-10-06T20:57:53.628552+00:00",
+    "tool_shas": {
+      "accelergy": "6911d15686ee7efdceba7d95605102df4472ae3a",
+      "accelergy-aladdin-plug-in": "5e2e1263ddcc896ba3b8ce95954d76cdeebe03ab",
+      "accelergy-cacti-plug-in": "7649b2c02a389f3c3d585d7ff4ececacfb01e6ea",
+      "accelergy-library-plug-in": "ba4e9dac1b2e7a3076fb8b7816a5228211623055",
+      "accelergy-table-based-plug-ins": "bad19e941043045e130ea999852331f203d8c3fe",
+      "scale-sim-v2": "9f98c4371055a54c75209c2e02b640b897550532",
+      "scalesim_installed_tree_sha256": "c5095fb318865988d7d87c9c667e4bde8fcb6a0cf81d7e3327cc820df1927ac5"
+    },
+    "tool_versions": {
+      "llvm": "LLVM version 22.1.8",
+      "numpy": "2.5.1",
+      "onnx": "1.22.0",
+      "onnxruntime": "1.27.0",
+      "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+      "python": "3.14.4",
+      "torch": "2.13.0+cpu"
+    },
+    "wall_clock_note": "every wall clock in this file was measured on the host named by cpu_model, under whatever else that machine was doing. The counted metrics are exact and reproduce on any host; the timed ones are a measurement of this one and are recorded with an interval for that reason."
+  },
+  "normalized": {
+    "edp": 15.764983858032002,
+    "energy_pj_per_inference": 6012579.656,
+    "macs_per_dram_byte": 16.605405405405406,
+    "units_convention": "one multiply accumulate is two operations. FLOPs is never reported for an integer cell: the integer kernels arrive at P14 and a floating point operation count over them would be a unit that does not apply. macs is the raw count and is the only one Accelergy ever sees; effective_macs is the utilization scaled figure the cycle charge used, and utilization and delta are recorded beside it so the charge can be reconstructed rather than trusted."
+  },
+  "npuisa_op_counts": {
+    "npuisa.add": 1,
+    "npuisa.const": 7,
+    "npuisa.conv2d": 2,
+    "npuisa.dequant": 1,
+    "npuisa.dma_load": 8,
+    "npuisa.dma_store": 1,
+    "npuisa.mul": 1,
+    "npuisa.quant": 1,
+    "npuisa.relu": 1
+  },
+  "passes": [
+    {
+      "anchor_op": "func.func",
+      "name": "npu-calibrate",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_after_total": 25,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.mul": 1,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_before_total": 19,
+      "pass_name": "NPUCalibrate",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 0,
+      "timing": {
+        "ci95_high_ms": 0.7250713000000001,
+        "ci95_low_ms": 0.45425265,
+        "iqr_ms": 0.07036949999999997,
+        "median_ms": 0.4719255,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-constant-fold",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_after_total": 25,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_before_total": 25,
+      "pass_name": "NPUConstantFold",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 1,
+      "timing": {
+        "ci95_high_ms": 0.10034945,
+        "ci95_low_ms": 0.087142125,
+        "iqr_ms": 0.008847750000000001,
+        "median_ms": 0.09025,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "canonicalize",
+      "ops_after": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_after_total": 25,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_before_total": 25,
+      "pass_name": "Canonicalizer",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 2,
+      "timing": {
+        "ci95_high_ms": 0.245853125,
+        "ci95_low_ms": 0.20877905,
+        "iqr_ms": 0.018445499999999976,
+        "median_ms": 0.2270885,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "builtin.module",
+      "name": "npu-lower-to-npuisa",
+      "ops_after": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 15,
+        "memref.reinterpret_cast": 1,
+        "npuisa.add": 1,
+        "npuisa.const": 7,
+        "npuisa.conv2d": 2,
+        "npuisa.dequant": 1,
+        "npuisa.dma_load": 8,
+        "npuisa.dma_store": 1,
+        "npuisa.mul": 1,
+        "npuisa.quant": 1,
+        "npuisa.relu": 1
+      },
+      "ops_after_total": 42,
+      "ops_before": {
+        "builtin.module": 1,
+        "func.func": 1,
+        "func.return": 1,
+        "npu.add": 1,
+        "npu.constant": 5,
+        "npu.conv2d": 2,
+        "npu.dequantize": 3,
+        "npu.mul": 1,
+        "npu.quantize": 3,
+        "npu.relu": 2,
+        "tensor.empty": 6
+      },
+      "ops_before_total": 26,
+      "pass_name": "NPULowerToNPUISA",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 3,
+      "timing": {
+        "ci95_high_ms": 0.789594075,
+        "ci95_low_ms": 0.559689375,
+        "iqr_ms": 0.037802,
+        "median_ms": 0.588417,
+        "n_trials": 10
+      }
+    },
+    {
+      "anchor_op": "func.func",
+      "name": "npu-allocate-scratchpad",
+      "ops_after": {
+        "arith.constant": 15,
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 1,
+        "memref.reinterpret_cast": 1,
+        "memref.view": 15,
+        "npuisa.add": 1,
+        "npuisa.const": 7,
+        "npuisa.conv2d": 2,
+        "npuisa.dequant": 1,
+        "npuisa.dma_load": 8,
+        "npuisa.dma_store": 1,
+        "npuisa.mul": 1,
+        "npuisa.quant": 1,
+        "npuisa.relu": 1
+      },
+      "ops_after_total": 57,
+      "ops_before": {
+        "func.func": 1,
+        "func.return": 1,
+        "memref.alloc": 15,
+        "memref.reinterpret_cast": 1,
+        "npuisa.add": 1,
+        "npuisa.const": 7,
+        "npuisa.conv2d": 2,
+        "npuisa.dequant": 1,
+        "npuisa.dma_load": 8,
+        "npuisa.dma_store": 1,
+        "npuisa.mul": 1,
+        "npuisa.quant": 1,
+        "npuisa.relu": 1
+      },
+      "ops_before_total": 41,
+      "pass_name": "NPUAllocateScratchpad",
+      "pass_timing_source": "measured: PassInstrumentation runBeforePass and runAfterPass, std::chrono::steady_clock, with the operation walk outside the timed span",
+      "position": 4,
+      "timing": {
+        "ci95_high_ms": 0.29214707500000003,
+        "ci95_low_ms": 0.230973925,
+        "iqr_ms": 0.017096,
+        "median_ms": 0.242525,
+        "n_trials": 10
+      }
+    }
+  ],
+  "prediction_id": "p14-quantized-cells",
+  "prediction_sha": "7bc37380b4f339868dd69df4baffd2a7493a880e",
+  "roofline": {
+    "operational_intensity": 39.207207207207205,
+    "roofline_bound_cycles": 1110.0,
+    "roofline_bound_cycles_per_layer": [
+      {
+        "bound_by": "compute",
+        "bound_cycles": 340.0,
+        "charged_cycles": 344.0,
+        "compute_branch_cycles": 340.0,
+        "compute_cycles": 344.0,
+        "dma_cycles": 246.0,
+        "dram_bytes": 672,
+        "effective_macs": 348160.0,
+        "macs": 147456,
+        "memory_branch_cycles": 42.0,
+        "name": "node_conv2d",
+        "op": "conv2d",
+        "operational_intensity": 518.0952380952381,
+        "position": 5,
+        "verdict": "at_or_above_bound"
+      },
+      {
+        "bound_by": "compute",
+        "bound_cycles": 340.0,
+        "charged_cycles": 344.0,
+        "compute_branch_cycles": 340.0,
+        "compute_cycles": 344.0,
+        "dma_cycles": 246.0,
+        "dram_bytes": 672,
+        "effective_macs": 348160.0,
+        "macs": 147456,
+        "memory_branch_cycles": 42.0,
+        "name": "node_conv2d_1",
+        "op": "conv2d",
+        "operational_intensity": 518.0952380952381,
+        "position": 9,
+        "verdict": "at_or_above_bound"
+      }
+    ],
+    "roofline_verdict": "at_or_above_bound"
+  },
+  "schema_version": 3,
+  "simulation": {
+    "delta": 0.9411764705882353,
+    "dram_bytes_read": 9568,
+    "dram_bytes_total": 17760,
+    "dram_bytes_written": 8192,
+    "effective_macs": 696320.0,
+    "fragmentation_ratio": 1.0,
+    "int8_macs": 294912,
+    "macs": 294912,
+    "overlap_fraction": 0.3343195266272189,
+    "quant_boundary_crossings": 2,
+    "scratchpad_elements_read": 21680,
+    "scratchpad_elements_written": 17592,
+    "simulated_cycles": 2622.0,
+    "simulated_cycles_without_int8_packing": 4662.0,
+    "spill_count": 0,
+    "tiling_choices": null,
+    "tiling_choices_null_reason": "P13, with -npu-tile-to-scratchpad. No pass in any -O level tiles yet, so there are no choices to record rather than an empty list of them.",
+    "utilization": 0.4722222222222222
+  },
+  "timing": {
+    "compile_ms": {
+      "ci95_high_ms": 43.855660781264305,
+      "ci95_low_ms": 38.44499229453504,
+      "iqr_ms": 2.44866925640963,
+      "median_ms": 39.64601794723421,
+      "n_trials": 10
+    },
+    "passes_total_ms": {
+      "ci95_high_ms": 1.88154935,
+      "ci95_low_ms": 1.56945445,
+      "iqr_ms": 0.17958050000000036,
+      "median_ms": 1.6835345,
+      "n_trials": 10
+    }
+  }
+}

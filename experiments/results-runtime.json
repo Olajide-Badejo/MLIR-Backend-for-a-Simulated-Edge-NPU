@@ -1,10 +1,10 @@
 {
   "budget_minutes": 90.0,
-  "cells_measured": 217,
-  "cells_total": 217,
+  "cells_measured": 280,
+  "cells_total": 280,
   "run_order_seed": 20260901,
-  "seconds_per_cell": 1.182577756866287,
-  "suite_seconds": 256.61937323998427,
-  "timestamp": "2026-09-30T19:03:15.717952+00:00",
-  "worst_timing_gap_ms": 0.223754
+  "seconds_per_cell": 1.1768407169608899,
+  "suite_seconds": 329.51540074904915,
+  "timestamp": "2026-10-06T21:02:25.553754+00:00",
+  "worst_timing_gap_ms": 0.20780099999999996
 }
