@@ -28,7 +28,9 @@ the fix is a change to a gate and a red at a gate is not answered by
 widening it. The entry carries the reproduction and the proposed
 precondition. **It now surfaces through a second case**, D-0066's, inside the
 regression baseline check; its eleventh observation has the message, and
-its twelfth is the first case again, with its message, at item 5's boundary.
+its twelfth is the first case again, with its message, at item 5's boundary,
+and its thirteenth the second case inside the baseline check after the merge
+of `main`.
 
 **D-0066 is closed as a duplicate of D-0049.** Of its three sightings the only
 one whose message survived is D-0049's upper gap bound, raised by the benchmark
@@ -3437,6 +3439,34 @@ cells where it was 31, the nine quantized cells added, each with its ten
 compile trials, so it samples the bound about 29 percent more often per run, and
 it took 42.53 seconds alone where the tenth observation's took 32.27. Neither
 bound moves; P15's flake governance has the precondition proposed above.
+
+**The thirteenth observation is the eleventh's case, inside the baseline check
+again, after the merge of `main`.** At `7ec37cf`, P14 Checkpoint C's merge
+commit, `bash scripts/regression-baseline.sh --check` found pytest with one
+failure, `test_a_rerun_reproduces_the_external_fields_too`, after 33.274
+seconds in the case, and kept its reports under
+`build/regression-baseline-evidence/20261007T044012Z`:
+
+```
+npu_frontend.pass_stats.PassStatisticsError: --mlir-timing reports CSE at
+0.4000 ms and this project's instrumentation at 0.1125 ms, a gap of 0.2875 ms
+against a bound of 0.2500 ms, which is 0.0500 ms of display rounding plus 50%
+of MLIR's figure.
+```
+
+This entry's upper bound, over by 0.0375 ms, on a pass whose whole MLIR figure
+is 0.4 ms. **The start was quiet by both averages the twelfth observation and
+the ninth name**: the battery waited for a one minute load below 0.25 and a
+five minute one below 0.6, and began the check at 0.10 and 0.58, with the
+fifteen minute one at 1.18 from the two suites and the harness rows before it.
+The five minute figure was inside the wait by 0.02, so the wait was tightened
+to 0.3 for the next start rather than the bound being touched, and the check
+was run again; the result is in the baseline record's commit message.
+
+**Like the twelfth, the case is heavier than it was**: each of its two runs
+over `conv_bn_relu_stack` is 40 cells with the external tools where it was 31,
+which samples the bound about 29 percent more often. Neither bound moves, and
+the baseline is not recorded around the red.
 
 ### D-0056 tiling is expressible now and is not always an improvement, and no rule inside the pass separates the two
 
