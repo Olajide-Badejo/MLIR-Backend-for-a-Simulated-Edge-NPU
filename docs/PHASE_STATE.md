@@ -14,8 +14,8 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-10-05, at P14 checkpoint B, the boundary of the cost
-model's INT8 terms.
+**Last updated:** 2026-10-06, at P14 checkpoint B, the boundary of item 5,
+the quantized cells.
 
 ## Current phase
 
@@ -25,9 +25,10 @@ instruction with the identical pair folded away, and the calibration after the
 `-O2` folds and fusion: a calibrated model compiles at every level to integer
 instructions that meet each other without going back to f32 where nothing
 between them needs it, runs on the machine, and meets both of Section 14's
-bounds at `-O0`, `-O1` and `-O2`; and the cost model charges an int8 MAC its
+bounds at `-O0`, `-O1` and `-O2`; the cost model charges an int8 MAC its
 own energy and can separate the int8 throughput assumption from the DMA traffic
-reduction.** Branch `phase/p14-int8`, cut from `main` at
+reduction; and the benchmark suite records 63 quantized cells beside the 217
+fp32 ones, 280 in all.** Branch `phase/p14-int8`, cut from `main` at
 `e72f610`, the P13 merge. `main` has moved on to `e1a94d3` with P13b, PR 23,
 and the owner's README edit; it is merged into this branch only at Checkpoint
 C's start, with a merge commit and never a rebase, because shas are cited
@@ -67,13 +68,34 @@ the current one.
 | **P1**: at `-O2` the calibration runs after the folds and the fusion | `7e313eb` |
 | The quantized models at `-O1` and `-O2`: the prediction, the declaration, both bounds at three levels, a quantized golden per level | `b8e661d` (prediction), `222f70d` (declaration), `acd142c`, `a6d80b8`, docs `eeb02cb`, record `a29e29f` |
 | The owner's rulings of 2026-09-30: D-0066 closed as D-0049, item 5 at 63 cells | `5f3701f`, `0f26de8` |
-| **Item 4, the cost model's INT8 terms**: the declaration, the prediction, the simulator's option and `kI8MacsPerLane`, the int8 MAC's energy, result schema 3, D-0070 and its audit and two fixes, the 217 cells re-recorded, and this docs commit | `5217d0c` (declaration), `8bf6576` (prediction), `d383a48`, `b9b6288`, `387a641`, `d71478e`, `7c75ab8`, `c3eadc9`, record `408cf17`, `31f91a0`, `655295c`, and the commit carrying this file |
+| **Item 4, the cost model's INT8 terms**: the declaration, the prediction, the simulator's option and `kI8MacsPerLane`, the int8 MAC's energy, result schema 3, D-0070 and its audit and two fixes, the 217 cells re-recorded | `5217d0c` (declaration), `8bf6576` (prediction), `d383a48`, `b9b6288`, `387a641`, `d71478e`, `7c75ab8`, `c3eadc9`, record `408cf17`, `31f91a0`, `655295c`, docs `c3b77e9`, baseline record `d2caa05` |
+| **Item 5, the quantized cells**: the declaration, the prediction, the analysis reading an int8 program, the 63 cells and every count of the suite at 280, the record, D-0071 and its fix, the packed scratchpad sensitivity, D-0072 and its fix, D-0049's twelfth observation, and this docs commit | `5793cda` (declaration), `7bc3738` (prediction), `ddedfe5`, `d5db735`, record `6b628f0`, `8b58f0b`, `2790160`, `a29357b`, `778105c`, `b7cb87e`, `a8fc377`, `203f2c8`, and the commit carrying this file |
 
 The baseline was re-recorded at `dab3e76`, `c9c1961`, `d2c431c`, `96bef52`,
 `832aef0`, `ccb4c07`, `4f6c663`, `d7c066b`, `f8f6940`, `a298ad0` and `a29e29f`,
-and is re-recorded again by the commit after this one, whose coefficient table
-gains the int8 MAC. The 217 result cells were re-recorded at schema 3 in
-`408cf17`.
+and `d2caa05`, and is re-recorded again by the commit after this one, whose
+suites gain item 5's tests. The 217 result cells were re-recorded at schema 3
+in `408cf17`, and all 280 in `6b628f0`.
+
+### What the quantized cells measured, in four sentences
+
+The suite is **280 cells, 63 fp32 benchmark, 63 quantized and 154 fp32
+ablation**, measured serially from a quiet start in **5.49 minutes, 1.18
+seconds a cell**, and the 217 fp32 cells came back unchanged field for field
+against `d2caa05` apart from what a re-record always moves and their place in
+the run order. The 63 quantized cells reproduce item 4's cycles, cycles without
+the packing and energy to the bit and the end to end test's errors and SQNR,
+33.80 to 52.68 dB against the fp32 twin, and at the tight budget each computes
+exactly what it computes at the default. The packing is 0.26 to 1.57 of the
+cycle win, above 1 on 38 cells; the quantized energy is 0.195 to 0.629 of fp32
+at the default budget as recorded, and 0.117 to 0.401 with int8 scratchpad
+accesses packed four to a word, a sensitivity computed from the programs'
+operand types. The prediction was wrong on SCALE-Sim at 10 tight cells where
+nothing tiles, because the int8 word this item chose after it was written lets
+SCALE-Sim move int8 data four times faster, and narrowly wrong on the cost,
+which came in under its bracket; D-0071 and D-0072 were found and fixed on the
+way, and neither moved a recorded field, which a re-run of all 280 at the tip
+measured.
 
 ### What the INT8 terms measured, in four sentences
 
@@ -115,48 +137,54 @@ clause of the prediction held.
 | Clause | Status |
 |---|---|
 | accuracy degradation measured and reported per model | **measured at all three levels**, per model, both bounds, the budgets recorded beside the measurement in a per level table, tightened at `-O2` for the two models that move and loosened nowhere. The calibration count and the three ablations are still to come |
-| cycles and energy win, the int8 throughput share separated from the DMA share | **measured** over the 63 quantized configurations with the int8 MAC's own coefficient and the throughput assumption separable, item 4; **recorded** as cells with item 5 |
+| cycles and energy win, the int8 throughput share separated from the DMA share | **met**: measured over the 63 quantized configurations with the int8 MAC's own coefficient and the throughput assumption separable, item 4, and **recorded as 63 cells** with item 5, each carrying its cycles with and without the packing, with a packed scratchpad sensitivity beside the recorded energy in `docs/NUMBERS.md` |
 | calibration methodology documented in one place | **met**, `docs/PASSES.md`, with the weight scale line changed by P2 and where the calibration runs added by P1 |
 | `Program::kVersion` unmoved, `test_binary_stability` green | **met**, 2 |
-| fp32 goldens byte identical | **met at this boundary**, and all 217 planned fp32 cells byte identical across P3 and P1, see the verification below |
+| fp32 goldens byte identical | **met at this boundary**, and the 217 fp32 result cells unchanged field for field across item 5's record |
 | quantized goldens added rather than substituted | **met at every level**, 21 with the record after this commit; none of the seven `-O0` ones moves |
 | reachability green with zero quantization exemptions | **met**, no exemptions in force |
 
 ### What remains, in order
 
-P6 with the float refusal, P1, P2, P3 and the `-O1` and `-O2` end to end have
-landed, above. What is left:
+P6 with the float refusal, P1, P2, P3, the `-O1` and `-O2` end to end, item
+4 and item 5 have landed, above. What is left:
 
-1. **Item 5, the quantized cells**: **63**, ruled on 2026-09-30, the mirror of
-   the benchmark grid the driver runs under ADR 0010, so the suite is 63 fp32
-   benchmark cells, 63 int8 ones and 154 fp32 ablation cells, **280**. Every
-   hardcoded count site moves in one commit, and the Section 2 paragraph for
-   the owner states it that way, with the measured seconds per cell and one
-   sentence saying that 84 and 301 were an earlier misstatement of the grid,
-   not a different ruling.
-2. **Checkpoint C**, starting with the merge of `main`; then the close.
+1. **The baseline's record**, the commit after this one, whose suites gain
+   item 5's tests.
+2. **Checkpoint C**, starting with the merge of `main` with a merge commit,
+   never a rebase; then the close. Its `docs/NUMBERS.md` work keeps the channel
+   scale spread table prominent.
 
 ### Open at this boundary
 
-- **Item 5's count is ruled: 63 int8 benchmark cells and 280 in all.** The
-  84 was an earlier misstatement of the grid: it is Section 2's arithmetic,
-  and the driver runs the tight budget at each model's declared batch only,
-  per ADR 0010. Measured at `a6d80b8`, a quantized model at its declared batch
-  compiles and runs at the tight budget at every level, the answer bit
-  identical to the default budget's; at batch 4, five of the seven do not fit
-  the tight budget, as in fp32.
+- **Item 5 is recorded: 63 quantized cells and 280 in all**, with the
+  Section 2 paragraph for the owner under "The Section 2 carve out, for the
+  owner" below.
 - **D-0066 is closed as a duplicate of D-0049**, surfacing through a second
   case: its one surviving message is D-0049's gap bound, and D-0049's eleventh
   observation carries it. Neither bound moved.
-- **Two questions from item 4, for the owner.** *The packing's geometry*: the
-  int8 charge is the fp32 charge at four times the peak with the fp32 tile
-  shape, and Section 5.5 does not say along which axis the four int8 multiplies
-  are packed; along the reduction axis, a layer with fewer than 64 reduction
-  terms would not fill the packed tile and a depthwise layer would gain nothing.
-  *The scratchpad's int8 accesses*: one 32 bit access per int8 element, as
-  declared, where packing four to a word would be consistent with the
-  throughput assumption. Every quantized cycle figure is bounded by the cells'
-  two columns, with and without the packing.
+- **Item 4's two questions are ruled, and both rulings are applied.** *The
+  packing's geometry* is kept as implemented, Section 5.5's per lane packing,
+  with the depthwise caveat beside `phi` in `docs/NUMBERS.md` as a stated
+  limitation: packed along the reduction axis a depthwise layer would gain
+  nothing, and the per lane assumption is what makes it gain. No code changed.
+  *The scratchpad's int8 accesses* stay one access per element as the
+  recorded figure, with a packed sensitivity beside the energy ratios in
+  `docs/NUMBERS.md`: four int8 elements per 32 bit access on int8 operand and
+  result traffic only, computed from the programs' operand types by
+  `experiments/int8_scratchpad_packing.py` because `Stats` counts accesses
+  without their type. No schema, cost model or declaration change.
+- **D-0071 and D-0072 are fixed.** The roofline and the SCALE-Sim command
+  lines rebuilt a quantized cell's program as its fp32 twin's and refused it on
+  the walk's check, `2790160`; and the fp32 end to end file's delegation check
+  held the quantized cells to the fp32 band and was red from the record to
+  `a8fc377`, which gives each end to end file its own half. No recorded number
+  and no bound moved. **D-0072 changes a practice**: a commit that adds a kind
+  of cell runs the whole suite against its record before the record is
+  committed.
+- **The README still reads P13's 217 cells in 4.12 minutes.** It moves at
+  Checkpoint C after `main`, which carries the owner's own README edit, is
+  merged.
 - **D-0070 is fixed, in two readers.** A fused location from P3 reached the
   layer names of the SCALE-Sim and roofline breakdowns through the `npuisa`
   walker, `7c75ab8`, and the audit for every reader of a location found the
@@ -166,11 +194,12 @@ landed, above. What is left:
   top of them.** Recorded at the contraction's boundary, not changed.
 - D-0049 open, its fix P15's, now with the observation that the regression
   baseline check's own workload is contention enough; D-0065 on `main`,
-  deferred to P15. D-0066, D-0069 and D-0070 are closed. **The next free defect
-  number is D-0071.**
+  deferred to P15. D-0066, D-0069, D-0070, D-0071 and D-0072 are closed.
+  D-0049's twelfth observation is the rerun case in the CI shape at item 5's
+  battery. **The next free defect number is D-0073.**
 - The Section 2 and Section 5.5 edits to the specification are still the
-  owner's, from P10 to P13, and item 5 adds the quantized arithmetic to the
-  Section 2 paragraph.
+  owner's, from P10 to P13; the Section 2 paragraph now carries the quantized
+  cells and the 280.
 
 ### Where the detail is
 
@@ -182,53 +211,59 @@ Phase P14, checkpoint B: the relu inside the instruction, and the pair that
 computes nothing", "2026-09-29 Phase P14, checkpoint B: the calibration after
 the folds, and the quantized models at every level", and "2026-09-30 Phase P14,
 checkpoint B: the cost model's INT8 terms, and how much of the win is the
-packing". `docs/DEFECT_LOG.md`: D-0049 with its eleventh observation, D-0063,
-D-0066 closed, D-0067, D-0068, D-0069, D-0070 with its audit.
-`docs/BREAKING_CHANGES.md`: the five P14 declarations, 2026-09-16, 2026-09-20,
-the two of 2026-09-29 and 2026-09-30. `experiments/predictions/p14-int8-cost-terms.md`
-for the prediction this boundary answers. `docs/NUMBERS.md` for the int8 MAC's
-coefficient beside the fp32 one.
+packing", and "2026-10-06 Phase P14, checkpoint B: the quantized cells, and the
+suite at 280". `docs/DEFECT_LOG.md`: D-0049 with its eleventh and twelfth
+observations, D-0063, D-0066 closed, D-0067, D-0068, D-0069, D-0070 with its
+audit, D-0071, D-0072.
+`docs/BREAKING_CHANGES.md`: the six P14 declarations, 2026-09-16, 2026-09-20,
+the two of 2026-09-29, 2026-09-30 and 2026-10-06.
+`experiments/predictions/p14-quantized-cells.md` for the prediction this
+boundary answers. `docs/NUMBERS.md` for the int8 MAC's coefficient beside the
+fp32 one, and "The quantized cells" for the 63 cells, the packing's share,
+the depthwise caveat and the packed scratchpad sensitivity.
 
 ### Verification at this boundary's tip
 
-Every row was predicted before it was run, at `408cf17`, with the arithmetic
-behind it: two simulator cases and four pytest cases since `a29e29f`, one of
-them needing Accelergy, and one licensed file.
+Every row was predicted before it was run, at `778105c`, with the arithmetic
+behind it: seven pytest cases since the baseline's record at `d2caa05`, one of
+them needing SCALE-Sim, and 66 licensed files. **The first run went red** on
+D-0072 in both suite shapes and on D-0049's upper bound in the CI shape, and
+was stopped there; the second, at `203f2c8`, was predicted again with D-0072's
+one added case and is the one below.
 
 | Command | Result |
 |---|---|
 | `ninja -C build -j6`, `ninja -C build-ndebug -j6` | clean, no warnings |
 | `ninja -C build check-npu` | **52 of 52**. **Predicted** |
 | `NPUInterfaceTests`, `NPUTilingTests`, `NPUAllocatorTests` | 23, 20, 47, both trees |
-| `NPUEncodingTests`, `NPUSimulatorTests` | 95 passed and 2 skipped, **82** passed and 1 skipped, both trees: the packing as the exact ratio of the peaks, and the packing separable. **Predicted** |
-| `pytest test/Python -m 'slow or not slow'`, dev | **1450 passed, 18 skipped**, 243.09 s. **Predicted 1449: wrong by one**, the mirror's parametrized `test_the_values_agree[kI8MacsPerLane]`, which a new constant adds and the arithmetic missed |
-| the same, CI shape, from a quiet start at 0.22 | **1434 passed, 34 skipped**, 185.10 s. Predicted 1433 and 34, wrong by the same case; the difference is 16, as predicted, the int8 sanity check skipping without Accelergy |
+| `NPUEncodingTests`, `NPUSimulatorTests` | 95 passed and 2 skipped, 82 passed and 1 skipped, both trees. **Predicted**: no C++ change since `d2caa05` |
+| `pytest test/Python -m 'slow or not slow'`, dev | **1459 passed, 18 skipped**, 277.13 s. **Predicted 1459 and 18.** The first run, at `778105c`, had the predicted 1458 cases with D-0072 red among them |
+| the same, CI shape, from a quiet start at 0.23 | **1442 passed, 35 skipped**, 206.27 s. **Predicted 1442 and 35.** The first run had D-0072 and D-0049's twelfth observation red |
 | `mypy`, both shapes | no issues in 29 source files |
-| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **709 of 709**, predicted |
+| `black --check .`, `ruff check .`, `dash-lint.sh` and `--self-test`, `reuse lint` | clean; reuse **775 of 775**, predicted |
 | `build-model-ir.py`, then `check-reachability.py` | 98 files, pass, all five layers, **no exemptions** |
 | `check-isa-staleness.sh build`, the dialect reference regenerated and diffed | up to date, up to date |
 | `gen-design-decisions.py --check`, `results_to_tex.py --check`, `patch-scalesim.py --check` | up to date, up to date, every edit in place |
-| `coverage.sh 85 93 16 58` | **C++ 87.2 PASS** against 85, 7135 lines of 8179, branches 76.6 over 4620. Per tree **93.62 / 40.61 / 71.35 PASS** against 93 / 16 / 58. **No threshold moved. Predicted** 87.2 within 0.3 and the trees within 0.3 of 93.60 / 40.61 / 71.51, all met |
-| `regression-baseline.sh --check`, from a quiet start at 0.23 | **red exactly as predicted on suites only**: the simulator suite 80 to 82 and pytest 1445 to 1450, seven names added. **Not one cell or golden line**: 42 cells and 42 tensors identical, largest movement against `-O0` 4.470e-08 |
-| the 217 result cells re-recorded at schema 3 and compared field by field with the committed ones | **no field they carried moved** beyond the timing objects, timestamps, git sha, content hash and schema version, at `7c75ab8` and again at `c3eadc9`, which is the record `408cf17`. The first comparison, at `387a641`, found D-0070 |
-| every quantized configuration item 5 will record, with and without the packing | none faster without it; the quantized cycles equal to `a6d80b8`'s |
-| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches** apart from "regenerated with" in prose; every commit authored and committed by me alone; the whole tree grepped for four more words, **0 matches** |
-
-`31f91a0` and `655295c` landed after the battery, the audit and ZigZag's fix,
-adding one pytest case; the baseline's record runs every suite at the tip.
+| `coverage.sh 85 93 16 58` | **C++ 87.2 PASS** against 85, **7134** lines of 8179, branches 76.6 over 4620. **Predicted 7135 to the line and wrong by one**, with no C++ change since; the percentage met. Per tree **93.72 / 40.61 / 71.95 PASS** against 93 / 16 / 58. **No threshold moved.** Predicted within 0.5 of 93.62 / 40.61 / 71.35: met on two, **wrong on `experiments` by 0.10**, which rose 0.60 with the int8 paths of the walker, the roofline and the export and the new sensitivity script now exercised |
+| `regression-baseline.sh --check`, from a quiet start at 0.23 | **red exactly as predicted on suites only**: pytest 1451 to 1459, eight names added. **Not one cell or golden line**: 42 cells and 42 tensors identical, largest movement against `-O0` 4.470e-08 |
+| `python experiments/roofline.py`, `scalesim_export.py`, `accelergy_energy.py` over the 280, after D-0071's fix | every cell at or above its bound, 926 layers; worst divergence -89.18%, tau b 0.5537 over cells; 280 cells at 45 nm. `int8_packing` exactly minus three times the int8 kernel charge on all 63 quantized cells, zero on the 217, residual zero |
+| the 217 fp32 cells at `6b628f0` against `d2caa05`, field by field | **no field outside the declared set moved**: 16 leaf patterns, 12235 leaf differences, all of them timing statistics, the timestamp, the git sha, the content hash, and `manifest.run_order_position` on 216 of the 217 |
+| **all 280 re-run at the tip, `203f2c8`, against the record `6b628f0`**, from a quiet start at 0.23 | **identical field for field on all 280** apart from the timing objects, the timestamps and the git sha; `content_hash` and `run_order_position` identical. 5.42 minutes, 1.16 seconds a cell. Neither D-0071's fix nor D-0072's moves a recorded field |
+| the 63 quantized cells' roofline and SCALE-Sim fields recomputed through the fixed `roofline.Compiler` | **equal to the record on all 63**: the driver never took the path D-0071 was on |
+| `git log -p main..HEAD` grepped for tooling and authorship traces | **0 matches** apart from "regenerated with" in prose and this row's own earlier versions; every commit authored and committed by me alone; the whole tree grepped for four more words, **0 matches** |
 
 ### Next command
 
-This boundary is recorded by the commit after this one and then verified,
-pushed and watched in CI before item 5 starts. Its state is one command:
+This boundary's baseline is recorded by the commit after this one, and then it
+is verified, pushed and watched in CI before Checkpoint C starts. Its state is
+one command:
 
 ```
 PYTHONPATH=$HOME/llvm-project/build/tools/mlir/python_packages/mlir_core:$PWD/python \
-  python -m pytest test/Python/test_accelergy_energy.py test/Python/test_result_schema.py -q -m 'slow or not slow'
+  python -m pytest test/Python/test_result_schema.py test/Python/test_benchmarks.py test/Python/test_int8_scratchpad_packing.py -q -m 'slow or not slow'
 ```
 
-Item 5 starts by moving every hardcoded count site from 217 to 280 in one
-commit, after its declaration.
+Checkpoint C starts by merging `main` into this branch with a merge commit.
 
 ## P13, merged at `e72f610`
 
@@ -1030,8 +1065,58 @@ were left exactly as they were.
 
 ## The Section 2 carve out, for the owner
 
-**Re-derived at P13, in the commit that made it derivable, and it is the owner's
-to apply because nothing in this project may edit the specification.**
+**Re-derived at P14 with the quantized cells, and it is the owner's to apply
+because nothing in this project may edit the specification.** The paragraph
+below replaces P13's, which follows it unchanged for the record.
+
+> **Benchmark cells, fp32:** 7 models times 3 levels times 3 budget and batch
+> combinations equals **63**, which is the 84 of a free product of 2 budgets
+> and 2 batches less ADR 0010's **21**: a tight budget is the smallest at which
+> that program allocates, measured from its own peak, and a model at another
+> batch is another program, so a cell that names the tight budget runs at the
+> model's declared batch, and the 21 tight cells at the batch a model does not
+> declare are not in the grid. `docs/adr/0010` records that decision and the
+> peaks behind it. **Benchmark cells, int8:** the same 63 with the model
+> calibrated from its committed profile and compiled through the QDQ
+> contraction, equals **63**. **Ablation cells:** 11 ablatable `-O2` passes,
+> Section 12 defines the property and Section 16.2 reads the set from the
+> driver, times 7 models times 2 budgets, at `-O2` and the model's declared
+> batch, fp32 only, equals **154**. Total **280 cells**. Each cell costs one
+> instrumented compile, one encode, one simulation, one onnxruntime reference
+> run, plus the `n_trials = 10` whole pipeline repetitions Section 16.1
+> requires for the timing object; a quantized cell also runs its program a
+> second time with the int8 packing switched off, and its fp32 twin once.
+> **The measured cost is 1.18 seconds per cell**, 280 cells in 5.49 minutes
+> serially on the reference machine, so **the 90 minute budget stands with a
+> factor of sixteen in hand** and the 15 second per cell planning figure is
+> replaced by the measurement, per the rule at the end of this section.
+
+**84 and 301 were an earlier misstatement of the grid, not a different
+ruling**: 84 is the free product above, and 301 is that 84 carried into a total
+beside the 63 int8 cells and the 154 ablation cells.
+
+**Measured beside it: the tight budget at the declared batch compiles at every
+level, with answers identical to the default budget's.** First measured at
+`a6d80b8`, and now recorded in all 21 tight quantized cells at `6b628f0`: each
+compiles and runs at its model's declared batch at `-O0`, `-O1` and `-O2`, its
+cycles equal the default budget cell's on all 21, and every field of its
+accuracy group equals the default budget cell's on all 21 pairs. At batch 4,
+five of the seven quantized models do not fit their tight budget, as in fp32,
+which is ADR 0010's reason holding in the quantized half too.
+
+**Two words in it differ from Section 2 on purpose.** Section 2 runs the
+ablation cells "at `-O2` and batch 1", and the driver runs them at each model's
+declared batch, which is batch 4 for `lenet_batched`; and the per cell cost now
+names the quantized cell's two extra runs, because they are part of what the
+1.18 seconds measures.
+
+**The measured cost, across the record.** 1.18 seconds a cell over 280, and
+1.18 over the 217 at `408cf17`: the 63 quantized cells added 72.9 seconds,
+1.16 each, if the fp32 cells cost what they did there.
+
+### P13's paragraph, kept for the record
+
+*Re-derived at P13, in the commit that made it derivable.*
 
 **What Section 2 says today.** 7 models times 3 levels times 2 budgets times 2
 batches is 84 benchmark cells; 11 ablatable `-O2` passes times 7 models times 2

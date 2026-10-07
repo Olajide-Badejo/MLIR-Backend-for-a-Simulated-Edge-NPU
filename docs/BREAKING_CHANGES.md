@@ -97,6 +97,57 @@ committed before any of these commits exists.
 
 **The commits that cause it:** named here once they exist.
 
+**Measured, after the commits that cause it.** *Added in the docs commit before
+the baseline's record; everything above is the declaration as committed in
+`5793cda`, unchanged.*
+
+- **The commits.** The analysis reading an int8 program is `ddedfe5`, the 63
+  cells and every count of the suite `d5db735`, and the record `6b628f0`. The
+  declaration said three commits and a record, and more landed that it did not
+  foresee: D-0071's entry `8b58f0b` and fix `2790160`, the roofline and SCALE-Sim
+  command lines rebuilding a quantized cell as its fp32 twin; the packed
+  scratchpad sensitivity `a29357b`, ruled at item 4's acceptance, with a file
+  mode corrected in `778105c`; and D-0072's entry `b7cb87e` and fix `a8fc377`,
+  the fp32 end to end file holding the quantized cells to the fp32 band. None
+  of them moves a recorded field. The baseline's suites move in the `record:`
+  commit after the one carrying this paragraph.
+- **What the declaration covered, checked against the record.** 63 files
+  arrived, every one a quantized cell of the planned grid. The 217 fp32 files
+  were compared field by field against `d2caa05` and nothing moved outside the
+  timing objects, the timestamps, the git sha, the content hash and
+  `manifest.run_order_position`, which moved on 216 of the 217. Leaf by leaf, the 217 files at `6b628f0` against `d2caa05` differ in 16 leaf
+  patterns and 12235 leaf differences, every one in that set: `content_hash`,
+  `manifest.git_sha` and `manifest.timestamp` on all 217,
+  `manifest.run_order_position` on 216, and the four statistics of
+  `timing.compile_ms`, of `timing.passes_total_ms` and of every
+  `passes[*].timing`. `schema_version` did not move, and no leaf arrived or
+  went. **The fixes after the record move none of it**: all 280 re-run at
+  `203f2c8` are identical to `6b628f0` field for field apart from the timing
+  objects, the timestamps and the git sha, `content_hash` and the run order
+  included.
+  `report/generated/macros.tex` and `experiments/results-runtime.json` moved as
+  declared: the cell count, the results sha and content hash, and 126 macros
+  for the quantized cells at the default budget and declared batch beside the
+  fp32 ones.
+- **Where the hardcoded counts moved, and one place the declaration was too
+  broad.** `d5db735` moved every count of the suite in the tests, the harness's
+  docstring, ADR 0010 and `docs/PASSES.md`. **The documents that state the
+  suite's size as a measurement moved in the docs commit instead**:
+  `docs/NUMBERS.md`'s suite table and the Section 2 paragraph in
+  `docs/PHASE_STATE.md`, because each pairs the count with a run time that did
+  not exist before the record. **The README's moves at Checkpoint C**, after
+  `main` is merged, because `main` carries the owner's own README edit and two
+  versions of one paragraph would be a merge to adjudicate rather than a
+  measurement to record; it still reads P13's 217 cells in 4.12 minutes. The
+  declaration said the documents that state the suite's size would move with
+  the counts; this is where they did, where one has not yet, and why.
+- **One site was not a count and was missed**: `test_end_to_end.py`'s
+  delegation check applied the fp32 band to every committed cell, and the
+  record made it red. That is D-0072, fixed in `a8fc377` without moving the
+  band.
+- **No golden tensor and no baseline cell moved.** The baseline check before
+  the record of its suites found suites only.
+
 ### 2026-09-30, Phase P14: the cost model's INT8 terms, an int8 MAC coefficient and the throughput assumption made separable
 
 **Written before the commits that cause it.** Three commits follow this one and

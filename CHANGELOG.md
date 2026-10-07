@@ -15,19 +15,34 @@ every level to integer instructions that meet each other without going back to
 f32 where nothing between them needs it, runs on the machine, and meets both of
 Section 14's bounds at `-O0`, `-O1` and `-O2`, with the int8 MAC charged its own
 energy and the int8 throughput assumption separable from the DMA traffic
-reduction. The quantized cells remain. The dialect's
+reduction, and the benchmark suite records 63 quantized cells beside the 217
+fp32 ones, 280 in all. The dialect's
 operator set is complete for the first time, the integer kernels have hand
 computed semantics and an independent numpy implementation that agrees with them
 **to the bit**, and `Program::kVersion` has not moved.
 
 **No fp32 number has moved and none was expected to.** Quantized mode is in no
-`-O` level, so no cell of the 217 can reach an integer instruction. The one
+`-O` level, so no fp32 cell can reach an integer instruction, and the 217 fp32
+cells came back unchanged field for field when the suite went to 280. The one
 recorded quantized thing that has moved, four of the seven quantized goldens
 when the relu was fused, was declared in `docs/BREAKING_CHANGES.md` before the
 commit that moved it and re-recorded in a commit of its own, and so are the
 fourteen quantized goldens that arrive with `-O1` and `-O2`. The measurements
 are in `docs/PHASE_STATE.md` beside the claims.
 
+- **The benchmark suite is 280 cells: 63 fp32 benchmark, 63 quantized and 154
+  fp32 ablation.** A quantized cell is the model calibrated from its committed
+  profile, run with and without the int8 packing, and held against its fp32
+  twin at the same model, level, budget and batch: 33.80 to 52.68 dB, the
+  packing 0.26 to 1.57 of the cycle win, and the energy 0.195 to 0.629 of fp32
+  at the default budget, 0.117 to 0.401 in a sensitivity with int8 scratchpad
+  accesses packed four to a word. At the tight budget each computes exactly
+  what it computes at the default. 5.49 minutes for the suite, 1.18 seconds a
+  cell. The walker, the roofline and SCALE-Sim read an int8 program, with the
+  packing a named term of the divergence. Declared first.
+- **D-0071 and D-0072 fixed**: the analysis command lines rebuilt a quantized
+  cell as its fp32 twin, and the fp32 end to end file held the quantized cells
+  to the fp32 band. Neither moved a recorded number or a bound.
 - **An int8 multiply accumulate is charged its own energy**, 1.0025 pJ from the
   same Accelergy plug in and pinned 45 nm as the fp32 MAC's 49.286: an 8 bit
   multiplier and a 32 bit accumulator, 4.36 times Section 16.4's published

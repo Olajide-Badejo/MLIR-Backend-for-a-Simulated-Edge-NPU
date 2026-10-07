@@ -7983,3 +7983,222 @@ check before the record moved suites only, and coverage held every threshold.
 
 The baseline's record, which gives its coefficient table the int8 action. Then
 item 5, the 63 quantized cells.
+
+## 2026-10-06 Phase P14, checkpoint B: the quantized cells, and the suite at 280
+
+**What this was for.** Section 14's gate asks for the cycles and energy win
+measured and reported, and item 4 measured it over the 63 quantized
+configurations in a script. Item 5 records them as benchmark cells, the
+quantized mirror of the fp32 grid the driver runs under ADR 0010, ruled on
+2026-09-30, so that every quantized figure has a result file, a prediction id
+and a place in the suite's own checks. The suite goes from 217 cells to 280,
+and nothing fp32 was to move but each cell's place in the run order.
+
+The commits: the declaration `5793cda`, the prediction `7bc3738`, the analysis
+reading an int8 program `ddedfe5`, the 63 cells and every count of the suite
+`d5db735`, the record `6b628f0`, D-0071's entry `8b58f0b` and fix `2790160`, the
+packed scratchpad sensitivity `a29357b` with a file mode corrected in
+`778105c`, D-0072's entry `b7cb87e` and fix `a8fc377`, D-0049's twelfth
+observation `203f2c8`, the docs commit that carries this entry, and the
+baseline's record after it.
+
+### What a quantized cell is
+
+The driver plans the fp32 benchmark grid twice, the second time with
+`quantized` set; ablation cells stay fp32 only, so the count is 63, 63 and 154,
+still computed from the driver. A quantized cell is the model compiled from its
+committed profile, and its pass list is checked against the level's with
+`-npu-calibrate` where the pipeline puts it: after `-npu-fuse-ops` at a level
+that has it and first at one that does not, the one rule of the pass list
+written down rather than read, which the compile driver test holds against the
+order the pass manager ran at every level and ablation. It runs twice, the
+second time with every int8 MAC at the f32 peak. Its three accuracy figures are
+taken against two references, on purpose: `max_abs_movement_vs_o0` against the
+**quantized** `-O0` answer at the same budget and batch, so that it measures the
+integer program across levels; `sqnr_db_vs_fp32_simulated` and
+`max_abs_error_vs_fp32_simulated` against the **fp32 twin**, the fp32 program at
+the same model, level, budget and batch, so that they isolate the quantization
+error. `per_layer_sqnr_db` is null with a reason of its own, because the
+machine returns only a program's declared outputs. The manifest names the
+profile, pins it by sha256 and records the options the pipeline read it with.
+Every quantized cell names `p14-quantized-cells`, and no fp32 cell does.
+
+The analysis had to read an int8 program first, `ddedfe5`: the `npuisa` walker
+knows the i8 and i32 widths and the int8 peak, the roofline bounds each layer
+at the peak its arithmetic runs at and the whole program at the int8 peak when
+every MAC is an int8 one, and SCALE-Sim is handed its bandwidth in the
+contraction's word, with an `int8_packing` term in the divergence decomposition
+so the packing does not hide inside the fragmentation term.
+
+### The record
+
+All 280 measured in one serial run at `d5db735`, from a quiet start, the one
+minute load at 0.24: **5.49 minutes, 1.18 seconds a cell**, a worst upper clock
+gap of 0.2078 ms, no red at either bound. The **217 fp32 cells were compared
+field by field against `d2caa05`, and nothing moved** outside the timing
+objects, the timestamps, the git sha, the content hash and
+`manifest.run_order_position`, which moved on 216 of them. Leaf by leaf that is
+16 patterns and 12235 leaf differences, every one a timing statistic, a
+timestamp, the git sha, the content hash or the run order; `schema_version`
+did not move, and no leaf arrived or went.
+
+**Neither fix after the record moves a recorded field, and that was measured
+rather than argued.** D-0071's fix is in the analysis command lines' class,
+which the driver does not use: it fills a cell's roofline and SCALE-Sim fields
+from the program it has just run. D-0072's is in two test files. All 280 cells
+re-run at `203f2c8`, the tip before this commit, from a quiet start, are
+identical to `6b628f0` field for field apart from the timing objects, the
+timestamps and the git sha, with `content_hash` and the run order identical
+too, in 5.42 minutes at 1.16 seconds a cell; and the 63 quantized cells'
+roofline and SCALE-Sim fields recomputed through the fixed class equal the
+record on all 63.
+
+### The adjudication, clause by clause
+
+`experiments/predictions/p14-quantized-cells.md` was committed before any of
+the code existed.
+
+- **The count, 63, 63 and 154, from the driver: met.**
+- **The fp32 cells unchanged but for the five fields, the run order on nearly
+  all of them: met**, on all 217; the run order moved on 216, and no
+  prediction id moved.
+- **Cycles, cycles without the packing and energy equal to item 4's to the
+  bit: met**, 189 of 189 figures over the 63.
+- **`int8_macs` equal to `macs`, and the crossings per the table at both
+  batches and budgets: met** on all 63.
+- **The largest error at the declared batch equal to the end to end test's:
+  met** to the five significant figures it was written at, the largest
+  relative difference 1.95e-5 against a rounding of up to 5e-5. **The SQNR
+  within 0.01 dB of the end to end figure: met**, at most 0.0054 dB from the
+  figure as written. **The two error figures within 1e-6: met**, at most
+  3.6e-7 apart over all 63.
+- **The budgets agree: met**: every field of the accuracy group is identical
+  between the tight and the default budget on all 21 pairs, and so are the
+  cycles.
+- **No quantized cell below its roofline: met**, every cell of the 280 at or
+  above its bound.
+- **SCALE-Sim's cycles the fp32 twin's wherever the twin is untiled: wrong, on
+  10 of the 63**, and wrong for a reason this item introduced after the
+  prediction was written. Twelve quantized cells differ from their twins, the
+  tight budget cells of `conv_bn_relu_stack`, `dilated_stack`,
+  `inception_block` and `resnet_block` at every level, at 0.34 to 0.49 of their
+  twins' cycles. Two of them, `inception_block` and `resnet_block` at `-O2`,
+  are where the fp32 twin tiles and the int8 program declines to, which the
+  prediction named as the exception. **The other ten are where nothing tiles.**
+  The prediction's reason was that SCALE-Sim models no data width. **It does
+  once it is told one**, and `ddedfe5` tells it: the bandwidth is given in the
+  contraction's word, 16 one byte words a cycle for a quantized cell where an
+  f32 one gets 4, which is the faithful conversion and was chosen after the
+  prediction. At a scratchpad of 6 to 8 kilobytes SCALE-Sim stalls on memory
+  and the word binds; at the default budget it does not, and all 42 default
+  budget cells equal their twins. Handed the f32 word instead, each of the ten
+  equals its twin exactly, layer by layer, which is the prediction's reason
+  holding once the word is held fixed.
+- **The `int8_packing` term exactly minus three times the int8 kernel charge,
+  zero on fp32, no residual: met** on all 63, all 217 and all 280.
+- **280 cells in 5.5 to 8 minutes, 1.2 to 1.7 seconds a cell: wrong, low and
+  narrowly**, at 5.49 minutes and 1.18 seconds. The prediction assumed a
+  quantized cell costs more than an fp32 one because it compiles one more pass
+  and runs twice, and it also has its fp32 twin compiled and run once. It does
+  not cost more: the 217 took 1.18 seconds each at `408cf17`, and the 63 added
+  72.9 seconds, 1.16 each, if the fp32 cells cost what they did there.
+
+### What the 63 cells say
+
+Item 4's sentences hold, now with a result file under each: the packing is
+0.26 to 1.57 of the cycle win, above 1 on 38 of the 63, so most quantized
+programs would be slower than fp32 without it, LeNet at batch 1 is the one
+where the traffic reduction carries the win, and the energy win does not
+depend on the packing. `docs/NUMBERS.md` has the tables, under "The quantized
+cells".
+
+**The two rulings on item 4's questions are applied there.** The packing's
+geometry is kept as implemented, and the depthwise caveat sits beside `phi` as a
+stated limitation: `depthwise_separable`'s `phi` of 1.049 is its whole cycle
+win, and packed along the reduction axis rather than per lane its depthwise
+layer would gain nothing. The scratchpad's int8 accesses stay one access per
+element as the recorded figure, and the packed sensitivity sits beside the
+energy ratios. `Stats` counts scratchpad element accesses without their type,
+so `experiments/int8_scratchpad_packing.py` computes the split from each
+program's operand types, the way the simulator counts them, and refuses to go
+on unless the split sums to the recorded counts, which it does on all 63. Four
+int8 elements to a 32 bit access, on int8 operand and result traffic only and
+not on the int32 bias, the rescale table or the f32 side of `QUANT` and
+`DEQUANT`, takes the default budget ratio from 0.195 to 0.629 recorded to 0.117
+to 0.401, and moves LeNet most, whose scratchpad reads are 88 percent int8.
+
+### D-0071, found by reading the path before running it
+
+Before running the roofline and the SCALE-Sim command lines over the record,
+reading how they get a program showed that they rebuild it through one class,
+`roofline.Compiler`, keyed on the model, the batch, the level, the budget and
+the ablated pass, which a quantized cell shares with its fp32 twin. Run, both
+refused the first quantized cell on the walk's own check, the fp32 program's
+DRAM bytes and instruction count against the int8 cell's. No recorded number
+was affected, because the driver fills those fields from the program it has
+just run and never takes that path. The class now compiles a quantized cell
+from its profile and keys on it; the test that proves it failed first on the
+walk's check. It is D-0070's shape from the other side: a cell gained a
+property that decides its program, and the reader that rebuilds a program from
+a cell had to learn it.
+
+### D-0072, found by the battery, and the practice it changes
+
+The first battery after the record went red in both suite shapes on
+`test_end_to_end.py`'s check of its own delegation: it reads every committed
+cell and requires each one's distance to onnxruntime inside the fp32 band,
+5e-5, and `dilated_stack-O0-default-n4-int8-normal` is 0.0683 from it, which is
+that model's quantization error and nothing wrong. The check was an fp32
+statement written when every cell was fp32. It now reads the fp32 cells only,
+and the quantized end to end file, which compiles every model at the default
+budget, gains the other half of the same delegation: every model, level and
+budget recorded, and each tight budget cell computing exactly what the default
+budget cell computes at the same batch. That check was shown red on a changed
+working tree copy of one tight cell before it was committed. No band moved.
+
+**What let it through is mine, and it is a practice rather than a test.**
+`d5db735` swept the sites that count the suite or build its grid, and this one
+does neither. Before the record was committed I ran the four test files I
+expected the record to move, and they passed; the whole suite ran for the
+first time in the battery. **A commit that adds a kind of cell now runs the
+whole suite against its record before the record is committed.**
+
+The same battery's CI shape run also went red on D-0049's upper bound, in the
+rerun case, over by 0.0007 ms from a start at a one minute load of 0.23 with
+the five minute one at 1.34; alone it passed. It is the entry's twelfth
+observation, with its message, and the case now samples the bound over 40
+cells a run where it did over 31.
+
+### Every count site in one commit, and the documents that state a measurement
+
+`d5db735` moved the hardcoded counts: the count test to 63, 63 and 154, the
+runtime record's total, the prediction groups, the schema test split into the
+217 fp32 cells and the 63 quantized ones, the harness's docstring, ADR 0010 and
+`docs/PASSES.md`. **The documents that state the suite's size as a measurement
+moved here instead**, `docs/NUMBERS.md`'s suite table and the Section 2
+paragraph in `docs/PHASE_STATE.md`, because each pairs the count with a run
+time that did not exist until the record. **The README's moves at Checkpoint
+C**, after `main` and the owner's own README edit on it are merged, so that two
+versions of one paragraph are not left to a merge. The declaration said the
+documents would move with the counts, and its adjudication says where they
+did and where one has not yet.
+
+**And one site was not a count, and was missed**: D-0072, below.
+
+### The battery
+
+Predicted before each run. The first, at `778105c`, met every count and went
+red on D-0072 in both shapes and on D-0049's upper bound in the CI shape, and
+was stopped. The second, at `203f2c8`, met every row but two: the C++ coverage
+was predicted unchanged to the line at 7135 of 8179 and is 7134, with no C++
+change and the percentage the same; and the `experiments` tree was predicted
+within half a point of 71.35 and is 71.95, because the int8 paths of the
+walker, the roofline and the export and the sensitivity script are exercised
+now. No threshold moved. The baseline check before its record moved suites
+only, pytest 1451 to 1459 with eight names added, and not a cell or a golden
+line.
+
+### What is next
+
+The baseline's record, whose suites gain item 5's tests. Then Checkpoint C,
+which starts by merging `main` into this branch with a merge commit.
