@@ -14,8 +14,8 @@ the status of its gate, the open questions, and the exact next command. This
 build spans dozens of sessions, and reconstructing where it stood from `git log`
 costs more than writing these lines did.
 
-**Last updated:** 2026-10-06, at P14 checkpoint B, the boundary of item 5,
-the quantized cells.
+**Last updated:** 2026-10-07, at P14 Checkpoint C's first boundary, the merge
+of `main`.
 
 ## Current phase
 
@@ -29,9 +29,9 @@ bounds at `-O0`, `-O1` and `-O2`; the cost model charges an int8 MAC its
 own energy and can separate the int8 throughput assumption from the DMA traffic
 reduction; and the benchmark suite records 63 quantized cells beside the 217
 fp32 ones, 280 in all.** Branch `phase/p14-int8`, cut from `main` at
-`e72f610`, the P13 merge. `main` has moved on to `e1a94d3` with P13b, PR 23,
-and the owner's README edit; it is merged into this branch only at Checkpoint
-C's start, with a merge commit and never a rebase, because shas are cited
+`e72f610`, the P13 merge. **`main` at `e1a94d3`, with P13b, PR 23, and the
+owner's README edit, is merged into this branch at `7ec37cf`**, Checkpoint C's
+first commit, with a merge commit and not a rebase, because shas are cited
 throughout these files.
 
 **This section replaces the checkpoint A account that was here.** That account
@@ -69,6 +69,7 @@ the current one.
 | The quantized models at `-O1` and `-O2`: the prediction, the declaration, both bounds at three levels, a quantized golden per level | `b8e661d` (prediction), `222f70d` (declaration), `acd142c`, `a6d80b8`, docs `eeb02cb`, record `a29e29f` |
 | The owner's rulings of 2026-09-30: D-0066 closed as D-0049, item 5 at 63 cells | `5f3701f`, `0f26de8` |
 | **Item 4, the cost model's INT8 terms**: the declaration, the prediction, the simulator's option and `kI8MacsPerLane`, the int8 MAC's energy, result schema 3, D-0070 and its audit and two fixes, the 217 cells re-recorded | `5217d0c` (declaration), `8bf6576` (prediction), `d383a48`, `b9b6288`, `387a641`, `d71478e`, `7c75ab8`, `c3eadc9`, record `408cf17`, `31f91a0`, `655295c`, docs `c3b77e9`, baseline record `d2caa05` |
+| **Checkpoint C's start**: `main` merged, D-0049's thirteenth observation, the baseline with P13b's four tests, and the README at 280 cells | merge `7ec37cf`, `ef08779`, record `9c414d3`, `0882b35`, and the commit carrying this file |
 | **Item 5, the quantized cells**: the declaration, the prediction, the analysis reading an int8 program, the 63 cells and every count of the suite at 280, the record, D-0071 and its fix, the packed scratchpad sensitivity, D-0072 and its fix, D-0049's twelfth observation, and this docs commit | `5793cda` (declaration), `7bc3738` (prediction), `ddedfe5`, `d5db735`, record `6b628f0`, `8b58f0b`, `2790160`, `a29357b`, `778105c`, `b7cb87e`, `a8fc377`, `203f2c8`, and the commit carrying this file |
 
 The baseline was re-recorded at `dab3e76`, `c9c1961`, `d2c431c`, `96bef52`,
@@ -147,13 +148,26 @@ clause of the prediction held.
 ### What remains, in order
 
 P6 with the float refusal, P1, P2, P3, the `-O1` and `-O2` end to end, item
-4 and item 5 have landed, above. What is left:
+4, item 5 and the merge of `main` have landed, above. What is left, in the
+order the coordinator set for Checkpoint C:
 
-1. **The baseline's record**, the commit after this one, whose suites gain
-   item 5's tests.
-2. **Checkpoint C**, starting with the merge of `main` with a merge commit,
-   never a rebase; then the close. Its `docs/NUMBERS.md` work keeps the channel
-   scale spread table prominent.
+1. **C1, the predictions** for Section 14's measurements, committed before any
+   of them runs: the calibration input count table at 8, 32, 128 and 512
+   inputs; per channel against per tensor at `-O0` and `-O2`; the four
+   calibration methods; the requantization row in the numpy reference; the
+   boundary crossing cost on `resnet_block`; the cycles and energy win in the
+   gate's wording; and per layer SQNR, which is unfilled and is a schema
+   carried field, so a declaration comes first.
+2. **C2, the measurements** into `docs/NUMBERS.md`, each prediction
+   adjudicated clause by clause, the methodology cited from `docs/PASSES.md`
+   rather than restated, and the channel scale spread table kept prominent.
+3. **C3**: INT8 reduction tiling is deferred out of P14 by the coordinator's
+   decision, recorded here and beside D-0060 with what the work would need.
+4. **C4**: every CI activation P14 introduces, with its recipe and a rehearsal
+   branch each, prepared locally and not pushed.
+5. **C5, Checkpoint D, the close**: this file rewritten as P14's closing
+   handoff, the changelog, the final battery in both shapes, coverage
+   re-measured.
 
 ### Open at this boundary
 
@@ -254,16 +268,17 @@ one added case and is the one below.
 
 ### Next command
 
-This boundary's baseline is recorded by the commit after this one, and then it
-is verified, pushed and watched in CI before Checkpoint C starts. Its state is
-one command:
+This boundary is the merge of `main`, recorded in `9c414d3`, and it is verified
+and pushed by the coordinator before C1's measurements. Its state is one
+command, which is the harness's refusal and the nightly's flag that the merge
+brought, over a suite that now has quantized cells:
 
 ```
 PYTHONPATH=$HOME/llvm-project/build/tools/mlir/python_packages/mlir_core:$PWD/python \
-  python -m pytest test/Python/test_result_schema.py test/Python/test_benchmarks.py test/Python/test_int8_scratchpad_packing.py -q -m 'slow or not slow'
+  python -m pytest test/Python/test_benchmarks.py test/Python/test_external_tools.py -q -m 'slow or not slow'
 ```
 
-Checkpoint C starts by merging `main` into this branch with a merge commit.
+C1 starts with its prediction files, committed before any measurement.
 
 ## Interphase P13b, merged into `main` at `6a9a4b7`
 
