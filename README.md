@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Olajide Badejo <olajideayomidebadejo@gmail.com>
 SPDX-License-Identifier: MIT
 -->
 
-# MLIR Backend for a Simulated Edge NPU  
+# MLIR Backend for a Simulated Edge NPU
 
 This repository is mid rebuild. I am rewriting the compiler from scratch
 against the v3 build specification, and this README is a stub that says where
@@ -73,14 +73,17 @@ nothing to propagate across because every module holds one function, and
 which is a limit of leave one out ablation rather than a fact about
 canonicalization.
 
-**What the measurement cost.** 217 cells in 4.12 minutes, 1.14 seconds per cell,
+**What the measurement cost.** 280 cells in 5.49 minutes, 1.18 seconds per cell,
 run serially against a 90 minute budget the harness enforces by failing. The
 external cross validation tools run inside that, which is why it is a second and
-not half of one; it was 1.17 seconds at P12, 1.27 at P11 and 0.60 at P10, and the
+not half of one; it was 1.14 seconds at P13, 1.17 at P12, 1.27 at P11 and 0.60 at
+P10, and the
 P11 to P12 difference is a host wall clock and nothing else, because the
 convolution kernel is genuinely parallel from P12 and was not before. The suite
 went from 175 cells to 217 at P13, when the last three ablatable passes went into
-`-O2`, and the per cell cost did not move with it. **No cycle count moved**, and
+`-O2`, and to 280 at P14, when the fp32 benchmark grid gained its quantized
+mirror, 63 cells, and the per cell cost did not move with either. **No cycle
+count moved**, and
 `CHANGELOG.md` says so at more length: a simulator that finishes sooner is not a
 design that runs faster.
 
